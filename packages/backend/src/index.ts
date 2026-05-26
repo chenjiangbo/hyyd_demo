@@ -40,15 +40,18 @@ async function start() {
     // 客户端使用 ws://localhost:3000/ws?token=huanyu_test_token_123&client=ext (浏览器插件)
     // 或 ws://localhost:3000/ws?token=huanyu_test_token_123&client=tray (托盘)
     server.register(async (fastifyInstance) => {
-      fastifyInstance.get('/ws', { websocket: true }, async (connection, request) => {
+      // 注意: @fastify/websocket v10+ 的回调签名变了
+      // 旧 v9: (connection, request) - connection.socket 是 WebSocket
+      // 新 v10: (socket, request) - socket 直接就是 WebSocket
+      fastifyInstance.get('/ws', { websocket: true }, async (socket, request) => {
         const query = request.query as any
         const token = query?.token
         const client = query?.client // 'ext' | 'tray'
 
         if (!token || !client || (client !== 'ext' && client !== 'tray')) {
           server.log.warn('WS 连接请求缺少 token 或 client 参数，已拒绝连接')
-          connection.socket.send(JSON.stringify({ error: '认证参数缺失或 client 格式错误' }))
-          connection.destroy()
+          try { socket.send(JSON.stringify({ error: '认证参数缺失或 client 格式错误' })) } catch {}
+          socket.close()
           return
         }
 
@@ -59,8 +62,8 @@ async function start() {
 
         if (!employee) {
           server.log.warn(`WS 连接请求使用了无效的 token: ${token}`)
-          connection.socket.send(JSON.stringify({ error: '无效的员工 Token' }))
-          connection.destroy()
+          try { socket.send(JSON.stringify({ error: '无效的员工 Token' })) } catch {}
+          socket.close()
           return
         }
 
@@ -70,21 +73,21 @@ async function start() {
         // 缓存连接
         const currentConn = activeConnections.get(employeeId) || {}
         if (client === 'ext') {
-          currentConn.ext = connection.socket
+          currentConn.ext = socket
         } else {
-          currentConn.tray = connection.socket
+          currentConn.tray = socket
         }
         activeConnections.set(employeeId, currentConn)
 
         // 发送确认连接成功的心跳消息
-        connection.socket.send(JSON.stringify({
+        socket.send(JSON.stringify({
           type: 'connection_established',
           client,
           employee: { id: employee.id, name: employee.name }
         }))
 
         // 监听断开
-        connection.socket.on('close', () => {
+        socket.on('close', () => {
           server.log.info(`员工 ${employee.name} (${client}) 断开了 WebSocket 连接`)
           const conn = activeConnections.get(employeeId)
           if (conn) {
@@ -101,13 +104,13 @@ async function start() {
         })
 
         // 监听消息（例如心跳包、同步订单）
-        connection.socket.on('message', async (messageBuffer) => {
+        socket.on('message', async (messageBuffer) => {
           try {
             const messageStr = messageBuffer.toString()
             const message = JSON.parse(messageStr)
             
             if (message.type === 'ping') {
-              connection.socket.send(JSON.stringify({ type: 'pong' }))
+              socket.send(JSON.stringify({ type: 'pong' }))
             } else if (message.type === 'PRESENCE') {
               // 插件上报的"在线/泰康标签"状态心跳
               presenceMap.set(employeeId, {
