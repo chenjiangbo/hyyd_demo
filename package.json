@@ -1,0 +1,21 @@
+{
+  "name": "huanyu-mvp",
+  "private": true,
+  "version": "0.1.0",
+  "description": "寰宇医道 MVP - 无感采集 + 无感回填",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "backend:dev": "pnpm --filter backend dev",
+    "backend:build": "pnpm --filter backend build",
+    "tray:dev": "pnpm --filter tray-app dev",
+    "ext:build": "pnpm --filter extension build",
+    "db:migrate": "pnpm --filter backend db:migrate",
+    "db:seed": "pnpm --filter backend db:seed"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

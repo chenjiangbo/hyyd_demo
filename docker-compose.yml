@@ -1,0 +1,48 @@
+services:
+  huanyu-postgres:
+    image: pgvector/pgvector:pg16
+    container_name: huanyu-postgres
+    ports:
+      - "15432:5432"
+    environment:
+      POSTGRES_DB: huanyu
+      POSTGRES_USER: huanyu
+      POSTGRES_PASSWORD: huanyu_dev_pwd
+    volumes:
+      - huanyu-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U huanyu -d huanyu"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  huanyu-minio:
+    image: minio/minio:latest
+    container_name: huanyu-minio
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    environment:
+      MINIO_ROOT_USER: huanyu
+      MINIO_ROOT_PASSWORD: huanyu_dev_pwd
+    command: server /data --console-address ":9001"
+    volumes:
+      - huanyu-minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 按需启动 ASR：docker compose --profile asr up -d huanyu-funasr
+  huanyu-funasr:
+    image: registry.cn-hangzhou.aliyuncs.com/funasr_repo/funasr:funasr-runtime-sdk-cpu-0.4.6
+    container_name: huanyu-funasr
+    ports:
+      - "10095:10095"
+    profiles:
+      - asr
+
+volumes:
+  huanyu-pg-data:
+  huanyu-minio-data:

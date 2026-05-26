@@ -1,0 +1,30 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+Thumbs.db
+
+# Electron
+out/
+release/
+
+# Prisma
+*.db
+*.db-journal
+
+# Android
+*.iml
+.gradle/
+local.properties
+.idea/
+*.apk
+*.aab
+android-app/app/build/
+android-app/build/
+
+# pnpm
+.pnpm-store/
