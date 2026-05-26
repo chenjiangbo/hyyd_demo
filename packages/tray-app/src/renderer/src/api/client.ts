@@ -56,6 +56,15 @@ export interface Order {
   updatedAt: string
 }
 
+export interface Presence {
+  extConnected: boolean
+  taikangTabOpen: boolean
+  trackingPoolPageActive: boolean
+  mode: 'pool_reader' | 'worker'
+  stale: boolean
+  lastSeenAt: string | null
+}
+
 export const api = {
   EMPLOYEE_ID,
   EMPLOYEE_TOKEN,
@@ -66,6 +75,11 @@ export const api = {
     const res = await fetch(`${BACKEND_URL}/health`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     return res.json()
+  },
+
+  /** 当前员工的插件 presence 状态 */
+  getPresence() {
+    return request<Presence>('/api/v1/me/presence')
   },
 
   /** 查询订单列表 */

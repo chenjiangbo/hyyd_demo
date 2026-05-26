@@ -34,6 +34,16 @@ declare module 'fastify' {
 // 员工ID -> { ext?: Socket, tray?: Socket }
 export const activeConnections = new Map<number, { ext?: any; tray?: any }>()
 
+// 内存中维护的员工 presence 状态（由插件 PRESENCE 心跳更新）
+// 员工ID -> { taikangTabOpen, mode, lastSeenAt }
+export interface PresenceInfo {
+  taikangTabOpen: boolean
+  trackingPoolPageActive: boolean
+  mode: 'pool_reader' | 'worker'
+  lastSeenAt: number
+}
+export const presenceMap = new Map<number, PresenceInfo>()
+
 export function registerApiRoutes(fastify: FastifyInstance, prisma: PrismaClient, minioClient: Minio.Client) {
   
   // 1. 鉴权 Hook
@@ -64,6 +74,42 @@ export function registerApiRoutes(fastify: FastifyInstance, prisma: PrismaClient
   // 2. 健康检查接口
   fastify.get('/health', async () => {
     return { status: 'OK', timestamp: new Date().toISOString() }
+  })
+
+  // 2.5 当前员工 presence 状态查询（给 Tray App 显示警告 banner 用）
+  fastify.get('/api/v1/me/presence', async (request, reply) => {
+    if (!request.employee) {
+      return reply.status(401).send({ error: '未登录' })
+    }
+    const info = presenceMap.get(request.employee.id)
+    const conn = activeConnections.get(request.employee.id)
+    const HEARTBEAT_TIMEOUT_MS = 30_000
+
+    if (!info) {
+      // 插件从未上报过 presence
+      return reply.send({
+        data: {
+          extConnected: !!conn?.ext,
+          taikangTabOpen: false,
+          trackingPoolPageActive: false,
+          mode: 'worker',
+          stale: true,
+          lastSeenAt: null
+        }
+      })
+    }
+
+    const stale = Date.now() - info.lastSeenAt > HEARTBEAT_TIMEOUT_MS
+    return reply.send({
+      data: {
+        extConnected: !!conn?.ext,
+        taikangTabOpen: info.taikangTabOpen,
+        trackingPoolPageActive: info.trackingPoolPageActive,
+        mode: info.mode,
+        stale,
+        lastSeenAt: new Date(info.lastSeenAt).toISOString()
+      }
+    })
   })
 
   // 3. 上报/同步订单 POST /api/v1/orders

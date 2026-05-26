@@ -5,19 +5,19 @@ import { join } from 'path';
 export default defineConfig({
   entry: {
     background: 'src/background/index.ts',
-    content: 'src/content/index.ts'
+    content: 'src/content/index.ts',
+    popup: 'src/popup/index.ts'
   },
-  format: ['iife'], // IIFE is best for Chrome extensions
+  format: ['iife'],
   outDir: 'dist',
   clean: true,
   bundle: true,
-  minify: false, // Keep readable for MVP
+  minify: false,
   onSuccess: async () => {
-    // Copy manifest to dist after build
-    if (!existsSync('dist')) {
-      mkdirSync('dist');
-    }
+    if (!existsSync('dist')) mkdirSync('dist');
+    // 复制 manifest 和 popup html
     copyFileSync('public/manifest.json', join('dist', 'manifest.json'));
-    console.log('Copied manifest.json to dist');
+    copyFileSync('src/popup/index.html', join('dist', 'popup.html'));
+    console.log('Copied manifest.json and popup.html to dist');
   }
 });

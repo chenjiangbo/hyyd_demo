@@ -13,9 +13,17 @@
     "tray:dev": "pnpm --filter tray-app dev",
     "ext:build": "pnpm --filter extension build",
     "db:migrate": "pnpm --filter backend db:migrate",
-    "db:seed": "pnpm --filter backend db:seed"
+    "db:seed": "pnpm --filter backend db:seed",
+    "deploy:win": "node scripts/deploy-win.js"
   },
   "devDependencies": {
+    "ssh2": "^1.17.0",
     "typescript": "^5.4.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
   }
 }

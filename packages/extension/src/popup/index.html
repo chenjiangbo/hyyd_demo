@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>寰宇医道探针</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        width: 320px;
+        font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC',
+          'Microsoft YaHei', '微软雅黑', sans-serif;
+        font-size: 13px;
+        color: #1f2937;
+        padding: 14px 16px;
+        background: #f9fafb;
+      }
+      .header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; }
+      .header h1 { font-size: 14px; font-weight: 600; }
+      .header .ver { font-size: 11px; color: #9ca3af; }
+      .row { display: flex; align-items: center; padding: 6px 0; font-size: 12px; }
+      .row .label { width: 60px; color: #6b7280; }
+      .row .value { color: #1f2937; flex: 1; }
+      .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+      .dot-green { background: #10b981; }
+      .dot-red { background: #ef4444; }
+      .dot-gray { background: #9ca3af; }
+      .separator { height: 1px; background: #e5e7eb; margin: 10px 0; }
+      .mode-section { padding: 10px; background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; }
+      .mode-section label { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+      .mode-section input[type=checkbox] { margin-top: 2px; }
+      .mode-section .title { font-weight: 600; font-size: 13px; }
+      .mode-section .desc { font-size: 11px; color: #6b7280; margin-top: 4px; line-height: 1.5; }
+      .mode-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-top: 8px; }
+      .mode-badge-reader { background: #dbeafe; color: #1e40af; }
+      .mode-badge-worker { background: #f3f4f6; color: #4b5563; }
+      .warning {
+        background: #fef3c7;
+        border: 1px solid #fcd34d;
+        color: #92400e;
+        font-size: 11px;
+        padding: 6px 8px;
+        border-radius: 4px;
+        margin-top: 8px;
+        line-height: 1.5;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>寰宇医道探针</h1>
+      <span class="ver" id="ver">v1.1.0</span>
+    </div>
+
+    <div class="row">
+      <span class="label">后端</span>
+      <span class="value">
+        <span class="dot dot-gray" id="ws-dot"></span>
+        <span id="ws-text">检查中…</span>
+      </span>
+    </div>
+    <div class="row">
+      <span class="label">泰康标签</span>
+      <span class="value">
+        <span class="dot dot-gray" id="tk-dot"></span>
+        <span id="tk-text">检查中…</span>
+      </span>
+    </div>
+
+    <div class="separator"></div>
+
+    <div class="mode-section">
+      <label>
+        <input type="checkbox" id="pool-reader-checkbox" />
+        <div>
+          <div class="title">本机为候选池读取者</div>
+          <div class="desc">
+            勾选后会自动扫描泰康追踪池并上报订单到后端。
+            <strong>整个团队只应在一台机器上勾选。</strong>
+          </div>
+        </div>
+      </label>
+      <div>
+        <span id="mode-badge" class="mode-badge mode-badge-worker">Worker 模式</span>
+      </div>
+      <div id="reader-warning" class="warning" style="display: none;">
+        ⚠️ 已切换为 Pool Reader 模式。请确认团队内没有其他机器已经在扮演此角色，否则会重复上报。
+      </div>
+    </div>
+
+    <script src="popup.global.js"></script>
+  </body>
+</html>

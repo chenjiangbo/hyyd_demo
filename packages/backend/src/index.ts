@@ -4,7 +4,7 @@ import websocket from '@fastify/websocket'
 import { PrismaClient } from '@prisma/client'
 import * as Minio from 'minio'
 import * as dotenv from 'dotenv'
-import { registerApiRoutes, activeConnections } from './routes/api.js'
+import { registerApiRoutes, activeConnections, presenceMap } from './routes/api.js'
 
 // 加载环境变量
 dotenv.config()
@@ -92,20 +92,57 @@ async function start() {
             if (client === 'tray') delete conn.tray
             if (!conn.ext && !conn.tray) {
               activeConnections.delete(employeeId)
+              // 完全离线，清理 presence
+              presenceMap.delete(employeeId)
             } else {
               activeConnections.set(employeeId, conn)
             }
           }
         })
 
-        // 监听消息（例如心跳包）
-        connection.socket.on('message', (messageBuffer) => {
+        // 监听消息（例如心跳包、同步订单）
+        connection.socket.on('message', async (messageBuffer) => {
           try {
             const messageStr = messageBuffer.toString()
             const message = JSON.parse(messageStr)
             
             if (message.type === 'ping') {
               connection.socket.send(JSON.stringify({ type: 'pong' }))
+            } else if (message.type === 'PRESENCE') {
+              // 插件上报的"在线/泰康标签"状态心跳
+              presenceMap.set(employeeId, {
+                taikangTabOpen: !!message.taikangTabOpen,
+                trackingPoolPageActive: !!message.trackingPoolPageActive,
+                mode: message.mode || 'worker',
+                lastSeenAt: Date.now()
+              })
+            } else if (message.type === 'ORDERS_SYNCED') {
+              server.log.info(`收到员工 ${employee.name} 同步的订单数据: ${message.payload.length} 条`)
+              const orders = message.payload
+              if (Array.isArray(orders)) {
+                for (const orderData of orders) {
+                  // 将抓取到的订单入库
+                  await prisma.order.upsert({
+                    where: {
+                      source_sourceOrderNo: {
+                        source: 'taikang',
+                        sourceOrderNo: orderData.orderId
+                      }
+                    },
+                    update: {
+                      status: orderData.status === '待申领' ? '候选' : '已申领', // 根据实际抓取状态映射
+                      rawJson: orderData
+                    },
+                    create: {
+                      source: 'taikang',
+                      sourceOrderNo: orderData.orderId,
+                      customerName: orderData.patientName || '未知',
+                      status: orderData.status === '待申领' ? '候选' : '已申领',
+                      rawJson: orderData
+                    }
+                  })
+                }
+              }
             } else {
               server.log.info(`收到来自员工 ${employee.name} (${client}) 的消息:`, message)
             }
