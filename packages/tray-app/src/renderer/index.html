@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>寰宇医道 - 采集工作台</title>
+    <!--
+      CSP 放行：
+      - connect-src: 允许调用后端 HTTP/WS（dev 在 localhost:13000）
+      - style-src + 'unsafe-inline': Tailwind 注入的样式与开发期 HMR 需要
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://localhost:13000 ws://localhost:13000 http://127.0.0.1:13000 ws://127.0.0.1:13000"
+    />
+  </head>
+
+  <body class="h-screen overflow-hidden">
+    <div id="root" class="h-full"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
