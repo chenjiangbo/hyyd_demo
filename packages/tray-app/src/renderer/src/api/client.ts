@@ -3,8 +3,10 @@
  * MVP 阶段：员工 Token + 后端地址硬编码，后续从 localStorage 或配置弹窗读取
  */
 
-export const BACKEND_URL = 'http://localhost:13000'
-export const EMPLOYEE_TOKEN = 'test-employee-token'
+// MVP: Tray App 跑在 Windows VM，后端跑在 Mac，必须用 Mac IP 而不是 localhost
+// 若客户端和后端同机，改为 'http://localhost:13000'
+export const BACKEND_URL = 'http://192.168.202.1:13000'
+export const EMPLOYEE_TOKEN = 'huanyu_test_token_123' // 对应 prisma/seed.ts 里的员工
 export const EMPLOYEE_ID = 1 // 临时硬编码，对应数据库 seed 的第一个员工
 
 interface ApiEnvelope<T> {

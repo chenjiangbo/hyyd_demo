@@ -1,8 +1,10 @@
 console.log('[寰宇探针] Background Service Worker 已启动');
 
 let ws: WebSocket | null = null;
-const BACKEND_WS_URL = 'ws://localhost:13000/ws';
-const EMPLOYEE_TOKEN = 'test-employee-token';
+// MVP: Chrome 跑在 Windows VM 里，后端跑在 Mac 上，必须用 Mac IP 而不是 localhost
+// 如果后端跑在同机，改成 ws://localhost:13000/ws
+const BACKEND_WS_URL = 'ws://192.168.202.1:13000/ws';
+const EMPLOYEE_TOKEN = 'huanyu_test_token_123'; // 对应 prisma/seed.ts 里的员工
 const CLIENT_TYPE = 'ext'; // 后端要求必须传 client=ext|tray
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
