@@ -1,0 +1,102 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Employee {
+  id             Int      @id @default(autoincrement())
+  name           String
+  phone          String
+  wechatId       String?  @map("wechat_id")
+  taikangAccount String?  @map("taikang_account")
+  token          String   @unique
+  orders         Order[]
+  messages       Message[]
+  calls          Call[]
+
+  @@map("employees")
+}
+
+model Order {
+  id                 Int          @id @default(autoincrement())
+  source             String       // 'taikang' | 'pingan'
+  sourceOrderNo      String       @map("source_order_no")
+  customerName       String       @map("customer_name")
+  customerPhone      String?      @map("customer_phone")
+  hospital           String?
+  dept               String?
+  doctor             String?
+  status             String       @default("候选") // '候选' | '已申领' | '进行中' | '完成'
+  assignedEmployeeId Int?         @map("assigned_employee_id")
+  assignedEmployee   Employee?    @relation(fields: [assignedEmployeeId], references: [id])
+  rawJson            Json?        @map("raw_json")
+  createdAt          DateTime     @default(now()) @map("created_at")
+  updatedAt          DateTime     @updatedAt @map("updated_at")
+  messages           Message[]
+  calls              Call[]
+  aiSummaries        AiSummary[]
+
+  @@unique([source, sourceOrderNo])
+  @@map("orders")
+}
+
+model Message {
+  id               Int      @id @default(autoincrement())
+  orderId          Int?     @map("order_id")
+  order            Order?   @relation(fields: [orderId], references: [id])
+  channel          String   // 'wechat' | 'wxwork'
+  conversationName String   @map("conversation_name")
+  senderName       String?  @map("sender_name")
+  contentText      String   @map("content_text")
+  screenshotOssKey String?  @map("screenshot_oss_key")
+  capturedAt       DateTime @map("captured_at")
+  employeeId       Int      @map("employee_id")
+  employee         Employee @relation(fields: [employeeId], references: [id])
+
+  @@map("messages")
+}
+
+model Call {
+  id              Int      @id @default(autoincrement())
+  orderId         Int?     @map("order_id")
+  order           Order?   @relation(fields: [orderId], references: [id])
+  employeeId      Int      @map("employee_id")
+  employee        Employee @relation(fields: [employeeId], references: [id])
+  phone           String
+  direction       String   // 'in' | 'out'
+  durationSec     Int      @map("duration_sec")
+  startedAt       DateTime @map("started_at")
+  recordingOssKey String?  @map("recording_oss_key")
+  asrText         String?  @map("asr_text")
+  asrStatus       String   @default("pending") @map("asr_status") // 'pending' | 'processing' | 'done' | 'failed'
+
+  @@map("calls")
+}
+
+model Command {
+  id          Int       @id @default(autoincrement())
+  target      String    // 'ext' | 'tray'
+  action      String    // 'claim' | 'fill_form'
+  payloadJson Json      @map("payload_json")
+  status      String    @default("pending") // 'pending' | 'done' | 'failed' | 'requires_manual'
+  createdAt   DateTime  @default(now()) @map("created_at")
+  executedAt  DateTime? @map("executed_at")
+
+  @@map("commands")
+}
+
+model AiSummary {
+  id        Int      @id @default(autoincrement())
+  orderId   Int      @map("order_id")
+  order     Order    @relation(fields: [orderId], references: [id])
+  type      String   // 'call' | 'message' | 'full'
+  content   String
+  model     String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("ai_summaries")
+}
