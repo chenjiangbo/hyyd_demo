@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "寰宇医道 - 泰康助手探针",
+  "version": "1.1.0",
+  "description": "连接泰康系统与寰宇医道中枢",
+  "host_permissions": [
+    "*://ccm.taikang.com/*"
+  ],
+  "permissions": [
+    "storage",
+    "activeTab",
+    "tabs"
+  ],
+  "background": {
+    "service_worker": "background.global.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://ccm.taikang.com/*"],
+      "js": ["content.global.js"],
+      "run_at": "document_end",
+      "all_frames": false
+    }
+  ]
+}
