@@ -79,7 +79,14 @@ function scanOrders() {
   });
 
   if (orders.length > 0) {
-    console.log(`[寰宇探针] 扫描到 ${orders.length} 条订单`);
+    console.log(`[寰宇探针] 扫描到 ${orders.length} 条订单 ↓`);
+    console.table(orders.map(o => ({
+      订单号: o.orderId,
+      状态: o.status,
+      就诊人: o.patientName,
+      申请号: o.applyNo,
+      入池时间: o.inPoolTime,
+    })));
     chrome.runtime.sendMessage({ type: 'SYNC_ORDERS', payload: orders });
   }
 }
@@ -182,6 +189,9 @@ chrome.runtime.onMessage.addListener((message) => {
 });
 
 // ─── 启动扫描 ─────────────────────────────────────────────────
-// 首次注入时延迟 1s 等待 Vue 渲染，之后每 5s 轮询一次
-setTimeout(scanOrders, 1000);
-setInterval(scanOrders, 5000);
+// 首次注入：500ms / 1.5s / 3s 各试一次（Vue 渲染速度不确定）
+// 之后每 10s 轮询保活（避免频繁请求触发反爬）
+setTimeout(scanOrders, 500);
+setTimeout(scanOrders, 1500);
+setTimeout(scanOrders, 3000);
+setInterval(scanOrders, 10000);

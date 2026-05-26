@@ -3,6 +3,7 @@ console.log('[寰宇探针] Background Service Worker 已启动');
 let ws: WebSocket | null = null;
 const BACKEND_WS_URL = 'ws://localhost:13000/ws';
 const EMPLOYEE_TOKEN = 'test-employee-token';
+const CLIENT_TYPE = 'ext'; // 后端要求必须传 client=ext|tray
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 // ─── WebSocket 连接 ──────────────────────────────────────────
@@ -11,8 +12,9 @@ function connectWebSocket() {
     return;
   }
 
-  console.log('[寰宇探针] 连接后端:', BACKEND_WS_URL);
-  ws = new WebSocket(`${BACKEND_WS_URL}?token=${EMPLOYEE_TOKEN}`);
+  const url = `${BACKEND_WS_URL}?token=${EMPLOYEE_TOKEN}&client=${CLIENT_TYPE}`;
+  console.log('[寰宇探针] 连接后端:', url);
+  ws = new WebSocket(url);
 
   ws.onopen = () => {
     console.log('[寰宇探针] 已连接后端');
@@ -27,7 +29,18 @@ function connectWebSocket() {
       const data = JSON.parse(event.data);
       console.log('[寰宇探针] 收到后端指令:', data);
 
-      // 后端发来 CLAIM_ORDER 指令 → 转发给 content script
+      // 后端推送格式: { type: 'command', action: 'claim', payload: { sourceOrderNo, ... } }
+      // 转换为 content script 能理解的 CLAIM_ORDER 格式
+      if (data.type === 'command' && data.action === 'claim') {
+        forwardToTaikangTab({
+          type: 'CLAIM_ORDER',
+          commandId: data.commandId,
+          payload: {
+            orderId: data.payload?.sourceOrderNo // content script 用泰康订单号定位行
+          }
+        });
+      }
+      // 兼容旧格式（直接测试用）
       if (data.type === 'CLAIM_ORDER') {
         forwardToTaikangTab(data);
       }
