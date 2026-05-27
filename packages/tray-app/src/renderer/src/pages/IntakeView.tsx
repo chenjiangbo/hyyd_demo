@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, type Order } from '../api/client'
+import OrderDetailModal from '../components/OrderDetailModal'
 
 export default function IntakeView(): React.JSX.Element {
   const [orders, setOrders] = useState<Order[]>([])
@@ -7,6 +8,9 @@ export default function IntakeView(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [claimingId, setClaimingId] = useState<number | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  // 申领成功后展示的订单详情
+  const [detailOrder, setDetailOrder] = useState<Order | null>(null)
+  const [detailCommandId, setDetailCommandId] = useState<number | null>(null)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -31,8 +35,10 @@ export default function IntakeView(): React.JSX.Element {
     setClaimingId(orderId)
     setToast(null)
     try {
-      await api.claim(orderId)
-      setToast(`已下发申领指令（订单 #${orderId}），浏览器插件应当自动点"详情"`)
+      const result = await api.claim(orderId)
+      // 弹出详情，展示这条订单的所有字段
+      setDetailOrder(result.order)
+      setDetailCommandId(result.commandId)
       setTimeout(refresh, 1500)
     } catch (e) {
       setToast(`申领失败：${e instanceof Error ? e.message : String(e)}`)
@@ -99,6 +105,15 @@ export default function IntakeView(): React.JSX.Element {
           暂无订单。请确认浏览器插件已采集并上报到后端。
         </div>
       )}
+
+      <OrderDetailModal
+        order={detailOrder}
+        commandId={detailCommandId}
+        onClose={() => {
+          setDetailOrder(null)
+          setDetailCommandId(null)
+        }}
+      />
     </div>
   )
 }
