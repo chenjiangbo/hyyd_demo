@@ -178,9 +178,12 @@ export function registerApiRoutes(fastify: FastifyInstance, prisma: PrismaClient
   )
 
   // 5. 工作台触发申领 POST /api/v1/orders/:id/claim
+  // 注意: 申领的员工 ID 直接从 token 解出来（auth 中间件已注入 request.employee），
+  // 忽略 body 里的 employeeId，避免客户端写死 ID 与数据库不匹配
   fastify.post<{ Params: { id: string }; Body: ClaimOrderPayload }>('/api/v1/orders/:id/claim', async (request, reply) => {
     const orderId = parseInt(request.params.id, 10)
-    const { employeeId } = request.body
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const employeeId = request.employee.id
 
     try {
       const order = await prisma.order.findUnique({
