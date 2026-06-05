@@ -25,30 +25,17 @@
       .dot-red { background: #ef4444; }
       .dot-gray { background: #9ca3af; }
       .separator { height: 1px; background: #e5e7eb; margin: 10px 0; }
-      .mode-section { padding: 10px; background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; }
-      .mode-section label { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
-      .mode-section input[type=checkbox] { margin-top: 2px; }
-      .mode-section .title { font-weight: 600; font-size: 13px; }
-      .mode-section .desc { font-size: 11px; color: #6b7280; margin-top: 4px; line-height: 1.5; }
-      .mode-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-top: 8px; }
-      .mode-badge-reader { background: #dbeafe; color: #1e40af; }
-      .mode-badge-worker { background: #f3f4f6; color: #4b5563; }
-      .warning {
-        background: #fef3c7;
-        border: 1px solid #fcd34d;
-        color: #92400e;
-        font-size: 11px;
-        padding: 6px 8px;
-        border-radius: 4px;
-        margin-top: 8px;
-        line-height: 1.5;
-      }
+      .config-section { padding: 10px; background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; }
+      .config-section label { display: block; margin-bottom: 8px; }
+      .config-section label span { display: block; color: #6b7280; font-size: 11px; margin-bottom: 4px; }
+      .config-section input { width: 100%; border: 1px solid #d1d5db; border-radius: 4px; padding: 6px 8px; font-size: 12px; }
+      .config-section button { width: 100%; border: 0; border-radius: 4px; padding: 7px 8px; background: #059669; color: white; font-size: 12px; cursor: pointer; }
     </style>
   </head>
   <body>
     <div class="header">
       <h1>寰宇医道探针</h1>
-      <span class="ver" id="ver">v1.1.0</span>
+      <span class="ver" id="ver">v1.2.0</span>
     </div>
 
     <div class="row">
@@ -68,23 +55,16 @@
 
     <div class="separator"></div>
 
-    <div class="mode-section">
+    <div class="config-section">
       <label>
-        <input type="checkbox" id="pool-reader-checkbox" />
-        <div>
-          <div class="title">本机为候选池读取者</div>
-          <div class="desc">
-            勾选后会自动扫描泰康追踪池并上报订单到后端。
-            <strong>整个团队只应在一台机器上勾选。</strong>
-          </div>
-        </div>
+        <span>后端 WS</span>
+        <input id="backend-ws-url" placeholder="ws://server:13000/ws" />
       </label>
-      <div>
-        <span id="mode-badge" class="mode-badge mode-badge-worker">Worker 模式</span>
-      </div>
-      <div id="reader-warning" class="warning" style="display: none;">
-        ⚠️ 已切换为 Pool Reader 模式。请确认团队内没有其他机器已经在扮演此角色，否则会重复上报。
-      </div>
+      <label>
+        <span>员工 ID</span>
+        <input id="employee-code" placeholder="zhangsan" />
+      </label>
+      <button id="save-config">保存配置</button>
     </div>
 
     <script src="popup.global.js"></script>
