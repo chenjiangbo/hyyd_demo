@@ -36,8 +36,11 @@ This system is built upon Mac Node.js (ssh2) -> Windows Remote SSH Control. The 
 2. SSH/SFTP Channel: Connecting to Windows VM SSH server using WIN_VM_* environment credentials.
 3. SFTP Upload: Transferring the archive to the VM destination folder.
 4. Remote Extraction: Extracting the zip using native tar -xf command on Windows, overriding existing files.
-5. Windows Native Build: Running pnpm install inside Windows. This guarantees that native dependencies (like Electron binaries, sqlite3, etc.) are built for Windows architecture.
-6. Real-time Logger: Pipelining standard outputs (stdout/stderr) of electron process back to the Mac console, providing unified output log.
+5. Old Process Cleanup: Before overwriting and rebuilding, the script runs `taskkill` for `electron.exe`, `tray-app.exe`, and `hyyd-capture-sidecar.exe`. This prevents file locks, stale single-instance locks, and an old sidecar from surviving into the next run.
+6. Windows Native Build: Running pnpm install inside Windows. This guarantees that native dependencies (like Electron binaries, sqlite3, etc.) are built for Windows architecture.
+7. Sidecar Build: Running `pnpm sidecar:build:win` inside Windows. The build script picks `win-arm64` or `win-x64` from the VM architecture and writes `hyyd-capture-sidecar.exe` into `packages/tray-app/resources/capture-sidecar`.
+8. Runtime Env Injection: The deploy script injects required VLM variables from root `.env`. The sidecar path is not an environment variable; Tray App resolves it from `resources/capture-sidecar/hyyd-capture-sidecar.exe`.
+9. Real-time Logger: Pipelining standard outputs (stdout/stderr) of electron process back to the Mac console, providing unified output log.
 
 ---
 
@@ -102,6 +105,16 @@ To resolve Windows on ARM (Apple Silicon virtualization) and non-interactive SSH
 * Issue: pnpm v9+ blocks all postinstall scripts by default unless trusted.
 * Solution: Configured `pnpm.onlyBuiltDependencies` in workspace root package.json to authorize "electron" and "esbuild".
 
+### 5. Stale Electron / Sidecar Processes
+* Issue: A previous `pnpm tray:dev` run can leave `electron.exe` or `hyyd-capture-sidecar.exe` alive. This can lock files, keep the old single-instance app running, or make the new sidecar build look successful while the UI is still connected to an old process.
+* Solution: `scripts/deploy-win.js` runs:
+  ```powershell
+  taskkill /F /IM electron.exe /T
+  taskkill /F /IM tray-app.exe /T
+  taskkill /F /IM hyyd-capture-sidecar.exe /T
+  ```
+  The command is intentionally non-interactive and ignores "process not found". A fresh deploy must always start from a clean desktop process state.
+
 ---
 
 ## 5. How to use?
@@ -119,6 +132,7 @@ pnpm deploy:win
 4. Auto-upgrade/ensure pnpm@9 is installed globally.
 5. Execute pnpm install (extremely fast).
 6. Auto-repair electron prebuilt packages via mirror.
-7. Run pnpm tray:dev.
-8. Pipe logs to your Mac terminal.
-9. Press Ctrl+C on Mac terminal to gracefully exit both Mac and Windows processes.
+7. Build `hyyd-capture-sidecar.exe`.
+8. Run pnpm tray:dev with required VLM variables injected.
+9. Pipe logs to your Mac terminal.
+10. Press Ctrl+C on Mac terminal to gracefully exit both Mac and Windows processes.
