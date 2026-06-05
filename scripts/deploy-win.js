@@ -33,11 +33,29 @@ const password = env.WIN_VM_PASSWORD;
 const targetDir = env.WIN_VM_TARGET_DIR.replace(/\\/g, '/');
 
 // 注入用户环境变量路径和 Electron 极速淘宝镜像，保障 Windows 端 Node 环境和大文件下载 100% 顺畅
-const pathInjection = `$env:Path += ';C:/Users/${username}/AppData/Local/pnpm;C:/Users/${username}/AppData/Roaming/npm;C:/Program Files/nodejs'; $env:ELECTRON_MIRROR='https://npmmirror.com/mirrors/electron/';`;
+const vlmInjection = [
+  'HYYD_VLM_BASE_URL',
+  'HYYD_VLM_API_KEY',
+  'HYYD_VLM_MODEL',
+  'GATEWAY_BASE_URL',
+  'GATEWAY_APP_ID',
+  'GATEWAY_API_KEY'
+]
+  .filter((key) => env[key])
+  .map((key) => ` $env:${key}='${String(env[key]).replace(/'/g, "''")}';`)
+  .join('');
+const pathInjection = `$env:Path += ';C:/Users/${username}/AppData/Local/pnpm;C:/Users/${username}/AppData/Roaming/npm;C:/Program Files/nodejs'; $env:ELECTRON_MIRROR='https://npmmirror.com/mirrors/electron/';${vlmInjection}`;
 
 if (!host || !username || !password || !targetDir) {
   console.error('❌ [ERROR] .env 配置文件缺少关键部署参数 (WIN_VM_HOST, WIN_VM_USERNAME, WIN_VM_PASSWORD, WIN_VM_TARGET_DIR)');
   process.exit(1);
+}
+
+for (const key of ['HYYD_VLM_BASE_URL', 'HYYD_VLM_API_KEY', 'HYYD_VLM_MODEL']) {
+  if (!env[key]) {
+    console.error(`❌ [ERROR] .env 配置文件缺少必需采集参数 ${key}`);
+    process.exit(1);
+  }
 }
 
 // 2. 本地打包源码
@@ -58,6 +76,8 @@ function packLocally() {
       '.idea',
       '.vscode',
       '.gemini',
+      '._*',
+      '**/._*',
       'dist',
       'packages/*/node_modules',
       'packages/*/dist',
@@ -68,7 +88,14 @@ function packLocally() {
     const excludeFlags = excludePatterns.map(p => `--exclude="${p}"`).join(' ');
     const cmd = `tar -czf "${archivePath}" ${excludeFlags} .`;
     
-    execSync(cmd, { cwd: path.join(__dirname, '..'), stdio: 'inherit' });
+    execSync(cmd, {
+      cwd: path.join(__dirname, '..'),
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        COPYFILE_DISABLE: '1'
+      }
+    });
     console.log(`✅ [Mac] 打包成功，生成归档包: ${archiveName} (${(fs.statSync(archivePath).size / 1024 / 1024).toFixed(2)} MB)`);
   } catch (err) {
     console.error('❌ [ERROR] 本地打包源码失败:', err.message);
@@ -129,8 +156,8 @@ conn.on('ready', () => {
         return;
       }
       
-      // 3.2 上传归档包
-      uploadArchive();
+      // 3.2 先清理旧 Electron / sidecar 进程，避免文件锁和单实例锁影响本次发布。
+      stopRemoteDesktopProcesses(uploadArchive);
     });
   });
 }).on('error', (err) => {
@@ -143,6 +170,29 @@ conn.on('ready', () => {
   username,
   password
 });
+
+function stopRemoteDesktopProcesses(next) {
+  console.log('🛑 [SSH] 正在停止旧 Electron / 采集 sidecar 进程...');
+  const taskkillCmd = `powershell -Command "taskkill /F /IM electron.exe /T 2>$null; taskkill /F /IM tray-app.exe /T 2>$null; taskkill /F /IM hyyd-capture-sidecar.exe /T 2>$null; exit 0"`;
+  conn.exec(taskkillCmd, (err, stream) => {
+    if (err) {
+      console.error('❌ [SSH] 发送 taskkill 指令出错:', err.message);
+      cleanupAndExit(1);
+      return;
+    }
+    stream.on('data', (data) => {
+      const text = data.toString().trim();
+      if (text) console.log(`[SSH stdout] ${text}`);
+    }).stderr.on('data', (data) => {
+      const text = data.toString().trim();
+      if (text) console.error(`[SSH stderr] ${text}`);
+    });
+    stream.on('close', () => {
+      console.log('✅ [SSH] 旧桌面进程清理完成');
+      next();
+    });
+  });
+}
 
 // SFTP 上传归档包
 function uploadArchive() {
@@ -176,7 +226,7 @@ function extractRemoteArchive() {
   console.log('🔓 [4/5] [SSH] 正在 Windows 上解压源码包并清理临时文件...');
   
   // 在 Windows 远程解压命令：转到目标路径，执行 tar 提取，之后删除 tar 包
-  const extractCmd = `powershell -Command "cd '${targetDir}'; tar -xf ${archiveName}; Remove-Item -Force ${archiveName}"`;
+  const extractCmd = `powershell -Command "cd '${targetDir}'; tar -xf ${archiveName}; Remove-Item -Force ${archiveName}; Get-ChildItem -Path . -Recurse -Force -Filter '._*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue"`;
   
   conn.exec(extractCmd, (err, stream) => {
     if (err) {
@@ -281,6 +331,53 @@ function installRemoteDependencies() {
               
               console.log('✅ [SSH] 依赖包原生编译与 Electron 重建安装全部完成！');
 
+              // 3.4.4 构建 Chrome 插件 (extension/dist)。
+              // 部署归档排除了所有 dist 目录，所以必须在 Windows 端重新构建，
+              // 否则 Chrome 加载的还是上一次的旧 bundle。
+              console.log('🔨 [SSH] 正在 Windows 端构建 Chrome 插件 (pnpm --filter @hyyd/extension build)...');
+              const extBuildCmd = `powershell -Command "${pathInjection} cd '${targetDir}'; pnpm --filter @hyyd/extension build"`;
+              conn.exec(extBuildCmd, (extErr, extStream) => {
+                if (extErr) {
+                  console.warn('⚠️ [SSH] 触发 extension 构建失败（不阻塞主流程）:', extErr.message);
+                  proceedBuildSidecar();
+                  return;
+                }
+                extStream.on('data', (d) => process.stdout.write(d));
+                extStream.stderr.on('data', (d) => process.stderr.write(d));
+                extStream.on('close', (code) => {
+                  if (code !== 0) {
+                    console.warn(`⚠️ [SSH] extension 构建退出码 ${code}（不阻塞主流程）`);
+                  } else {
+                    console.log('✅ [SSH] Chrome 插件构建完成，请在浏览器 chrome://extensions 点"刷新"按钮');
+                  }
+                  proceedBuildSidecar();
+                });
+              });
+
+              function proceedBuildSidecar() {
+                console.log('🔨 [SSH] 正在 Windows 端构建采集 sidecar (pnpm sidecar:build:win)...');
+                const sidecarBuildCmd = `powershell -Command "${pathInjection} cd '${targetDir}'; pnpm sidecar:build:win"`;
+                conn.exec(sidecarBuildCmd, (sidecarErr, sidecarStream) => {
+                  if (sidecarErr) {
+                    console.error('❌ [SSH] 触发 sidecar 构建失败:', sidecarErr.message);
+                    cleanupAndExit(1);
+                    return;
+                  }
+                  sidecarStream.on('data', (d) => process.stdout.write(d));
+                  sidecarStream.stderr.on('data', (d) => process.stderr.write(d));
+                  sidecarStream.on('close', (code) => {
+                    if (code !== 0) {
+                      console.error(`❌ [SSH] sidecar 构建失败，退出码: ${code}`);
+                      cleanupAndExit(1);
+                      return;
+                    }
+                    console.log('✅ [SSH] 采集 sidecar 构建完成');
+                    proceedNormalizePath();
+                  });
+                });
+              }
+
+              function proceedNormalizePath() {
               // 3.4.5 归一化 Electron 的 path.txt
               // 已知坑：某些 Electron 版本在 Windows-on-ARM 上 install.js 会把
               // path.txt 写成 "dist/electron.exe\r\n"，而 Electron 自身的
@@ -323,6 +420,7 @@ function installRemoteDependencies() {
                 }
               });
               } // end proceedDiagnostic
+              } // end proceedNormalizePath
             });
           });
         });
@@ -335,32 +433,52 @@ function installRemoteDependencies() {
 let remoteProcessStream = null;
 
 function runRemoteApplication() {
+  // 先杀掉残留的 electron 进程，避免 SingletonLock (Error code: 32) 导致新实例起不来。
+  // 已知坑：上一个 tray app 没退干净时，新进程会因为锁文件冲突直接退出。
+  console.log('🧹 [SSH] 清理 Windows 上残留的 electron 进程...');
+  const killCmd = `powershell -Command "taskkill /F /IM electron.exe /T 2>$null; exit 0"`;
+  conn.exec(killCmd, (killErr, killStream) => {
+    if (killErr) {
+      console.warn('⚠️ [SSH] 发送 taskkill 指令失败（不阻塞）:', killErr.message);
+      launchApp();
+      return;
+    }
+    killStream.on('data', (d) => process.stdout.write(`[taskkill] ${d.toString().trim()}\n`));
+    killStream.stderr.on('data', () => {/* 没有进程时会报错，忽略 */});
+    killStream.on('close', () => {
+      console.log('✅ [SSH] 旧 electron 进程已清理');
+      launchApp();
+    });
+  });
+}
+
+function launchApp() {
   console.log('\n✨ ================================================== ✨');
-  console.log('🚀 [SSH] 正在 Windows 上远程拉起客户端 (pnpm tray:dev)...');
-  console.log('📡 [LOGGER] 日志管道已对接成功，以下为您在 Windows 上的实时控制台日志：');
+  console.log('🚀 [SSH] 在 Windows 上以独立进程(detached)拉起客户端 (pnpm tray:dev)...');
+  console.log('ℹ️  [LOGGER] 不再 tail 远程日志：启动命令会立即返回，app 在 VM 上后台继续运行。');
   console.log('✨ ================================================== ✨\n');
-  
-  // 在 Windows 远程启动客户端的命令。由于是开发联调，我们可以利用 pnpm tray:dev
-  const runCmd = `powershell -Command "${pathInjection} cd '${targetDir}'; pnpm tray:dev"`;
-  
+
+  // 用 Start-Process 起一个独立进程：命令立即返回，关闭 SSH 连接后 app 仍继续运行，
+  // 避免之前“脚本挂着 tail 日志一直不返回、误以为卡住而提前手动重启”的连锁问题。
+  const startProcess =
+    `Start-Process -FilePath 'cmd.exe' -ArgumentList '/c pnpm tray:dev' ` +
+    `-WorkingDirectory '${targetDir}' -WindowStyle Hidden`;
+  const runCmd = `powershell -Command "${pathInjection} ${startProcess}"`;
+
   conn.exec(runCmd, (err, stream) => {
     if (err) {
       console.error('❌ [SSH] 远程启动应用命令发送失败:', err.message);
       cleanupAndExit(1);
       return;
     }
-    
-    remoteProcessStream = stream;
-    
-    // 监听 Windows 端的标准输出和错误输出，实时在 Mac 终端还原
-    stream.on('data', (data) => {
-      process.stdout.write(data);
-    }).stderr.on('data', (data) => {
-      process.stderr.write(data);
-    });
-    
-    stream.on('close', (code, signal) => {
-      console.log(`\n🛑 [SSH] 远程应用已关闭。退出码: ${code}, 信号: ${signal}`);
+
+    stream.on('data', (data) => process.stdout.write(data));
+    stream.stderr.on('data', (data) => process.stderr.write(data));
+
+    stream.on('close', () => {
+      console.log('\n✅ [SSH] 客户端已在 VM 后台启动（detached），本次部署到此返回。');
+      console.log('   · app 需要约 10~20 秒构建后才会出现窗口/托盘图标，请稍候。');
+      console.log('   · 如需查看实时日志，可在 VM 上手动运行：pnpm tray:dev');
       cleanupAndExit(0);
     });
   });
