@@ -7,10 +7,11 @@
       CSP 放行：
       - connect-src: 允许调用后端 HTTP/WS（dev 在 localhost:13000）
       - style-src + 'unsafe-inline': Tailwind 注入的样式与开发期 HMR 需要
+      - img-src: 允许从 MinIO presigned URL 加载附件图片
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://localhost:13000 ws://localhost:13000 http://127.0.0.1:13000 ws://127.0.0.1:13000 http://192.168.202.1:13000 ws://192.168.202.1:13000"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http: https:; media-src 'self' http: https:; connect-src 'self' http: https: ws: wss:"
     />
   </head>
 

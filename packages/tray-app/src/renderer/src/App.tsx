@@ -4,6 +4,12 @@ import StatusBar from './components/StatusBar'
 import PresenceBanner from './components/PresenceBanner'
 import IntakeView from './pages/IntakeView'
 import MyWorkbenchView from './pages/MyWorkbenchView'
+import CallsView from './pages/CallsView'
+import MessagesView from './pages/MessagesView'
+import CaptureDebugView from './pages/CaptureDebugView'
+import CaptureVerifyView from './pages/CaptureVerifyView'
+import CaptureAiView from './pages/CaptureAiView'
+import SettingsView from './pages/SettingsView'
 import { api, type Presence } from './api/client'
 
 function App(): React.JSX.Element {
@@ -48,6 +54,12 @@ function App(): React.JSX.Element {
         <div className="flex-1 overflow-auto">
           {view === 'intake' && <IntakeView />}
           {view === 'mine' && <MyWorkbenchView />}
+          {view === 'calls' && <CallsView />}
+          {view === 'messages' && <MessagesView />}
+          {view === 'capture-debug' && <CaptureDebugView />}
+          {view === 'capture-verify' && <CaptureVerifyView />}
+          {view === 'capture-ai' && <CaptureAiView />}
+          {view === 'settings' && <SettingsView />}
         </div>
         <StatusBar backendOk={backendOk} presence={presence} />
       </main>

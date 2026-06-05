@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, EMPLOYEE_ID, type Order } from '../api/client'
+import { api, getClientConfig, type Order } from '../api/client'
 
 const COLUMNS: { status: Order['status']; label: string; color: string }[] = [
   { status: '已申领', label: '已申领', color: 'border-blue-400' },
@@ -16,7 +16,7 @@ export default function MyWorkbenchView(): React.JSX.Element {
     setLoading(true)
     setError(null)
     try {
-      const data = await api.listOrders({ assignedEmployeeId: EMPLOYEE_ID })
+      const data = await api.listOrders({ assignedEmployeeCode: getClientConfig().employeeCode })
       setOrders(data)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -37,7 +37,7 @@ export default function MyWorkbenchView(): React.JSX.Element {
         <div>
           <h1 className="text-xl font-semibold text-slate-800">我的工作台</h1>
           <p className="text-sm text-slate-500 mt-1">
-            员工 #{EMPLOYEE_ID} 名下所有订单，按状态分列。
+            员工 {getClientConfig().employeeCode} 名下所有订单，按状态分列。
           </p>
         </div>
         <button

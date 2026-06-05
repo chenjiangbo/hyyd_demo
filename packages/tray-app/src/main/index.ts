@@ -2,10 +2,15 @@ import { app, shell, BrowserWindow, Tray, Menu, nativeImage, ipcMain } from 'ele
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import { CaptureSidecarClient } from './capture-sidecar-client'
+import { loadRootEnv } from './runtime-env'
+
+loadRootEnv()
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
+const captureSidecar = new CaptureSidecarClient()
 
 function showMainWindow(): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -107,9 +112,42 @@ if (!gotLock) {
       isQuitting = true
       app.quit()
     })
+    ipcMain.handle('capture:status', () => captureSidecar.getStatus())
+    ipcMain.handle('capture:conversations', (_e, channel?: string) =>
+      captureSidecar.listConversations(channel)
+    )
+    ipcMain.handle('capture:messages', (_e, threadId: number) =>
+      captureSidecar.listMessages(threadId)
+    )
+    // 调试用
+    ipcMain.handle('capture:frames', (_e, channel?: string, limit?: number) =>
+      captureSidecar.listFrames(channel, limit ?? 30)
+    )
+    ipcMain.handle('capture:layout', (_e, id: number) => captureSidecar.getLayout(id))
+    ipcMain.handle('capture:screenshot', (_e, path: string) =>
+      captureSidecar.readScreenshotDataUrl(path)
+    )
+    // 截图验证：直接从磁盘列出 sidecar 存下的原始 PNG
+    ipcMain.handle('capture:shots', (_e, channel?: string, limit?: number) =>
+      captureSidecar.listShots(channel, limit ?? 30)
+    )
+    ipcMain.handle('capture:clear-shots', () => captureSidecar.clearShots())
+    // AI 还原验证：把选中关键帧发给多个模型还原消息
+    ipcMain.handle(
+      'capture:ai-reconstruct',
+      (
+        _e,
+        inputs: Array<{ path: string; capturedAt: string | null }>,
+        models?: string[],
+        channel?: string
+      ) => captureSidecar.reconstructAi(inputs, models, channel)
+    )
 
     createTray()
     createWindow()
+    captureSidecar.start().catch((error) => {
+      console.error('[capture] failed to start sidecar', error)
+    })
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -119,6 +157,7 @@ if (!gotLock) {
 
   app.on('before-quit', () => {
     isQuitting = true
+    captureSidecar.stop()
   })
 
   // 注意：故意不监听 window-all-closed，让应用在托盘保持运行

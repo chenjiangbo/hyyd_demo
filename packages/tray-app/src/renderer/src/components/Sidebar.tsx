@@ -1,4 +1,12 @@
-export type ViewKey = 'intake' | 'mine'
+export type ViewKey =
+  | 'intake'
+  | 'mine'
+  | 'calls'
+  | 'messages'
+  | 'capture-debug'
+  | 'capture-verify'
+  | 'capture-ai'
+  | 'settings'
 
 interface Props {
   current: ViewKey
@@ -7,7 +15,13 @@ interface Props {
 
 const items: { key: ViewKey; label: string; icon: string }[] = [
   { key: 'intake', label: '申领台', icon: '📥' },
-  { key: 'mine', label: '我的工作台', icon: '🗂️' }
+  { key: 'mine', label: '我的工作台', icon: '🗂️' },
+  { key: 'calls', label: '通话记录', icon: '📞' },
+  { key: 'messages', label: '消息记录', icon: '💬' },
+  { key: 'capture-debug', label: '采集调试', icon: '🔬' },
+  { key: 'capture-verify', label: '截图验证', icon: '📷' },
+  { key: 'capture-ai', label: 'AI 还原', icon: '🤖' },
+  { key: 'settings', label: '系统设置', icon: '⚙️' }
 ]
 
 export default function Sidebar({ current, onChange }: Props): React.JSX.Element {
