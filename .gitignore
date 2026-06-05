@@ -23,8 +23,8 @@ local.properties
 .idea/
 *.apk
 *.aab
-android-app/app/build/
-android-app/build/
+packages/android-app/app/build/
+packages/android-app/build/
 
 # pnpm
 .pnpm-store/

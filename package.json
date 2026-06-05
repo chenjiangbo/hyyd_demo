@@ -10,11 +10,15 @@
   "scripts": {
     "backend:dev": "pnpm --filter backend dev",
     "backend:build": "pnpm --filter backend build",
+    "android:install": "cd packages/android-app && JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home ./gradlew installDebug",
+    "net:mobile:auto": "node scripts/switch-mobile-network.js",
+    "net:mobile:set": "node scripts/switch-mobile-network.js",
     "tray:dev": "pnpm --filter tray-app dev",
     "ext:build": "pnpm --filter extension build",
     "db:migrate": "pnpm --filter backend db:migrate",
     "db:seed": "pnpm --filter backend db:seed",
-    "deploy:win": "node scripts/deploy-win.js"
+    "deploy:win": "node scripts/deploy-win.js",
+    "sidecar:build:win": "node scripts/build-sidecar-win.js"
   },
   "devDependencies": {
     "ssh2": "^1.17.0",
@@ -22,6 +26,7 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
+      "better-sqlite3",
       "electron",
       "esbuild"
     ]
