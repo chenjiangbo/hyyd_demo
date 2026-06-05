@@ -34,14 +34,36 @@ model Order {
   assignedEmployeeId Int?         @map("assigned_employee_id")
   assignedEmployee   Employee?    @relation(fields: [assignedEmployeeId], references: [id])
   rawJson            Json?        @map("raw_json")
+  detailJson         Json?        @map("detail_json")
+  detailFetchedAt    DateTime?    @map("detail_fetched_at")
   createdAt          DateTime     @default(now()) @map("created_at")
   updatedAt          DateTime     @updatedAt @map("updated_at")
   messages           Message[]
   calls              Call[]
   aiSummaries        AiSummary[]
+  attachments        OrderAttachment[]
 
   @@unique([source, sourceOrderNo])
   @@map("orders")
+}
+
+model OrderAttachment {
+  id          Int      @id @default(autoincrement())
+  orderId     Int      @map("order_id")
+  order       Order    @relation(fields: [orderId], references: [id])
+  fileType    String   @map("file_type")
+  fileId      String   @map("file_id")
+  fileName    String   @map("file_name")
+  mimeType    String   @map("mime_type")
+  minioBucket String   @map("minio_bucket")
+  minioKey    String   @map("minio_key")
+  byteSize    Int      @map("byte_size")
+  rawJson     Json?    @map("raw_json")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@unique([orderId, fileId])
+  @@index([orderId])
+  @@map("order_attachments")
 }
 
 model Message {
@@ -67,12 +89,18 @@ model Call {
   employeeId      Int      @map("employee_id")
   employee        Employee @relation(fields: [employeeId], references: [id])
   phone           String
+  contactName     String?  @map("contact_name") // 通讯录里的姓名（移动端采集时带上，可能为空）
   direction       String   // 'in' | 'out'
+  callStatus      String   @default("answered") @map("call_status") // 'answered' | 'missed' | 'rejected' | 'outgoing_unanswered'
   durationSec     Int      @map("duration_sec")
   startedAt       DateTime @map("started_at")
   recordingOssKey String?  @map("recording_oss_key")
   asrText         String?  @map("asr_text")
-  asrStatus       String   @default("pending") @map("asr_status") // 'pending' | 'processing' | 'done' | 'failed'
+  asrStatus       String   @default("no_recording") @map("asr_status") // 'no_recording' | 'pending' | 'processing' | 'done' | 'failed' | 'requires_manual'
+  // Fun-ASR (DashScope) 任务追踪
+  dashscopeTaskId String?  @map("dashscope_task_id")
+  asrResultJson   Json?    @map("asr_result_json")
+  asrFinishedAt   DateTime? @map("asr_finished_at")
 
   @@map("calls")
 }
@@ -93,10 +121,12 @@ model AiSummary {
   id        Int      @id @default(autoincrement())
   orderId   Int      @map("order_id")
   order     Order    @relation(fields: [orderId], references: [id])
+  callId    Int?     @map("call_id")  // 关联到具体某次通话；message/full 类型可为 null
   type      String   // 'call' | 'message' | 'full'
   content   String
   model     String
   createdAt DateTime @default(now()) @map("created_at")
 
+  @@index([callId])
   @@map("ai_summaries")
 }

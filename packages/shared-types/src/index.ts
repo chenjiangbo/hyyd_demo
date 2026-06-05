@@ -5,7 +5,8 @@ export type CommandAction = 'claim' | 'fill_form'
 export type CommandStatus = 'pending' | 'done' | 'failed' | 'requires_manual'
 export type MessageChannel = 'wechat' | 'wxwork'
 export type CallDirection = 'in' | 'out'
-export type AsrStatus = 'pending' | 'processing' | 'done' | 'failed'
+export type CallStatus = 'answered' | 'missed' | 'rejected' | 'outgoing_unanswered'
+export type AsrStatus = 'no_recording' | 'pending' | 'processing' | 'done' | 'failed' | 'requires_manual'
 export type SummaryType = 'call' | 'message' | 'full'
 
 export interface Employee {
@@ -14,7 +15,7 @@ export interface Employee {
   phone: string
   wechatId: string | null
   taikangAccount: string | null
-  token: string
+  employeeCode: string
 }
 
 export interface Order {
@@ -50,7 +51,9 @@ export interface Call {
   orderId: number | null
   employeeId: number
   phone: string
+  contactName: string | null
   direction: CallDirection
+  callStatus: CallStatus
   durationSec: number
   startedAt: string
   recordingOssKey: string | null
@@ -116,9 +119,10 @@ export interface CreateMessagePayload {
 }
 
 export interface CreateCallPayload {
-  employeeId: number
   phone: string
+  contactName?: string
   direction: CallDirection
+  callStatus: CallStatus
   durationSec: number
   startedAt: string
   orderId?: number
