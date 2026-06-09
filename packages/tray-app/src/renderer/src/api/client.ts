@@ -3,19 +3,25 @@
  * MVP 现场版：服务器地址和员工 ID 从 localStorage 读取。
  */
 
+// backendUrl 给生产默认地址，用户仍可在设置页覆盖。
+// 但 employeeCode 不给默认 —— 强制员工进设置页明确填写，
+// 否则一不小心默认到某个静默值上，会导致工作台为空但又"看似在跑"。
 export const DEFAULT_BACKEND_URL = 'http://47.95.14.233:9093'
-export const DEFAULT_EMPLOYEE_CODE = 'huanyu-field-1'
 
 export interface ClientConfig {
   backendUrl: string
-  employeeCode: string
+  employeeCode: string // 空串表示未配置
 }
 
 export function getClientConfig(): ClientConfig {
   return {
     backendUrl: localStorage.getItem('huanyu.backendUrl') || DEFAULT_BACKEND_URL,
-    employeeCode: localStorage.getItem('huanyu.employeeCode') || DEFAULT_EMPLOYEE_CODE
+    employeeCode: (localStorage.getItem('huanyu.employeeCode') || '').trim()
   }
+}
+
+export function isEmployeeConfigured(): boolean {
+  return getClientConfig().employeeCode.length > 0
 }
 
 export function setClientConfig(config: ClientConfig): void {
@@ -53,7 +59,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return (json?.data ?? (json as unknown as T))
 }
 
-export type OrderStatus = '候选' | '已申领' | '进行中' | '完成'
+// 后端直接存泰康 orderStateName 原文（如"待处理 / 待就诊 / 已完成"），
+// 类型放开为 string；旧的四态枚举保留作历史兼容。
+export type OrderStatus = string
 
 export interface Order {
   id: number
@@ -69,6 +77,18 @@ export interface Order {
   rawJson: Record<string, unknown> | null
   createdAt: string
   updatedAt: string
+  // —— 后端 GET /orders 派生字段（工作台列表用） ——
+  // hospital / dept / doctor / customerPhone / intendDate 已经在 Order 里
+  // （DB 列），但 GET /orders 会从 rawJson/detail.recommendations 兜底覆盖，
+  // 渲染端直接用顶层字段，不再翻嵌套对象。
+  intendDate: string | null
+  intendDateAmorpm: string | null
+  claimedAt: string         // 申领时间（rawJson 派生，兜底到 createdAt）
+  audioCount: number        // 已采录音条数
+  textCount: number         // 已粘贴文字素材数（materials 接入前恒 0）
+  imageCount: number        // 已粘贴图片素材数（materials 接入前恒 0）
+  materialCount: number     // 三类合计
+  lastMaterialAt: string | null // 最近一次素材入库时间
 }
 
 export interface OrderAttachment {
@@ -82,12 +102,9 @@ export interface OrderAttachment {
 
 export interface OrderDetailResponse {
   order: Order & { detailFetchedAt: string | null; detailJson: unknown }
+  // chrome 插件抓的详情统一只调 recommendations 接口，所有字段扁平挂在这下面。
   detail: {
-    caseInfo?: Record<string, any> | null
-    intendClinicInfo?: Record<string, any> | null
-    latestRegisterInfo?: Record<string, any> | null
-    hospitalAddr?: Record<string, any> | null
-    exceInfo?: any
+    recommendations?: Record<string, any> | null
   } | null
   attachments: OrderAttachment[]
 }
@@ -96,7 +113,6 @@ export interface Presence {
   extConnected: boolean
   taikangTabOpen: boolean
   trackingPoolPageActive: boolean
-  mode: 'pool_reader' | 'worker'
   stale: boolean
   lastSeenAt: string | null
   tokenOk: boolean | null
@@ -263,6 +279,13 @@ export interface MessageAiSummary {
 
 export type AsrStatus = 'no_recording' | 'pending' | 'processing' | 'done' | 'failed' | 'requires_manual'
 
+export interface OrderBrief {
+  id: number
+  sourceOrderNo: string
+  customerName: string
+  status: string
+}
+
 export interface CallSummary {
   id: number
   phone: string
@@ -274,12 +297,10 @@ export interface CallSummary {
   asrStatus: AsrStatus
   asrFinishedAt: string | null
   hasRecording: boolean
-  order: null | {
-    id: number
-    sourceOrderNo: string
-    customerName: string
-    status: string
-  }
+  /** 兜底单 order（取 relatedOrders[0]，旧字段保留兼容） */
+  order: OrderBrief | null
+  /** 按手机号匹配到的全部订单（0/1/N），用 updated_at 倒序 */
+  relatedOrders: OrderBrief[]
 }
 
 export interface CallTranscript {

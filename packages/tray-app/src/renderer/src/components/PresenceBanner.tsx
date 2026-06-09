@@ -1,4 +1,4 @@
-import type { Presence } from '../api/client'
+import { isEmployeeConfigured, type Presence } from '../api/client'
 
 interface Props {
   presence: Presence | null
@@ -14,6 +14,15 @@ interface Props {
  *  - 插件心跳超时（stale）
  */
 export default function PresenceBanner({ presence, backendOk }: Props): React.JSX.Element | null {
+  // 优先级最高：员工 ID 未配置，所有业务功能都没法用
+  if (!isEmployeeConfigured()) {
+    return (
+      <Banner color="red">
+        🔴 员工 ID 未设置。请点右上角齿轮 ⚙ → 设置，填入员工 ID（必须和 Chrome
+        插件、移动端一致），保存后再使用。
+      </Banner>
+    )
+  }
   if (backendOk === false) {
     return (
       <Banner color="red">
@@ -30,11 +39,23 @@ export default function PresenceBanner({ presence, backendOk }: Props): React.JS
       </Banner>
     )
   }
+  // 插件最近一次拉数据时被泰康拒了（token 过期）。这时插件已经停止采集，
+  // 员工必须回 Chrome 重登泰康，登完插件会自动恢复。
+  if (presence.tokenOk === false) {
+    return (
+      <Banner color="red">
+        🔒 泰康登录已失效（{presence.tokenReason ?? '会话过期'}）。请到 Chrome 的{' '}
+        <code className="px-1 bg-red-100 rounded">ccm.taikang.com</code>{' '}
+        标签页重新登录，登录后插件会自动恢复采集。
+      </Banner>
+    )
+  }
   if (!presence.taikangTabOpen) {
     return (
       <Banner color="amber">
-        ⚠️ 未检测到泰康标签页。在工作台点"申领"后插件无法点击对应按钮。
-        请先在 Chrome 打开 <code className="px-1 bg-amber-100 rounded">https://ccm.taikang.com</code> 并登录。
+        ⚠️ 未检测到泰康标签页。请在 Chrome 打开{' '}
+        <code className="px-1 bg-amber-100 rounded">ccm.taikang.com</code> 并保持登录，
+        插件每 5 分钟会自动采一次个人池。
       </Banner>
     )
   }
@@ -42,15 +63,6 @@ export default function PresenceBanner({ presence, backendOk }: Props): React.JS
     return (
       <Banner color="amber">
         ⚠️ 插件心跳超时（&gt; 30s）。可能 Chrome 已挂起或网络不稳。
-      </Banner>
-    )
-  }
-  // pool_reader 没在追踪池页面时也提示一下，避免读者忘了切页面
-  if (presence.mode === 'pool_reader' && !presence.trackingPoolPageActive) {
-    return (
-      <Banner color="blue">
-        ℹ️ 当前为 Pool Reader 模式，但未在追踪池页面。请打开
-        <code className="px-1 bg-blue-100 rounded">trackIngPoolList</code> 以采集候选订单。
       </Banner>
     )
   }

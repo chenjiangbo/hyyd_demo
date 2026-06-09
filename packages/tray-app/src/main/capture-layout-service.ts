@@ -21,15 +21,22 @@ export interface CaptureLayoutResult {
   model: string
 }
 
+// ⚠️ DEPRECATED in tray-app（2026-06）：
+// tray-app 不再持有 VLM API key。要恢复 sidecar 截图布局识别功能，
+// 请在 backend 新建 /api/v1/admin/vlm-layout 端点（接收 base64 截图 → 调
+// 百炼 → 返回 regions），让 tray-app 通过 backend 转发。
+// 现场版默认 HYYD_ENABLE_SIDECAR=0，sidecar 不启动，本服务不会被实例化。
 export class CaptureLayoutService {
-  private readonly baseUrl: string
-  private readonly apiKey: string
-  private readonly model: string
+  private readonly baseUrl: string = ''
+  private readonly apiKey: string = ''
+  private readonly model: string = ''
 
-  constructor(env = process.env) {
-    this.baseUrl = requireEnv(env, 'HYYD_VLM_BASE_URL')
-    this.apiKey = requireEnv(env, 'HYYD_VLM_API_KEY')
-    this.model = requireEnv(env, 'HYYD_VLM_MODEL')
+  constructor(_env: NodeJS.ProcessEnv = process.env) {
+    void _env
+    throw new Error(
+      'CaptureLayoutService 已弃用：VLM 调用必须走后端。' +
+        '请在 backend 实现 /api/v1/admin/vlm-layout 后由 tray-app 转发调用。'
+    )
   }
 
   getConfigSummary(): { baseUrl: string; model: string } {
@@ -136,6 +143,8 @@ const layoutJsonSchema = {
   }
 }
 
+// 保留以备未来后端代理实现时参考。当前未被引用。
+// @ts-expect-error - intentionally unused deprecated helper
 function requireEnv(env: NodeJS.ProcessEnv, key: string): string {
   const value = env[key]?.trim()
   if (!value) throw new Error(`缺少必需环境变量 ${key}`)

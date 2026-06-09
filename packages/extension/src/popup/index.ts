@@ -5,17 +5,27 @@
 
 const $ = (id: string) => document.getElementById(id)!;
 
+// 后端 WS 地址有默认；员工 ID 不给默认，必须手工填，
+// 否则数据可能错误归到默认员工名下。
 async function getConfig(): Promise<{ backendWsUrl: string; employeeCode: string }> {
   const r = await chrome.storage.local.get(['backendWsUrl', 'employeeCode']);
   return {
-    backendWsUrl: (r.backendWsUrl as string) || 'ws://192.168.202.1:13000/ws',
-    employeeCode: (r.employeeCode as string) || 'huanyu-field-1',
+    backendWsUrl: (r.backendWsUrl as string) || 'ws://47.95.14.233:9093/ws',
+    employeeCode: ((r.employeeCode as string) || '').trim(),
   };
 }
 
 async function setConfig() {
   const backendWsUrl = ($('backend-ws-url') as HTMLInputElement).value.trim();
   const employeeCode = ($('employee-code') as HTMLInputElement).value.trim();
+  if (!employeeCode) {
+    alert('员工 ID 必填，请填写后再保存。\n（必须和 trayapp、移动端一致）');
+    return;
+  }
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(employeeCode)) {
+    alert('员工 ID 只能用英文字母 / 数字 / 横线 / 下划线，长度 1-32。');
+    return;
+  }
   await chrome.storage.local.set({ backendWsUrl, employeeCode });
   await refreshStatus();
 }

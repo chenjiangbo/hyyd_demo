@@ -3,7 +3,6 @@ import {
   api,
   type CallSummary,
   type CallTranscript,
-  type CallAiSummary,
   type AsrStatus
 } from '../api/client'
 
@@ -227,30 +226,25 @@ function CallDetailPanel({
 }): React.JSX.Element {
   const [transcript, setTranscript] = useState<CallTranscript | null>(null)
   const [recordingUrl, setRecordingUrl] = useState<string | null>(null)
-  const [aiSummary, setAiSummary] = useState<CallAiSummary | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [retrying, setRetrying] = useState(false)
   const detailAbortRef = useRef(false)
 
-  // 加载详情：转写 + 录音 URL + AI 分析
+  // 加载详情：转写 + 录音 URL
+  // 注：本期 demo 不接 LLM，关联订单完全靠 phone 匹配，所以删掉 AI 分析获取。
   useEffect(() => {
     detailAbortRef.current = false
     setTranscript(null)
     setRecordingUrl(null)
-    setAiSummary(null)
     setError(null)
     setLoading(true)
 
     const load = async (): Promise<void> => {
       try {
-        const [t, ai] = await Promise.all([
-          api.getCallTranscript(call.id),
-          api.getCallAiSummary(call.id).catch(() => null)
-        ])
+        const t = await api.getCallTranscript(call.id)
         if (detailAbortRef.current) return
         setTranscript(t)
-        setAiSummary(ai)
         if (call.hasRecording) {
           try {
             const r = await api.getCallRecordingUrl(call.id)
@@ -282,8 +276,6 @@ function CallDetailPanel({
         setTranscript(newT)
         if (newT.asrStatus === 'done' || newT.asrStatus === 'failed') {
           onRefreshList() // 让左列表也更新一下
-          // 顺手拉一下 AI 分析（万一已经写入了）
-          api.getCallAiSummary(call.id).then(setAiSummary).catch(() => null)
         }
       } catch {/* 静默 */}
     }, DETAIL_POLL_MS)
@@ -331,26 +323,38 @@ function CallDetailPanel({
         </div>
       </section>
 
-      {/* 关联订单卡 */}
+      {/* 关联订单卡 —— 按手机号实时匹配 */}
       <section className="bg-white rounded-md border border-slate-200 p-4">
-        <h3 className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">关联订单</h3>
-        {call.order ? (
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm text-slate-800">
-                {call.order.customerName} ·{' '}
-                <code className="text-xs text-slate-600">{call.order.sourceOrderNo}</code>
-              </div>
-              <div className="text-xs text-slate-500 mt-0.5">状态: {call.order.status}</div>
+        <h3 className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">
+          关联订单
+          {call.relatedOrders.length > 1 && (
+            <span className="ml-2 text-fg-subtle normal-case">
+              （{call.relatedOrders.length} 单同号）
+            </span>
+          )}
+        </h3>
+        {call.relatedOrders.length === 0 ? (
+          <div className="text-sm text-slate-500">
+            未匹配到当前员工名下手机号一致的订单。
+            <div className="text-[11px] text-fg-subtle mt-1">
+              按手机号精确匹配；订单详情（recommendations）抓回前可能临时匹配不上。
             </div>
-            {/* TODO: 点击跳到申领台并打开订单弹窗。当前只展示，等以后做联动 */}
-            <span className="text-xs text-slate-400">订单 #{call.order.id}</span>
           </div>
         ) : (
-          <div className="text-sm text-slate-500">
-            未关联订单。
-            <span className="text-xs text-slate-400 ml-2">等通话转写完成后 LLM 会尝试自动关联</span>
-          </div>
+          <ul className="space-y-2">
+            {call.relatedOrders.map((o) => (
+              <li key={o.id} className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm text-slate-800 truncate">
+                    {o.customerName} ·{' '}
+                    <code className="text-xs text-slate-600">{o.sourceOrderNo}</code>
+                  </div>
+                  <div className="text-xs text-slate-500 mt-0.5">状态: {o.status}</div>
+                </div>
+                <span className="text-xs text-slate-400 shrink-0">订单 #{o.id}</span>
+              </li>
+            ))}
+          </ul>
         )}
       </section>
 
@@ -408,31 +412,7 @@ function CallDetailPanel({
         <TranscriptBlock transcript={transcript} loading={loading} error={error} />
       </section>
 
-      {/* AI 分析 */}
-      <section className="bg-white rounded-md border border-slate-200 p-4">
-        <h3 className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">🤖 AI 分析</h3>
-        {aiSummary ? (
-          <div>
-            <p className="text-sm text-slate-700 whitespace-pre-wrap">{aiSummary.content}</p>
-            <div className="mt-3 text-xs text-slate-400 flex items-center gap-3">
-              <span>模型: {aiSummary.model}</span>
-              <span>分析时间: {new Date(aiSummary.createdAt).toLocaleString('zh-CN')}</span>
-              <span>
-                推测关联订单:{' '}
-                <code>#{aiSummary.inferredOrderId}</code>
-              </span>
-            </div>
-          </div>
-        ) : transcript?.asrStatus !== 'done' ? (
-          <div className="text-sm text-slate-400">
-            ⏳ 等待转写完成后 LLM 才会分析
-          </div>
-        ) : (
-          <div className="text-sm text-slate-400">
-            ⏳ 待 LLM 分析…<span className="text-xs ml-2">（接入 LLM 后会自动出现）</span>
-          </div>
-        )}
-      </section>
+      {/* 本期不接 LLM 分析，先采数据为重，后续再上 */}
     </div>
   )
 }

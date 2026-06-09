@@ -1,8 +1,9 @@
 console.log('[寰宇探针] Background Service Worker 已启动');
 
 let ws: WebSocket | null = null;
-const DEFAULT_BACKEND_WS_URL = 'ws://192.168.202.1:13000/ws';
-const DEFAULT_EMPLOYEE_CODE = 'huanyu-field-1';
+// backendWsUrl 给默认（同子网下基本不变）；employeeCode 不给默认 ——
+// 没配置就不连 WS、不轮询，避免把数据错误归到默认员工名下。
+const DEFAULT_BACKEND_WS_URL = 'ws://47.95.14.233:9093/ws';
 const CLIENT_TYPE = 'ext';
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let presenceTimer: ReturnType<typeof setInterval> | null = null;
@@ -10,17 +11,21 @@ let presenceTimer: ReturnType<typeof setInterval> | null = null;
 // 缓存：员工信息（从后端 connection_established 拿到）
 let employeeName: string | null = null;
 let backendWsUrl = DEFAULT_BACKEND_WS_URL;
-let employeeCode = DEFAULT_EMPLOYEE_CODE;
+let employeeCode = ''; // 空 = 未配置
 
 async function loadConfig() {
   const r = await chrome.storage.local.get(['backendWsUrl', 'employeeCode']);
   backendWsUrl = (r.backendWsUrl as string) || DEFAULT_BACKEND_WS_URL;
-  employeeCode = (r.employeeCode as string) || DEFAULT_EMPLOYEE_CODE;
+  employeeCode = ((r.employeeCode as string) || '').trim();
 }
 
 // ─── WebSocket 连接 ──────────────────────────────────────────
 function connectWebSocket() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+  if (!employeeCode) {
+    console.warn('[寰宇探针] 员工 ID 未配置，请在插件 popup 里设置后再使用');
     return;
   }
 
@@ -47,15 +52,17 @@ function connectWebSocket() {
 
       if (data.type === 'connection_established' && data.employee) {
         employeeName = data.employee.name;
+        // 连接建立后主动拉一次基线（覆盖"content 早于 WS 连上时发的请求丢失"）
+        requestFingerprintBaseline();
       }
 
-      // 插件只读：不再执行任何点击/申领写操作。
-      // 仅保留"抓取订单详情"这类只读指令（详情接口本身是 GET/POST 查询）。
-      if (data.type === 'command' && data.action === 'fetch_detail') {
-        if (data.payload?.sourceOrderNo) {
-          void fetchAndReportDetail(data.payload.sourceOrderNo);
-        }
+      // 后端返回的指纹基线 → 转发给泰康标签页的 content script
+      if (data.type === 'FINGERPRINTS_BASELINE') {
+        forwardBaselineToTabs(data.payload || {});
       }
+
+      // 插件纯只读自动采集：个人池列表 + 订单详情都由 content script 定时
+      // 轮询抓取并主动上报，后端无需下发任何指令。这里只处理后端的状态消息。
     } catch (e) {
       console.error('[寰宇探针] 解析后端消息失败', e);
     }
@@ -107,15 +114,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       break;
 
-    case 'COMMAND_RESULT':
+    case 'ORDER_DETAIL_FETCHED':
+      // content script 抓到的订单详情，转发给后端入库
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
-          type: 'COMMAND_RESULT',
+          type: 'ORDER_DETAIL_FETCHED',
           payload: message.payload,
           employeeCode,
         }));
+      } else {
+        console.warn('[寰宇探针] 后端未连接，本条详情未上报');
       }
-      console.log('[寰宇探针] 指令执行结果:', message.payload);
       break;
 
     case 'TAIKANG_TOKEN_STATUS':
@@ -126,6 +135,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           ok: !!message.ok,
           reason: message.reason ?? null,
           at: message.at ?? Date.now(),
+        }));
+      }
+      break;
+
+    case 'REQUEST_FINGERPRINT_BASELINE':
+      // content 启动时请求后端指纹基线；若 WS 未就绪，连接建立后会自动补拉
+      requestFingerprintBaseline();
+      break;
+
+    case 'SYNC_FINGERPRINTS':
+      // content 把本地全量指纹推给后端对账
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'SYNC_FINGERPRINTS',
+          payload: message.payload,
+          employeeCode,
         }));
       }
       break;
@@ -144,6 +169,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 });
 
+// ─── 指纹基线（增量起点） ────────────────────────────────────
+function requestFingerprintBaseline() {
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'GET_FINGERPRINTS', employeeCode }));
+  }
+}
+
+async function forwardBaselineToTabs(payload: unknown) {
+  const tabs = await chrome.tabs.query({ url: '*://ccm.taikang.com/*' });
+  for (const t of tabs) {
+    if (t.id) {
+      chrome.tabs
+        .sendMessage(t.id, { type: 'FINGERPRINT_BASELINE', payload })
+        .catch(() => {/* tab 无 content script 时忽略 */});
+    }
+  }
+}
+
 // ─── 监听配置变化 ────────────────────────────────────────────
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
@@ -154,50 +197,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
     connectWebSocket();
   }
 });
-
-// ─── 详情抓取并上报 ──────────────────────────────────────────
-// MV3 service worker 的 fetch 不带 cookie，所以委托给 content script 在页面上下文跑
-async function fetchAndReportDetail(sourceOrderNo: string) {
-  console.log('[寰宇探针] 开始抓取详情:', sourceOrderNo);
-  try {
-    const tabs = await chrome.tabs.query({ url: '*://ccm.taikang.com/*' });
-    if (tabs.length === 0 || !tabs[0].id) {
-      throw new Error('未找到泰康标签页（请先在浏览器登录并打开泰康系统）');
-    }
-    const resp = await chrome.tabs.sendMessage(tabs[0].id, {
-      type: 'FETCH_ORDER_DETAIL',
-      subOrderNo: sourceOrderNo,
-    });
-    if (!resp?.ok) {
-      throw new Error(resp?.error || '未知错误');
-    }
-    const result = resp.result;
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: 'ORDER_DETAIL_FETCHED',
-        payload: {
-          sourceOrderNo,
-          detail: result.detail,
-          attachments: result.attachments,
-        },
-      }));
-      console.log(
-        `[寰宇探针] 详情已上报: ${sourceOrderNo} 附件=${result.attachments.length}`
-      );
-    } else {
-      console.warn('[寰宇探针] WS 未连接，详情未上报');
-    }
-  } catch (e) {
-    const err = e instanceof Error ? e.message : String(e);
-    console.error('[寰宇探针] 抓取详情失败:', err);
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: 'ORDER_DETAIL_FETCHED',
-        payload: { sourceOrderNo, error: err },
-      }));
-    }
-  }
-}
 
 // ─── MV3 Service Worker 保活 ─────────────────────────────────
 // Chrome 会在 SW 空闲 ~30s 后休眠，导致 WS 断开、新 command 丢失。

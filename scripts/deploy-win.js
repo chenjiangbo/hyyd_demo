@@ -69,7 +69,10 @@ function packLocally() {
       fs.unlinkSync(archivePath);
     }
     
-    // 排除所有的 node_modules、.git、打包产物及临时文件，大幅度缩减上传包大小
+    // 排除所有的 node_modules、.git、打包产物及临时文件，大幅度缩减上传包大小。
+    // 关键：排除所有 .env 文件 —— 它们含数据库密码、MinIO key、VLM API key、
+    // Admin password、VM 自身的 SSH 凭证。绝对不能上员工 VM。
+    // tray-app 必须不依赖根 .env（main 进程读这个），见 runtime-env.ts。
     const excludePatterns = [
       'node_modules',
       '.git',
@@ -82,7 +85,11 @@ function packLocally() {
       'packages/*/node_modules',
       'packages/*/dist',
       archiveName,
-      '*.log'
+      '*.log',
+      '.env',
+      '.env.*',
+      'packages/*/.env',
+      'packages/*/.env.*'
     ];
     
     const excludeFlags = excludePatterns.map(p => `--exclude="${p}"`).join(' ');

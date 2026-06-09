@@ -1,9 +1,11 @@
-import { app, shell, BrowserWindow, Tray, Menu, nativeImage, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, Tray, Menu, nativeImage, ipcMain, clipboard } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { CaptureSidecarClient } from './capture-sidecar-client'
 import { loadRootEnv } from './runtime-env'
+import { MaterialStore } from './material-store'
+import { MaterialSyncWorker } from './material-sync'
 
 loadRootEnv()
 
@@ -11,6 +13,9 @@ let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
 const captureSidecar = new CaptureSidecarClient()
+// 现场采集素材的本地落地 + 异步同步：粘贴→落 sqlite/文件→worker 上传后端
+const materialStore = new MaterialStore()
+const materialSync = new MaterialSyncWorker(materialStore)
 
 function showMainWindow(): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -143,11 +148,75 @@ if (!gotLock) {
       ) => captureSidecar.reconstructAi(inputs, models, channel)
     )
 
+    // ─── 现场采集素材 IPC ───
+    // 粘贴落地后立即返回 view row（图片含 base64 dataURL），由渲染端追加进时间线，
+    // 同时触发一次 sync tick，不必等下一个轮询间隔。
+    ipcMain.handle('materials:add-text', (_e, orderId: number, text: string) => {
+      const row = materialStore.addText(orderId, text)
+      materialSync.kick()
+      return row
+    })
+    ipcMain.handle('materials:add-image', (_e, orderId: number, dataUrl: string) => {
+      const row = materialStore.addImage(orderId, dataUrl)
+      materialSync.kick()
+      return row
+    })
+    ipcMain.handle('materials:list', (_e, orderId: number) =>
+      materialStore.listForOrder(orderId)
+    )
+    ipcMain.handle('materials:delete', (_e, id: number) => {
+      materialStore.softDelete(id)
+      materialSync.kick()
+      return { id }
+    })
+    ipcMain.handle('materials:status', (_e, orderId?: number) =>
+      materialStore.countByStatus(orderId)
+    )
+    ipcMain.handle('materials:retry-failed', () => {
+      const n = materialStore.retryFailed()
+      materialSync.kick()
+      return { retried: n }
+    })
+    ipcMain.handle('materials:discard-failed', () => {
+      const n = materialStore.discardFailed()
+      return { discarded: n }
+    })
+    // 读 Electron 系统剪贴板。比 navigator.clipboard.read() 可靠得多：
+    //   - 不要求 document focused（按钮点击就立刻能读）
+    //   - 微信/企微截图复制的 DIB/BMP 格式 Electron 能正确解析成图片
+    //   - 同时拿文本和图片，渲染端一次调用搞定
+    ipcMain.handle('clipboard:read', () => {
+      const text = clipboard.readText() || null
+      const img = clipboard.readImage()
+      const imageDataUrl = img.isEmpty() ? null : img.toDataURL()
+      return { text, imageDataUrl }
+    })
+
+    // 渲染端把 backendUrl + employeeCode 推过来，worker 才会真上传。
+    // 没设置前 worker 空转。
+    ipcMain.handle(
+      'materials:set-config',
+      (_e, cfg: { backendUrl: string; employeeCode: string }) => {
+        materialSync.setConfig(cfg)
+        materialSync.kick()
+        return { ok: true }
+      }
+    )
+
     createTray()
     createWindow()
-    captureSidecar.start().catch((error) => {
-      console.error('[capture] failed to start sidecar', error)
-    })
+    // 现场采集版默认不启动截图 sidecar（员工改用剪贴板粘贴方式）。
+    // 如需排障开启，启动 app 前设环境变量 HYYD_ENABLE_SIDECAR=1。
+    if (process.env.HYYD_ENABLE_SIDECAR === '1') {
+      captureSidecar.start().catch((error) => {
+        console.error('[capture] failed to start sidecar', error)
+      })
+    } else {
+      console.log('[capture] sidecar disabled (HYYD_ENABLE_SIDECAR != 1)')
+    }
+
+    // 素材同步 worker：每 10s 扫一轮 pending/pending_delete
+    materialSync.start()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -158,6 +227,7 @@ if (!gotLock) {
   app.on('before-quit', () => {
     isQuitting = true
     captureSidecar.stop()
+    materialSync.stop()
   })
 
   // 注意：故意不监听 window-all-closed，让应用在托盘保持运行

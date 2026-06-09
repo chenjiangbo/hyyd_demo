@@ -63,47 +63,25 @@ const userIntro = (n: number, channel: string): string =>
   '{"isChat":true,"conversationTitle":"会话标题或null","messages":[{"sender":"self|other|system","name":"昵称或null","time":"可见时间或null","content":"消息内容","type":"text"}]}'
 
 export class CaptureAiReconstructor {
-  // 百炼（DashScope OpenAI 兼容）
-  private readonly vlmBaseUrl: string
-  private readonly vlmApiKey: string
-  // blackwhite AI Gateway（中转 OpenRouter，模型名形如 google/gemini-2.5-flash）
-  private readonly gwBaseUrl: string
-  private readonly gwAppId: string
-  private readonly gwApiKey: string
-
-  constructor(env = process.env) {
-    this.vlmBaseUrl = (env.HYYD_VLM_BASE_URL ?? '').trim()
-    this.vlmApiKey = (env.HYYD_VLM_API_KEY ?? '').trim()
-    this.gwBaseUrl = (env.GATEWAY_BASE_URL ?? '').trim()
-    this.gwAppId = (env.GATEWAY_APP_ID ?? 'hyyd-demo').trim()
-    this.gwApiKey = (env.GATEWAY_API_KEY ?? 'hyyd-demo-secret-2026').trim()
+  // ⚠️ DEPRECATED：tray-app 不再持有 API key。env 字段保留只为类型兼容。
+  // 真正的调用入口 resolveEndpoint() 会抛错指向后端。
+  constructor(_env: NodeJS.ProcessEnv = process.env) {
+    void _env
   }
 
-  // 模型名含 "/" 视为 OpenRouter 模型 → 走网关；否则走百炼
+  // ⚠️ DEPRECATED in tray-app（2026-06）
+  // tray-app 不再持有任何 LLM/VLM API key（API key 必须只放在后端，
+  // 避免随源码 deploy 到员工 VM 上泄露）。如果未来要恢复 sidecar 的 AI 还原
+  // 能力，请在 backend 实现一个 /api/v1/admin/vlm-reconstruct 端点，
+  // tray-app 通过 backend HTTP 调用该端点，由 backend 转发给 DashScope / 网关。
+  // 现状：env 里这些 key 都是空字符串（VM 上没有 .env），调用会直接抛错。
   private resolveEndpoint(model: string): { url: string; headers: Record<string, string> } {
-    if (model.includes('/')) {
-      if (!this.gwBaseUrl) {
-        throw new Error('使用网关模型需配置 GATEWAY_BASE_URL（blackwhite 网关地址）')
-      }
-      return {
-        url: `${this.gwBaseUrl.replace(/\/$/, '')}/proxy/openrouter/chat/completions`,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-App-Id': this.gwAppId,
-          Authorization: `Bearer ${this.gwApiKey}`
-        }
-      }
-    }
-    if (!this.vlmBaseUrl || !this.vlmApiKey) {
-      throw new Error('使用百炼模型需配置 HYYD_VLM_BASE_URL / HYYD_VLM_API_KEY')
-    }
-    return {
-      url: `${this.vlmBaseUrl.replace(/\/$/, '')}/chat/completions`,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.vlmApiKey}`
-      }
-    }
+    void model
+    throw new Error(
+      'AI 还原已迁移到后端：tray-app 不再持有 LLM/VLM API key。' +
+        '请在 backend 实现 /api/v1/admin/vlm-reconstruct 后由 tray-app 转发调用。' +
+        '现场版默认不启用 sidecar，本路径不应被触发。'
+    )
   }
 
   async reconstruct(

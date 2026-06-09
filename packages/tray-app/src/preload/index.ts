@@ -24,7 +24,23 @@ const api = {
     inputs: Array<{ path: string; capturedAt: string | null }>,
     models?: string[],
     channel?: string
-  ) => ipcRenderer.invoke('capture:ai-reconstruct', inputs, models, channel)
+  ) => ipcRenderer.invoke('capture:ai-reconstruct', inputs, models, channel),
+
+  // 现场采集素材（剪贴板粘贴）
+  materialsAddText: (orderId: number, text: string) =>
+    ipcRenderer.invoke('materials:add-text', orderId, text),
+  materialsAddImage: (orderId: number, dataUrl: string) =>
+    ipcRenderer.invoke('materials:add-image', orderId, dataUrl),
+  materialsList: (orderId: number) => ipcRenderer.invoke('materials:list', orderId),
+  materialsDelete: (id: number) => ipcRenderer.invoke('materials:delete', id),
+  materialsStatus: (orderId?: number) => ipcRenderer.invoke('materials:status', orderId),
+  materialsRetryFailed: () => ipcRenderer.invoke('materials:retry-failed'),
+  materialsDiscardFailed: () => ipcRenderer.invoke('materials:discard-failed'),
+  materialsSetConfig: (cfg: { backendUrl: string; employeeCode: string }) =>
+    ipcRenderer.invoke('materials:set-config', cfg),
+
+  // 系统剪贴板（Electron 原生，绕过 navigator.clipboard 焦点限制）
+  clipboardRead: () => ipcRenderer.invoke('clipboard:read')
 }
 
 if (process.contextIsolated) {
