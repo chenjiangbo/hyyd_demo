@@ -17,6 +17,7 @@ model Employee {
   orders         Order[]
   messages       Message[]
   calls          Call[]
+  materials      Material[]
 
   @@map("employees")
 }
@@ -30,21 +31,39 @@ model Order {
   hospital           String?
   dept               String?
   doctor             String?
-  status             String       @default("候选") // '候选' | '已申领' | '进行中' | '完成'
+  status             String       @default("候选") // 泰康 orderStateName 原文，如"待处理 / 待就诊 / 待支付 / 已完成"。默认值留旧文案仅作迁移兼容。
   assignedEmployeeId Int?         @map("assigned_employee_id")
   assignedEmployee   Employee?    @relation(fields: [assignedEmployeeId], references: [id])
   rawJson            Json?        @map("raw_json")
   detailJson         Json?        @map("detail_json")
   detailFetchedAt    DateTime?    @map("detail_fetched_at")
+  detailFingerprint  String?      @map("detail_fingerprint") // 插件算的状态指纹，用于增量基线
+  orderState         String?      @map("order_state") // 泰康订单状态码原值，用于检测状态变化
   createdAt          DateTime     @default(now()) @map("created_at")
   updatedAt          DateTime     @updatedAt @map("updated_at")
   messages           Message[]
   calls              Call[]
   aiSummaries        AiSummary[]
   attachments        OrderAttachment[]
+  materials          Material[]
+  statusHistory      OrderStatusHistory[]
 
   @@unique([source, sourceOrderNo])
   @@map("orders")
+}
+
+// 订单状态变更历史：每当 orderState 变化（含首次出现）记一条，
+// 用于追溯订单在个人池里的状态流转。
+model OrderStatusHistory {
+  id             Int      @id @default(autoincrement())
+  orderId        Int      @map("order_id")
+  order          Order    @relation(fields: [orderId], references: [id])
+  orderState     String?  @map("order_state")      // 状态码，如 "2002" / "8"
+  orderStateName String?  @map("order_state_name") // 状态名，如 "待处理" / "待分配医学陪诊"
+  recordedAt     DateTime @default(now()) @map("recorded_at")
+
+  @@index([orderId])
+  @@map("order_status_history")
 }
 
 model OrderAttachment {
@@ -64,6 +83,30 @@ model OrderAttachment {
   @@unique([orderId, fileId])
   @@index([orderId])
   @@map("order_attachments")
+}
+
+// 现场采集版的核心数据：员工从微信/企微复制粘贴进来的素材。
+// type=text 走 textContent；type=image 走 MinIO（bucket=materials）。
+// clientUuid 由 tray-app 本地 sqlite 在落地时生成，
+// 用 (orderId, clientUuid) 做幂等键，避免离线补传时双插。
+model Material {
+  id           Int      @id @default(autoincrement())
+  orderId      Int      @map("order_id")
+  order        Order    @relation(fields: [orderId], references: [id])
+  employeeId   Int      @map("employee_id")
+  employee     Employee @relation(fields: [employeeId], references: [id])
+  type         String   // 'text' | 'image'
+  textContent  String?  @map("text_content")
+  minioBucket  String?  @map("minio_bucket")
+  minioKey     String?  @map("minio_key")
+  mimeType     String?  @map("mime_type")
+  byteSize     Int?     @map("byte_size")
+  clientUuid   String   @map("client_uuid")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([orderId, clientUuid])
+  @@index([orderId])
+  @@map("materials")
 }
 
 model Message {

@@ -2,6 +2,7 @@
  * 阿里云百炼 Fun-ASR 录音文件识别客户端
  * 文档: https://help.aliyun.com/zh/model-studio/fun-asr-recorded-speech-recognition-restful-api
  */
+import { getEnv } from '../env.js'
 
 const DASHSCOPE_BASE = 'https://dashscope.aliyuncs.com/api/v1'
 
@@ -60,9 +61,7 @@ export interface TranscriptionDoc {
 }
 
 function getApiKey(): string {
-  const k = process.env.DASHSCOPE_API_KEY
-  if (!k) throw new Error('DASHSCOPE_API_KEY 未配置')
-  return k
+  return getEnv().dashscopeApiKey
 }
 
 /** 提交录音文件识别任务（异步） */

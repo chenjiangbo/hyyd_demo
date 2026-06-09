@@ -3,12 +3,11 @@ import * as Minio from 'minio'
 
 export const ATTACHMENT_BUCKET = 'order-attachments'
 
+// 插件抓详情统一只调 recommendations 接口，所有绿通业务返回结构一致的大对象，
+// 已全量塞进来。旧的 caseInfo / intendClinicInfo / hospitalAddr / exceInfo
+// 子结构都是 recommendations 内部字段，无需单独建顶层属性。
 export interface DetailBundle {
-  caseInfo?: any
-  intendClinicInfo?: any
-  latestRegisterInfo?: any
-  hospitalAddr?: any
-  exceInfo?: any
+  recommendations?: any
 }
 
 export interface AttachmentInput {
@@ -25,6 +24,7 @@ export interface SaveDetailInput {
   source?: string // 默认 'taikang'
   detail: DetailBundle
   attachments: AttachmentInput[]
+  fingerprint?: string // 插件算的状态指纹，存下来供增量基线比对
 }
 
 export interface SaveDetailResult {
@@ -55,7 +55,8 @@ export async function saveOrderDetailBundle(
     where: { id: order.id },
     data: {
       detailJson: input.detail as any,
-      detailFetchedAt: new Date()
+      detailFetchedAt: new Date(),
+      ...(input.fingerprint ? { detailFingerprint: input.fingerprint } : {})
     }
   })
 

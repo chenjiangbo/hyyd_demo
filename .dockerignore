@@ -1,0 +1,13 @@
+.git
+.claude
+node_modules
+packages/*/node_modules
+packages/*/dist
+packages/*/*.tsbuildinfo
+temp_project.tar.gz
+*.log
+**/.env
+**/.env.*
+debug
+docs/*.har
+docs/*.html

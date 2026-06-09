@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "寰宇医道 MVP - 无感采集 + 无感回填",
+  "packageManager": "pnpm@9.15.9",
   "engines": {
     "node": ">=20.0.0",
     "pnpm": ">=9.0.0"

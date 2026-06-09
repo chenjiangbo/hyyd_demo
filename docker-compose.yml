@@ -1,13 +1,40 @@
 services:
-  huanyu-postgres:
-    image: pgvector/pgvector:pg16
-    container_name: huanyu-postgres
-    ports:
-      - "15432:5432"
+  huanyu-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: huanyu-backend:latest
+    env_file:
+      - ${ENV_FILE:-.env.production}
     environment:
-      POSTGRES_DB: huanyu
-      POSTGRES_USER: huanyu
-      POSTGRES_PASSWORD: huanyu_dev_pwd
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@huanyu-postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      MINIO_HOST: huanyu-minio
+      MINIO_PORT: "9000"
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+    ports:
+      - "${HOST_PORT:-13000}:${PORT:?PORT is required}"
+    depends_on:
+      huanyu-postgres:
+        condition: service_healthy
+      huanyu-minio:
+        condition: service_healthy
+    networks:
+      - default
+      - blackwhite_default
+    command: ["sh", "-c", "pnpm --filter @huanyu/backend db:deploy && pnpm --filter @huanyu/backend start"]
+    restart: unless-stopped
+    mem_limit: ${BACKEND_MEM_LIMIT:-768m}
+
+  huanyu-postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16}
+    ports:
+      - "${POSTGRES_HOST_PORT:-15432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     volumes:
       - huanyu-pg-data:/var/lib/postgresql/data
     healthcheck:
@@ -15,16 +42,16 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    mem_limit: ${POSTGRES_MEM_LIMIT:-1g}
 
   huanyu-minio:
     image: minio/minio:latest
-    container_name: huanyu-minio
     ports:
-      - "19000:9000"
-      - "19001:9001"
+      - "${MINIO_HOST_PORT:-19000}:9000"
+      - "${MINIO_CONSOLE_HOST_PORT:-19001}:9001"
     environment:
-      MINIO_ROOT_USER: huanyu
-      MINIO_ROOT_PASSWORD: huanyu_dev_pwd
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
     command: server /data --console-address ":9001"
     volumes:
       - huanyu-minio-data:/data
@@ -33,6 +60,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    mem_limit: ${MINIO_MEM_LIMIT:-768m}
 
   # 按需启动 ASR：docker compose --profile asr up -d huanyu-funasr
   huanyu-funasr:
@@ -46,3 +74,7 @@ services:
 volumes:
   huanyu-pg-data:
   huanyu-minio-data:
+
+networks:
+  blackwhite_default:
+    external: true

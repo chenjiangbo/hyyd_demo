@@ -18,8 +18,8 @@ import {
   renderTranscriptText,
   type TranscriptionDoc
 } from './funAsrClient.js'
+import { getEnv } from '../env.js'
 
-const RECORDINGS_BUCKET = process.env.MINIO_BUCKET_RECORDINGS || 'recordings'
 const OBJECT_READY_TIMEOUT_MS = 60_000
 const OBJECT_READY_INTERVAL_MS = 2_000
 const POLL_INTERVAL_MS = 30_000
@@ -73,6 +73,7 @@ export async function scheduleTranscription(callId: number): Promise<void> {
     return
   }
   const { prisma } = deps
+  const recordingsBucket = getEnv().minioBucketRecordings
   try {
     const call = await prisma.call.findUnique({ where: { id: callId } })
     if (!call) {
@@ -95,7 +96,7 @@ export async function scheduleTranscription(callId: number): Promise<void> {
     }
 
     // 1. 等对象就绪
-    const ready = await waitObjectReady(RECORDINGS_BUCKET, call.recordingOssKey)
+    const ready = await waitObjectReady(recordingsBucket, call.recordingOssKey)
     if (!ready) {
       await prisma.call.update({
         where: { id: callId },
@@ -107,7 +108,7 @@ export async function scheduleTranscription(callId: number): Promise<void> {
 
     // 2. 生成 24h presigned URL
     const fileUrl = await deps.minioPublicClient.presignedGetObject(
-      RECORDINGS_BUCKET,
+      recordingsBucket,
       call.recordingOssKey,
       24 * 60 * 60
     )

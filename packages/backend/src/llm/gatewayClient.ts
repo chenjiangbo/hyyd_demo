@@ -3,10 +3,11 @@
  *
  * hyyd_demo 的所有 LLM 调用都走这个模块，不直连 OpenRouter。
  * 凭证通过环境变量注入：
- *   GATEWAY_BASE_URL   = http://127.0.0.1:8080   （默认）
+ *   GATEWAY_BASE_URL
  *   GATEWAY_APP_ID     = hyyd-demo
- *   GATEWAY_API_KEY    = hyyd-demo-secret-2026
+ *   GATEWAY_API_KEY
  */
+import { getEnv } from '../env.js'
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
@@ -34,10 +35,12 @@ export interface ChatResult {
 // ── 配置 ────────────────────────────────────────────────────────────────────
 
 function getConfig() {
-  const baseUrl = process.env.GATEWAY_BASE_URL || 'http://127.0.0.1:8080'
-  const appId   = process.env.GATEWAY_APP_ID   || 'hyyd-demo'
-  const apiKey  = process.env.GATEWAY_API_KEY  || 'hyyd-demo-secret-2026'
-  return { baseUrl, appId, apiKey }
+  const env = getEnv()
+  return {
+    baseUrl: env.gatewayBaseUrl,
+    appId: env.gatewayAppId,
+    apiKey: env.gatewayApiKey
+  }
 }
 
 // ── 非流式聊天 ────────────────────────────────────────────────────────────────

@@ -2,7 +2,9 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { PrismaClient, Prisma } from '@prisma/client'
 import * as Minio from 'minio'
 import { scheduleTranscription } from '../asr/transcribeScheduler.js'
+import { broadcastAdmin } from './adminBus.js'
 import { summarizeCall, summarizeMessages, summarizeFull } from '../llm/summaryService.js'
+import { getEnv } from '../env.js'
 import {
   CreateOrderPayload,
   ClaimOrderPayload, 
@@ -37,11 +39,12 @@ declare module 'fastify' {
 export const activeConnections = new Map<number, { ext?: any; tray?: any }>()
 
 // 内存中维护的员工 presence 状态（由插件 PRESENCE 心跳更新）
-// 员工ID -> { taikangTabOpen, mode, lastSeenAt }
+// 员工ID -> { taikangTabOpen, lastSeenAt }
+// 注：原 mode 字段（pool_reader / worker）已无意义——插件现在只读个人池，
+// 不再下发 mode，所以从类型里删掉。
 export interface PresenceInfo {
   taikangTabOpen: boolean
   trackingPoolPageActive: boolean
-  mode: 'pool_reader' | 'worker'
   lastSeenAt: number
   // 泰康 token 保活状态（由插件 content script 定时探测后上报）
   tokenOk?: boolean | null
@@ -49,6 +52,11 @@ export interface PresenceInfo {
   tokenLastCheckAt?: number | null
 }
 export const presenceMap = new Map<number, PresenceInfo>()
+
+// Tray 桌面端没有 WebSocket（纯 REST），靠它每 5s 轮询 /api/v1/me/presence 当心跳。
+// 这里记录每个员工最近一次该轮询的时间戳，给管理后台判断"Tray 是否在线"。
+// 员工ID -> 最近一次 /me/presence 命中的毫秒时间戳
+export const trayRestSeenMap = new Map<number, number>()
 
 export function normalizeEmployeeCode(value: unknown): string {
   if (typeof value !== 'string') return ''
@@ -75,11 +83,20 @@ export function registerApiRoutes(
   minioClient: Minio.Client,
   minioPublicClient: Minio.Client = minioClient
 ) {
+  const env = getEnv()
   
   // 1. 鉴权 Hook
   fastify.addHook('preHandler', async (request: FastifyRequest, reply: FastifyReply) => {
-    // 排除健康检查等不需要鉴权的接口
-    if (request.url === '/health' || request.url.startsWith('/ws')) {
+    // 排除健康检查等不需要鉴权的接口。
+    // - /api/v1/admin/*：走独立管理员 JWT cookie 鉴权（见 routes/admin.ts）
+    // - /admin/*：管理后台前端静态资源（@fastify/static），由前端自身登录态控制
+    // 这些都不参与员工 X-Employee-Code 体系，直接放行。
+    if (
+      request.url === '/health' ||
+      request.url.startsWith('/ws') ||
+      request.url.startsWith('/api/v1/admin') ||
+      request.url.startsWith('/admin')
+    ) {
       return
     }
 
@@ -113,6 +130,9 @@ export function registerApiRoutes(
     if (!request.employee) {
       return reply.status(401).send({ error: '未登录' })
     }
+    // Tray 桌面端心跳：记录本次轮询时间，供管理后台判断 tray 在线
+    trayRestSeenMap.set(request.employee.id, Date.now())
+
     const info = presenceMap.get(request.employee.id)
     const conn = activeConnections.get(request.employee.id)
     const HEARTBEAT_TIMEOUT_MS = 30_000
@@ -124,7 +144,6 @@ export function registerApiRoutes(
           extConnected: !!conn?.ext,
           taikangTabOpen: false,
           trackingPoolPageActive: false,
-          mode: 'worker',
           stale: true,
           lastSeenAt: null
         }
@@ -137,7 +156,6 @@ export function registerApiRoutes(
         extConnected: !!conn?.ext,
         taikangTabOpen: info.taikangTabOpen,
         trackingPoolPageActive: info.trackingPoolPageActive,
-        mode: info.mode,
         stale,
         lastSeenAt: new Date(info.lastSeenAt).toISOString(),
         tokenOk: info.tokenOk ?? null,
@@ -208,9 +226,112 @@ export function registerApiRoutes(
       try {
         const orders = await prisma.order.findMany({
           where,
-          orderBy: { createdAt: 'desc' }
+          orderBy: { createdAt: 'desc' },
+          include: {
+            // 录音条数 + 最新录音时间
+            _count: { select: { calls: true, materials: true } },
+            calls: {
+              select: { startedAt: true },
+              orderBy: { startedAt: 'desc' },
+              take: 1
+            },
+            // 拉每单一条最近的素材 + 全量类型计数（一次查询，
+            // 顺手在 map 里分桶；素材体量小不会爆查询）
+            materials: {
+              select: { type: true, createdAt: true },
+              orderBy: { createdAt: 'desc' }
+            }
+          }
         })
-        return reply.send({ data: orders })
+        // 给每单补几个 trayapp 工作台要展示的派生字段：
+        //   - claimedAt：申领时间。优先用泰康 rawJson 里的几种时间字段，
+        //     最后兜底到我们自己的 createdAt。
+        //   - audioCount：已采到的录音条数（calls 表实际行数）。
+        //   - textCount / imageCount：粘贴的文字 / 图片素材数（materials 表）
+        //   - materialCount：三类合计
+        //   - lastMaterialAt：任何素材的最近一次入库时间（取 max(call, material)）
+        const data = orders.map((o: any) => {
+          const raw = (o.rawJson ?? {}) as Record<string, unknown>
+          // chrome 插件抓的详情扁平挂在 detailJson.recommendations 下
+          const rec = ((o.detailJson as any)?.recommendations ?? {}) as Record<string, unknown>
+          const claimedAt =
+            (raw.mmgrApplyDate as string | undefined) ??
+            (raw.applicationDate as string | undefined) ??
+            (raw.applyDate as string | undefined) ??
+            (raw.applyTime as string | undefined) ??
+            o.createdAt.toISOString()
+
+          // 泰康个人池列表接口大多数业务字段都不返回（只有订单号 / 状态 / 业务名等几个）。
+          // 真正的医院 / 科室 / 医生 / 手机号 / 就诊日期 都在 recommendations 里。
+          // 这里统一按"列表 rawJson 优先 → 详情 recommendations 兜底"派生，
+          // 让工作台一列一个字段读就行，不用再翻嵌套对象。
+          const customerPhoneRow =
+            (raw.paMobile as string | undefined) ??
+            (rec.paMobile as string | undefined) ??
+            (rec.ecpPhone as string | undefined) ??
+            o.customerPhone ??
+            null
+          const hospitalRow =
+            (raw.hospital as string | undefined) ??
+            (rec.intendHos as string | undefined) ??
+            (rec.visitingHospital as string | undefined) ??
+            o.hospital ??
+            null
+          const deptRow =
+            (raw.dept as string | undefined) ??
+            (rec.intendDept as string | undefined) ??
+            o.dept ??
+            null
+          const doctorRow =
+            (raw.doctor as string | undefined) ??
+            (rec.intendDoc as string | undefined) ??
+            o.doctor ??
+            null
+          const intendDateRow =
+            (raw.intendDate as string | undefined) ??
+            (rec.intendDate as string | undefined) ??
+            null
+          const intendDateAmorpmRow =
+            (raw.intendDateAmorpm as string | undefined) ??
+            (rec.intendDateAmorpm as string | undefined) ??
+            null
+
+          const audioCount = o._count?.calls ?? 0
+          const textCount = (o.materials ?? []).filter((m: any) => m.type === 'text').length
+          const imageCount = (o.materials ?? []).filter((m: any) => m.type === 'image').length
+          const materialCount = audioCount + textCount + imageCount
+
+          const lastCallAt = o.calls?.[0]?.startedAt
+            ? new Date(o.calls[0].startedAt).getTime()
+            : 0
+          const lastMatAt = o.materials?.[0]?.createdAt
+            ? new Date(o.materials[0].createdAt).getTime()
+            : 0
+          const lastTs = Math.max(lastCallAt, lastMatAt)
+          const lastMaterialAt = lastTs > 0 ? new Date(lastTs).toISOString() : null
+
+          // 删掉 include 出来的辅助字段，给前端返回扁平结构
+          const { _count, calls, materials, ...rest } = o
+          void _count
+          void calls
+          void materials
+          return {
+            ...rest,
+            customerPhone: customerPhoneRow,
+            hospital: hospitalRow,
+            dept: deptRow,
+            doctor: doctorRow,
+            intendDate: intendDateRow,
+            intendDateAmorpm: intendDateAmorpmRow,
+            claimedAt,
+            audioCount,
+            textCount,
+            imageCount,
+            materialCount,
+            lastMaterialAt
+          }
+        })
+        return reply.send({ data })
       } catch (err: any) {
         return reply.status(500).send({ error: '查询订单失败: ' + err.message })
       }
@@ -466,7 +587,7 @@ export function registerApiRoutes(
         return reply.status(404).send({ error: '该消息无截图' })
       }
       const url = await minioPublicClient.presignedGetObject(
-        process.env.MINIO_BUCKET_SCREENSHOTS || 'screenshots',
+        env.minioBucketScreenshots,
         msg.screenshotOssKey,
         60 * 60
       )
@@ -548,38 +669,93 @@ export function registerApiRoutes(
     }
   })
 
-  // 8.5 通话列表 GET /api/v1/calls （当前员工，按时间倒序，附带关联订单简要信息）
+  // 8.5 通话列表 GET /api/v1/calls （当前员工，按时间倒序）
+  //
+  // 关联订单策略（不依赖 LLM）：
+  //   实时按 call.phone 在当前员工所有订单里找匹配，匹配源：
+  //     - Order.customerPhone（DB 列，目前 ORDERS_SYNCED 不写，多为 null）
+  //     - detail_json.recommendations.paMobile / ecpPhone（chrome 插件详情）
+  //   匹配上几条就返回几条（一般 1 条，偶尔 0 或多条），
+  //   响应里用 relatedOrders: Order[]。Call.orderId（兜底单一关联）仍然返回。
   fastify.get('/api/v1/calls', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
     const employeeId = request.employee.id
     try {
       const calls = await prisma.call.findMany({
         where: { employeeId },
-        orderBy: { startedAt: 'desc' },
-        include: {
-          order: { select: { id: true, sourceOrderNo: true, customerName: true, status: true } }
+        orderBy: { startedAt: 'desc' }
+      })
+      // 一次拉当前员工所有订单的"任意可匹配电话 + 基础字段"，内存里 join 给每条 call
+      const orders = await prisma.$queryRaw<
+        Array<{
+          id: number
+          source_order_no: string
+          customer_name: string
+          status: string
+          updated_at: Date
+          phone_list: string[] | null
+        }>
+      >`
+        SELECT
+          id,
+          source_order_no,
+          customer_name,
+          status,
+          updated_at,
+          ARRAY_REMOVE(ARRAY[
+            customer_phone,
+            detail_json->'recommendations'->>'paMobile',
+            detail_json->'recommendations'->>'ecpPhone'
+          ], NULL) AS phone_list
+        FROM orders
+        WHERE assigned_employee_id = ${employeeId}
+      `
+      // 反查表：phone（去尾号清洗）→ 匹配的订单
+      const norm = (s: string | null | undefined): string => (s ?? '').replace(/\D/g, '')
+      const phoneIndex = new Map<string, typeof orders>()
+      for (const o of orders) {
+        for (const p of o.phone_list ?? []) {
+          const k = norm(p)
+          if (!k) continue
+          const arr = phoneIndex.get(k) ?? []
+          arr.push(o)
+          phoneIndex.set(k, arr)
+        }
+      }
+      const toOrderBrief = (o: (typeof orders)[number]): {
+        id: number
+        sourceOrderNo: string
+        customerName: string
+        status: string
+      } => ({
+        id: o.id,
+        sourceOrderNo: o.source_order_no,
+        customerName: o.customer_name,
+        status: o.status
+      })
+
+      const data = calls.map((c) => {
+        const matched = (phoneIndex.get(norm(c.phone)) ?? []).sort(
+          (a, b) => b.updated_at.getTime() - a.updated_at.getTime()
+        )
+        const related = matched.map(toOrderBrief)
+        // 兜底单 order：取 updated_at 最新的那个（最近被泰康改动过的）
+        const primary = related[0] ?? null
+        return {
+          id: c.id,
+          phone: c.phone,
+          contactName: c.contactName,
+          direction: c.direction,
+          callStatus: c.callStatus,
+          durationSec: c.durationSec,
+          startedAt: c.startedAt.toISOString(),
+          asrStatus: c.asrStatus,
+          asrFinishedAt: c.asrFinishedAt?.toISOString() ?? null,
+          hasRecording: !!c.recordingOssKey,
+          order: primary, // 兼容旧字段（单 order）
+          relatedOrders: related // 新：按手机号匹配到的全部订单
         }
       })
-      const data = calls.map((c) => ({
-        id: c.id,
-        phone: c.phone,
-        contactName: c.contactName,
-        direction: c.direction,
-        callStatus: c.callStatus,
-        durationSec: c.durationSec,
-        startedAt: c.startedAt.toISOString(),
-        asrStatus: c.asrStatus,
-        asrFinishedAt: c.asrFinishedAt?.toISOString() ?? null,
-        hasRecording: !!c.recordingOssKey,
-        order: c.order
-          ? {
-              id: c.order.id,
-              sourceOrderNo: c.order.sourceOrderNo,
-              customerName: c.order.customerName,
-              status: c.order.status
-            }
-          : null
-      }))
       return reply.send({ data })
     } catch (err: any) {
       fastify.log.error('查询通话列表失败:', err)
@@ -601,7 +777,7 @@ export function registerApiRoutes(
         return reply.status(404).send({ error: '该通话尚未上传录音' })
       }
       const url = await minioPublicClient.presignedGetObject(
-        process.env.MINIO_BUCKET_RECORDINGS || 'recordings',
+        env.minioBucketRecordings,
         call.recordingOssKey,
         60 * 60
       )
@@ -651,21 +827,29 @@ export function registerApiRoutes(
     try {
       let finalOrderId = orderId ?? null
 
-      // 模糊匹配号码对应订单
+      // 按手机号匹配订单：customer_phone (列) / recommendations.paMobile / recommendations.ecpPhone 三处任一命中。
+      // 状态不做过滤，泰康原文 status 类型很多（"待处理 / 待分配医学陪诊 / 已完成"...），
+      // 旧代码的 status IN ('已申领','进行中') 在新数据下永远 false。
+      // 多条命中时取 updated_at 最新那条作 Call.orderId 兜底；GET /calls 会再列全部匹配。
       if (!finalOrderId) {
-        const matchedOrder = await prisma.order.findFirst({
-          where: {
-            assignedEmployeeId: employeeId,
-            status: { in: ['已申领', '进行中'] },
-            customerPhone: {
-              contains: phone // 电话号码模糊包含
-            }
-          },
-          orderBy: { updatedAt: 'desc' }
-        })
-        if (matchedOrder) {
-          finalOrderId = matchedOrder.id
-          fastify.log.info(`自动关联通话记录至订单: ${matchedOrder.sourceOrderNo} (ID: ${finalOrderId})`)
+        const normPhone = (phone ?? '').replace(/\D/g, '')
+        if (normPhone) {
+          const matched = await prisma.$queryRaw<Array<{ id: number; source_order_no: string }>>`
+            SELECT id, source_order_no
+              FROM orders
+             WHERE assigned_employee_id = ${employeeId}
+               AND (
+                 regexp_replace(COALESCE(customer_phone, ''), '\D', '', 'g') = ${normPhone}
+                 OR regexp_replace(COALESCE(detail_json->'recommendations'->>'paMobile', ''), '\D', '', 'g') = ${normPhone}
+                 OR regexp_replace(COALESCE(detail_json->'recommendations'->>'ecpPhone', ''), '\D', '', 'g') = ${normPhone}
+               )
+             ORDER BY updated_at DESC
+             LIMIT 1
+          `
+          if (matched[0]) {
+            finalOrderId = matched[0].id
+            fastify.log.info(`自动关联通话至订单: ${matched[0].source_order_no} (id=${finalOrderId})`)
+          }
         }
       }
 
@@ -683,6 +867,11 @@ export function registerApiRoutes(
         }
       })
 
+      // 推送给在线管理后台
+      broadcastAdmin({
+        type: 'call_created',
+        payload: { employeeId, orderId: finalOrderId ?? null }
+      })
       return reply.send({ data: call })
     } catch (err: any) {
       fastify.log.error('通话记录上报失败:', err)
@@ -716,7 +905,7 @@ export function registerApiRoutes(
 
       // 生成客户端直接 PUT 音频文件至 MinIO 的预签名 URL (有效期 5 分钟)
       const uploadUrl = await minioPublicClient.presignedPutObject(
-        process.env.MINIO_BUCKET_RECORDINGS || 'recordings',
+        env.minioBucketRecordings,
         ossKey,
         5 * 60
       )
@@ -1044,5 +1233,156 @@ export function registerApiRoutes(
       return reply.status(500).send({ error: '全单摘要生成失败: ' + err.message })
     }
   })
+
+  // ════════════════════════════════════════════════════════════
+  // 12. 现场采集素材（剪贴板粘贴）
+  //
+  //   POST /api/v1/orders/:id/materials   员工粘贴一条文字或图片
+  //   GET  /api/v1/materials?orderId=     拉某订单的素材列表（图片附 presigned URL）
+  //   DEL  /api/v1/materials/:id          删除一条素材
+  //
+  //   幂等：clientUuid 由 tray-app 本地生成，(orderId, clientUuid) 唯一。
+  //   离线补传时同一 UUID 重发会被 upsert 收敛，不会产生重复行。
+  // ════════════════════════════════════════════════════════════
+
+  const MATERIAL_BUCKET = 'materials'
+
+  fastify.post<{
+    Params: { id: string }
+    Body: {
+      type: 'text' | 'image'
+      clientUuid: string
+      textContent?: string
+      mimeType?: string
+      base64?: string // image 时必填，无 data URL 前缀
+    }
+  }>('/api/v1/orders/:id/materials', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const orderId = parseInt(request.params.id, 10)
+    const { type, clientUuid, textContent, mimeType, base64 } = request.body || ({} as any)
+    if (!Number.isFinite(orderId)) return reply.status(400).send({ error: 'orderId 非法' })
+    if (!clientUuid) return reply.status(400).send({ error: 'clientUuid 必填' })
+    if (type !== 'text' && type !== 'image')
+      return reply.status(400).send({ error: 'type 必须是 text 或 image' })
+    if (type === 'text' && !textContent) return reply.status(400).send({ error: '文本不能为空' })
+    if (type === 'image' && (!base64 || !mimeType))
+      return reply.status(400).send({ error: '图片需要 base64 + mimeType' })
+
+    const order = await prisma.order.findUnique({ where: { id: orderId } })
+    if (!order) return reply.status(404).send({ error: '订单不存在' })
+
+    let minioBucket: string | null = null
+    let minioKey: string | null = null
+    let byteSize: number | null = null
+
+    if (type === 'image') {
+      // base64 → buffer → MinIO
+      const buf = Buffer.from(base64!, 'base64')
+      byteSize = buf.length
+      const ext = (mimeType!.split('/')[1] || 'bin').toLowerCase()
+      // 路径：materials/<orderId>/<clientUuid>.<ext>
+      minioKey = `materials/${orderId}/${clientUuid}.${ext}`
+      minioBucket = MATERIAL_BUCKET
+      try {
+        await minioClient.putObject(MATERIAL_BUCKET, minioKey, buf, buf.length, {
+          'Content-Type': mimeType!
+        })
+      } catch (e: any) {
+        fastify.log.error('MinIO 上传材料图失败: ' + e.message)
+        return reply.status(500).send({ error: 'MinIO 上传失败: ' + e.message })
+      }
+    }
+
+    try {
+      const created = await prisma.material.upsert({
+        where: {
+          orderId_clientUuid: { orderId, clientUuid }
+        },
+        update: {
+          // 幂等：同 UUID 重发不更新内容（避免覆盖删除痕迹），只确保存在
+        },
+        create: {
+          orderId,
+          employeeId: request.employee.id,
+          type,
+          textContent: type === 'text' ? textContent! : null,
+          mimeType: type === 'image' ? mimeType! : null,
+          minioBucket,
+          minioKey,
+          byteSize,
+          clientUuid
+        }
+      })
+      // 推送给在线管理后台，让仪表盘/素材流水实时刷新
+      broadcastAdmin({
+        type: 'material_created',
+        payload: { employeeId: request.employee.id, orderId, materialType: type }
+      })
+      return reply.send({ data: { id: created.id, createdAt: created.createdAt } })
+    } catch (e: any) {
+      fastify.log.error('保存素材失败: ' + e.message)
+      return reply.status(500).send({ error: '保存素材失败: ' + e.message })
+    }
+  })
+
+  fastify.get<{ Querystring: { orderId?: string } }>(
+    '/api/v1/materials',
+    async (request, reply) => {
+      const orderId = parseInt(request.query.orderId || '', 10)
+      if (!Number.isFinite(orderId))
+        return reply.status(400).send({ error: 'orderId 必填' })
+
+      const list = await prisma.material.findMany({
+        where: { orderId },
+        orderBy: { createdAt: 'desc' }
+      })
+      const data = await Promise.all(
+        list.map(async (m) => {
+          let url: string | null = null
+          if (m.type === 'image' && m.minioBucket && m.minioKey) {
+            try {
+              url = await minioPublicClient.presignedGetObject(
+                m.minioBucket,
+                m.minioKey,
+                60 * 60
+              )
+            } catch (e: any) {
+              fastify.log.warn(`presigned URL 生成失败 material=${m.id}: ${e.message}`)
+            }
+          }
+          return {
+            id: m.id,
+            orderId: m.orderId,
+            type: m.type,
+            textContent: m.textContent,
+            mimeType: m.mimeType,
+            byteSize: m.byteSize,
+            url,
+            clientUuid: m.clientUuid,
+            createdAt: m.createdAt.toISOString()
+          }
+        })
+      )
+      return reply.send({ data })
+    }
+  )
+
+  fastify.delete<{ Params: { id: string } }>(
+    '/api/v1/materials/:id',
+    async (request, reply) => {
+      const id = parseInt(request.params.id, 10)
+      if (!Number.isFinite(id)) return reply.status(400).send({ error: 'id 非法' })
+      const m = await prisma.material.findUnique({ where: { id } })
+      if (!m) return reply.status(404).send({ error: '素材不存在' })
+      // 先删 MinIO 对象（失败也继续删 DB，避免孤儿记录卡住前端）
+      if (m.type === 'image' && m.minioBucket && m.minioKey) {
+        await minioClient
+          .removeObject(m.minioBucket, m.minioKey)
+          .catch((e) => fastify.log.warn(`MinIO 删除失败 ${m.minioKey}: ${e.message}`))
+      }
+      await prisma.material.delete({ where: { id } })
+      return reply.send({ data: { id } })
+    }
+  )
 
 }
