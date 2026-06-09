@@ -3,7 +3,7 @@
  * MVP 现场版：服务器地址和员工 ID 从 localStorage 读取。
  */
 
-export const DEFAULT_BACKEND_URL = 'http://192.168.202.1:13000'
+export const DEFAULT_BACKEND_URL = 'http://47.95.14.233:9093'
 export const DEFAULT_EMPLOYEE_CODE = 'huanyu-field-1'
 
 export interface ClientConfig {
