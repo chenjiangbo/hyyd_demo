@@ -20,6 +20,9 @@ const api = {
   getCaptureShots: (channel?: string, limit?: number) =>
     ipcRenderer.invoke('capture:shots', channel, limit),
   clearCaptureShots: () => ipcRenderer.invoke('capture:clear-shots'),
+  // 【临时·采集调试页】最近原始帧（含结构化 messages/orderNo/conversationKind）
+  getCaptureDebugFrames: (limit?: number) => ipcRenderer.invoke('capture:debug-frames', limit),
+  clearCaptureDebugFrames: () => ipcRenderer.invoke('capture:debug-clear'),
   reconstructCaptureAi: (
     inputs: Array<{ path: string; capturedAt: string | null }>,
     models?: string[],

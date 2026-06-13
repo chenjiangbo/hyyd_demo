@@ -25,6 +25,29 @@ export interface CaptureMessage {
   sourceScreenshotPath: string | null
 }
 
+// 【临时·采集调试页】sidecar 原始帧（含路线1 结构化消息），仅内存、不落库
+export interface CaptureDebugMessage {
+  speaker: 'self' | 'other' | 'system'
+  name?: string | null
+  text: string
+}
+export interface CaptureDebugFrame {
+  type: 'frame'
+  channel: 'wxwork' | 'wechat'
+  processName: string
+  windowTitle?: string | null
+  capturedAt: string
+  window: { left: number; top: number; width: number; height: number; showState: string }
+  screenshotPath: string
+  imageHash?: string | null
+  ocr: { engine: string; status: 'success' | 'failed'; text: string; blocks: unknown[] }
+  keepReason?: string
+  diffScore?: number
+  conversationKind?: 'group' | 'single' | null
+  orderNo?: string | null
+  messages?: CaptureDebugMessage[]
+}
+
 // 现场采集素材（剪贴板粘贴）—— 由 main/material-store.ts 给出的视图行
 export type MaterialType = 'text' | 'image'
 export type MaterialSyncStatus =
@@ -65,6 +88,13 @@ declare global {
       getCaptureStatus: () => Promise<unknown>
       getCaptureConversations: (channel?: string) => Promise<CaptureConversation[]>
       getCaptureMessages: (threadId: number) => Promise<CaptureMessage[]>
+      getCaptureFrames: (channel?: string, limit?: number) => Promise<unknown[]>
+      getCaptureScreenshot: (path: string) => Promise<string | null>
+      getCaptureShots: (channel?: string, limit?: number) => Promise<unknown[]>
+      clearCaptureShots: () => Promise<{ deleted: number }>
+      // 【临时·采集调试页】
+      getCaptureDebugFrames: (limit?: number) => Promise<CaptureDebugFrame[]>
+      clearCaptureDebugFrames: () => Promise<{ cleared: number }>
       // 现场采集素材
       materialsAddText: (orderId: number, text: string) => Promise<MaterialViewRow>
       materialsAddImage: (orderId: number, dataUrl: string) => Promise<MaterialViewRow>

@@ -48,6 +48,23 @@ export class CaptureSidecarClient {
     sidecarPath: null
   }
 
+  // 【临时·调试用】最近若干帧的原始事件环形缓冲（含 sidecar 吐出的 messages/orderNo/conversationKind，
+  // 这些字段持久化层暂未消费——见交接文档附录 C）。仅供「采集调试」标签页可视化验证，不落库、重启即清。
+  private static readonly DEBUG_RING_MAX = 60
+  private debugFrames: CaptureFrameEvent[] = []
+
+  /** 【调试】最近的原始采集帧（最新在前）。供 capture:debug-frames IPC。 */
+  listDebugFrames(limit = CaptureSidecarClient.DEBUG_RING_MAX): CaptureFrameEvent[] {
+    return this.debugFrames.slice(0, limit)
+  }
+
+  /** 【调试】清空调试环形缓冲（只清内存视图，不动磁盘/数据库）。 */
+  clearDebugFrames(): { cleared: number } {
+    const cleared = this.debugFrames.length
+    this.debugFrames = []
+    return { cleared }
+  }
+
   getStatus(): CaptureSidecarStatus {
     return { ...this.status }
   }
@@ -342,6 +359,11 @@ export class CaptureSidecarClient {
     }
 
     if (message.type === 'frame') {
+      // 【调试】先入环形缓冲（无论入库成功与否，反映 sidecar 真实输出）
+      this.debugFrames.unshift(message)
+      if (this.debugFrames.length > CaptureSidecarClient.DEBUG_RING_MAX) {
+        this.debugFrames.length = CaptureSidecarClient.DEBUG_RING_MAX
+      }
       if (!this.store) {
         this.setError('本地采集数据库未初始化')
         return

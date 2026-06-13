@@ -137,6 +137,11 @@ if (!gotLock) {
       captureSidecar.listShots(channel, limit ?? 30)
     )
     ipcMain.handle('capture:clear-shots', () => captureSidecar.clearShots())
+    // 【临时·采集调试页】最近原始帧（含结构化 messages/orderNo/conversationKind，不落库、仅内存）
+    ipcMain.handle('capture:debug-frames', (_e, limit?: number) =>
+      captureSidecar.listDebugFrames(limit ?? 60)
+    )
+    ipcMain.handle('capture:debug-clear', () => captureSidecar.clearDebugFrames())
     // AI 还原验证：把选中关键帧发给多个模型还原消息
     ipcMain.handle(
       'capture:ai-reconstruct',
