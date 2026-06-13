@@ -44,7 +44,12 @@ const vlmInjection = [
   .filter((key) => env[key])
   .map((key) => ` $env:${key}='${String(env[key]).replace(/'/g, "''")}';`)
   .join('');
-const pathInjection = `$env:Path += ';C:/Users/${username}/AppData/Local/pnpm;C:/Users/${username}/AppData/Roaming/npm;C:/Program Files/nodejs'; $env:ELECTRON_MIRROR='https://npmmirror.com/mirrors/electron/';${vlmInjection}`;
+// 部署目标已从「Apple Silicon 上的 ARM64 Windows VM」换成「x64 荣耀笔记本」。
+// x64 机器用原生默认即可（electron 下 x64 二进制、install-app-deps 编 x64 better-sqlite3），
+// 不能再强制 arm64——否则 electron/原生模块架构不符，报 "Electron uninstall" / "not a valid Win32 application"。
+// 注：若以后又要部署到 ARM64 目标，把这里改回 arm64，或改成按目标 PROCESSOR_ARCHITECTURE 动态判断。
+const archInjection = ``;
+const pathInjection = `$env:Path += ';C:/Users/${username}/AppData/Local/pnpm;C:/Users/${username}/AppData/Roaming/npm;C:/Program Files/nodejs'; $env:ELECTRON_MIRROR='https://npmmirror.com/mirrors/electron/';${archInjection}${vlmInjection}`;
 
 if (!host || !username || !password || !targetDir) {
   console.error('❌ [ERROR] .env 配置文件缺少关键部署参数 (WIN_VM_HOST, WIN_VM_USERNAME, WIN_VM_PASSWORD, WIN_VM_TARGET_DIR)');
@@ -84,6 +89,13 @@ function packLocally() {
       'dist',
       'packages/*/node_modules',
       'packages/*/dist',
+      // 非源码大块，员工机构建/运行用不到，排除以缩小上传包
+      'dist-artifacts',
+      '.windows-usb-work',
+      'debug',
+      '.claude',
+      '*.har',
+      '*.zip',
       archiveName,
       '*.log',
       '.env',
@@ -175,7 +187,12 @@ conn.on('ready', () => {
   host,
   port,
   username,
-  password
+  password,
+  // 握手超时放大到 90s：Windows OpenSSH 在被频繁连过后会短时限流(MaxStartups)，
+  // 握手可能 >20s，默认值会误判失败。加心跳保活长连接。
+  readyTimeout: 90000,
+  keepaliveInterval: 15000,
+  keepaliveCountMax: 6
 });
 
 function stopRemoteDesktopProcesses(next) {
@@ -314,7 +331,10 @@ function installRemoteDependencies() {
           }
           
           console.log('⚙️ [SSH] 正在使用国内高速镜像强制运行 Electron 二进制安装脚本 (node install.js)...');
-          const rebuildCmd = `powershell -Command "${pathInjection} cd '${targetDir}/packages/tray-app/node_modules/electron'; node install.js"`;
+          // pnpm 在不同版本/安装状态下可能把 electron 放在根 node_modules/electron，
+          // 也可能只放在 node_modules/.pnpm/electron@*/node_modules/electron。
+          // 不允许这里继续写死路径；否则依赖已装好也会发布失败。
+          const rebuildCmd = `powershell -Command "${pathInjection} $electronDir = '${targetDir}/node_modules/electron'; if (!(Test-Path $electronDir)) { $pkg = Get-ChildItem -Path '${targetDir}/node_modules/.pnpm' -Directory -Filter 'electron@*' -ErrorAction SilentlyContinue | Select-Object -First 1; if ($pkg) { $electronDir = Join-Path $pkg.FullName 'node_modules/electron' } }; if (!(Test-Path $electronDir)) { Write-Error '找不到 electron 安装目录'; exit 1 }; cd $electronDir; node install.js"`;
           
           conn.exec(rebuildCmd, (rebuildErr, rebuildStream) => {
             if (rebuildErr) {

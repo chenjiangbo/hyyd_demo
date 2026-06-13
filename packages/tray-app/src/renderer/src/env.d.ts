@@ -20,6 +20,8 @@ interface CaptureConversation {
   threadKey: string
   conversationTitle: string | null
   phone: string | null
+  orderNo: string | null
+  conversationKind: string | null
   isGroup: boolean
   classification: string | null
   firstSeenAt: string | null
@@ -32,6 +34,7 @@ interface CaptureMessage {
   id: number
   threadId: number
   senderType: 'self' | 'other' | 'system' | 'unknown'
+  senderName: string | null
   content: string
   firstSeenAt: string
   lastSeenAt: string

@@ -6,6 +6,14 @@ const api = {
   hideWindow: () => ipcRenderer.send('window:hide'),
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
   quitApp: () => ipcRenderer.send('app:quit'),
+  // 自绘标题栏：最大化切换 + 查询是否最大化 + 订阅状态变化
+  maximizeToggle: () => ipcRenderer.send('window:maximize-toggle'),
+  isMaximized: (): Promise<boolean> => ipcRenderer.invoke('window:is-maximized'),
+  onMaximizedChanged: (cb: (maximized: boolean) => void): (() => void) => {
+    const listener = (_e: unknown, v: boolean): void => cb(v)
+    ipcRenderer.on('window:maximized-changed', listener)
+    return () => ipcRenderer.removeListener('window:maximized-changed', listener)
+  },
   getCaptureStatus: () => ipcRenderer.invoke('capture:status'),
   // 本地采集库读取（企微/微信会话与消息）
   getCaptureConversations: (channel?: string) =>

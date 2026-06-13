@@ -20,7 +20,7 @@ export interface CaptureOcrBlock {
 export interface CaptureFrameEvent {
   type: 'frame'
   channel: CaptureChannel
-  processName: 'WXWork.exe' | 'WeChat.exe'
+  processName: 'WXWork.exe' | 'WeChat.exe' | 'Weixin.exe'
   windowTitle?: string | null
   capturedAt: string
   window: {
@@ -38,6 +38,17 @@ export interface CaptureFrameEvent {
     text: string
     blocks: CaptureOcrBlock[]
   }
+  keepReason?: string
+  diffScore?: number
+  conversationKind?: 'group' | 'single' | null
+  orderNo?: string | null
+  messages?: CaptureStructuredMessage[]
+}
+
+export interface CaptureStructuredMessage {
+  speaker: 'self' | 'other' | 'system'
+  name?: string | null
+  text: string
 }
 
 export interface CaptureSidecarStatus {
@@ -53,4 +64,3 @@ export interface CaptureSidecarStatus {
   lastTextPreview: string | null
   sidecarPath: string | null
 }
-

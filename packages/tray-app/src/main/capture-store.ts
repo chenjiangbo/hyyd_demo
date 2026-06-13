@@ -16,6 +16,7 @@ export interface InsertFrameResult {
 interface ExtractedMessage {
   content: string
   senderType: 'self' | 'other' | 'system' | 'unknown'
+  senderName?: string | null
   bbox: { left: number; top: number; right: number; bottom: number } | null
 }
 
@@ -76,7 +77,7 @@ export class CaptureStore {
   listThreads(channel?: string): CaptureThreadRow[] {
     const sql = `
       SELECT t.id, t.channel, t.thread_key, t.conversation_title, t.normalized_title,
-             t.phone, t.is_group, t.classification, t.first_seen_at, t.last_seen_at,
+             t.phone, t.order_no, t.conversation_kind, t.is_group, t.classification, t.first_seen_at, t.last_seen_at,
              t.message_count,
              (
                SELECT mb.content FROM message_blocks mb
@@ -96,6 +97,8 @@ export class CaptureStore {
       threadKey: r.thread_key,
       conversationTitle: r.conversation_title,
       phone: r.phone,
+      orderNo: r.order_no ?? null,
+      conversationKind: r.conversation_kind ?? null,
       isGroup: !!r.is_group,
       classification: r.classification,
       firstSeenAt: r.first_seen_at,
@@ -109,7 +112,7 @@ export class CaptureStore {
   listMessageBlocks(threadId: number): CaptureMessageRow[] {
     const rows = this.db
       .prepare(
-        `SELECT id, thread_id, sender_type, content, first_seen_at, last_seen_at,
+        `SELECT id, thread_id, sender_type, sender_name, content, first_seen_at, last_seen_at,
                 seen_count, source_screenshot_path
            FROM message_blocks
           WHERE thread_id = ?
@@ -120,6 +123,7 @@ export class CaptureStore {
       id: r.id,
       threadId: r.thread_id,
       senderType: r.sender_type,
+      senderName: r.sender_name ?? null,
       content: r.content,
       firstSeenAt: r.first_seen_at,
       lastSeenAt: r.last_seen_at,
@@ -257,7 +261,8 @@ export class CaptureStore {
       })
 
     const frameId = Number(row.lastInsertRowid)
-    if (duplicate || frame.ocr.status !== 'success' || !frame.ocr.text.trim()) {
+    const hasStructuredMessages = frame.messages?.some((message) => normalizeMessageContent(message.text)) ?? false
+    if (duplicate || frame.ocr.status !== 'success' || (!frame.ocr.text.trim() && !hasStructuredMessages)) {
       return { frameId, duplicate, threadId: null, messageBlockId: null }
     }
 
@@ -331,9 +336,16 @@ export class CaptureStore {
   }
 
   private upsertConversationThread(frame: CaptureFrameEvent, layout: CaptureLayoutResult | null): number {
-    const title = normalizeTitle(extractRegionText(frame, layout?.regions.title) || frame.windowTitle || frame.processName)
+    const orderNo = normalizeOrderNo(frame.orderNo)
+    const title = normalizeTitle(
+      orderNo ||
+        extractRegionText(frame, layout?.regions.title) ||
+        frame.windowTitle ||
+        frame.processName
+    )
     const phone = extractPhone(title)
-    const threadKey = phone ? `phone:${phone}` : `title:${hashText(title)}`
+    const threadKey = orderNo ? `order:${orderNo}` : phone ? `phone:${phone}` : `title:${hashText(title)}`
+    const conversationKind = frame.conversationKind ?? null
     const now = new Date().toISOString()
 
     this.db
@@ -341,18 +353,25 @@ export class CaptureStore {
         `
         INSERT INTO conversation_threads (
           channel, thread_key, conversation_title, normalized_title, phone,
-          is_group, classification, first_seen_at, last_seen_at, message_count,
+          order_no, conversation_kind, is_group, classification, first_seen_at, last_seen_at, message_count,
           created_at, updated_at
         )
         VALUES (
           @channel, @threadKey, @conversationTitle, @normalizedTitle, @phone,
-          @isGroup, @classification, @seenAt, @seenAt, 0,
+          @orderNo, @conversationKind, @isGroup, @classification, @seenAt, @seenAt, 0,
           @now, @now
         )
         ON CONFLICT(channel, thread_key) DO UPDATE SET
           conversation_title = excluded.conversation_title,
           normalized_title = excluded.normalized_title,
           phone = COALESCE(excluded.phone, conversation_threads.phone),
+          order_no = COALESCE(excluded.order_no, conversation_threads.order_no),
+          conversation_kind = COALESCE(excluded.conversation_kind, conversation_threads.conversation_kind),
+          is_group = CASE
+            WHEN excluded.conversation_kind = 'group' THEN 1
+            WHEN excluded.conversation_kind = 'single' THEN 0
+            ELSE conversation_threads.is_group
+          END,
           last_seen_at = excluded.last_seen_at,
           updated_at = excluded.updated_at
         `
@@ -360,10 +379,12 @@ export class CaptureStore {
       .run({
         channel: frame.channel,
         threadKey,
-        conversationTitle: frame.windowTitle ?? null,
+        conversationTitle: orderNo || frame.windowTitle || null,
         normalizedTitle: title,
         phone,
-        isGroup: isLikelyGroupTitle(title) ? 1 : 0,
+        orderNo,
+        conversationKind,
+        isGroup: conversationKind === 'group' ? 1 : isLikelyGroupTitle(title) ? 1 : 0,
         classification: classifyThread(title, phone),
         seenAt: frame.capturedAt,
         now
@@ -381,7 +402,7 @@ export class CaptureStore {
     threadId: number,
     layout: CaptureLayoutResult | null
   ): number | null {
-    const messages = extractMessages(frame, layout)
+    const messages = extractStructuredMessages(frame) ?? extractMessages(frame, layout)
     let firstId: number | null = null
     for (const message of messages) {
       const id = this.insertMessageBlock(frame, frameId, threadId, message)
@@ -448,14 +469,14 @@ export class CaptureStore {
       .prepare(
         `
         INSERT INTO message_blocks (
-          thread_id, channel, process_name, sender_type, content, normalized_content,
+          thread_id, channel, process_name, sender_type, sender_name, content, normalized_content,
           bbox_left, bbox_top, bbox_right, bbox_bottom,
           first_seen_at, last_seen_at, seen_count,
           content_hash, dedupe_key, source_frame_ids, source_screenshot_path,
           ocr_confidence, sender_confidence, created_at, updated_at
         )
         VALUES (
-          @threadId, @channel, @processName, @senderType, @content, @normalizedContent,
+          @threadId, @channel, @processName, @senderType, @senderName, @content, @normalizedContent,
           @bboxLeft, @bboxTop, @bboxRight, @bboxBottom,
           @seenAt, @seenAt, 1,
           @contentHash, @dedupeKey, @sourceFrameIds, @sourceScreenshotPath,
@@ -468,6 +489,7 @@ export class CaptureStore {
         channel: frame.channel,
         processName: frame.processName,
         senderType: message.senderType,
+        senderName: message.senderName ?? null,
         content,
         normalizedContent,
         bboxLeft: message.bbox?.left ?? null,
@@ -539,6 +561,8 @@ export class CaptureStore {
         conversation_title TEXT,
         normalized_title TEXT,
         phone TEXT,
+        order_no TEXT,
+        conversation_kind TEXT,
         is_group INTEGER DEFAULT 0,
         classification TEXT,
         first_seen_at TEXT,
@@ -555,6 +579,7 @@ export class CaptureStore {
         channel TEXT NOT NULL,
         process_name TEXT NOT NULL,
         sender_type TEXT NOT NULL,
+        sender_name TEXT,
         content TEXT NOT NULL,
         normalized_content TEXT NOT NULL,
         bbox_left INTEGER,
@@ -580,6 +605,9 @@ export class CaptureStore {
     `)
     this.ensureColumn('message_blocks', 'channel', 'TEXT')
     this.ensureColumn('message_blocks', 'process_name', 'TEXT')
+    this.ensureColumn('message_blocks', 'sender_name', 'TEXT')
+    this.ensureColumn('conversation_threads', 'order_no', 'TEXT')
+    this.ensureColumn('conversation_threads', 'conversation_kind', 'TEXT')
     this.db.exec(`
       UPDATE message_blocks
       SET channel = COALESCE(channel, (
@@ -611,6 +639,8 @@ export interface CaptureThreadRow {
   threadKey: string
   conversationTitle: string | null
   phone: string | null
+  orderNo: string | null
+  conversationKind: string | null
   isGroup: boolean
   classification: string | null
   firstSeenAt: string | null
@@ -623,6 +653,7 @@ export interface CaptureMessageRow {
   id: number
   threadId: number
   senderType: 'self' | 'other' | 'system' | 'unknown'
+  senderName: string | null
   content: string
   firstSeenAt: string
   lastSeenAt: string
@@ -692,6 +723,11 @@ function classifyThread(title: string, phone: string | null): string {
   return 'unknown_thread'
 }
 
+function normalizeOrderNo(orderNo: string | null | undefined): string | null {
+  const value = orderNo?.trim()
+  return value ? value : null
+}
+
 function normalizeMessageContent(text: string): string {
   return text
     .split('\n')
@@ -719,6 +755,19 @@ function appendFrameId(sourceFrameIds: string | null, frameId: number): string {
   const ids = sourceFrameIds ? (JSON.parse(sourceFrameIds) as number[]) : []
   if (!ids.includes(frameId)) ids.push(frameId)
   return JSON.stringify(ids.slice(-20))
+}
+
+function extractStructuredMessages(frame: CaptureFrameEvent): ExtractedMessage[] | null {
+  if (!frame.messages?.length) return null
+  const messages = frame.messages
+    .map((message) => ({
+      content: message.text,
+      senderType: message.speaker,
+      senderName: message.name ?? null,
+      bbox: null
+    }))
+    .filter((message) => Boolean(normalizeMessageContent(message.content)))
+  return messages.length > 0 ? messages : null
 }
 
 function extractMessages(frame: CaptureFrameEvent, layout: CaptureLayoutResult | null): ExtractedMessage[] {

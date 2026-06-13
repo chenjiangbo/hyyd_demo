@@ -25,7 +25,7 @@ export interface CaptureLayoutResult {
 // tray-app 不再持有 VLM API key。要恢复 sidecar 截图布局识别功能，
 // 请在 backend 新建 /api/v1/admin/vlm-layout 端点（接收 base64 截图 → 调
 // 百炼 → 返回 regions），让 tray-app 通过 backend 转发。
-// 现场版默认 HYYD_ENABLE_SIDECAR=0，sidecar 不启动，本服务不会被实例化。
+// sidecar 当前默认启动，但已改用确定性 OCR/列检测结构化消息；本 VLM 布局服务不会被实例化。
 export class CaptureLayoutService {
   private readonly baseUrl: string = ''
   private readonly apiKey: string = ''

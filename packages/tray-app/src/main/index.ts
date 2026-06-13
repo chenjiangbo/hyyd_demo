@@ -29,11 +29,12 @@ function showMainWindow(): void {
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    minWidth: 1024,
+    width: 1120,
+    height: 760,
+    minWidth: 960,
     minHeight: 640,
     show: false,
+    frame: false, // 去掉 Windows 原生标题栏，用 v2 自绘标题栏 + 窗口按钮
     autoHideMenuBar: true,
     title: '寰宇医道 - 采集工作台',
     ...(process.platform === 'linux' ? { icon } : {}),
@@ -59,15 +60,20 @@ function createWindow(): void {
     mainWindow = null
   })
 
+  // 最大化/还原状态变化时通知渲染层，切换自绘按钮图标
+  mainWindow.on('maximize', () => mainWindow?.webContents.send('window:maximized-changed', true))
+  mainWindow.on('unmaximize', () => mainWindow?.webContents.send('window:maximized-changed', false))
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
   })
 
+  // 桌面应用加载 v2（新采集工具 UI）。v1 入口（index.html）保留作浏览器参考，不再在 Electron 里加载。
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    mainWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/index-v2.html`)
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    mainWindow.loadFile(join(__dirname, '../renderer/index-v2.html'))
   }
 }
 
@@ -113,6 +119,12 @@ if (!gotLock) {
     // IPC: 关闭窗口（仅隐藏）
     ipcMain.on('window:hide', () => mainWindow?.hide())
     ipcMain.on('window:minimize', () => mainWindow?.minimize())
+    ipcMain.on('window:maximize-toggle', () => {
+      if (!mainWindow) return
+      if (mainWindow.isMaximized()) mainWindow.unmaximize()
+      else mainWindow.maximize()
+    })
+    ipcMain.handle('window:is-maximized', () => mainWindow?.isMaximized() ?? false)
     ipcMain.on('app:quit', () => {
       isQuitting = true
       app.quit()
@@ -210,14 +222,14 @@ if (!gotLock) {
 
     createTray()
     createWindow()
-    // 现场采集版默认不启动截图 sidecar（员工改用剪贴板粘贴方式）。
-    // 如需排障开启，启动 app 前设环境变量 HYYD_ENABLE_SIDECAR=1。
-    if (process.env.HYYD_ENABLE_SIDECAR === '1') {
+    // sidecar 是订单生命周期沟通数据的核心来源；Windows 桌面端默认随应用启动。
+    // 如需排障关闭，启动 app 前设环境变量 HYYD_ENABLE_SIDECAR=0。
+    if (process.env.HYYD_ENABLE_SIDECAR !== '0') {
       captureSidecar.start().catch((error) => {
         console.error('[capture] failed to start sidecar', error)
       })
     } else {
-      console.log('[capture] sidecar disabled (HYYD_ENABLE_SIDECAR != 1)')
+      console.log('[capture] sidecar disabled (HYYD_ENABLE_SIDECAR=0)')
     }
 
     // 素材同步 worker：每 10s 扫一轮 pending/pending_delete

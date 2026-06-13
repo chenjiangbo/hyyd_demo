@@ -32,6 +32,9 @@ internal sealed class FrameDeduplicator
 
     public int ThumbnailWidth { get; }
 
+    public string ConfigSummary =>
+        $"diff阈值={_diffThreshold} 像素阈值={_perPixelThreshold} 心跳={_heartbeat.TotalSeconds:0}s 历史={_historySize}张 缩略图宽={ThumbnailWidth}";
+
     public FrameDeduplicator()
     {
         // 阈值全部可通过环境变量覆盖；默认偏保守（宁可多保留）。
