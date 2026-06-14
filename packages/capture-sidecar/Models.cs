@@ -10,7 +10,11 @@ internal sealed record TargetWindow(
 
 internal sealed record CaptureRect(int X, int Y, int Width, int Height);
 
-internal sealed record OcrBlock(string Text, CaptureRect Bbox, double? Confidence);
+internal sealed record OcrBlock(string Text, CaptureRect Bbox, double? Confidence, ColorSample? ColorSample = null);
+
+/// 词块所在气泡的填充色采样（跳过文字笔画后的底色）。供后端按 HSV 饱和度判 self/other。
+/// 像素只有 sidecar 有，所以在本机采好、随 OCR 块上传；结构化算法本身移到后端。
+internal sealed record ColorSample(int R, int G, int B);
 
 internal sealed record OcrPayload(string Engine, string Status, string Text, IReadOnlyList<OcrBlock> Blocks);
 

@@ -102,6 +102,7 @@ export function bizChipClass(o: Order): string {
 const SOURCE_LABELS: Record<string, string> = {
   taikang: '泰康',
   pingan: '平安',
+  picc: '人保',
   taiping: '太平洋',
   guoshou: '人寿',
   xinhua: '新华'
@@ -110,6 +111,21 @@ const SOURCE_LABELS: Record<string, string> = {
 export function sourceLabel(o: Order): string {
   return SOURCE_LABELS[o.source] || o.source || '未知来源'
 }
+
+/** 按来源码取标签（给筛选/建单用，不依赖 Order 对象） */
+export function sourceLabelByCode(code: string): string {
+  return SOURCE_LABELS[code] || code
+}
+
+/** 手工建单可选来源（保司） */
+export const SOURCE_OPTIONS: { code: string; label: string }[] = [
+  { code: 'taikang', label: '泰康' },
+  { code: 'pingan', label: '平安' },
+  { code: 'picc', label: '人保' },
+  { code: 'taiping', label: '太平洋' },
+  { code: 'guoshou', label: '人寿' },
+  { code: 'xinhua', label: '新华' }
+]
 
 /** 来源（甲方保险公司）配色：不同来源不同色 */
 export interface SourceStyle {
@@ -121,6 +137,7 @@ export interface SourceStyle {
 const SOURCE_STYLES: Record<string, SourceStyle> = {
   taikang: { label: '泰康', text: 'text-[#047857]', bg: 'bg-[#d1fae5]' },
   pingan: { label: '平安', text: 'text-[#c2410c]', bg: 'bg-[#ffedd5]' },
+  picc: { label: '人保', text: 'text-[#0e7490]', bg: 'bg-[#cffafe]' },
   taiping: { label: '太平洋', text: 'text-[#1d4ed8]', bg: 'bg-[#dbeafe]' },
   guoshou: { label: '人寿', text: 'text-[#b91c1c]', bg: 'bg-[#fee2e2]' },
   xinhua: { label: '新华', text: 'text-[#6d28d9]', bg: 'bg-[#ede9fe]' }

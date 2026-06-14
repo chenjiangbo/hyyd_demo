@@ -15,6 +15,8 @@ export interface CaptureOcrBlock {
   text: string
   bbox: CaptureRect
   confidence?: number | null
+  // sidecar 在本机采样的气泡填充色（跳过文字后的底色）。供后端结构化判 self/other；采不到为 null。
+  colorSample?: { r: number; g: number; b: number } | null
 }
 
 export interface CaptureFrameEvent {

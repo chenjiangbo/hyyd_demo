@@ -5,6 +5,10 @@ import { scheduleTranscription } from '../asr/transcribeScheduler.js'
 import { broadcastAdmin } from './adminBus.js'
 import { summarizeCall, summarizeMessages, summarizeFull } from '../llm/summaryService.js'
 import { getEnv } from '../env.js'
+import { extractOrderCandidate, resolveOrder, type OrderNoEntry } from '../lib/orderNoMatch.js'
+import { extractKeyInfo, type KeyInfoMessage, type KeyInfoContext } from '../llm/keyInfoService.js'
+import { structureMessages, type StructInput } from '../lib/messageStructure.js'
+import { refreshOrderBrief } from '../jobs/orderBriefRunner.js'
 import {
   CreateOrderPayload,
   ClaimOrderPayload, 
@@ -95,7 +99,8 @@ export function registerApiRoutes(
       request.url === '/health' ||
       request.url.startsWith('/ws') ||
       request.url.startsWith('/api/v1/admin') ||
-      request.url.startsWith('/admin')
+      request.url.startsWith('/admin') ||
+      request.url.startsWith('/ext') // 插件分发文件（.crx / update.xml），公开资源
     ) {
       return
     }
@@ -631,21 +636,72 @@ export function registerApiRoutes(
     try {
       let finalOrderId = orderId ?? null
 
-      // 如果未明确提供订单ID，根据 conversationName (客户姓名) 及 employeeId 模糊匹配当前员工“已申领”或“进行中”的最近订单
+      // 关联策略（优先级）：
+      //  1) 标题里抽到订单号候选(COD/CCOD/OD/fwyy) → 在该员工订单里"归一+编辑距离≤2"模糊解析
+      //     - 唯一最近 → 关联
+      //     - 找不到(none)/多单并列(ambiguous) → 存 UnmatchedOrderRef 待客户/人工确认
+      //  2) 没有订单号候选 → 退回按 conversationName(客户姓名) 模糊匹配
       if (!finalOrderId) {
-        const matchedOrder = await prisma.order.findFirst({
-          where: {
-            assignedEmployeeId: employeeId,
-            status: { in: ['已申领', '进行中'] },
-            customerName: {
-              contains: conversationName // 微信会话名称匹配客户姓名
-            }
-          },
-          orderBy: { updatedAt: 'desc' }
-        })
-        if (matchedOrder) {
-          finalOrderId = matchedOrder.id
-          fastify.log.info(`自动关联微信消息至订单: ${matchedOrder.sourceOrderNo} (ID: ${finalOrderId})`)
+        const cand = extractOrderCandidate(conversationName)
+        if (cand) {
+          // 取该员工所有订单的已知订单号（列 source_order_no + rawJson.applyNo / crmApplyNo）
+          const orders = await prisma.order.findMany({
+            where: { assignedEmployeeId: employeeId },
+            select: { id: true, sourceOrderNo: true, rawJson: true }
+          })
+          const entries: OrderNoEntry[] = orders.map((o) => {
+            const raw = (o.rawJson ?? {}) as Record<string, unknown>
+            const nos = [o.sourceOrderNo, raw.applyNo, raw.crmApplyNo].filter(
+              (x): x is string => typeof x === 'string' && x.length > 0
+            )
+            return { orderId: o.id, nos }
+          })
+          const r = resolveOrder(cand.raw, entries, 2)
+          if (r.status === 'matched') {
+            finalOrderId = r.orderId
+            fastify.log.info(`订单号模糊解析命中: "${cand.raw}" → 订单 ${r.orderId}（距离 ${r.dist}）`)
+          } else {
+            // 有订单号但解析不到 → 存待确认（同一员工+候选去重，重复出现则计数+刷新截图/时间）
+            await prisma.unmatchedOrderRef.upsert({
+              where: { employee_candidate: { employeeId, candidate: cand.raw } },
+              create: {
+                employeeId,
+                channel,
+                conversationName,
+                candidate: cand.raw,
+                candidateKind: cand.kind,
+                reason: r.status === 'ambiguous' ? 'ambiguous' : 'no_match',
+                bestDist: r.status === 'ambiguous' ? r.bestDist : r.bestDist,
+                candidateOrderIds: r.status === 'ambiguous' ? r.orderIds : undefined,
+                screenshotOssKey: screenshotOssKey ?? null,
+                capturedAt: new Date(capturedAt)
+              },
+              update: {
+                seenCount: { increment: 1 },
+                conversationName,
+                reason: r.status === 'ambiguous' ? 'ambiguous' : 'no_match',
+                bestDist: r.status === 'ambiguous' ? r.bestDist : r.bestDist,
+                candidateOrderIds: r.status === 'ambiguous' ? r.orderIds : Prisma.JsonNull,
+                screenshotOssKey: screenshotOssKey ?? null,
+                capturedAt: new Date(capturedAt)
+              }
+            })
+            fastify.log.info(`订单号待确认: "${cand.raw}" (${r.status})，已存 UnmatchedOrderRef`)
+          }
+        } else {
+          // 没抽到订单号 → 退回按客户姓名模糊匹配“已申领/进行中”的最近订单
+          const matchedOrder = await prisma.order.findFirst({
+            where: {
+              assignedEmployeeId: employeeId,
+              status: { in: ['已申领', '进行中'] },
+              customerName: { contains: conversationName }
+            },
+            orderBy: { updatedAt: 'desc' }
+          })
+          if (matchedOrder) {
+            finalOrderId = matchedOrder.id
+            fastify.log.info(`按姓名关联微信消息至订单: ${matchedOrder.sourceOrderNo} (ID: ${finalOrderId})`)
+          }
         }
       }
 
@@ -667,6 +723,131 @@ export function registerApiRoutes(
       fastify.log.error('微信消息上报失败:', err)
       return reply.status(500).send({ error: '微信消息上报失败: ' + err.message })
     }
+  })
+
+  // 8.2 待确认订单号引用 —— 截图标题里有订单号(COD/fwyy…)但解析不到订单，存这里给员工/客户确认。
+  //     UI 由另一端开发，这里提供：列出 / 确认绑定 / 忽略 三个接口。详见 docs/订单号待确认_交接说明.md
+  // 列表（当前员工，默认只看 pending）
+  fastify.get<{ Querystring: { status?: string } }>('/api/v1/unmatched-order-refs', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const status = request.query.status || 'pending'
+    const rows = await prisma.unmatchedOrderRef.findMany({
+      where: { employeeId: request.employee.id, status },
+      orderBy: { updatedAt: 'desc' }
+    })
+    return reply.send({ data: rows })
+  })
+
+  // 确认：把某条待确认绑定到指定订单（同时回填该会话下未关联的消息到该订单）
+  fastify.post<{ Params: { id: string }; Body: { orderId: number } }>(
+    '/api/v1/unmatched-order-refs/:id/confirm',
+    async (request, reply) => {
+      if (!request.employee) return reply.status(401).send({ error: '未登录' })
+      const id = parseInt(request.params.id, 10)
+      const { orderId } = request.body || ({} as { orderId: number })
+      if (!Number.isFinite(orderId)) return reply.status(400).send({ error: 'orderId 必填' })
+
+      const ref = await prisma.unmatchedOrderRef.findUnique({ where: { id } })
+      if (!ref || ref.employeeId !== request.employee.id) {
+        return reply.status(404).send({ error: '记录不存在' })
+      }
+      const order = await prisma.order.findUnique({ where: { id: orderId } })
+      if (!order) return reply.status(404).send({ error: '订单不存在' })
+
+      await prisma.unmatchedOrderRef.update({
+        where: { id },
+        data: { status: 'confirmed', resolvedOrderId: orderId }
+      })
+      // 回填：该员工、该会话名下、还没关联订单的消息，挂到确认的订单上
+      const backfilled = await prisma.message.updateMany({
+        where: { employeeId: ref.employeeId, conversationName: ref.conversationName, orderId: null },
+        data: { orderId }
+      })
+      return reply.send({ data: { ok: true, backfilledMessages: backfilled.count } })
+    }
+  )
+
+  // 忽略：标记为 rejected（不是客户会话 / 不需要绑定）
+  fastify.post<{ Params: { id: string } }>(
+    '/api/v1/unmatched-order-refs/:id/reject',
+    async (request, reply) => {
+      if (!request.employee) return reply.status(401).send({ error: '未登录' })
+      const id = parseInt(request.params.id, 10)
+      const ref = await prisma.unmatchedOrderRef.findUnique({ where: { id } })
+      if (!ref || ref.employeeId !== request.employee.id) {
+        return reply.status(404).send({ error: '记录不存在' })
+      }
+      await prisma.unmatchedOrderRef.update({ where: { id }, data: { status: 'rejected' } })
+      return reply.send({ data: { ok: true } })
+    }
+  )
+
+  // 8.3 关键信息抽取（路线1 的 AI 环节）—— 后端调百炼文本 LLM，从"带说话人的对话"抽可回填关键字段。
+  //     接口已建好、可独立调（body 直接传 messages），但不自动触发（先测 sidecar 结构化效果）。
+  //     说话人已由 sidecar 用 OCR+颜色确定性判好，这里只做文本抽取，不用 VLM。
+  fastify.post<{
+    Body: { messages: KeyInfoMessage[]; orderContext?: KeyInfoContext }
+  }>('/api/v1/ai/extract-key-info', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const { messages, orderContext } = request.body || ({} as { messages: KeyInfoMessage[] })
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return reply.status(400).send({ error: 'messages 必填且非空' })
+    }
+    try {
+      const result = await extractKeyInfo(messages, orderContext)
+      return reply.send({ data: result })
+    } catch (e: any) {
+      fastify.log.error('关键信息抽取失败: ' + e.message)
+      return reply.status(500).send({ error: '关键信息抽取失败: ' + e.message })
+    }
+  })
+
+  // 8.4 消息结构化（路线1 的"解释层"）—— OCR 词块(含气泡颜色样本) → 带说话人的消息列表。
+  //     纯函数、无状态：每帧自带输入、输出仅依赖本帧，多员工并发天然隔离不串。
+  //     算法从 sidecar(C#)挪到后端(TS)，便于热更新/测试，且不必上传图片(只传词块+颜色样本)。
+  fastify.post<{ Body: StructInput }>('/api/v1/capture/structure', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const body = request.body
+    if (!body || !Array.isArray(body.blocks)) {
+      return reply.status(400).send({ error: 'blocks 必填' })
+    }
+    try {
+      const messages = structureMessages(body)
+      return reply.send({ data: { messages } })
+    } catch (e: any) {
+      fastify.log.error('消息结构化失败: ' + e.message)
+      return reply.status(500).send({ error: '消息结构化失败: ' + e.message })
+    }
+  })
+
+  // 8.45 订单 AI 滚动简报 —— 手动刷新（员工点"刷新简报"按钮）。综合该订单的微信/企微消息 +
+  //      通话/录音转写，一次 LLM 调用产出 摘要/阶段/待办/风险 + 回填关键信息。增量(基于上一版简报)。
+  //      自动触发由扫描器负责(静默5min/攒够10条)；这里是手动兜底，force=true 强制重算。
+  fastify.post<{ Params: { id: string } }>('/api/v1/orders/:id/brief/refresh', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const id = parseInt(request.params.id, 10)
+    if (!Number.isFinite(id)) return reply.status(400).send({ error: 'id 非法' })
+    try {
+      const result = await refreshOrderBrief(prisma, minioClient, id, { force: true })
+      if (!result) return reply.status(404).send({ error: '订单不存在' })
+      return reply.send({ data: result.brief })
+    } catch (e: any) {
+      fastify.log.error('订单简报刷新失败: ' + e.message)
+      return reply.status(500).send({ error: '订单简报刷新失败: ' + e.message })
+    }
+  })
+
+  // 8.46 读订单 AI 简报（已存的 aiBriefJson，不触发 LLM）。详情页打开时调。
+  fastify.get<{ Params: { id: string } }>('/api/v1/orders/:id/brief', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const id = parseInt(request.params.id, 10)
+    if (!Number.isFinite(id)) return reply.status(400).send({ error: 'id 非法' })
+    const order = await prisma.order.findUnique({
+      where: { id },
+      select: { aiBriefJson: true, briefUpdatedAt: true }
+    })
+    if (!order) return reply.status(404).send({ error: '订单不存在' })
+    return reply.send({ data: { brief: order.aiBriefJson ?? null, updatedAt: order.briefUpdatedAt } })
   })
 
   // 8.5 通话列表 GET /api/v1/calls （当前员工，按时间倒序）

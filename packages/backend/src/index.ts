@@ -6,6 +6,7 @@ import { PrismaClient } from '@prisma/client'
 import * as Minio from 'minio'
 import * as dotenv from 'dotenv'
 import { registerApiRoutes, activeConnections, presenceMap, ensureEmployeeByCode, normalizeEmployeeCode } from './routes/api.js'
+import { startOrderBriefScheduler } from './jobs/orderBriefScheduler.js'
 import { registerAdminRoutes, ADMIN_COOKIE, verifyAdminToken } from './routes/admin.js'
 import { addAdminSocket, removeAdminSocket } from './routes/adminBus.js'
 import { saveOrderDetailBundle } from './orderDetail.js'
@@ -374,6 +375,21 @@ async function start() {
       server.log.info('未发现 admin-web/dist，跳过静态托管（开发期由 vite dev server 提供）')
     }
 
+    // 4.3 托管 Chrome 插件分发文件到 /ext/*（自托管强制安装：.crx + update.xml）
+    // Chrome 企业策略 ExtensionInstallForcelist 会定期拉 /ext/update.xml 检查更新，
+    // 并从其中 codebase 指向的 /ext/huanyu-extension.crx 下载安装。
+    const extDir = join(__dirname, '../public/ext')
+    if (existsSync(extDir)) {
+      await server.register(fastifyStatic, {
+        root: extDir,
+        prefix: '/ext/',
+        decorateReply: false // admin 那个 static 已 decorate 过 reply.sendFile
+      })
+      server.log.info(`插件分发资源已挂载: /ext/  ← ${extDir}`)
+    } else {
+      server.log.info('未发现 public/ext，跳过插件分发托管')
+    }
+
     // 4.5 初始化 ASR 调度器（启动后会自动恢复 processing 状态任务）
     initScheduler({
       prisma,
@@ -392,6 +408,9 @@ async function start() {
     
     await server.listen({ port, host })
     server.log.info(`寰宇医道后端服务启动成功，运行在: http://${host}:${port}`)
+
+    // 订单 AI 滚动简报：后台扫描器（静默5min/攒够10条 → 自动刷新简报）
+    startOrderBriefScheduler(prisma, minioClient)
   } catch (err) {
     server.log.error({ err }, '服务启动失败')
     process.exit(1)

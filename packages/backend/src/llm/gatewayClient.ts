@@ -1,13 +1,14 @@
 /**
- * BlackWhite AI Gateway 客户端
- *
- * hyyd_demo 的所有 LLM 调用都走这个模块，不直连 OpenRouter。
- * 凭证通过环境变量注入：
- *   GATEWAY_BASE_URL
- *   GATEWAY_APP_ID     = hyyd-demo
- *   GATEWAY_API_KEY
+ * LLM 客户端：直连阿里云百炼（DashScope）OpenAI 兼容端点。
+ *   端点：https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
+ *   凭证：DASHSCOPE_API_KEY（env，与 ASR 复用同一个 key）
+ *   默认模型：qwen-plus（可用 options.model 或环境变量 HYYD_LLM_MODEL 覆盖）
+ * 历史：之前走自建 BlackWhite 网关（GATEWAY_*），现改为百炼官方直连。
+ * 铁律：所有 LLM 调用只在后端发起，tray-app/sidecar 不持 key。
  */
 import { getEnv } from '../env.js'
+
+const DASHSCOPE_CHAT_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
@@ -49,8 +50,11 @@ export async function chat(
   messages: ChatMessage[],
   options: ChatOptions = {}
 ): Promise<ChatResult> {
-  const { baseUrl, appId, apiKey } = getConfig()
-  const model = options.model ?? 'google/gemini-2.5-flash-lite'
+  const apiKey = getEnv().dashscopeApiKey
+  // 默认 qwen-plus（当前 DASHSCOPE key 已开通、可用）。
+  // ⚠️ qwen-max-latest 这个 key 暂无权限(403)。想用旗舰/推理模型：先在百炼控制台「模型广场」开通，
+  //    再设环境变量 HYYD_LLM_MODEL=<型号>（如 qwen-max-latest / qwen3-235b-a22b / qwq-plus），无需改代码。
+  const model = options.model ?? process.env.HYYD_LLM_MODEL ?? 'qwen-plus'
 
   const body: Record<string, unknown> = {
     model,
@@ -59,13 +63,11 @@ export async function chat(
   }
   if (options.maxTokens)   body.max_tokens   = options.maxTokens
   if (options.temperature !== undefined) body.temperature = options.temperature
-  if (options.plugins?.length) body.plugins = options.plugins
 
-  const res = await fetch(`${baseUrl}/proxy/openrouter/chat/completions`, {
+  const res = await fetch(DASHSCOPE_CHAT_URL, {
     method: 'POST',
     headers: {
       'Content-Type':  'application/json',
-      'X-App-Id':      appId,
       'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
@@ -73,18 +75,63 @@ export async function chat(
 
   if (!res.ok) {
     const text = await res.text().catch(() => '(no body)')
-    throw new Error(`Gateway 返回错误 ${res.status}: ${text}`)
+    throw new Error(`百炼返回错误 ${res.status}: ${text}`)
   }
 
   const json = await res.json() as any
   const choice = json.choices?.[0]
-  if (!choice) throw new Error('Gateway 响应缺少 choices')
+  if (!choice) throw new Error('百炼响应缺少 choices')
 
   return {
     content: choice.message?.content ?? '',
     model:   json.model ?? model,
     usage:   json.usage,
   }
+}
+
+// ── 多模态（图片理解）─────────────────────────────────────────────────────
+// 用百炼 qwen-vl 模型对图片做"看图 + 提取"。图片以 data URL(base64) 传入
+// （MinIO 在内网，DashScope 抓不到 presigned URL，必须 base64 内联）。
+// 模型经 HYYD_VLM_MODEL 覆盖，默认 qwen-vl-max（已验证该 key 可用）。
+export async function visionChat(
+  systemPrompt: string,
+  userText: string,
+  imageDataUrl: string,
+  options: ChatOptions = {}
+): Promise<ChatResult> {
+  const apiKey = getEnv().dashscopeApiKey
+  const model = options.model ?? process.env.HYYD_VLM_MODEL ?? 'qwen-vl-max'
+
+  const body: Record<string, unknown> = {
+    model,
+    stream: false,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: userText },
+          { type: 'image_url', image_url: { url: imageDataUrl } }
+        ]
+      }
+    ]
+  }
+  if (options.maxTokens) body.max_tokens = options.maxTokens
+  if (options.temperature !== undefined) body.temperature = options.temperature
+
+  const res = await fetch(DASHSCOPE_CHAT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(body)
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '(no body)')
+    throw new Error(`百炼 VL 返回错误 ${res.status}: ${text}`)
+  }
+  const json = (await res.json()) as any
+  const choice = json.choices?.[0]
+  if (!choice) throw new Error('百炼 VL 响应缺少 choices')
+  return { content: choice.message?.content ?? '', model: json.model ?? model, usage: json.usage }
 }
 
 // ── 流式聊天（AsyncGenerator，调用方可 for-await 逐 chunk 处理）────────────

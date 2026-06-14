@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 interface WindowApi {
   minimizeWindow?: () => void
   hideWindow?: () => void
+  requestWindowClose?: () => Promise<void>
   maximizeToggle?: () => void
   isMaximized?: () => Promise<boolean>
   onMaximizedChanged?: (cb: (m: boolean) => void) => () => void
@@ -17,7 +18,7 @@ function getWindowApi(): WindowApi | null {
 /**
  * 自绘标题栏：替代 Windows 原生标题栏。
  * - 整条可拖动窗口（app-drag），按钮区排除（app-no-drag）
- * - 右侧三键：macOS 风格交通灯；最小化 / 最大化·还原 / 关闭（关闭=隐藏到托盘，沿用 tray 行为）
+ * - 右侧三键：macOS 风格交通灯；最小化 / 最大化·还原 / 关闭（关闭行为由设置控制）
  * - 浏览器预览（无 window.api）下不渲染，避免占位
  */
 export default function TitleBar(): React.JSX.Element | null {
@@ -61,7 +62,7 @@ export default function TitleBar(): React.JSX.Element | null {
           <span className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-[1px] border border-[#0f6d22] opacity-0 transition-opacity group-hover/window-controls:opacity-75" />
         </button>
         <button
-          onClick={() => api.hideWindow?.()}
+          onClick={() => { void api.requestWindowClose?.() }}
           title="关闭"
           className="relative size-3.5 rounded-full bg-[#ff5f57] border border-[#e0443e] shadow-sm transition-transform hover:scale-110 focus:outline-none focus:ring-2 focus:ring-[#ff5f57]/35"
         >

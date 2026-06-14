@@ -5,6 +5,7 @@ import { electronAPI } from '@electron-toolkit/preload'
 const api = {
   hideWindow: () => ipcRenderer.send('window:hide'),
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
+  requestWindowClose: () => ipcRenderer.invoke('window:request-close'),
   quitApp: () => ipcRenderer.send('app:quit'),
   // 自绘标题栏：最大化切换 + 查询是否最大化 + 订阅状态变化
   maximizeToggle: () => ipcRenderer.send('window:maximize-toggle'),
@@ -14,6 +15,9 @@ const api = {
     ipcRenderer.on('window:maximized-changed', listener)
     return () => ipcRenderer.removeListener('window:maximized-changed', listener)
   },
+  getWindowPreferences: () => ipcRenderer.invoke('window:get-preferences'),
+  setWindowPreferences: (prefs: { closeBehavior: 'ask' | 'minimize' | 'quit' }) =>
+    ipcRenderer.invoke('window:set-preferences', prefs),
   getCaptureStatus: () => ipcRenderer.invoke('capture:status'),
   // 本地采集库读取（企微/微信会话与消息）
   getCaptureConversations: (channel?: string) =>
@@ -49,6 +53,8 @@ const api = {
   materialsDiscardFailed: () => ipcRenderer.invoke('materials:discard-failed'),
   materialsSetConfig: (cfg: { backendUrl: string; employeeCode: string }) =>
     ipcRenderer.invoke('materials:set-config', cfg),
+  captureSetConfig: (cfg: { backendUrl: string; employeeCode: string }) =>
+    ipcRenderer.invoke('capture:set-config', cfg),
 
   // 系统剪贴板（Electron 原生，绕过 navigator.clipboard 焦点限制）
   clipboardRead: () => ipcRenderer.invoke('clipboard:read')

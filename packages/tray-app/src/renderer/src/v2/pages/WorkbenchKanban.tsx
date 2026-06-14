@@ -16,7 +16,7 @@ import {
 type View = 'board' | 'list'
 
 const REFRESH_INTERVAL_MS = 30_000
-const BOARD_WINDOW_MS = 30 * 24 * 60 * 60 * 1000
+const BOARD_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 
 // 临时模拟：当前真实数据里没有「已完成」订单，造两张用于预览已完成卡片样式。
 // 接入真实完成态数据后删除这段。
@@ -240,7 +240,7 @@ function BoardView({ orders, onOpen }: { orders: Order[]; onOpen: (o: Order) => 
                   {lane.label}
                 </h3>
                 <span className="text-body-sm text-text-muted bg-surface-variant px-2 py-0.5 rounded-full">
-                  {items.length}
+                  共 {items.length} 条（近一周）
                 </span>
               </div>
 

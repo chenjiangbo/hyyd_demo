@@ -1,4 +1,5 @@
-import { app, shell, BrowserWindow, Tray, Menu, nativeImage, ipcMain, clipboard } from 'electron'
+import { app, shell, BrowserWindow, Tray, Menu, nativeImage, ipcMain, clipboard, dialog, type MessageBoxReturnValue } from 'electron'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -9,13 +10,97 @@ import { MaterialSyncWorker } from './material-sync'
 
 loadRootEnv()
 
+if (process.platform === 'win32') {
+  app.disableHardwareAcceleration()
+}
+
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
+let closePromptInFlight = false
 const captureSidecar = new CaptureSidecarClient()
 // 现场采集素材的本地落地 + 异步同步：粘贴→落 sqlite/文件→worker 上传后端
 const materialStore = new MaterialStore()
 const materialSync = new MaterialSyncWorker(materialStore)
+
+type CloseBehavior = 'ask' | 'minimize' | 'quit'
+
+interface WindowPreferences {
+  closeBehavior: CloseBehavior
+}
+
+const DEFAULT_WINDOW_PREFS: WindowPreferences = {
+  closeBehavior: 'ask'
+}
+
+function windowPrefsPath(): string {
+  return join(app.getPath('userData'), 'window-preferences.json')
+}
+
+function readWindowPreferences(): WindowPreferences {
+  const file = windowPrefsPath()
+  if (!existsSync(file)) return DEFAULT_WINDOW_PREFS
+  const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<WindowPreferences>
+  if (parsed.closeBehavior === 'ask' || parsed.closeBehavior === 'minimize' || parsed.closeBehavior === 'quit') {
+    return { closeBehavior: parsed.closeBehavior }
+  }
+  throw new Error(`窗口关闭偏好非法: ${String(parsed.closeBehavior)}`)
+}
+
+function writeWindowPreferences(prefs: WindowPreferences): void {
+  if (prefs.closeBehavior !== 'ask' && prefs.closeBehavior !== 'minimize' && prefs.closeBehavior !== 'quit') {
+    throw new Error(`窗口关闭偏好非法: ${String(prefs.closeBehavior)}`)
+  }
+  writeFileSync(windowPrefsPath(), JSON.stringify(prefs, null, 2), 'utf8')
+}
+
+function closeToTray(): void {
+  mainWindow?.hide()
+}
+
+function quitApplication(): void {
+  isQuitting = true
+  app.quit()
+}
+
+async function requestWindowClose(): Promise<void> {
+  if (closePromptInFlight) return
+  const behavior = readWindowPreferences().closeBehavior
+  if (behavior === 'minimize') {
+    closeToTray()
+    return
+  }
+  if (behavior === 'quit') {
+    quitApplication()
+    return
+  }
+  if (!mainWindow) return
+
+  closePromptInFlight = true
+  let result: MessageBoxReturnValue
+  try {
+    result = await dialog.showMessageBox(mainWindow, {
+      type: 'question',
+      title: '关闭智能寰宇',
+      message: '关闭窗口时要退出应用，还是最小化到托盘？',
+      detail: '最小化后应用会继续在托盘运行，采集功能也会继续工作。',
+      buttons: ['最小化到托盘', '退出应用', '取消'],
+      defaultId: 0,
+      cancelId: 2,
+      checkboxLabel: '记住我的选择',
+      checkboxChecked: false,
+      noLink: true
+    })
+  } finally {
+    closePromptInFlight = false
+  }
+
+  if (result.checkboxChecked && result.response === 0) writeWindowPreferences({ closeBehavior: 'minimize' })
+  if (result.checkboxChecked && result.response === 1) writeWindowPreferences({ closeBehavior: 'quit' })
+
+  if (result.response === 0) closeToTray()
+  if (result.response === 1) quitApplication()
+}
 
 function showMainWindow(): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -48,11 +133,11 @@ function createWindow(): void {
     mainWindow?.show()
   })
 
-  // 关闭窗口时只隐藏（除非从托盘选择"退出"）
+  // 关闭窗口时按用户偏好处理：首次询问，可记住最小化到托盘或直接退出。
   mainWindow.on('close', (e) => {
     if (!isQuitting) {
       e.preventDefault()
-      mainWindow?.hide()
+      void requestWindowClose()
     }
   })
 
@@ -116,7 +201,13 @@ if (!gotLock) {
       optimizer.watchWindowShortcuts(window)
     })
 
-    // IPC: 关闭窗口（仅隐藏）
+    // IPC: 关闭窗口（按偏好询问/最小化/退出）
+    ipcMain.handle('window:request-close', () => requestWindowClose())
+    ipcMain.handle('window:get-preferences', () => readWindowPreferences())
+    ipcMain.handle('window:set-preferences', (_e, prefs: WindowPreferences) => {
+      writeWindowPreferences(prefs)
+      return readWindowPreferences()
+    })
     ipcMain.on('window:hide', () => mainWindow?.hide())
     ipcMain.on('window:minimize', () => mainWindow?.minimize())
     ipcMain.on('window:maximize-toggle', () => {
@@ -216,6 +307,13 @@ if (!gotLock) {
       (_e, cfg: { backendUrl: string; employeeCode: string }) => {
         materialSync.setConfig(cfg)
         materialSync.kick()
+        return { ok: true }
+      }
+    )
+    ipcMain.handle(
+      'capture:set-config',
+      (_e, cfg: { backendUrl: string; employeeCode: string }) => {
+        captureSidecar.setConfig(cfg)
         return { ok: true }
       }
     )

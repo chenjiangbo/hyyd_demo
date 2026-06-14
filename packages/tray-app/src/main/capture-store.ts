@@ -4,7 +4,7 @@ import { mkdirSync, rmSync } from 'fs'
 import { dirname, join } from 'path'
 import { app } from 'electron'
 import type { CaptureLayoutResult } from './capture-layout-service'
-import type { CaptureFrameEvent } from './capture-types'
+import type { CaptureFrameEvent, CaptureStructuredMessage } from './capture-types'
 
 export interface InsertFrameResult {
   frameId: number
@@ -18,12 +18,6 @@ interface ExtractedMessage {
   senderType: 'self' | 'other' | 'system' | 'unknown'
   senderName?: string | null
   bbox: { left: number; top: number; right: number; bottom: number } | null
-}
-
-interface ExtractedLine extends ExtractedMessage {
-  leftEdge: number
-  rightEdge: number
-  lineHeight: number
 }
 
 export class CaptureStore {
@@ -215,7 +209,7 @@ export class CaptureStore {
   insertFrame(
     frame: CaptureFrameEvent,
     layoutVersionId: number | null = null,
-    layout: CaptureLayoutResult | null = null
+    structuredMessages: CaptureStructuredMessage[] | null = null
   ): InsertFrameResult {
     const ocrTextHash = hashText(frame.ocr.text)
     const duplicate = this.isDuplicateFrame(frame, ocrTextHash)
@@ -258,16 +252,20 @@ export class CaptureStore {
         ocrBlocksJson: JSON.stringify(frame.ocr.blocks),
         frameStatus: duplicate ? 'skipped_duplicate' : frame.ocr.status === 'success' ? 'captured' : 'ocr_failed',
         createdAt: new Date().toISOString()
-      })
+    })
 
     const frameId = Number(row.lastInsertRowid)
-    const hasStructuredMessages = frame.messages?.some((message) => normalizeMessageContent(message.text)) ?? false
-    if (duplicate || frame.ocr.status !== 'success' || (!frame.ocr.text.trim() && !hasStructuredMessages)) {
+    if (duplicate || frame.ocr.status !== 'success') {
       return { frameId, duplicate, threadId: null, messageBlockId: null }
     }
 
-    const threadId = this.upsertConversationThread(frame, layout)
-    const messageBlockId = this.insertMessageBlocks(frame, frameId, threadId, layout)
+    const messages = toExtractedMessages(structuredMessages)
+    if (messages.length === 0) {
+      return { frameId, duplicate, threadId: null, messageBlockId: null }
+    }
+
+    const threadId = this.upsertConversationThread(frame)
+    const messageBlockId = this.insertMessageBlocks(frame, frameId, threadId, messages)
     return { frameId, duplicate, threadId, messageBlockId }
   }
 
@@ -335,14 +333,9 @@ export class CaptureStore {
     return Boolean(frame.imageHash && latest.image_hash === frame.imageHash && latest.ocr_text_hash === ocrTextHash)
   }
 
-  private upsertConversationThread(frame: CaptureFrameEvent, layout: CaptureLayoutResult | null): number {
+  private upsertConversationThread(frame: CaptureFrameEvent): number {
     const orderNo = normalizeOrderNo(frame.orderNo)
-    const title = normalizeTitle(
-      orderNo ||
-        extractRegionText(frame, layout?.regions.title) ||
-        frame.windowTitle ||
-        frame.processName
-    )
+    const title = normalizeTitle(orderNo || frame.windowTitle || frame.processName)
     const phone = extractPhone(title)
     const threadKey = orderNo ? `order:${orderNo}` : phone ? `phone:${phone}` : `title:${hashText(title)}`
     const conversationKind = frame.conversationKind ?? null
@@ -400,9 +393,8 @@ export class CaptureStore {
     frame: CaptureFrameEvent,
     frameId: number,
     threadId: number,
-    layout: CaptureLayoutResult | null
+    messages: ExtractedMessage[]
   ): number | null {
-    const messages = extractStructuredMessages(frame) ?? extractMessages(frame, layout)
     let firstId: number | null = null
     for (const message of messages) {
       const id = this.insertMessageBlock(frame, frameId, threadId, message)
@@ -757,9 +749,9 @@ function appendFrameId(sourceFrameIds: string | null, frameId: number): string {
   return JSON.stringify(ids.slice(-20))
 }
 
-function extractStructuredMessages(frame: CaptureFrameEvent): ExtractedMessage[] | null {
-  if (!frame.messages?.length) return null
-  const messages = frame.messages
+function toExtractedMessages(messages: CaptureStructuredMessage[] | null): ExtractedMessage[] {
+  if (!messages?.length) return []
+  return messages
     .map((message) => ({
       content: message.text,
       senderType: message.speaker,
@@ -767,152 +759,4 @@ function extractStructuredMessages(frame: CaptureFrameEvent): ExtractedMessage[]
       bbox: null
     }))
     .filter((message) => Boolean(normalizeMessageContent(message.content)))
-  return messages.length > 0 ? messages : null
-}
-
-function extractMessages(frame: CaptureFrameEvent, layout: CaptureLayoutResult | null): ExtractedMessage[] {
-  if (!layout) {
-    return [
-      {
-        content: frame.ocr.text,
-        senderType: 'unknown',
-        bbox: null
-      }
-    ]
-  }
-
-  const lines = extractChatLines(frame, layout)
-  if (lines.length === 0) return []
-
-  const medianHeight = median(lines.map((line) => line.lineHeight)) || 18
-  const messages: ExtractedLine[] = []
-  for (const line of lines) {
-    const previous = messages[messages.length - 1]
-    if (
-      previous &&
-      previous.senderType === line.senderType &&
-      line.bbox &&
-      previous.bbox &&
-      line.bbox.top - previous.bbox.bottom < medianHeight * 1.2 &&
-      Math.abs(line.leftEdge - previous.leftEdge) < medianHeight * 2 &&
-      Math.abs(line.rightEdge - previous.rightEdge) < medianHeight * 4
-    ) {
-      previous.content = `${previous.content}\n${line.content}`
-      previous.bbox = {
-        left: Math.min(previous.bbox.left, line.bbox.left),
-        top: Math.min(previous.bbox.top, line.bbox.top),
-        right: Math.max(previous.bbox.right, line.bbox.right),
-        bottom: Math.max(previous.bbox.bottom, line.bbox.bottom)
-      }
-      continue
-    }
-    messages.push({ ...line })
-  }
-
-  return messages
-}
-
-function extractChatLines(frame: CaptureFrameEvent, layout: CaptureLayoutResult): ExtractedLine[] {
-  const chat = layout.regions.chat
-  const blocks = frame.ocr.blocks
-    .filter((block) => {
-      const centerX = block.bbox.x + block.bbox.width / 2
-      const centerY = block.bbox.y + block.bbox.height / 2
-      return centerX >= chat.x1 && centerX <= chat.x2 && centerY >= chat.y1 && centerY <= chat.y2
-    })
-    .sort((a, b) => {
-      const dy = a.bbox.y - b.bbox.y
-      if (Math.abs(dy) > Math.max(a.bbox.height, b.bbox.height) * 0.7) return dy
-      return a.bbox.x - b.bbox.x
-    })
-
-  const lines: Array<{ text: string[]; bbox: { left: number; top: number; right: number; bottom: number }; height: number }> = []
-  for (const block of blocks) {
-    const bbox = {
-      left: block.bbox.x,
-      top: block.bbox.y,
-      right: block.bbox.x + block.bbox.width,
-      bottom: block.bbox.y + block.bbox.height
-    }
-    const previous = lines[lines.length - 1]
-    const sameLine =
-      previous && Math.abs(bbox.top - previous.bbox.top) <= Math.max(block.bbox.height, previous.height) * 0.7
-    if (sameLine) {
-      previous.text.push(block.text)
-      previous.bbox.left = Math.min(previous.bbox.left, bbox.left)
-      previous.bbox.top = Math.min(previous.bbox.top, bbox.top)
-      previous.bbox.right = Math.max(previous.bbox.right, bbox.right)
-      previous.bbox.bottom = Math.max(previous.bbox.bottom, bbox.bottom)
-      previous.height = Math.max(previous.height, block.bbox.height)
-    } else {
-      lines.push({ text: [block.text], bbox, height: block.bbox.height })
-    }
-  }
-
-  const chatWidth = chat.x2 - chat.x1
-  return lines
-    .map((line) => {
-      const content = line.text.join(' ').trim()
-      return {
-        content,
-        senderType: inferSenderType(content, line.bbox.left, line.bbox.right, chat.x1, chat.x2, chatWidth),
-        bbox: line.bbox,
-        leftEdge: line.bbox.left,
-        rightEdge: line.bbox.right,
-        lineHeight: line.height
-      } satisfies ExtractedLine
-    })
-    .filter((line) => Boolean(line.content))
-}
-
-function inferSenderType(
-  text: string,
-  left: number,
-  right: number,
-  chatLeft: number,
-  chatRight: number,
-  chatWidth: number
-): 'self' | 'other' | 'system' | 'unknown' {
-  if (/^\d{1,2}:\d{2}$|昨天|今天|星期|周[一二三四五六日天]/.test(text)) return 'system'
-  if (right > chatRight - chatWidth * 0.22) return 'self'
-  if (left < chatLeft + chatWidth * 0.22) return 'other'
-  return 'unknown'
-}
-
-function median(values: number[]): number {
-  if (values.length === 0) return 0
-  const sorted = [...values].sort((a, b) => a - b)
-  return sorted[Math.floor(sorted.length / 2)] ?? 0
-}
-
-function extractRegionText(
-  frame: CaptureFrameEvent,
-  region: CaptureLayoutResult['regions']['chat'] | undefined
-): string {
-  if (!region) return ''
-  const blocks = frame.ocr.blocks
-    .filter((block) => {
-      const centerX = block.bbox.x + block.bbox.width / 2
-      const centerY = block.bbox.y + block.bbox.height / 2
-      return centerX >= region.x1 && centerX <= region.x2 && centerY >= region.y1 && centerY <= region.y2
-    })
-    .sort((a, b) => {
-      const dy = a.bbox.y - b.bbox.y
-      if (Math.abs(dy) > Math.max(a.bbox.height, b.bbox.height) * 0.7) return dy
-      return a.bbox.x - b.bbox.x
-    })
-
-  const lines: string[] = []
-  for (const block of blocks) {
-    const previous = blocks[blocks.indexOf(block) - 1]
-    if (!previous) {
-      lines.push(block.text)
-      continue
-    }
-    const sameLine = Math.abs(block.bbox.y - previous.bbox.y) <= Math.max(block.bbox.height, previous.bbox.height) * 0.7
-    if (sameLine) lines[lines.length - 1] = `${lines[lines.length - 1]} ${block.text}`
-    else lines.push(block.text)
-  }
-
-  return lines.join('\n')
 }

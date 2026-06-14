@@ -2,7 +2,7 @@ import { type ReactNode } from 'react'
 import { initials } from '../lib/orderMapping'
 import type { Session } from '../api'
 
-export type NavKey = 'claim' | 'workbench' | 'customers' | 'knowledge' | 'dashboard' | 'debug'
+export type NavKey = 'claim' | 'workbench' | 'customers' | 'knowledge' | 'dashboard' | 'debug' | 'settings'
 
 const NAV: { key: NavKey; label: string }[] = [
   { key: 'claim', label: '待申领' },
@@ -68,7 +68,14 @@ export default function AppShell({
           <button className="p-2 text-text-muted hover:bg-surface-container-low rounded-full transition-colors" title="帮助">
             <span className="material-symbols-outlined">help</span>
           </button>
-          <button className="p-2 text-text-muted hover:bg-surface-container-low rounded-full transition-colors" title="设置">
+          <button
+            onClick={() => onNavigate('settings')}
+            className={
+              'p-2 hover:bg-surface-container-low rounded-full transition-colors ' +
+              (active === 'settings' ? 'text-primary bg-surface-container-low' : 'text-text-muted')
+            }
+            title="设置"
+          >
             <span className="material-symbols-outlined">settings</span>
           </button>
           <div className="group relative">

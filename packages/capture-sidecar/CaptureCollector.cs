@@ -330,6 +330,13 @@ internal sealed class CaptureCollector : IDisposable
             Diag.Line($"OCR[{ocr.Status}] {t.Length}字: {(t.Length > 160 ? t.Substring(0, 160) + "…" : t)}");
         }
 
+        // 给每个词块采样气泡填充色（像素只有本机有）。结构化/判说话人已移到后端，
+        // 后端按这些颜色样本算 HSV 饱和度判 self/other；采不到色的块后端按位置兜底。
+        if (ocr.Status == "success" && ocr.Blocks.Count > 0)
+        {
+            ocr = ocr with { Blocks = BlockColorSampler.Enrich(bitmap, ocr.Blocks) };
+        }
+
         // 客户会话过滤：群聊命中"就医服务群"或标题/全文出现订单号(fwyy / COD/CCOD/OD) → 保留并抽订单号；
         // 否则非客户聊天，删盘、不上报。OCR 失败(status!=success)时不过滤，保留该帧以免漏采。
         var conv = ocr.Status == "success" ? Classify(ocr) : new ConversationClass(true, null, null);

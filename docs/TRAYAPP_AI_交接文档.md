@@ -441,6 +441,13 @@ sidecar 已经吐出 `messages[]/conversationKind/orderNo`，但 tray-app 还在
 
 ## 附录 C：sidecar → tray-app 集成实施指南（**给开发 tray-app 的 AI，照着做即可**）
 
+> ⚠️ **架构已调整（2026-06-13）**：消息结构化（拼行/判说话人）**从 sidecar 移到后端**了，见
+> [docs/变更说明_结构化移至后端.md](变更说明_结构化移至后端.md)。本附录下文"直接消费 sidecar 的
+> `messages[]`"是**旧方案**——sidecar 仍会吐 `messages[]`（过渡期没删），但**正确方向**是：tray-app
+> 把"OCR 词块(含 `colorSample`)+ 渠道 + 宽高"发 `POST /api/v1/capture/structure` 让**后端**结构化，
+> 或在 `POST /api/v1/messages` 内部结构化后入库。**不要再在 tray-app 里写第二份结构化逻辑**（那正是
+> 要删的重复）。下文步骤②里"直接用 frame.messages"按此调整。
+
 > 这一节是**可直接落地的施工说明**。附录 A 讲 sidecar「怎么实现」、附录 B 讲「现状链路」；本节讲「**你要改哪些文件、改成什么样**」，把 sidecar 已经吐出的「带说话人结构化消息 + 订单号」真正接进 tray-app，并（可选）上传后端关联订单。
 >
 > **背景一句话**：sidecar 早已在每个 `frame` 里吐出 `messages[]`（self/other/system 已判好）、`conversationKind`、`orderNo`，但 tray-app 现在的入库逻辑（`capture-store.ts` 的 `extractMessages(frame, layout)`）是**旧的 VLM 布局方案残留**——`layout` 恒为 `null`，结果把整页 OCR 文本塞成**一条 `unknown` 消息**。也就是说：**新字段目前被白白丢弃**。本节就是把这条断点接上。

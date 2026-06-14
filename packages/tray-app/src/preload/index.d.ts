@@ -87,7 +87,10 @@ declare global {
     api: {
       hideWindow: () => void
       minimizeWindow: () => void
+      requestWindowClose: () => Promise<void>
       quitApp: () => void
+      getWindowPreferences: () => Promise<{ closeBehavior: 'ask' | 'minimize' | 'quit' }>
+      setWindowPreferences: (prefs: { closeBehavior: 'ask' | 'minimize' | 'quit' }) => Promise<{ closeBehavior: 'ask' | 'minimize' | 'quit' }>
       getCaptureStatus: () => Promise<unknown>
       getCaptureConversations: (channel?: string) => Promise<CaptureConversation[]>
       getCaptureMessages: (threadId: number) => Promise<CaptureMessage[]>
@@ -107,6 +110,7 @@ declare global {
       materialsRetryFailed: () => Promise<{ retried: number }>
       materialsDiscardFailed: () => Promise<{ discarded: number }>
       materialsSetConfig: (cfg: { backendUrl: string; employeeCode: string }) => Promise<{ ok: boolean }>
+      captureSetConfig: (cfg: { backendUrl: string; employeeCode: string }) => Promise<{ ok: boolean }>
       clipboardRead: () => Promise<{ text: string | null; imageDataUrl: string | null }>
     }
   }

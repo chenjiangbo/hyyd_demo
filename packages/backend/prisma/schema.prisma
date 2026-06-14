@@ -14,10 +14,11 @@ model Employee {
   wechatId       String?  @map("wechat_id")
   taikangAccount String?  @map("taikang_account")
   token          String   @unique
-  orders         Order[]
-  messages       Message[]
-  calls          Call[]
-  materials      Material[]
+  orders             Order[]
+  messages           Message[]
+  calls              Call[]
+  materials          Material[]
+  unmatchedOrderRefs UnmatchedOrderRef[]
 
   @@map("employees")
 }
@@ -39,6 +40,13 @@ model Order {
   detailFetchedAt    DateTime?    @map("detail_fetched_at")
   detailFingerprint  String?      @map("detail_fingerprint") // 插件算的状态指纹，用于增量基线
   orderState         String?      @map("order_state") // 泰康订单状态码原值，用于检测状态变化
+  // AI 滚动简报（综合微信/企微消息 + 通话/录音转写，一次调用产出 摘要/阶段/待办/风险/回填关键信息）
+  // 见 docs/设计_订单AI滚动简报.md。aiBriefJson 存整份简报；brief* 是增量水位。
+  aiBriefJson        Json?        @map("ai_brief_json")
+  briefUpdatedAt     DateTime?    @map("brief_updated_at")
+  briefLastMsgId     Int?         @map("brief_last_msg_id")  // 上次处理到的最大 Message.id
+  briefLastCallId    Int?         @map("brief_last_call_id") // 上次处理到的最大 Call.id
+  briefLastMaterialId Int?        @map("brief_last_material_id") // 上次处理到的最大 Material.id（手工补录）
   createdAt          DateTime     @default(now()) @map("created_at")
   updatedAt          DateTime     @updatedAt @map("updated_at")
   messages           Message[]
@@ -102,6 +110,10 @@ model Material {
   mimeType     String?  @map("mime_type")
   byteSize     Int?     @map("byte_size")
   clientUuid   String   @map("client_uuid")
+  // 图片素材的 AI 识图缓存（qwen-vl 分类 + OCR，识一次复用）。供订单 AI 简报使用。
+  aiImageKind  String?  @map("ai_image_kind")  // 聊天截图 / 单据 / 短信 / 其他
+  aiImageText  String?  @map("ai_image_text")  // 从图中提取的文字/关键信息
+  aiImageProcessedAt DateTime? @map("ai_image_processed_at")
   createdAt    DateTime @default(now()) @map("created_at")
 
   @@unique([orderId, clientUuid])
@@ -123,6 +135,34 @@ model Message {
   employee         Employee @relation(fields: [employeeId], references: [id])
 
   @@map("messages")
+}
+
+/// 待客户确认的订单号引用：截图标题里确实抽到了订单号候选（COD/fwyy…），
+/// 但在该员工订单里模糊匹配不到（none）或并列多单（ambiguous）时，存这里给前端列出、
+/// 让员工/客户确认绑定到哪张订单。UI 由另一端开发，本表只负责"存"。
+/// 详见 docs/订单号待确认_交接说明.md。
+model UnmatchedOrderRef {
+  id               Int       @id @default(autoincrement())
+  employeeId       Int       @map("employee_id")
+  employee         Employee  @relation(fields: [employeeId], references: [id])
+  channel          String // 'wechat' | 'wxwork'
+  conversationName String    @map("conversation_name") // OCR 到的会话标题原文
+  candidate        String // 抽到的订单号候选（去空白后）
+  candidateKind    String    @map("candidate_kind") // 'fwyy' | 'cod' | 'ccod' | 'od' | 'unknown'
+  reason           String // 'no_match'（找不到） | 'ambiguous'（多单并列）
+  bestDist         Int?      @map("best_dist") // 最近编辑距离（none 时是超阈值的最小值，便于排查）
+  candidateOrderIds Json?    @map("candidate_order_ids") // ambiguous 时并列的订单 id 列表
+  screenshotOssKey String?   @map("screenshot_oss_key")
+  capturedAt       DateTime  @map("captured_at")
+  seenCount        Int       @default(1) @map("seen_count") // 同一候选重复出现次数
+  status           String    @default("pending") // 'pending' | 'confirmed' | 'rejected'
+  resolvedOrderId  Int?      @map("resolved_order_id") // 确认后绑定的订单
+  note             String?
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@unique([employeeId, candidate], name: "employee_candidate")
+  @@map("unmatched_order_refs")
 }
 
 model Call {

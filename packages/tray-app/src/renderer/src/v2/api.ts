@@ -72,6 +72,42 @@ export interface Order {
   } | null
 }
 
+export interface OrderAttachment {
+  id: number
+  fileType: string
+  fileName: string
+  mimeType: string
+  byteSize: number
+  url: string
+}
+
+export interface OrderDetailResponse {
+  order: Order & { detailFetchedAt: string | null; detailJson: unknown }
+  detail: {
+    recommendations?: Record<string, unknown> | null
+  } | null
+  attachments: OrderAttachment[]
+}
+
+export interface OrderCall {
+  id: number
+  phone: string
+  contactName: string | null
+  direction: 'in' | 'out' | string
+  callStatus: 'answered' | 'missed' | 'rejected' | 'outgoing_unanswered' | string
+  durationSec: number
+  startedAt: string
+  recordingOssKey: string | null
+  asrText: string | null
+  asrStatus: string
+  asrFinishedAt?: string | null
+}
+
+export interface OrderAggregateResponse {
+  id: number
+  calls: OrderCall[]
+}
+
 async function authedGet<T>(path: string): Promise<T> {
   const code = getSession()?.employeeCode
   if (!code) throw new Error('未登录')
@@ -86,6 +122,71 @@ async function authedGet<T>(path: string): Promise<T> {
 /** 拉取当前登录员工名下的订单 */
 export function fetchOrders(): Promise<Order[]> {
   return authedGet<Order[]>('/api/v1/orders')
+}
+
+/** 待申领池：全局"候选"状态订单（任何员工可申领） */
+export function fetchClaimableOrders(): Promise<Order[]> {
+  return authedGet<Order[]>('/api/v1/orders?status=候选')
+}
+
+/** 申领一张订单（→ 已申领，分配给当前登录员工） */
+export function claimOrder(orderId: number): Promise<{ order: Order; commandId: number }> {
+  return authedSend<{ order: Order; commandId: number }>(`/api/v1/orders/${orderId}/claim`, 'POST', {})
+}
+
+/** 手工建单（→ 候选，进入待申领池）。sourceOrderNo 缺省自动生成。 */
+export interface CreateOrderInput {
+  source: string
+  sourceOrderNo?: string
+  customerName: string
+  customerPhone?: string
+  hospital?: string
+  dept?: string
+  serviceType?: string
+}
+export function createOrder(input: CreateOrderInput): Promise<Order> {
+  const sourceOrderNo = input.sourceOrderNo?.trim() || `SD${Date.now().toString(36).toUpperCase()}`
+  return authedSend<Order>('/api/v1/orders', 'POST', {
+    source: input.source,
+    sourceOrderNo,
+    customerName: input.customerName,
+    customerPhone: input.customerPhone || null,
+    hospital: input.hospital || null,
+    dept: input.dept || null,
+    rawJson: { serviceType: input.serviceType || undefined, manual: true }
+  })
+}
+
+export function fetchOrderDetail(orderId: number): Promise<OrderDetailResponse> {
+  return authedGet<OrderDetailResponse>(`/api/v1/orders/${orderId}/detail`)
+}
+
+export function fetchOrderAggregate(orderId: number): Promise<OrderAggregateResponse> {
+  return authedGet<OrderAggregateResponse>(`/api/v1/orders/${orderId}/aggregate`)
+}
+
+// ─── AI 滚动简报 ────────────────────────────────────────
+// 综合微信/企微消息 + 通话/录音转写，由后端 LLM 产出。给员工的现状/阶段/待办/风险 + 回填关键信息。
+export interface OrderBrief {
+  summary: string | null
+  stage: string | null
+  stageEvidence: string | null
+  hasOpenIssue: boolean
+  nextActions: string[]
+  risks: string[]
+  keyInfo: Record<string, string | null>
+  model?: string
+  updatedFrom?: { lastMessageId: number; lastCallId: number }
+}
+
+/** 读已存的简报（不触发 LLM） */
+export function fetchOrderBrief(orderId: number): Promise<{ brief: OrderBrief | null; updatedAt: string | null }> {
+  return authedGet<{ brief: OrderBrief | null; updatedAt: string | null }>(`/api/v1/orders/${orderId}/brief`)
+}
+
+/** 手动刷新简报（触发一次 LLM，强制重算） */
+export function refreshOrderBrief(orderId: number): Promise<OrderBrief> {
+  return authedSend<OrderBrief>(`/api/v1/orders/${orderId}/brief/refresh`, 'POST', {})
 }
 
 // ─── 素材（过程数据）─────────────────────────────────────

@@ -10,7 +10,7 @@ import {
   type ReconstructInput
 } from './capture-ai-reconstruct'
 import { CaptureStore } from './capture-store'
-import type { CaptureFrameEvent, CaptureSidecarStatus } from './capture-types'
+import type { CaptureFrameEvent, CaptureSidecarStatus, CaptureStructuredMessage } from './capture-types'
 
 export interface CaptureShot {
   path: string
@@ -30,9 +30,21 @@ interface SidecarCommand {
   requestId: string
 }
 
+interface CaptureBackendConfig {
+  backendUrl: string
+  employeeCode: string
+}
+
+interface StructureResponse {
+  data?: {
+    messages?: CaptureStructuredMessage[]
+  }
+}
+
 export class CaptureSidecarClient {
   private child: ChildProcessWithoutNullStreams | null = null
   private store: CaptureStore | null = null
+  private backendConfig: CaptureBackendConfig | null = null
   private buffer = ''
   private status: CaptureSidecarStatus = {
     enabled: process.platform === 'win32',
@@ -67,6 +79,18 @@ export class CaptureSidecarClient {
 
   getStatus(): CaptureSidecarStatus {
     return { ...this.status }
+  }
+
+  setConfig(cfg: CaptureBackendConfig): void {
+    const backendUrl = cfg.backendUrl.trim().replace(/\/+$/, '')
+    const employeeCode = cfg.employeeCode.trim()
+    if (!backendUrl) throw new Error('capture backendUrl 不能为空')
+    if (!employeeCode) throw new Error('capture employeeCode 不能为空')
+    this.backendConfig = { backendUrl, employeeCode }
+    if (this.status.mode === 'error' && this.status.lastError?.includes('未配置后端结构化')) {
+      this.status.mode = this.status.collecting ? 'collecting' : 'ready'
+      this.status.lastError = null
+    }
   }
 
   // 读 store：采集在跑时复用采集连接，否则惰性开一个独立连接（只做 SELECT）。
@@ -368,8 +392,8 @@ export class CaptureSidecarClient {
         this.setError('本地采集数据库未初始化')
         return
       }
-      // 已放弃 VLM 区域分区方案：不再按帧调用付费 VLM，只把关键帧落库
-      const result = this.store.insertFrame(message, null, null)
+      const structuredMessages = await this.structureFrame(message)
+      const result = this.store.insertFrame(message, null, structuredMessages)
       this.status.collecting = true
       this.status.mode = 'collecting'
       this.status.lastError = null
@@ -384,6 +408,42 @@ export class CaptureSidecarClient {
     this.status.lastError = message
     this.status.mode = 'error'
     console.error(`[capture-sidecar] ${message}`)
+  }
+
+  private async structureFrame(frame: CaptureFrameEvent): Promise<CaptureStructuredMessage[] | null> {
+    if (frame.ocr.status !== 'success') return null
+    if (!frame.ocr.blocks.length) return []
+    if (!this.backendConfig) {
+      throw new Error('未配置后端结构化服务：请先登录，让渲染进程同步 backendUrl 和 employeeCode')
+    }
+
+    const res = await fetch(`${this.backendConfig.backendUrl}/api/v1/capture/structure`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Employee-Code': this.backendConfig.employeeCode
+      },
+      body: JSON.stringify({
+        channel: frame.channel,
+        width: frame.window.width,
+        height: frame.window.height,
+        blocks: frame.ocr.blocks.map((block) => ({
+          text: block.text,
+          bbox: block.bbox,
+          colorSample: block.colorSample ?? null
+        }))
+      })
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new Error(`后端消息结构化失败(${res.status}): ${text || res.statusText}`)
+    }
+    const json = (await res.json()) as StructureResponse
+    const messages = json.data?.messages
+    if (!Array.isArray(messages)) {
+      throw new Error('后端消息结构化响应缺少 data.messages')
+    }
+    return messages
   }
 }
 
