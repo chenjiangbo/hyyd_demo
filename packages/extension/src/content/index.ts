@@ -18,7 +18,9 @@ const UNIFY_BASE = 'https://ccm.taikang.com/ccm-unify/ccm-unify/ccm-unify';
 const SYSTEM_BASE = 'https://ccm.taikang.com/ccm-unify/hssrmp';
 // 挂号协助有独立的池接口；其余所有绿通业务走通用 individualPool。
 const REGISTER_SERVICE_TYPE = '2000709';
-const FETCH_FILE_TYPES = ['40', '41', '5000', '5001'];
+// 与泰康订单详情页一致拉取常见附件类型。HAR 实测详情页会请求这些 fileType；
+// 空结果由泰康接口正常返回，插件只保存真正带 fileUrl/fileId 的附件。
+const FETCH_FILE_TYPES = ['40', '41', '5000', '5001', '5002', '100', '99', '5010', '5008', '5009'];
 
 const POLL_INTERVAL_MS = 2 * 60 * 1000;
 const POLL_FIRST_DELAY_MS = 3000;

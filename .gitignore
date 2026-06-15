@@ -28,3 +28,8 @@ packages/android-app/build/
 
 # pnpm
 .pnpm-store/
+
+# Chrome 扩展签名私钥（绝不提交）
+packages/extension/key.pem
+packages/extension/.ext-meta.json
+packages/extension/*.crx
