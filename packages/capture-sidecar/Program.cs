@@ -15,6 +15,13 @@ internal static class Program
     {
         // 让中文输出走 UTF-8（默认 Windows 控制台是 GBK，经 SSH/管道会乱码）
         try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { /* 某些宿主不支持，忽略 */ }
+        // stderr 同样强制 UTF-8（Diag.Line 走 stderr，Electron 主进程 chunk.toString('utf8') 解码）
+        try
+        {
+            var utf8Err = new System.IO.StreamWriter(Console.OpenStandardError(), System.Text.Encoding.UTF8) { AutoFlush = true };
+            Console.SetError(utf8Err);
+        }
+        catch { /* ignore */ }
         NativeMethods.TryEnableDpiAwareness();
 
         var writer = new JsonLineWriter(JsonOptions);
@@ -52,6 +59,9 @@ internal static class Program
             return;
         }
 
+        // tray 模式下始终打开诊断日志（stderr 由 Electron 主进程捕获并展示到调试页，不影响用户）
+        Diag.Verbose = true;
+
         string? line;
         while ((line = await Console.In.ReadLineAsync()) is not null)
         {
@@ -77,7 +87,7 @@ internal static class Program
         OcrPayload ocr;
         try
         {
-            ocr = await new WindowsOcr().RecognizeAsync(path);
+            ocr = await OcrEngineFactory.CreateDefault().RecognizeAsync(path);
         }
         catch (Exception ex)
         {
@@ -105,15 +115,22 @@ internal static class Program
         dump.Append("]}");
         Console.Error.WriteLine(dump.ToString());
 
-        // 渠道靠文件名/无法判定，默认 wxwork（颜色规则通用，不影响 self/other）
+        var lowerPath = path.ToLowerInvariant();
+        var channel = lowerPath.Contains("企微") || lowerPath.Contains("wxwork")
+            ? "wxwork"
+            : "wechat";
+
         using var bmp = new System.Drawing.Bitmap(path);
-        var msgs = MessageStructurer.Build(bmp, ocr.Blocks, "wxwork");
-        Console.Error.WriteLine($"---- 结构化消息（{msgs.Count} 条）----");
-        foreach (var m in msgs)
+        var enriched = ocr with { Blocks = BlockColorSampler.Enrich(bmp, ocr.Blocks) };
+        var structure = MessageStructurer.Build(bmp, enriched.Blocks, channel);
+        Console.Error.WriteLine($"---- 渠道：{channel} ----");
+        Console.Error.WriteLine($"---- 标题：\"{structure.Title}\" ----");
+        Console.Error.WriteLine($"---- 结构化消息（{structure.Messages.Count} 条）----");
+        foreach (var m in structure.Messages)
         {
             var t = m.Text.Replace('\n', ' ');
             if (t.Length > 60) t = t.Substring(0, 60) + "…";
-            Console.Error.WriteLine($"  [{m.Speaker}]{(m.Name != null ? " " + m.Name : "")} {t}");
+            Console.Error.WriteLine($"  [{m.Speaker}{(m.Kind != null ? ":" + m.Kind : "")}]{(m.Name != null ? " " + m.Name : "")} {t}");
         }
         Console.Error.WriteLine("============ 测试结束 ============");
     }
@@ -192,4 +209,3 @@ internal static class Program
         public string? RequestId { get; set; }
     }
 }
-

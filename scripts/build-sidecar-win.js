@@ -17,6 +17,22 @@ if (!fs.existsSync(projectPath)) {
 fs.rmSync(outputDir, { recursive: true, force: true });
 fs.mkdirSync(outputDir, { recursive: true });
 
+console.log('🔎 ensuring RapidOCR Chinese models...');
+const modelResult = spawnSync(process.execPath, [path.join(repoRoot, 'scripts', 'ensure-sidecar-ocr-models.js')], {
+  cwd: repoRoot,
+  stdio: 'inherit'
+});
+
+if (modelResult.error) {
+  console.error(`❌ failed to ensure OCR models: ${modelResult.error.message}`);
+  process.exit(1);
+}
+
+if (modelResult.status !== 0) {
+  console.error(`❌ ensure OCR models failed with code ${modelResult.status}`);
+  process.exit(modelResult.status ?? 1);
+}
+
 const args = [
   'publish',
   projectPath,
@@ -55,4 +71,3 @@ if (!fs.existsSync(exePath)) {
 }
 
 console.log(`✅ sidecar built: ${exePath}`);
-

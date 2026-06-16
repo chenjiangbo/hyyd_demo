@@ -28,16 +28,23 @@ export interface CaptureMessage {
   sourceScreenshotPath: string | null
 }
 
-// 【临时·采集调试页】sidecar 原始帧（含路线1 结构化消息），仅内存、不落库
+// 【临时·采集调试页】sidecar 原始帧（含 sidecar 结构化成品消息），仅内存、不落库
 export interface CaptureDebugMessage {
   speaker: 'self' | 'other' | 'system'
   name?: string | null
   text: string
+  kind?: 'time' | 'notice' | 'other' | null
+  box?: { x: number; y: number; w: number; h: number } | null
+  l?: number | null
+  r?: number | null
+  decidedBy?: 'position' | 'color' | 'center' | null
 }
 export interface CaptureDebugFrame {
   type: 'frame'
   channel: 'wxwork' | 'wechat'
   processName: string
+  /** 会话标题：聊天区顶行 OCR（取代旧 windowTitle） */
+  title?: string | null
   windowTitle?: string | null
   capturedAt: string
   window: { left: number; top: number; width: number; height: number; showState: string }
@@ -49,6 +56,27 @@ export interface CaptureDebugFrame {
   conversationKind?: 'group' | 'single' | null
   orderNo?: string | null
   messages?: CaptureDebugMessage[]
+  filtered?: boolean
+  chatX0?: number | null
+  chatX1?: number | null
+  inputCutY?: number | null
+  inputCut?: {
+    sendButtonY?: number | null
+    separatorLineY?: number | null
+    gapCutY?: number | null
+    lastBubbleBottomY?: number | null
+    finalCutY?: number | null
+    finalReason?: 'separator_line' | 'send_button' | string | null
+    removedLineCount?: number
+    removedLinePreview?: string[]
+  } | null
+  droppedBlockCount?: number | null
+}
+
+export interface DiagLogEntry {
+  ts: string
+  tag: 'sidecar' | 'insert' | 'structure' | 'upload' | 'error' | 'info'
+  msg: string
 }
 
 // 现场采集素材（剪贴板粘贴）—— 由 main/material-store.ts 给出的视图行
@@ -91,6 +119,7 @@ declare global {
       quitApp: () => void
       getWindowPreferences: () => Promise<{ closeBehavior: 'ask' | 'minimize' | 'quit' }>
       setWindowPreferences: (prefs: { closeBehavior: 'ask' | 'minimize' | 'quit' }) => Promise<{ closeBehavior: 'ask' | 'minimize' | 'quit' }>
+      setWindowStage: (stage: 'login' | 'main') => void
       getCaptureStatus: () => Promise<unknown>
       getCaptureConversations: (channel?: string) => Promise<CaptureConversation[]>
       getCaptureMessages: (threadId: number) => Promise<CaptureMessage[]>
@@ -101,6 +130,8 @@ declare global {
       // 【临时·采集调试页】
       getCaptureDebugFrames: (limit?: number) => Promise<CaptureDebugFrame[]>
       clearCaptureDebugFrames: () => Promise<{ cleared: number }>
+      getDiagLogs: (limit?: number) => Promise<DiagLogEntry[]>
+      clearDiagLogs: () => Promise<{ cleared: number }>
       // 现场采集素材
       materialsAddText: (orderId: number, text: string) => Promise<MaterialViewRow>
       materialsAddImage: (orderId: number, dataUrl: string) => Promise<MaterialViewRow>

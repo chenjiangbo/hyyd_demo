@@ -11,6 +11,19 @@ export interface InsertFrameResult {
   duplicate: boolean
   threadId: number | null
   messageBlockId: number | null
+  /** 会话标题（窗口标题）—— 上报后端做按客户名兜底匹配用 */
+  conversationName: string | null
+  /** 本帧 OCR 抽到的订单号候选（可能含 OCR 误差）—— 后端做"归一+编辑距离"模糊匹配 */
+  orderNo: string | null
+  /** 本帧"首次出现"的消息块（已去重，不含重复刷到的旧消息）—— 仅这些需要上报后端 */
+  newMessages: NewMessageBlock[]
+}
+
+export interface NewMessageBlock {
+  id: number
+  senderType: 'self' | 'other' | 'system' | 'unknown'
+  senderName: string | null
+  content: string
 }
 
 interface ExtractedMessage {
@@ -235,7 +248,7 @@ export class CaptureStore {
       .run({
         channel: frame.channel,
         processName: frame.processName,
-        windowTitle: frame.windowTitle ?? null,
+        windowTitle: (frame.title ?? frame.windowTitle ?? null),
         capturedAt: frame.capturedAt,
         windowLeft: frame.window.left,
         windowTop: frame.window.top,
@@ -254,19 +267,36 @@ export class CaptureStore {
         createdAt: new Date().toISOString()
     })
 
+    const conversationName = (frame.title ?? frame.windowTitle ?? null)
+    const orderNo = normalizeOrderNo(frame.orderNo)
+
     const frameId = Number(row.lastInsertRowid)
     if (duplicate || frame.ocr.status !== 'success') {
-      return { frameId, duplicate, threadId: null, messageBlockId: null }
+      return { frameId, duplicate, threadId: null, messageBlockId: null, conversationName, orderNo, newMessages: [] }
     }
 
     const messages = toExtractedMessages(structuredMessages)
     if (messages.length === 0) {
-      return { frameId, duplicate, threadId: null, messageBlockId: null }
+      return { frameId, duplicate, threadId: null, messageBlockId: null, conversationName, orderNo, newMessages: [] }
     }
 
     const threadId = this.upsertConversationThread(frame)
-    const messageBlockId = this.insertMessageBlocks(frame, frameId, threadId, messages)
-    return { frameId, duplicate, threadId, messageBlockId }
+    const newMessages: NewMessageBlock[] = []
+    let messageBlockId: number | null = null
+    for (const message of messages) {
+      const res = this.insertMessageBlock(frame, frameId, threadId, message)
+      if (!res) continue
+      if (!messageBlockId) messageBlockId = res.id
+      if (res.inserted) {
+        newMessages.push({
+          id: res.id,
+          senderType: message.senderType,
+          senderName: message.senderName ?? null,
+          content: res.content
+        })
+      }
+    }
+    return { frameId, duplicate, threadId, messageBlockId, conversationName, orderNo, newMessages }
   }
 
   insertLayoutVersion(
@@ -326,7 +356,7 @@ export class CaptureStore {
       .get({
         channel: frame.channel,
         processName: frame.processName,
-        windowTitle: frame.windowTitle ?? null
+        windowTitle: (frame.title ?? frame.windowTitle ?? null)
       }) as { image_hash: string | null; ocr_text_hash: string | null } | undefined
 
     if (!latest) return false
@@ -335,7 +365,7 @@ export class CaptureStore {
 
   private upsertConversationThread(frame: CaptureFrameEvent): number {
     const orderNo = normalizeOrderNo(frame.orderNo)
-    const title = normalizeTitle(orderNo || frame.windowTitle || frame.processName)
+    const title = normalizeTitle(orderNo || frame.title || frame.windowTitle || frame.processName)
     const phone = extractPhone(title)
     const threadKey = orderNo ? `order:${orderNo}` : phone ? `phone:${phone}` : `title:${hashText(title)}`
     const conversationKind = frame.conversationKind ?? null
@@ -372,7 +402,7 @@ export class CaptureStore {
       .run({
         channel: frame.channel,
         threadKey,
-        conversationTitle: orderNo || frame.windowTitle || null,
+        conversationTitle: orderNo || frame.title || frame.windowTitle || null,
         normalizedTitle: title,
         phone,
         orderNo,
@@ -389,26 +419,13 @@ export class CaptureStore {
     return row.id
   }
 
-  private insertMessageBlocks(
-    frame: CaptureFrameEvent,
-    frameId: number,
-    threadId: number,
-    messages: ExtractedMessage[]
-  ): number | null {
-    let firstId: number | null = null
-    for (const message of messages) {
-      const id = this.insertMessageBlock(frame, frameId, threadId, message)
-      if (!firstId) firstId = id
-    }
-    return firstId
-  }
-
+  /** 插入/合并一条消息块。返回块 id、是否为"首次插入"(inserted)、归一后的内容。 */
   private insertMessageBlock(
     frame: CaptureFrameEvent,
     frameId: number,
     threadId: number,
     message: ExtractedMessage
-  ): number | null {
+  ): { id: number; inserted: boolean; content: string } | null {
     const content = normalizeMessageContent(message.content)
     if (!content) return null
 
@@ -454,7 +471,7 @@ export class CaptureStore {
           sourceFrameIds,
           updatedAt: now
         })
-      return recent.id
+      return { id: recent.id, inserted: false, content }
     }
 
     const row = this.db
@@ -497,7 +514,7 @@ export class CaptureStore {
       })
 
     this.db.prepare('UPDATE conversation_threads SET message_count = message_count + 1 WHERE id = ?').run(threadId)
-    return Number(row.lastInsertRowid)
+    return { id: Number(row.lastInsertRowid), inserted: true, content }
   }
 
   private migrate(): void {

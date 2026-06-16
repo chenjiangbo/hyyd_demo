@@ -14,6 +14,9 @@ internal sealed class CaptureCollector : IDisposable
     private static readonly TimeSpan DebounceDelay = TimeSpan.FromMilliseconds(600);
     // 两次截图的最小间隔，进一步压制事件风暴（去重已能省存储，这个省 CPU/OCR）
     private static readonly TimeSpan MinCaptureInterval = TimeSpan.FromMilliseconds(1000);
+    // 打字静默期：兜底定时截图若发现最近这么久内还有按键，判定"用户正在打字"，跳过本轮，
+    // 避免把半截、还没发送的消息截下来。回车(发送)会单独触发截图，不受此限。
+    private static readonly TimeSpan TypingQuietPeriod = TimeSpan.FromMilliseconds(2500);
 
     private static TimeSpan ReadFallbackInterval()
     {
@@ -29,7 +32,7 @@ internal sealed class CaptureCollector : IDisposable
     private readonly WindowInspector _windowInspector = new();
     private readonly WindowCapture _windowCapture = new();
     private readonly FrameDeduplicator _dedup = new();
-    private WindowsOcr? _ocr;
+    private IOcrEngine? _ocr;
     private readonly CancellationTokenSource _disposeCts = new();
     private CancellationTokenSource? _captureCts;
     private Task? _captureTask;
@@ -44,6 +47,8 @@ internal sealed class CaptureCollector : IDisposable
     private InputEventMonitor? _inputMonitor;
     private DateTimeOffset _lastCaptureAt = DateTimeOffset.MinValue;
     private volatile string _lastTriggerReason = "interval";
+    private readonly object _triggerLock = new();
+    private TargetWindow? _pendingForegroundTarget;
 
     private long _filteredCount;
 
@@ -73,7 +78,7 @@ internal sealed class CaptureCollector : IDisposable
         @"fwyy[0-9a-z|]{6,24}|(?:CCOD|COD|OD)[0-9a-z|]{12,18}",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
 
-    // Windows OCR 对中文常逐字拆开、字符间塞空格，会把订单号和"就医服务群"打散；匹配前先去掉所有空白
+    // OCR 仍可能把订单号和"就医服务群"拆散或插空白；匹配前先去掉所有空白
     private static readonly System.Text.RegularExpressions.Regex WhitespaceRegex = new(
         @"\s+",
         System.Text.RegularExpressions.RegexOptions.Compiled);
@@ -81,20 +86,19 @@ internal sealed class CaptureCollector : IDisposable
     internal readonly record struct ConversationClass(bool IsCustomer, string? Kind, string? OrderNo);
 
     /// <summary>
-    /// 判断截图是否"与客户的会话"，并尽量抽出订单号。
-    /// 群聊：OCR 命中"就医服务群"关键词即算（高客/普客通吃）。
-    /// 单聊：标题/全文里出现订单号（fwyy 或 COD/CCOD/OD）即算。
-    /// 命中关键词或抽到订单号任一 → 客户会话。
+    /// 判断是否"与客户的会话"，并尽量抽订单号——**只看聊天区标题行**（不再用全图 OCR，避免左侧联系人列表污染）。
+    /// 群聊：标题含"就医服务群"关键词。
+    /// 单聊：标题含订单号（fwyy 或 COD/CCOD/OD）——会话名可被改成订单号。
+    /// 命中其一 → 客户会话。标题为空（OCR 没读到/分区失败）→ 非客户。
     /// </summary>
-    private static ConversationClass Classify(OcrPayload ocr)
+    private static ConversationClass ClassifyTitle(string? title)
     {
-        var text = ocr.Text ?? string.Empty;
-        if (text.Length == 0 && ocr.Blocks is { Count: > 0 })
-        {
-            text = string.Concat(ocr.Blocks.Select(b => b.Text));
-        }
         // 去掉所有空白后再匹配（OCR 会在字符间塞空格，否则订单号/关键词会被截断）
-        var compact = WhitespaceRegex.Replace(text, string.Empty);
+        var compact = WhitespaceRegex.Replace(title ?? string.Empty, string.Empty);
+        if (compact.Length == 0)
+        {
+            return new ConversationClass(false, null, null);
+        }
 
         var isGroup = TitleKeywords.Any(kw => compact.Contains(kw, StringComparison.OrdinalIgnoreCase));
         var m = OrderNoRegex.Match(compact);
@@ -105,27 +109,33 @@ internal sealed class CaptureCollector : IDisposable
         return new ConversationClass(isCustomer, kind, orderNo);
     }
 
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            System.IO.File.Delete(path);
-        }
-        catch
-        {
-            // 删不掉就算了，下次启动也无所谓
-        }
-    }
-
     public CaptureCollector(JsonLineWriter writer)
     {
         _writer = writer;
     }
 
     // 由输入钩子线程调用，必须极轻、不阻塞
-    private void OnInputTrigger(string reason)
+    private void OnInputTrigger(string reason, IntPtr? hwnd)
     {
-        _lastTriggerReason = reason;
+        lock (_triggerLock)
+        {
+            _lastTriggerReason = reason;
+            if (reason == "foreground" && hwnd is { } h)
+            {
+                try
+                {
+                    _pendingForegroundTarget = _windowInspector.GetTargetFromHwnd(h);
+                }
+                catch
+                {
+                    _pendingForegroundTarget = null;
+                }
+            }
+            else
+            {
+                _pendingForegroundTarget = null;
+            }
+        }
         if (_wake.CurrentCount == 0)
         {
             try
@@ -204,10 +214,13 @@ internal sealed class CaptureCollector : IDisposable
                 await WaitForCaptureAsync(cancellationToken);
 
                 // 最小间隔节流：距上次截图太近就等一会儿，压制事件风暴
-                var since = DateTimeOffset.UtcNow - _lastCaptureAt;
-                if (since < MinCaptureInterval)
+                if (!IsForegroundTriggerPending())
                 {
-                    await Task.Delay(MinCaptureInterval - since, cancellationToken);
+                    var since = DateTimeOffset.UtcNow - _lastCaptureAt;
+                    if (since < MinCaptureInterval)
+                    {
+                        await Task.Delay(MinCaptureInterval - since, cancellationToken);
+                    }
                 }
 
                 await CaptureOnceIfTargetAsync(cancellationToken);
@@ -235,6 +248,16 @@ internal sealed class CaptureCollector : IDisposable
             return; // 兜底定时
         }
 
+        string reason;
+        lock (_triggerLock)
+        {
+            reason = _lastTriggerReason;
+        }
+        if (reason == "foreground")
+        {
+            return;
+        }
+
         // 尾沿防抖：只要还有事件在 DebounceDelay 内陆续到来，就继续等，直到输入停顿
         while (await _wake.WaitAsync(DebounceDelay, cancellationToken))
         {
@@ -242,9 +265,26 @@ internal sealed class CaptureCollector : IDisposable
         }
     }
 
+    private bool IsForegroundTriggerPending()
+    {
+        lock (_triggerLock)
+        {
+            return _lastTriggerReason == "foreground" && _pendingForegroundTarget is not null;
+        }
+    }
+
     private async Task CaptureOnceIfTargetAsync(CancellationToken cancellationToken)
     {
-        var target = _windowInspector.GetForegroundTarget();
+        string captureReason;
+        TargetWindow? pendingForeground;
+        lock (_triggerLock)
+        {
+            captureReason = _lastTriggerReason;
+            pendingForeground = _pendingForegroundTarget;
+            _pendingForegroundTarget = null;
+        }
+
+        var target = pendingForeground ?? _windowInspector.GetForegroundTarget();
         if (target is null)
         {
             if (_lastWindowKey is not null)
@@ -259,7 +299,19 @@ internal sealed class CaptureCollector : IDisposable
 
         // 本次截图的归因：默认取触发原因；若是窗口刚切入（激活），固定记为 foreground，
         // 避免被"点图标激活"那一下的 click 覆盖（截图发生在渲染延迟之后，期间共享变量会被改）。
-        var captureReason = _lastTriggerReason;
+        var targetCameFromForegroundEvent = pendingForeground is not null;
+
+        // 正在打字 + 仅是兜底定时触发 → 跳过本轮，等回车(发送)再截，避免截到半截还没发出去的消息。
+        // 收到对方消息时没有本地按键，静默期早已过，照常被兜底定时截到。
+        if (captureReason == "interval" && _inputMonitor is not null)
+        {
+            var sinceKey = DateTimeOffset.UtcNow - _inputMonitor.LastTypingAt;
+            if (sinceKey < TypingQuietPeriod)
+            {
+                Diag.Line("打字中，跳过兜底定时截图（等回车发送再截）");
+                return;
+            }
+        }
 
         var windowKey = $"{target.ProcessName}:{target.WindowTitle}:{target.Rect.Width}x{target.Rect.Height}";
         var now = DateTimeOffset.UtcNow;
@@ -270,12 +322,17 @@ internal sealed class CaptureCollector : IDisposable
             captureReason = "foreground";
             await _writer.WriteStatusAsync(true);
             Diag.Line($"命中目标窗口 [{target.Channel}] \"{target.WindowTitle}\" {target.Rect.Width}x{target.Rect.Height}");
-            await Task.Delay(FirstFrameDelay, cancellationToken);
+            if (!targetCameFromForegroundEvent)
+            {
+                await Task.Delay(FirstFrameDelay, cancellationToken);
+            }
         }
 
         // 关键：抠图前重新读取最新窗口位置/大小，并确认窗口没在移动。
         // 否则用旧 rect 的屏幕坐标 CopyFromScreen，会截到窗口旧位置(此刻是桌面/别的窗口)。
-        var stable = await GetStableTargetAsync(target.Channel, cancellationToken);
+        var stable = targetCameFromForegroundEvent
+            ? target
+            : await GetStableForegroundTargetAsync(target.Channel, cancellationToken);
         if (stable is null)
         {
             return; // 已切走 / 正在拖动缩放 → 本轮跳过，等下一轮窗口停稳再截
@@ -314,7 +371,7 @@ internal sealed class CaptureCollector : IDisposable
         OcrPayload ocr;
         try
         {
-            _ocr ??= new WindowsOcr();
+            _ocr ??= OcrEngineFactory.CreateDefault();
             ocr = await _ocr.RecognizeAsync(image.Path);
         }
         catch (Exception ex)
@@ -330,41 +387,65 @@ internal sealed class CaptureCollector : IDisposable
             Diag.Line($"OCR[{ocr.Status}] {t.Length}字: {(t.Length > 160 ? t.Substring(0, 160) + "…" : t)}");
         }
 
-        // 给每个词块采样气泡填充色（像素只有本机有）。结构化/判说话人已移到后端，
-        // 后端按这些颜色样本算 HSV 饱和度判 self/other；采不到色的块后端按位置兜底。
+        // 给每个词块采样气泡填充色（像素只有本机有）。结构化在 sidecar 本地做，
+        // 判说话人时把一条消息所有词块的颜色样本平均、算 HSV 饱和度做辅助（位置为主）。
         if (ocr.Status == "success" && ocr.Blocks.Count > 0)
         {
             ocr = ocr with { Blocks = BlockColorSampler.Enrich(bitmap, ocr.Blocks) };
         }
 
-        // 客户会话过滤：群聊命中"就医服务群"或标题/全文出现订单号(fwyy / COD/CCOD/OD) → 保留并抽订单号；
-        // 否则非客户聊天，删盘、不上报。OCR 失败(status!=success)时不过滤，保留该帧以免漏采。
-        var conv = ocr.Status == "success" ? Classify(ocr) : new ConversationClass(true, null, null);
+        // 分区 + 结构化（sidecar 本地完成）：切聊天区 → 拼行 → 顶行=标题 → 判说话人 → 抽昵称。
+        // OCR 失败时跳过结构化，保留该帧以免漏采（title=null）。
+        var structure = ocr.Status == "success"
+            ? MessageStructurer.Build(bitmap, ocr.Blocks, target.Channel)
+            : new StructureResult(null, Array.Empty<StructuredMessage>());
+
+        // 客户会话判断：只看聊天区**标题行**（群名含"就医服务群" 或 标题含订单号）。
+        // OCR 失败时不过滤（保留该帧）。
+        var conv = ocr.Status == "success" ? ClassifyTitle(structure.Title) : new ConversationClass(true, null, null);
         if (!conv.IsCustomer)
         {
-            TryDelete(image.Path);
+            // 非客户会话：不入库、不上报，但保留截图、仍把整帧吐给 tray-app（Filtered=true），供调试页看截图+OCR。
             _filteredCount++;
             _lastError = null;
-            Diag.Line($"非客户会话，丢弃 → 已删 {System.IO.Path.GetFileName(image.Path)}");
+            Diag.Line($"非客户会话，不入库（保留截图供调试）标题=\"{structure.Title}\" → {image.Path}");
+            await _writer.WriteAsync(new FramePayload(
+                "frame",
+                target.Channel,
+                target.ProcessName,
+                structure.Title,
+                capturedAt.UtcDateTime.ToString("O"),
+                new WindowPayload(target.Rect.Left, target.Rect.Top, target.Rect.Width, target.Rect.Height, target.ShowState),
+                image.Path,
+                image.Sha256,
+                ocr,
+                decision.Reason,
+                decision.DiffScore,
+                null,
+                null,
+                structure.Messages,
+                Filtered: true,
+                ChatX0: structure.ChatX0,
+                ChatX1: structure.ChatX1,
+                InputCutY: structure.InputCutY,
+                InputCut: structure.InputCut,
+                DroppedBlockCount: structure.DroppedBlockCount
+            ));
             return;
         }
 
         Diag.Line(
-            $"保留关键帧 [{decision.Reason}] {conv.Kind ?? "ocr?"} 订单号={conv.OrderNo ?? "无"} " +
+            $"保留关键帧 [{decision.Reason}] {conv.Kind ?? "?"} 标题=\"{structure.Title}\" 订单号={conv.OrderNo ?? "无"} " +
             $"diff={decision.DiffScore:0.###} 触发={captureReason} → {image.Path}");
 
-        // 路线1：结构化出"带说话人"的消息列表（颜色+位置判 self/other）
-        var messages = ocr.Status == "success"
-            ? MessageStructurer.Build(bitmap, ocr.Blocks, target.Channel)
-            : Array.Empty<StructuredMessage>();
-        if (Diag.Verbose && messages.Count > 0)
+        if (Diag.Verbose && structure.Messages.Count > 0)
         {
-            Diag.Line($"  结构化消息（{messages.Count} 条）：");
-            foreach (var msg in messages)
+            Diag.Line($"  结构化消息（{structure.Messages.Count} 条）：");
+            foreach (var msg in structure.Messages)
             {
                 var t = msg.Text.Replace('\n', ' ');
                 if (t.Length > 40) t = t.Substring(0, 40) + "…";
-                Diag.Line($"    [{msg.Speaker}]{(msg.Name != null ? " " + msg.Name : "")} {t}");
+                Diag.Line($"    [{msg.Speaker}{(msg.Kind != null ? ":" + msg.Kind : "")}]{(msg.Name != null ? " " + msg.Name : "")} {t}");
             }
         }
 
@@ -372,7 +453,7 @@ internal sealed class CaptureCollector : IDisposable
             "frame",
             target.Channel,
             target.ProcessName,
-            target.WindowTitle,
+            structure.Title,
             capturedAt.UtcDateTime.ToString("O"),
             new WindowPayload(
                 target.Rect.Left,
@@ -388,7 +469,13 @@ internal sealed class CaptureCollector : IDisposable
             decision.DiffScore,
             conv.Kind,
             conv.OrderNo,
-            messages
+            structure.Messages,
+            Filtered: false,
+            ChatX0: structure.ChatX0,
+            ChatX1: structure.ChatX1,
+            InputCutY: structure.InputCutY,
+            InputCut: structure.InputCut,
+            DroppedBlockCount: structure.DroppedBlockCount
         );
 
         _keptCount++;
@@ -398,7 +485,7 @@ internal sealed class CaptureCollector : IDisposable
 
     // 读取当前前台目标窗口，并确认它"没在移动/缩放"：间隔 150ms 读两次，rect 一致才算稳定。
     // 返回最新（稳定）窗口；若已切走或正在拖动则返回 null（本轮跳过）。
-    private async Task<TargetWindow?> GetStableTargetAsync(string expectChannel, CancellationToken ct)
+    private async Task<TargetWindow?> GetStableForegroundTargetAsync(string expectChannel, CancellationToken ct)
     {
         var a = SafeGetForegroundTarget();
         if (a is null || !string.Equals(a.Channel, expectChannel, StringComparison.Ordinal))
@@ -415,6 +502,22 @@ internal sealed class CaptureCollector : IDisposable
         return a.Rect == b.Rect ? b : null;
     }
 
+    private async Task<TargetWindow?> GetStableTargetByWindowAsync(TargetWindow target, CancellationToken ct)
+    {
+        var a = SafeGetTargetFromHwnd(target.Hwnd);
+        if (a is null || !string.Equals(a.Channel, target.Channel, StringComparison.Ordinal))
+        {
+            return null;
+        }
+        await Task.Delay(StableCheckDelay, ct);
+        var b = SafeGetTargetFromHwnd(target.Hwnd);
+        if (b is null || !string.Equals(b.Channel, target.Channel, StringComparison.Ordinal))
+        {
+            return null;
+        }
+        return a.Rect == b.Rect ? b : null;
+    }
+
     private TargetWindow? SafeGetForegroundTarget()
     {
         try
@@ -424,6 +527,18 @@ internal sealed class CaptureCollector : IDisposable
         catch
         {
             // 缩放过程中窗口可能瞬时过小/取 rect 失败，视为不稳定
+            return null;
+        }
+    }
+
+    private TargetWindow? SafeGetTargetFromHwnd(IntPtr hwnd)
+    {
+        try
+        {
+            return _windowInspector.GetTargetFromHwnd(hwnd);
+        }
+        catch
+        {
             return null;
         }
     }

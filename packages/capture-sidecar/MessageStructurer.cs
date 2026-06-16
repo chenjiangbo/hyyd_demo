@@ -4,13 +4,14 @@ using System.Text.RegularExpressions;
 namespace Hyyd.CaptureSidecar;
 
 /// <summary>
-/// 路线1：把一张聊天截图的 OCR 结果 + 像素，结构化成"带说话人"的消息列表。
-/// 说话人判定不靠 AI 猜，靠确定性规则：
-///   - 气泡背景"有色(高饱和=绿/蓝)" → self；"灰/白(低饱和)" → other（深浅色模式都成立，自己永远是有色那个）
-///   - 辅以左右位置（右=self、左=other）做兜底
-///   - 居中 + 时间/日期/撤回 文案 → system
-/// 区域上裁掉顶部标题栏、底部输入框（按比例，可调）。侧边会话列表暂不裁（默认全宽，后续按真实全窗口截图调 left 比例）。
-/// 这是第一版，阈值/比例都走环境变量，便于在真实截图上调。
+/// 把一张聊天截图的 OCR 词块 + 像素，结构化成「标题 + 带说话人的消息列表」。
+/// 全在 sidecar 本地做（分区→拼行→判说话人→抽昵称），后端不再二次结构化。
+///
+/// 判说话人不靠 AI 猜，靠确定性的**左右位置**规则（见 §9.2）：
+///   - 气泡靠右 → self（自己/专员）；靠左 → other（对方/客户）；居中且窄 → system（时间/通知）
+///   - 颜色（气泡底色饱和度）仅在左右几乎对称的模糊带里做辅助，不同机器色差不影响主判据
+///
+/// 阈值都走环境变量，便于在真实截图上标定（默认值见各 EnvD）。
 /// </summary>
 internal static class MessageStructurer
 {
@@ -20,243 +21,515 @@ internal static class MessageStructurer
         return double.TryParse(v, out var d) ? d : dflt;
     }
 
-    // 列检测：把所有词块 X 投影成覆盖直方图，栏与栏之间是宽空白竖条；按空白条切列，取最宽的密集列 = 聊天区。
-    // 纯动态：每张图用自己的 OCR 坐标算，不写死比例/坐标，不受窗口大小、成员面板开合影响。
-    private static (int x0, int x1) DetectChatXRange(IReadOnlyList<OcrBlock> blocks, int w)
-    {
-        int gapMin = (int)EnvD("HYYD_CHAT_COL_GAP", 18); // 视作栏间隙的最小空白宽
-        int minBlocks = (int)EnvD("HYYD_CHAT_COL_MINBLOCKS", 5);
-        var cover = new int[w];
-        foreach (var b in blocks)
-        {
-            int xs = Math.Max(0, b.Bbox.X), xe = Math.Min(w, b.Bbox.X + b.Bbox.Width);
-            for (int x = xs; x < xe; x++) cover[x]++;
-        }
-        // 扫描切列：一列持续到遇见 >=gapMin 的连续空白；小于 gapMin 的空白算列内
-        var cols = new List<(int s, int e)>();
-        int i = 0;
-        while (i < w)
-        {
-            while (i < w && cover[i] == 0) i++;
-            if (i >= w) break;
-            int s = i, lastNonZero = i;
-            while (i < w)
-            {
-                if (cover[i] > 0) { lastNonZero = i; i++; }
-                else
-                {
-                    int z = i;
-                    while (z < w && cover[z] == 0) z++;
-                    if (z - i >= gapMin) break; // 栏间隙，列结束
-                    i = z; // 列内小空白，继续
-                }
-            }
-            cols.Add((s, lastNonZero + 1));
-        }
-        // 取 块数>=minBlocks 的列里最宽的
-        (int s, int e) best = (0, w);
-        int bestWidth = -1;
-        foreach (var c in cols)
-        {
-            int n = blocks.Count(b =>
-            {
-                var cx = b.Bbox.X + b.Bbox.Width / 2;
-                return cx >= c.s && cx < c.e;
-            });
-            if (n >= minBlocks && c.e - c.s > bestWidth) { bestWidth = c.e - c.s; best = c; }
-        }
-        return best;
-    }
-
-    // 气泡"有色"判定的饱和度阈值（≥ 视为 self）
-    private static double SatThreshold => EnvD("HYYD_BUBBLE_SAT", 0.15);
+    // ── 阈值（相对量，不写死像素；换机器/分辨率不变） ──────────────────────────
+    private static double CenterThresh => EnvD("HYYD_MSG_CENTER_THRESH", 0.12);    // |L-R| < 此值视为居中(system 候选)
+    private static double CenterWidthFrac => EnvD("HYYD_MSG_CENTER_WIDTH", 0.6);   // 居中还要求气泡宽度 < 整区宽×此值（排除占满整宽的长消息）
 
     private static readonly Regex TimeLine = new(
-        @"^\s*(\d{1,2}\s*[:：]\s*\d{2}|\d{1,2}\s*月\s*\d{1,2}\s*日|昨天|星期[一二三四五六日天]|上午|下午|\d{2}/\d{1,2}/\d{1,2})",
+        @"^\s*(\d{1,2}\s*[:：]\s*\d{2}|\d{1,2}\s*月\s*\d{1,2}\s*日|昨天|前天|星期[一二三四五六日天]|上午|下午|凌晨|中午|晚上|\d{2,4}[-/]\d{1,2}[-/]\d{1,2})",
         RegexOptions.Compiled);
-    private static readonly Regex SystemKeyword = new(
-        @"撤回|以下为新消息|拍了拍|加入了群聊|邀请|领取了你的|红包",
-        RegexOptions.Compiled);
+    // 群通知/系统提示（可用 HYYD_CAPTURE_SYSTEM_KEYWORDS 追加，逗号分隔）
+    private static readonly Regex SystemKeyword = BuildSystemKeyword();
 
+    private static Regex BuildSystemKeyword()
+    {
+        var baseWords = new List<string>
+        {
+            "撤回", "以下为新消息", "拍了拍", "加入了群聊", "邀请", "领取了你的", "红包",
+            "现在可以开始聊天", "已添加", "成为好友", "你已添加了", "通过了你的朋友验证",
+            "对方正在输入", "该消息类型暂不支持", "进入了群聊", "移出了群聊", "修改群名"
+        };
+        var extra = Environment.GetEnvironmentVariable("HYYD_CAPTURE_SYSTEM_KEYWORDS");
+        if (!string.IsNullOrWhiteSpace(extra))
+        {
+            baseWords.AddRange(extra.Split(new[] { ',', '，' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        }
+        return new Regex(string.Join("|", baseWords.Select(Regex.Escape)), RegexOptions.Compiled);
+    }
+
+    /// 选聊天区：左界来自联系人列表行右端的重复最大值；企微右界只认"群成员"文字锚点。
+    private static (int x0, int x1) DetectChatXRange(IReadOnlyList<OcrBlock> blocks, int w, string channel)
+    {
+        var contactRight = DetectContactRight(blocks, w);
+        var leftPadding = (int)EnvD("HYYD_CHAT_LEFT_PADDING", 15);
+        var chatX0 = Math.Min(w - 1, contactRight + leftPadding);
+        var chatX1 = w;
+
+        if (string.Equals(channel, "wxwork", StringComparison.OrdinalIgnoreCase))
+        {
+            var memberLeft = DetectGroupMemberLeft(blocks, chatX0);
+            if (memberLeft != null)
+            {
+                chatX1 = memberLeft.Value;
+            }
+        }
+
+        if (chatX1 <= chatX0)
+        {
+            throw new InvalidOperationException($"聊天区分区失败：右界 {chatX1} 不大于左界 {chatX0}。");
+        }
+        return (chatX0, chatX1);
+    }
+
+    private static int DetectContactRight(IReadOnlyList<OcrBlock> blocks, int w)
+    {
+        var minContactX = Math.Max(80, (int)(w * EnvD("HYYD_CONTACT_MIN_X_FRAC", 0.08)));
+        var maxContactCenterX = w * EnvD("HYYD_CONTACT_MAX_CENTER_FRAC", 0.40);
+        var minSupport = (int)EnvD("HYYD_CONTACT_RIGHT_MIN_SUPPORT", 2);
+
+        var contactBlocks = blocks.Where(b =>
+        {
+            var cx = b.Bbox.X + b.Bbox.Width / 2.0;
+            return b.Bbox.X >= minContactX && cx < maxContactCenterX;
+        }).ToList();
+        if (contactBlocks.Count == 0)
+        {
+            throw new InvalidOperationException("聊天区分区失败：左侧联系人候选 OCR 块为空。");
+        }
+
+        var rightCounts = ToLines(contactBlocks)
+            .Select(l => l.MaxX)
+            .GroupBy(x => x)
+            .Select(g => new { Right = g.Key, Count = g.Count() })
+            .OrderByDescending(g => g.Right)
+            .ToList();
+
+        var selected = rightCounts.FirstOrDefault(g => g.Count >= minSupport);
+        if (selected == null)
+        {
+            var debug = string.Join(", ", rightCounts.Select(g => $"{g.Right}×{g.Count}"));
+            throw new InvalidOperationException($"聊天区分区失败：联系人右边界没有重复值（{debug}）。");
+        }
+
+        return selected.Right;
+    }
+
+    private static int? DetectGroupMemberLeft(IReadOnlyList<OcrBlock> blocks, int chatX0)
+    {
+        foreach (var line in ToLines(blocks))
+        {
+            var words = line.Words.OrderBy(w => w.Bbox.X).ToList();
+            for (int i = 0; i < words.Count; i++)
+            {
+                if (words[i].Bbox.X <= chatX0) continue;
+                var text = string.Join(string.Empty, words.Skip(i).Take(8).Select(w => w.Text));
+                if (text.Contains("群成员", StringComparison.Ordinal))
+                {
+                    return words[i].Bbox.X;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static int? DetectSendButtonY(IReadOnlyList<Line> lines, int chatX0, int chatX1, int h)
+    {
+        var W = Math.Max(1, chatX1 - chatX0);
+        foreach (var line in lines.OrderByDescending(l => l.MinY))
+        {
+            if (line.CenterY < h * 0.55) continue;
+            if (line.MinX < chatX0 + W * 0.45) continue;
+            var text = line.Text.Replace(" ", string.Empty);
+            if (text.Contains("发送", StringComparison.Ordinal))
+            {
+                return line.MinY;
+            }
+        }
+        return null;
+    }
+
+    // ── 词块 → 行 ──────────────────────────────────────────────────────────────
     private sealed class Line
     {
         public readonly List<OcrBlock> Words = new();
         public int MinX, MinY, MaxX, MaxY;
         public int CenterY => (MinY + MaxY) / 2;
+        public int CenterX => (MinX + MaxX) / 2;
         public int Height => MaxY - MinY;
         public string Text => string.Join(string.Empty, Words.OrderBy(w => w.Bbox.X).Select(w => w.Text));
     }
 
-    // 词块 → 行：按 Y 顺序，垂直中心重叠算同一行
-    private static List<Line> GroupLines(IEnumerable<OcrBlock> blocks)
+    private sealed record BubbleRegion(int X, int Y, int W, int H, int Area, int MaxRow)
+    {
+        public int MaxX => X + W;
+        public int MaxY => Y + H;
+        public int CenterX => X + W / 2;
+    }
+
+    // RapidOCR 当前输出已经是行级结果；这里只做轻量封装，不再把多个块二次拼成一行。
+    private static List<Line> ToLines(IEnumerable<OcrBlock> blocks)
     {
         var lines = new List<Line>();
         foreach (var b in blocks.OrderBy(b => b.Bbox.Y).ThenBy(b => b.Bbox.X))
         {
-            var cy = b.Bbox.Y + b.Bbox.Height / 2;
-            var last = lines.Count > 0 ? lines[^1] : null;
-            // 同一行：垂直中心重叠即可。（列检测已隔离聊天列，不再需要 X 间隔断行——那样会切坏正常多行消息）
-            if (last != null && Math.Abs(cy - last.CenterY) <= Math.Max(b.Bbox.Height, last.Height) * 0.6)
+            var ln = new Line
             {
-                last.Words.Add(b);
-                last.MinX = Math.Min(last.MinX, b.Bbox.X);
-                last.MinY = Math.Min(last.MinY, b.Bbox.Y);
-                last.MaxX = Math.Max(last.MaxX, b.Bbox.X + b.Bbox.Width);
-                last.MaxY = Math.Max(last.MaxY, b.Bbox.Y + b.Bbox.Height);
-            }
-            else
-            {
-                var ln = new Line
-                {
-                    MinX = b.Bbox.X,
-                    MinY = b.Bbox.Y,
-                    MaxX = b.Bbox.X + b.Bbox.Width,
-                    MaxY = b.Bbox.Y + b.Bbox.Height
-                };
-                ln.Words.Add(b);
-                lines.Add(ln);
-            }
+                MinX = b.Bbox.X,
+                MinY = b.Bbox.Y,
+                MaxX = b.Bbox.X + b.Bbox.Width,
+                MaxY = b.Bbox.Y + b.Bbox.Height
+            };
+            ln.Words.Add(b);
+            lines.Add(ln);
         }
         return lines;
     }
 
-    public static IReadOnlyList<StructuredMessage> Build(Bitmap bmp, IReadOnlyList<OcrBlock> blocks, string channel)
+    private static List<BubbleRegion> DetectBubbleRegions(Bitmap bmp, int chatX0, int chatX1, int y0, int y1, string channel)
     {
-        if (blocks.Count == 0) return Array.Empty<StructuredMessage>();
-        int w = bmp.Width, h = bmp.Height;
-        // 1) 列检测（动态，按本张图自己的 OCR 坐标算，不写死比例/坐标）：
-        //    X 投影 → 找栏间空白竖条 → 取最宽的密集列 = 聊天区。
-        //    天然排除 图标栏/会话列表/右侧成员面板/工具栏，且不受窗口大小、面板开合影响。
-        var (chatX0, chatX1) = DetectChatXRange(blocks, w);
-        // 顶/底仍按比例轻裁（标题栏/输入框；这俩沿垂直方向，远不如左右栏敏感）。
-        int top = (int)(h * EnvD("HYYD_CHAT_TOP_FRAC", 0.08));
-        int bottom = h - (int)(h * EnvD("HYYD_CHAT_BOTTOM_FRAC", 0.10));
+        var width = bmp.Width;
+        var height = bmp.Height;
+        y0 = Math.Clamp(y0, 0, height - 1);
+        y1 = Math.Clamp(y1, y0 + 1, height);
+        chatX0 = Math.Clamp(chatX0, 0, width - 1);
+        chatX1 = Math.Clamp(chatX1, chatX0 + 1, width);
 
-        var inChat = blocks
-            .Where(b =>
-            {
-                var cx = b.Bbox.X + b.Bbox.Width / 2;
-                var cy = b.Bbox.Y + b.Bbox.Height / 2;
-                return cy >= top && cy <= bottom && cx >= chatX0 && cx < chatX1;
-            })
-            .ToList();
-        if (inChat.Count == 0) return Array.Empty<StructuredMessage>();
-
-        // 2) 词 → 行
-        var lines = GroupLines(inChat);
-        if (lines.Count == 0) return Array.Empty<StructuredMessage>();
-
-        var lineH = Median(lines.Select(l => l.Height).Where(x => x > 0).ToList());
-        if (lineH <= 0) lineH = 20;
-        var midX = (chatX0 + chatX1) / 2.0;
-
-        // 3) 行 → 消息（气泡）：垂直间隔大 或 左右侧切换 → 新消息
-        var msgs = new List<List<Line>>();
-        foreach (var ln in lines)
+        var mask = new bool[width, height];
+        for (int y = y0; y < y1; y++)
         {
-            bool newMsg = msgs.Count == 0;
-            if (!newMsg)
+            for (int x = chatX0; x < chatX1; x++)
             {
-                var cur = msgs[^1];
-                var gap = ln.MinY - cur[^1].MaxY;
-                var sidePrev = SideOf(cur[^1], midX);
-                var sideCur = SideOf(ln, midX);
-                if (gap > lineH * 0.9 || sidePrev != sideCur) newMsg = true;
+                if (IsBubbleFill(bmp.GetPixel(x, y), channel))
+                {
+                    mask[x, y] = true;
+                }
             }
-            if (newMsg) msgs.Add(new List<Line> { ln });
-            else msgs[^1].Add(ln);
         }
 
-        // 4) 每条消息判说话人
-        var result = new List<StructuredMessage>();
-        foreach (var m in msgs)
+        var closed = Erode(Dilate(mask, width, height, chatX0, chatX1, y0, y1, 3), width, height, chatX0, chatX1, y0, y1, 2);
+        var seen = new bool[width, height];
+        var regions = new List<BubbleRegion>();
+        var q = new Queue<(int X, int Y)>();
+        var dirs = new (int X, int Y)[] { (1, 0), (-1, 0), (0, 1), (0, -1) };
+
+        for (int y = y0; y < y1; y++)
         {
-            var text = string.Join("\n", m.Select(l => l.Text)).Trim();
+            for (int x = chatX0; x < chatX1; x++)
+            {
+                if (!closed[x, y] || seen[x, y]) continue;
+
+                int minX = x, maxX = x, minY = y, maxY = y, area = 0;
+                var rowCounts = new Dictionary<int, int>();
+                q.Clear();
+                q.Enqueue((x, y));
+                seen[x, y] = true;
+
+                while (q.Count > 0)
+                {
+                    var cur = q.Dequeue();
+                    area++;
+                    minX = Math.Min(minX, cur.X);
+                    maxX = Math.Max(maxX, cur.X);
+                    minY = Math.Min(minY, cur.Y);
+                    maxY = Math.Max(maxY, cur.Y);
+                    rowCounts[cur.Y] = rowCounts.TryGetValue(cur.Y, out var c) ? c + 1 : 1;
+
+                    foreach (var d in dirs)
+                    {
+                        var nx = cur.X + d.X;
+                        var ny = cur.Y + d.Y;
+                        if (nx < chatX0 || nx >= chatX1 || ny < y0 || ny >= y1) continue;
+                        if (!closed[nx, ny] || seen[nx, ny]) continue;
+                        seen[nx, ny] = true;
+                        q.Enqueue((nx, ny));
+                    }
+                }
+
+                var w = maxX - minX + 1;
+                var h = maxY - minY + 1;
+                if (area < 120 || w < 18 || h < 12) continue;
+
+                var maxRow = rowCounts.Values.DefaultIfEmpty().Max();
+                var threshold = Math.Max(24, maxRow * 0.28);
+                var solidRows = rowCounts
+                    .Where(kv => kv.Value >= threshold)
+                    .Select(kv => kv.Key)
+                    .Order()
+                    .ToList();
+                if (solidRows.Count > 0)
+                {
+                    minY = solidRows[0];
+                    maxY = solidRows[^1];
+                    h = maxY - minY + 1;
+                }
+
+                if (IsLikelyBubbleRegion(minX, minY, w, h, chatX0, chatX1, y0, y1))
+                {
+                    regions.Add(new BubbleRegion(minX, minY, w, h, area, maxRow));
+                }
+            }
+        }
+
+        return regions.OrderBy(r => r.Y).ThenBy(r => r.X).ToList();
+    }
+
+    private static bool IsBubbleFill(Color p, string channel)
+    {
+        if (p.A < 200) return false;
+        if (string.Equals(channel, "wxwork", StringComparison.OrdinalIgnoreCase))
+        {
+            return p.R >= 188 && p.R <= 215 &&
+                   p.G >= 220 && p.G <= 240 &&
+                   p.B >= 248 && p.B <= 255;
+        }
+
+        var neutral = Math.Abs(p.R - p.G) <= 4 && Math.Abs(p.G - p.B) <= 5;
+        var lightGrayBubble = neutral && p.R >= 228 && p.R <= 246 && p.G >= 228 && p.G <= 246 && p.B >= 228 && p.B <= 247;
+        var greenBubble = p.G >= 220 && p.G <= 248 && p.R >= 145 && p.R <= 185 && p.B >= 145 && p.B <= 185;
+        return lightGrayBubble || greenBubble;
+    }
+
+    private static bool IsLikelyBubbleRegion(int x, int y, int w, int h, int chatX0, int chatX1, int y0, int y1)
+    {
+        if (w <= 45 && h <= 45) return false;
+        if (h < 10) return false;
+        if (w <= 40 && h >= 60) return false;
+        if (w <= 32 && h >= 100) return false;
+        if (h <= 22 && w <= 90) return false;
+        if (h <= 12 && w <= 140) return false;
+        if (x <= chatX0 + 36 && w <= 42) return false;
+        if (x + w >= chatX1 - 18 && w <= 42) return false;
+        if (y >= y1 - 140 && w <= 32 && h >= 80) return false;
+        return true;
+    }
+
+    private static bool[,] Dilate(bool[,] src, int width, int height, int x0, int x1, int y0, int y1, int radius)
+    {
+        var dst = new bool[width, height];
+        for (int y = y0; y < y1; y++)
+        {
+            for (int x = x0; x < x1; x++)
+            {
+                var on = false;
+                for (int dy = -radius; dy <= radius && !on; dy++)
+                {
+                    for (int dx = -radius; dx <= radius; dx++)
+                    {
+                        var xx = x + dx;
+                        var yy = y + dy;
+                        if (xx < x0 || xx >= x1 || yy < y0 || yy >= y1) continue;
+                        if (src[xx, yy]) { on = true; break; }
+                    }
+                }
+                dst[x, y] = on;
+            }
+        }
+        return dst;
+    }
+
+    private static bool[,] Erode(bool[,] src, int width, int height, int x0, int x1, int y0, int y1, int radius)
+    {
+        var dst = new bool[width, height];
+        for (int y = y0; y < y1; y++)
+        {
+            for (int x = x0; x < x1; x++)
+            {
+                var on = true;
+                for (int dy = -radius; dy <= radius && on; dy++)
+                {
+                    for (int dx = -radius; dx <= radius; dx++)
+                    {
+                        var xx = x + dx;
+                        var yy = y + dy;
+                        if (xx < x0 || xx >= x1 || yy < y0 || yy >= y1 || !src[xx, yy])
+                        {
+                            on = false;
+                            break;
+                        }
+                    }
+                }
+                dst[x, y] = on;
+            }
+        }
+        return dst;
+    }
+
+    // ── 主入口 ──────────────────────────────────────────────────────────────────
+    public static StructureResult Build(Bitmap bmp, IReadOnlyList<OcrBlock> blocks, string channel)
+    {
+        if (blocks.Count == 0) return new StructureResult(null, Array.Empty<StructuredMessage>());
+        int w = bmp.Width;
+
+        // 1) 分区：切出聊天区（已排除图标栏/联系人列表/(企微)成员区）
+        var (chatX0, chatX1) = DetectChatXRange(blocks, w, channel);
+        double W = Math.Max(1, chatX1 - chatX0);
+
+        var inChat = blocks.Where(b =>
+        {
+            var cx = b.Bbox.X + b.Bbox.Width / 2;
+            return cx >= chatX0 && cx < chatX1;
+        }).ToList();
+        int dropped = blocks.Count - inChat.Count; // 聊天区外被丢弃的词块（联系人区/图标栏/成员区）
+        if (inChat.Count == 0) return new StructureResult(null, Array.Empty<StructuredMessage>(), chatX0, chatX1, null, null, dropped);
+
+        // 2) 拼行
+        var lines = ToLines(inChat);
+        if (lines.Count == 0) return new StructureResult(null, Array.Empty<StructuredMessage>(), chatX0, chatX1, null, null, dropped);
+
+        // 3) 标题 = 跳过窗口系统按钮后的聊天区顶行。RapidOCR 会识别右上角 □/×，
+        // 这些不属于聊天区标题。
+        var topChromeY = Math.Max(28, (int)(bmp.Height * 0.04));
+        var contentLines = lines.Where(l => l.MinY >= topChromeY).ToList();
+        if (contentLines.Count == 0)
+        {
+            return new StructureResult(null, Array.Empty<StructuredMessage>(), chatX0, chatX1, null, null, dropped);
+        }
+        var titleLine = contentLines[0];
+        var title = titleLine.Text;
+
+        // 4) 像素 → 气泡。OCR 只提供文字行；消息边界以截图里的气泡/卡片底色为准。
+        // 输入区分区先不参与正式结果，但发送按钮同一行及其下方的工具栏 OCR 需要丢弃。
+        var lineH = Median(contentLines.Select(l => l.Height).Where(x => x > 0).ToList());
+        if (lineH <= 0) lineH = 20;
+        var bodyLines = contentLines.Skip(1).ToList();
+
+        var sendLine = contentLines
+            .Where(l => l.Text.Replace(" ", string.Empty).Contains("发送", StringComparison.Ordinal))
+            .Where(l => l.CenterY >= bmp.Height * 0.55)
+            .OrderByDescending(l => l.MinY)
+            .FirstOrDefault();
+        var visibleBodyLines = bodyLines
+            .Where(l => !IsInputNoiseLine(l, sendLine))
+            .ToList();
+        if (visibleBodyLines.Count == 0)
+        {
+            return new StructureResult(title, Array.Empty<StructuredMessage>(), chatX0, chatX1, null, null, dropped);
+        }
+
+        var midX = (chatX0 + chatX1) / 2.0;
+        var scanY0 = Math.Min(bmp.Height - 1, Math.Max(titleLine.MaxY + 4, topChromeY + 20));
+        var scanY1 = sendLine == null
+            ? Math.Min(bmp.Height, (int)(bmp.Height * 0.92))
+            : Math.Clamp(sendLine.MinY - 4, scanY0 + 1, bmp.Height);
+        var regions = DetectBubbleRegions(bmp, chatX0, chatX1, scanY0, scanY1, channel);
+        if (regions.Count == 0)
+        {
+            throw new InvalidOperationException($"消息气泡检测失败：聊天区 {chatX0}-{chatX1}，扫描 Y={scanY0}-{scanY1}。");
+        }
+
+        // 5) 气泡内文字 → 消息；气泡外且相对居中的文字 → system。
+        var result = new List<StructuredMessage>();
+        var usedLines = new HashSet<Line>();
+        foreach (var region in regions)
+        {
+            var inside = visibleBodyLines
+                .Where(l => LineInsideRegion(l, region, pad: 6))
+                .OrderBy(l => l.MinY)
+                .ThenBy(l => l.MinX)
+                .ToList();
+            if (inside.Count == 0) continue;
+
+            var speaker = region.CenterX >= midX ? "self" : "other";
+            string? sender = null;
+            if (speaker == "other")
+            {
+                if (!PromoteOverlappingSenderName(inside, region, lineH, ref sender))
+                {
+                    sender = FindSenderNameForRegion(visibleBodyLines, regions, region, midX, lineH);
+                }
+            }
+
+            foreach (var line in inside) usedLines.Add(line);
+            var text = string.Join("\n", inside.Select(l => l.Text)).Trim();
             if (text.Length == 0) continue;
 
-            int mnX = m.Min(l => l.MinX), mxX = m.Max(l => l.MaxX);
-            int mnY = m.Min(l => l.MinY), mxY = m.Max(l => l.MaxY);
-            var center = (mnX + mxX) / 2.0;
-
-            // system：单行、居中、时间/日期/撤回等
-            if (m.Count == 1 && Math.Abs(center - midX) < (chatX1 - chatX0) * 0.18 &&
-                (TimeLine.IsMatch(text) || SystemKeyword.IsMatch(text)) && text.Length <= 30)
-            {
-                result.Add(new StructuredMessage("system", null, text));
-                continue;
-            }
-
-            var speaker = ClassifySpeaker(bmp, mnX, mnY, mxX, mxY, center, midX);
-            result.Add(new StructuredMessage(speaker, null, text));
+            var box = new MsgBox(region.X, region.Y, region.W, region.H);
+            var leftGap = (region.X - chatX0) / W;
+            var rightGap = (chatX1 - region.MaxX) / W;
+            result.Add(new StructuredMessage(speaker, string.IsNullOrEmpty(sender) ? null : sender, text, null, box, leftGap, rightGap, "bubble"));
         }
-        return result;
-    }
 
-    private static string SideOf(Line ln, double midX)
-    {
-        var c = (ln.MinX + ln.MaxX) / 2.0;
-        return c >= midX ? "R" : "L";
-    }
-
-    // 颜色为主、位置兜底
-    private static string ClassifySpeaker(Bitmap bmp, int x0, int y0, int x1, int y1, double center, double midX)
-    {
-        var fill = SampleFill(bmp, x0, y0, x1, y1);
-        if (fill is { } c)
+        foreach (var line in visibleBodyLines.OrderBy(l => l.MinY).ThenBy(l => l.MinX))
         {
-            var (_, s, _) = ToHsv(c.R, c.G, c.B);
-            if (s >= SatThreshold) return "self"; // 有色气泡（绿/蓝）= 自己（深浅色模式都成立）
-            // 低饱和（灰/白）= 对方
-            return "other";
+            if (usedLines.Contains(line)) continue;
+            if (LineInsideAnyRegion(line, regions, pad: 6)) continue;
+            if (!IsCenteredSystemLine(line, chatX0, chatX1)) continue;
+
+            var text = line.Text.Trim();
+            if (text.Length == 0) continue;
+            string kind = TimeLine.IsMatch(text) ? "time" : SystemKeyword.IsMatch(text) ? "notice" : "other";
+            var box = new MsgBox(line.MinX, line.MinY, line.MaxX - line.MinX, line.MaxY - line.MinY);
+            var leftGap = (line.MinX - chatX0) / W;
+            var rightGap = (chatX1 - line.MaxX) / W;
+            result.Add(new StructuredMessage("system", null, text, kind, box, leftGap, rightGap, "center"));
         }
-        // 取不到颜色 → 用左右位置
-        return center >= midX ? "self" : "other";
+
+        result = result
+            .OrderBy(m => m.Box?.Y ?? 0)
+            .ThenBy(m => m.Box?.X ?? 0)
+            .ToList();
+        return new StructureResult(title, result, chatX0, chatX1, null, null, dropped);
     }
 
-    // 网格采样气泡填充色：跳过近黑（文字）像素，对其余取平均 → 气泡底色
-    private static (int R, int G, int B)? SampleFill(Bitmap bmp, int x0, int y0, int x1, int y1)
+    private static bool IsInputNoiseLine(Line line, Line? sendLine)
     {
-        x0 = Math.Max(0, x0 - 4);
-        y0 = Math.Max(0, y0);
-        x1 = Math.Min(bmp.Width - 1, x1 + 4);
-        y1 = Math.Min(bmp.Height - 1, y1);
-        if (x1 <= x0 || y1 <= y0) return null;
-        int stepX = Math.Max(1, (x1 - x0) / 24), stepY = Math.Max(1, (y1 - y0) / 8);
-        long sr = 0, sg = 0, sb = 0;
-        int n = 0;
-        for (int y = y0; y <= y1; y += stepY)
-        {
-            for (int x = x0; x <= x1; x += stepX)
-            {
-                var p = bmp.GetPixel(x, y);
-                int lum = (p.R * 30 + p.G * 59 + p.B * 11) / 100;
-                if (lum < 70) continue; // 跳过文字笔画（深色）
-                sr += p.R;
-                sg += p.G;
-                sb += p.B;
-                n++;
-            }
-        }
-        if (n == 0) return null;
-        return ((int)(sr / n), (int)(sg / n), (int)(sb / n));
+        if (sendLine == null) return false;
+        if (line.MinY >= sendLine.MinY) return true;
+        return Math.Abs(line.CenterY - sendLine.CenterY) <= Math.Max(18, sendLine.Height);
     }
 
-    private static (double H, double S, double V) ToHsv(int r, int g, int b)
+    private static bool LineInsideRegion(Line line, BubbleRegion region, int pad)
     {
-        double rd = r / 255.0, gd = g / 255.0, bd = b / 255.0;
-        double max = Math.Max(rd, Math.Max(gd, bd)), min = Math.Min(rd, Math.Min(gd, bd));
-        double v = max;
-        double s = max <= 0 ? 0 : (max - min) / max;
-        double h = 0, d = max - min;
-        if (d > 0)
-        {
-            if (max == rd) h = (gd - bd) / d % 6;
-            else if (max == gd) h = (bd - rd) / d + 2;
-            else h = (rd - gd) / d + 4;
-            h *= 60;
-            if (h < 0) h += 360;
-        }
-        return (h, s, v);
+        return line.CenterX >= region.X - pad &&
+               line.CenterX <= region.MaxX + pad &&
+               line.CenterY >= region.Y - pad &&
+               line.CenterY <= region.MaxY + pad;
+    }
+
+    private static bool LineInsideAnyRegion(Line line, IReadOnlyList<BubbleRegion> regions, int pad)
+        => regions.Any(region => LineInsideRegion(line, region, pad));
+
+    private static string? FindSenderNameForRegion(
+        IReadOnlyList<Line> lines,
+        IReadOnlyList<BubbleRegion> regions,
+        BubbleRegion region,
+        double midX,
+        int lineH)
+    {
+        return lines
+            .Where(l => l.CenterX < midX)
+            .Where(l => !LineInsideAnyRegion(l, regions, pad: 3))
+            .Where(l => l.MaxY <= region.Y + Math.Max(4, lineH / 3))
+            .Where(l => region.Y - l.MaxY <= lineH * 2.4)
+            .Where(l => l.MinX >= region.X - lineH * 1.2 && l.MinX <= region.X + lineH * 4.0)
+            .Where(IsPlausibleSenderName)
+            .OrderByDescending(l => l.MaxY)
+            .Select(l => l.Text.Trim())
+            .FirstOrDefault();
+    }
+
+    private static bool PromoteOverlappingSenderName(List<Line> inside, BubbleRegion region, int lineH, ref string? sender)
+    {
+        if (!string.IsNullOrWhiteSpace(sender)) return false;
+        if (inside.Count < 2) return false;
+
+        var first = inside[0];
+        if (first.MinY > region.Y + Math.Max(4, lineH / 3)) return false;
+        if (!IsPlausibleSenderName(first)) return false;
+
+        sender = first.Text.Trim();
+        inside.RemoveAt(0);
+        return true;
+    }
+
+    private static bool IsPlausibleSenderName(Line line)
+    {
+        var text = line.Text.Trim();
+        if (text.Length == 0 || text.Length > 26) return false;
+        if (TimeLine.IsMatch(text) || SystemKeyword.IsMatch(text)) return false;
+        if (text.Contains("http", StringComparison.OrdinalIgnoreCase) || text.Contains("www.", StringComparison.OrdinalIgnoreCase)) return false;
+        if (text.Contains("微信电脑版", StringComparison.Ordinal) || text.Contains("企业微信", StringComparison.Ordinal)) return false;
+        if (text.Contains("发送", StringComparison.Ordinal)) return false;
+        return true;
+    }
+
+    private static bool IsCenteredSystemLine(Line line, int chatX0, int chatX1)
+    {
+        var chatW = Math.Max(1, chatX1 - chatX0);
+        var center = (chatX0 + chatX1) / 2.0;
+        var width = line.MaxX - line.MinX;
+        var centerDistance = Math.Abs(line.CenterX - center);
+        return centerDistance <= chatW * 0.16 && width <= chatW * CenterWidthFrac;
     }
 
     private static int Median(List<int> xs)

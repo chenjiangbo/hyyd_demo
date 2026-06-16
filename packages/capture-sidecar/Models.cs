@@ -1,6 +1,7 @@
 namespace Hyyd.CaptureSidecar;
 
 internal sealed record TargetWindow(
+    IntPtr Hwnd,
     string Channel,
     string ProcessName,
     string WindowTitle,
@@ -24,7 +25,8 @@ internal sealed record FramePayload(
     string Type,
     string Channel,
     string ProcessName,
-    string? WindowTitle,
+    // 会话标题：聊天区顶行 OCR（=会话名/群名）。不再用 Win32 GetWindowText（对微信不可靠）。
+    string? Title,
     string CapturedAt,
     WindowPayload Window,
     string ScreenshotPath,
@@ -32,14 +34,55 @@ internal sealed record FramePayload(
     OcrPayload Ocr,
     string KeepReason,
     double DiffScore,
-    // 客户会话识别结果：会话类型（group/single）与从标题/全文抽到的订单号（高客 fwyy… / 普客 COD/CCOD/OD…），抽不到为 null。
+    // 客户会话识别结果：会话类型（group/single）与从标题抽到的订单号（高客 fwyy… / 普客 COD/CCOD/OD…），抽不到为 null。
     string? ConversationKind,
     string? OrderNo,
-    // 结构化消息：用气泡颜色+位置判出的"带说话人"的消息列表（路线1：供后端 LLM 抽关键信息）
-    IReadOnlyList<StructuredMessage> Messages
+    // 结构化消息：sidecar 分区+拼行+判说话人后的成品（后端不再二次结构化）。
+    IReadOnlyList<StructuredMessage> Messages,
+    // 非客户会话过滤掉的帧：仍输出该帧（供调试页看 OCR），但 tray-app 端只进调试缓冲、不入库不上报。
+    bool Filtered = false,
+    // ── 调试元数据（仅采集调试页用；tray-app 入库/上报时忽略）──
+    int? ChatX0 = null,            // 聊天区左界（分区竖线）
+    int? ChatX1 = null,            // 聊天区右界
+    int? InputCutY = null,         // 输入框上沿 Y（此下被切），无则 null
+    InputCutDebug? InputCut = null,// 输入区定位候选与最终依据（调试页展示）
+    int? DroppedBlockCount = null  // 聊天区外被丢弃的词块数（联系人区/图标栏/成员区）
 );
 
-/// 一条结构化消息。Speaker: 'self'（本员工）| 'other'（客户/群成员）| 'system'（时间/撤回等系统提示）。
-/// Name: 群聊里对方的昵称（能识别时），单聊/自己为 null。
-internal sealed record StructuredMessage(string Speaker, string? Name, string Text);
+/// 词块/气泡的外接框（调试用）。
+internal sealed record MsgBox(int X, int Y, int W, int H);
 
+/// 一条结构化消息。Speaker: 'self'（本员工）| 'other'（客户/群成员）| 'system'（时间/通知）。
+/// Name: 群聊里对方的昵称（能识别时），单聊/自己为 null。
+/// Kind: system 消息的细分——"time"(时间锚点，保留)/"notice"(群通知，可忽略)/"other"；非 system 为 null。
+/// Box/L/R/DecidedBy: 调试元数据——气泡外接框、左右相对留白比、判据来源(position/color/center)。
+internal sealed record StructuredMessage(
+    string Speaker,
+    string? Name,
+    string Text,
+    string? Kind = null,
+    MsgBox? Box = null,
+    double? L = null,
+    double? R = null,
+    string? DecidedBy = null);
+
+/// 输入框定位调试信息。FinalCutY 与 FramePayload.InputCutY 一致。
+internal sealed record InputCutDebug(
+    int? SendButtonY,
+    int? SeparatorLineY,
+    int? GapCutY,
+    int? LastBubbleBottomY,
+    int? FinalCutY,
+    string? FinalReason,
+    int RemovedLineCount,
+    IReadOnlyList<string> RemovedLinePreview);
+
+/// 结构化产出：标题（聊天区顶行）+ 消息列表 + 分区调试信息。
+internal sealed record StructureResult(
+    string? Title,
+    IReadOnlyList<StructuredMessage> Messages,
+    int ChatX0 = 0,
+    int ChatX1 = 0,
+    int? InputCutY = null,
+    InputCutDebug? InputCut = null,
+    int DroppedBlockCount = 0);

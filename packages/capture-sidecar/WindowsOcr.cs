@@ -4,9 +4,11 @@ using Windows.Storage;
 
 namespace Hyyd.CaptureSidecar;
 
-internal sealed class WindowsOcr
+internal sealed class WindowsOcr : IOcrEngine
 {
     private readonly OcrEngine _engine;
+
+    public string Name => "windows_ocr";
 
     public WindowsOcr()
     {
@@ -42,7 +44,7 @@ internal sealed class WindowsOcr
         }
 
         return new OcrPayload(
-            "windows_ocr",
+            Name,
             "success",
             result.Text ?? string.Empty,
             blocks

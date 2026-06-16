@@ -10,13 +10,20 @@ import {
   type ReconstructInput
 } from './capture-ai-reconstruct'
 import { CaptureStore } from './capture-store'
-import type { CaptureFrameEvent, CaptureSidecarStatus, CaptureStructuredMessage } from './capture-types'
+import type { CaptureFrameEvent, CaptureSidecarStatus } from './capture-types'
 
 export interface CaptureShot {
   path: string
   fileName: string
   channel: string
   capturedAt: string | null
+}
+
+export interface DiagLogEntry {
+  ts: string
+  /** sidecar=C# stderr  insert=本地入库  structure=sidecar结构化结果  upload=上报后端  error=异常  info=TS侧系统消息 */
+  tag: 'sidecar' | 'insert' | 'structure' | 'upload' | 'error' | 'info'
+  msg: string
 }
 
 type SidecarIncoming =
@@ -33,12 +40,6 @@ interface SidecarCommand {
 interface CaptureBackendConfig {
   backendUrl: string
   employeeCode: string
-}
-
-interface StructureResponse {
-  data?: {
-    messages?: CaptureStructuredMessage[]
-  }
 }
 
 export class CaptureSidecarClient {
@@ -64,6 +65,27 @@ export class CaptureSidecarClient {
   // 这些字段持久化层暂未消费——见交接文档附录 C）。仅供「采集调试」标签页可视化验证，不落库、重启即清。
   private static readonly DEBUG_RING_MAX = 60
   private debugFrames: CaptureFrameEvent[] = []
+
+  // 【调试】过程日志环形缓冲：sidecar stderr + TS 侧 insert/structure/upload 结果，最新在前。
+  private static readonly DIAG_LOG_MAX = 500
+  private diagLog: DiagLogEntry[] = []
+
+  private addLog(tag: DiagLogEntry['tag'], msg: string): void {
+    this.diagLog.unshift({ ts: new Date().toISOString(), tag, msg })
+    if (this.diagLog.length > CaptureSidecarClient.DIAG_LOG_MAX) {
+      this.diagLog.length = CaptureSidecarClient.DIAG_LOG_MAX
+    }
+  }
+
+  listDiagLog(limit = CaptureSidecarClient.DIAG_LOG_MAX): DiagLogEntry[] {
+    return this.diagLog.slice(0, limit)
+  }
+
+  clearDiagLog(): { cleared: number } {
+    const cleared = this.diagLog.length
+    this.diagLog = []
+    return { cleared }
+  }
 
   /** 【调试】最近的原始采集帧（最新在前）。供 capture:debug-frames IPC。 */
   listDebugFrames(limit = CaptureSidecarClient.DEBUG_RING_MAX): CaptureFrameEvent[] {
@@ -280,10 +302,21 @@ export class CaptureSidecarClient {
       windowsHide: true
     })
 
+    this.addLog('info' as DiagLogEntry['tag'], `sidecar 进程已启动: ${sidecarPath}`)
     this.child.stdout.on('data', (chunk) => this.handleStdout(chunk.toString('utf8')))
-    this.child.stderr.on('data', (chunk) => {
-      const message = chunk.toString('utf8').trim()
-      if (message) console.error(`[capture-sidecar] ${message}`)
+    this.child.stderr.on('data', (chunk: Buffer) => {
+      // C# stderr 已强制设为 UTF-8，直接解码
+      const raw = chunk.toString('utf8')
+      for (const line of raw.split('\n')) {
+        const trimmed = line.trim()
+        if (trimmed) {
+          console.error(`[capture-sidecar] ${trimmed}`)
+          // Diag.Line 写入格式为 "HH:mm:ss.fff <message>"，去掉时间戳前缀后存入 diagLog
+          // 这样 SidecarDebugPage 的 parseSessions 正则才能从行首匹配关键词
+          const msg = trimmed.replace(/^\d{2}:\d{2}:\d{2}\.\d{3} /, '')
+          this.addLog('sidecar', msg)
+        }
+      }
     })
     this.child.on('error', (error) => {
       this.setError(`采集 sidecar 启动失败: ${error.message}`)
@@ -388,19 +421,90 @@ export class CaptureSidecarClient {
       if (this.debugFrames.length > CaptureSidecarClient.DEBUG_RING_MAX) {
         this.debugFrames.length = CaptureSidecarClient.DEBUG_RING_MAX
       }
+      // 非客户会话过滤掉的帧：sidecar 仍吐出来供调试页看截图/OCR，但不入库、不上报、不结构化。
+      if (message.filtered) {
+        this.status.lastFrameAt = message.capturedAt
+        this.status.lastTextPreview = message.ocr.text.replace(/\s+/g, ' ').slice(0, 120)
+        return
+      }
       if (!this.store) {
         this.setError('本地采集数据库未初始化')
         return
       }
-      const structuredMessages = await this.structureFrame(message)
+      // 结构化已在 sidecar 本地完成（分区+拼行+判说话人），直接用成品 messages，后端不再 structure。
+      const structuredMessages = message.messages ?? null
+      const convName = message.title ?? message.windowTitle ?? message.processName
+      this.addLog('structure', `${message.channel} "${convName}" → ${structuredMessages?.length ?? 0}条消息`)
       const result = this.store.insertFrame(message, null, structuredMessages)
       this.status.collecting = true
       this.status.mode = 'collecting'
       this.status.lastError = null
       this.status.lastFrameAt = message.capturedAt
-      if (result.duplicate) this.status.skippedDuplicateCount += 1
-      else this.status.capturedFrameCount += 1
+      if (result.duplicate) {
+        this.status.skippedDuplicateCount += 1
+        this.addLog('insert', `去重·已存在 ${message.channel} "${convName}"`)
+      } else {
+        this.status.capturedFrameCount += 1
+        this.addLog('insert', `新帧 ${message.channel} "${convName}" → ${result.newMessages.length} 条新消息 订单候选=${result.orderNo ?? '无'}`)
+      }
       this.status.lastTextPreview = message.ocr.text.replace(/\s+/g, ' ').slice(0, 120)
+
+      // 把本帧"首次出现"的消息上报后端 → 按屏幕订单号(容忍 OCR 误差)模糊匹配挂到订单，
+      // 进入订单的「需求沟通」时间线。只传新消息(本地已去重)，避免重复刷屏导致后端灌水。
+      if (!result.duplicate && result.newMessages.length > 0) {
+        void this.uploadNewMessages(message, result)
+      }
+    }
+  }
+
+  /** 上报本帧新消息到后端（失败不影响采集，仅记日志）。订单关联由后端按 orderNoCandidate 模糊解析。 */
+  private async uploadNewMessages(frame: CaptureFrameEvent, result: import('./capture-store').InsertFrameResult): Promise<void> {
+    if (!this.backendConfig) return
+    const { backendUrl, employeeCode } = this.backendConfig
+    const conversationName = result.conversationName || frame.title || frame.processName
+    for (const m of result.newMessages) {
+      // 系统提示(时间戳/撤回提示等)不入订单沟通时间线
+      if (m.senderType === 'system') continue
+      const body = {
+        channel: frame.channel,
+        conversationName,
+        senderName: m.senderName ?? undefined,
+        contentText: m.content,
+        capturedAt: frame.capturedAt,
+        orderNoCandidate: result.orderNo ?? undefined
+      }
+      const preview = m.content.replace(/\s+/g, ' ').slice(0, 40)
+      try {
+        const res = await fetch(`${backendUrl}/api/v1/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Employee-Code': employeeCode },
+          body: JSON.stringify(body)
+        })
+        const json = await res.json().catch(() => null) as {
+          data?: { id?: number; orderId?: number | null }
+          _debug?: { matchMethod?: string; candidate?: string; dist?: number; matchedOrderId?: number | null; reason?: string }
+          error?: string
+        } | null
+        if (res.ok && json?.data) {
+          const d = json.data
+          const dbg = json._debug
+          const orderInfo = d.orderId
+            ? `→ 订单${d.orderId}${dbg?.matchMethod ? `(${dbg.matchMethod}${dbg?.dist != null ? ` dist=${dbg.dist}` : ''})` : ''}`
+            : dbg?.matchMethod
+              ? `→ 未关联订单(${dbg.matchMethod}${dbg?.reason ? `:${dbg.reason}` : ''})`
+              : '→ 未关联订单'
+          this.addLog('upload', `✓ ${m.senderType} "${preview}" 候选=${body.orderNoCandidate ?? '无'} ${orderInfo} msgId=${d.id}`)
+        } else {
+          const errText = json?.error ?? res.statusText
+          const errMsg = `✗ ${m.senderType} "${preview}" → HTTP ${res.status}: ${errText.slice(0, 120)}`
+          console.error(`[capture] 上报消息失败: ${errMsg}`)
+          this.addLog('upload', errMsg)
+        }
+      } catch (e) {
+        const errMsg = `✗ ${m.senderType} "${preview}" → 网络异常: ${(e as Error).message}`
+        console.error('[capture] 上报消息异常:', errMsg)
+        this.addLog('upload', errMsg)
+      }
     }
   }
 
@@ -408,42 +512,6 @@ export class CaptureSidecarClient {
     this.status.lastError = message
     this.status.mode = 'error'
     console.error(`[capture-sidecar] ${message}`)
-  }
-
-  private async structureFrame(frame: CaptureFrameEvent): Promise<CaptureStructuredMessage[] | null> {
-    if (frame.ocr.status !== 'success') return null
-    if (!frame.ocr.blocks.length) return []
-    if (!this.backendConfig) {
-      throw new Error('未配置后端结构化服务：请先登录，让渲染进程同步 backendUrl 和 employeeCode')
-    }
-
-    const res = await fetch(`${this.backendConfig.backendUrl}/api/v1/capture/structure`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Employee-Code': this.backendConfig.employeeCode
-      },
-      body: JSON.stringify({
-        channel: frame.channel,
-        width: frame.window.width,
-        height: frame.window.height,
-        blocks: frame.ocr.blocks.map((block) => ({
-          text: block.text,
-          bbox: block.bbox,
-          colorSample: block.colorSample ?? null
-        }))
-      })
-    })
-    if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      throw new Error(`后端消息结构化失败(${res.status}): ${text || res.statusText}`)
-    }
-    const json = (await res.json()) as StructureResponse
-    const messages = json.data?.messages
-    if (!Array.isArray(messages)) {
-      throw new Error('后端消息结构化响应缺少 data.messages')
-    }
-    return messages
   }
 }
 

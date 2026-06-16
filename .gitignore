@@ -33,3 +33,6 @@ packages/android-app/build/
 packages/extension/key.pem
 packages/extension/.ext-meta.json
 packages/extension/*.crx
+
+# 本地 OCR 模型缓存，由 scripts/ensure-sidecar-ocr-models.js 按 hash 下载校验
+packages/capture-sidecar/models/

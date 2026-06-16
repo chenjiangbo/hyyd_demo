@@ -15,6 +15,11 @@ internal sealed class WindowInspector
     public TargetWindow? GetForegroundTarget()
     {
         var hwnd = NativeMethods.GetForegroundWindow();
+        return GetTargetFromHwnd(hwnd);
+    }
+
+    public TargetWindow? GetTargetFromHwnd(IntPtr hwnd)
+    {
         if (hwnd == IntPtr.Zero)
         {
             return null;
@@ -68,12 +73,17 @@ internal sealed class WindowInspector
             throw new InvalidOperationException($"GetWindowRect failed for {processName}.");
         }
 
-        if (rect.Width < 320 || rect.Height < 240)
+        // 太小的多半是表情/通知/输入法等弹窗，不是主聊天窗 → 静默跳过（不抛异常，否则会被
+        // 当成采集错误反复弹到状态栏）。阈值放宽到 200，避免误杀新版微信(Weixin.exe)较窄的窗口。
+        if (rect.Width < 200 || rect.Height < 200)
         {
-            throw new InvalidOperationException($"Target window size is too small: {rect.Width}x{rect.Height}.");
+            Console.Error.WriteLine(
+                $"[capture] 跳过过小窗口 process={processName} {rect.Width}x{rect.Height}（疑似弹窗/输入法）");
+            return null;
         }
 
         return new TargetWindow(
+            hwnd,
             channel,
             processName,
             GetWindowTitle(hwnd),
@@ -96,4 +106,3 @@ internal sealed class WindowInspector
         return builder.ToString();
     }
 }
-

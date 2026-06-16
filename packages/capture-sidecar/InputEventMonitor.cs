@@ -13,10 +13,15 @@ namespace Hyyd.CaptureSidecar;
 /// </summary>
 internal sealed class InputEventMonitor : IDisposable
 {
-    private readonly Action<string> _onTrigger;
+    private readonly Action<string, IntPtr?> _onTrigger;
     private Thread? _thread;
     private uint _threadId;
     private volatile bool _running;
+
+    // 最近一次「非回车」按键的时间戳(ticks)。采集循环用它判断"用户是否正在打字"，
+    // 以便兜底定时截图时避开打字中途（半截消息）。回车单独触发截图，不计入这里。
+    private long _lastTypingTicks;
+    public DateTimeOffset LastTypingAt => new(Interlocked.Read(ref _lastTypingTicks), TimeSpan.Zero);
 
     private IntPtr _kbHook;
     private IntPtr _mouseHook;
@@ -27,7 +32,7 @@ internal sealed class InputEventMonitor : IDisposable
     private NativeMethods.HookProc? _mouseProc;
     private NativeMethods.WinEventProc? _winEventProc;
 
-    public InputEventMonitor(Action<string> onTrigger)
+    public InputEventMonitor(Action<string, IntPtr?> onTrigger)
     {
         _onTrigger = onTrigger;
     }
@@ -98,6 +103,11 @@ internal sealed class InputEventMonitor : IDisposable
                 {
                     SafeTrigger("key-enter");
                 }
+                else
+                {
+                    // 其它按键视为"正在打字"，记下时间但不触发截图（避免截到半截消息）
+                    Interlocked.Exchange(ref _lastTypingTicks, DateTimeOffset.UtcNow.UtcTicks);
+                }
             }
         }
         return NativeMethods.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
@@ -131,14 +141,14 @@ internal sealed class InputEventMonitor : IDisposable
         uint dwEventThread,
         uint dwmsEventTime)
     {
-        SafeTrigger("foreground");
+        SafeTrigger("foreground", hwnd);
     }
 
-    private void SafeTrigger(string reason)
+    private void SafeTrigger(string reason, IntPtr? hwnd = null)
     {
         try
         {
-            _onTrigger(reason);
+            _onTrigger(reason, hwnd);
         }
         catch
         {

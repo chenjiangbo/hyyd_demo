@@ -116,6 +116,12 @@ interface AiReconstructResult {
   rawContent: string
 }
 
+interface DiagLogEntry {
+  ts: string
+  tag: 'sidecar' | 'insert' | 'structure' | 'upload' | 'error' | 'info'
+  msg: string
+}
+
 // ─── 现场采集素材（剪贴板粘贴）──────────────────────────────
 type MaterialType = 'text' | 'image'
 type MaterialSyncStatus =
@@ -148,7 +154,11 @@ interface Window {
   api?: {
     hideWindow: () => void
     minimizeWindow: () => void
+    requestWindowClose: () => Promise<void>
     quitApp: () => void
+    getWindowPreferences: () => Promise<{ closeBehavior: 'ask' | 'minimize' | 'quit' }>
+    setWindowPreferences: (prefs: { closeBehavior: 'ask' | 'minimize' | 'quit' }) => Promise<{ closeBehavior: 'ask' | 'minimize' | 'quit' }>
+    setWindowStage: (stage: 'login' | 'main') => void
     getCaptureStatus: () => Promise<CaptureSidecarStatus>
     getCaptureConversations: (channel?: string) => Promise<CaptureConversation[]>
     getCaptureMessages: (threadId: number) => Promise<CaptureMessage[]>
@@ -157,6 +167,10 @@ interface Window {
     getCaptureScreenshot: (path: string) => Promise<string | null>
     getCaptureShots: (channel?: string, limit?: number) => Promise<CaptureShot[]>
     clearCaptureShots: () => Promise<{ deleted: number }>
+    getCaptureDebugFrames: (limit?: number) => Promise<unknown[]>
+    clearCaptureDebugFrames: () => Promise<{ cleared: number }>
+    getDiagLogs: (limit?: number) => Promise<DiagLogEntry[]>
+    clearDiagLogs: () => Promise<{ cleared: number }>
     reconstructCaptureAi: (
       inputs: Array<{ path: string; capturedAt: string | null }>,
       models?: string[],
@@ -171,6 +185,7 @@ interface Window {
     materialsRetryFailed: () => Promise<{ retried: number }>
     materialsDiscardFailed: () => Promise<{ discarded: number }>
     materialsSetConfig: (cfg: { backendUrl: string; employeeCode: string }) => Promise<{ ok: boolean }>
+    captureSetConfig: (cfg: { backendUrl: string; employeeCode: string }) => Promise<{ ok: boolean }>
     clipboardRead: () => Promise<{ text: string | null; imageDataUrl: string | null }>
   }
 }

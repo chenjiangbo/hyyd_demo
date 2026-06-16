@@ -10,6 +10,8 @@ const api = {
   // 自绘标题栏：最大化切换 + 查询是否最大化 + 订阅状态变化
   maximizeToggle: () => ipcRenderer.send('window:maximize-toggle'),
   isMaximized: (): Promise<boolean> => ipcRenderer.invoke('window:is-maximized'),
+  // 登录态用小窗、登录后放大到工作台尺寸
+  setWindowStage: (stage: 'login' | 'main') => ipcRenderer.send('window:set-stage', stage),
   onMaximizedChanged: (cb: (maximized: boolean) => void): (() => void) => {
     const listener = (_e: unknown, v: boolean): void => cb(v)
     ipcRenderer.on('window:maximized-changed', listener)
@@ -35,6 +37,8 @@ const api = {
   // 【临时·采集调试页】最近原始帧（含结构化 messages/orderNo/conversationKind）
   getCaptureDebugFrames: (limit?: number) => ipcRenderer.invoke('capture:debug-frames', limit),
   clearCaptureDebugFrames: () => ipcRenderer.invoke('capture:debug-clear'),
+  getDiagLogs: (limit?: number) => ipcRenderer.invoke('capture:diag-logs', limit),
+  clearDiagLogs: () => ipcRenderer.invoke('capture:diag-clear'),
   reconstructCaptureAi: (
     inputs: Array<{ path: string; capturedAt: string | null }>,
     models?: string[],
