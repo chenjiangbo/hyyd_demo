@@ -67,6 +67,7 @@ internal static class NativeMethods
     internal const int WM_MOUSEWHEEL = 0x020A;
     internal const int VK_RETURN = 0x0D;
     internal const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    internal const int OBJID_WINDOW = 0;
     internal const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     internal const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
     internal const uint WM_QUIT = 0x0012;
@@ -132,6 +133,14 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern bool PostThreadMessage(uint idThread, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    internal static extern int GetSystemMetrics(int nIndex);
+
+    internal const int SM_XVIRTUALSCREEN = 76;
+    internal const int SM_YVIRTUALSCREEN = 77;
+    internal const int SM_CXVIRTUALSCREEN = 78;
+    internal const int SM_CYVIRTUALSCREEN = 79;
 }
 
 internal readonly record struct WinRect(int Left, int Top, int Right, int Bottom)

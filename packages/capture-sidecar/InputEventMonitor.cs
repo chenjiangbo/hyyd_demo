@@ -141,6 +141,13 @@ internal sealed class InputEventMonitor : IDisposable
         uint dwEventThread,
         uint dwmsEventTime)
     {
+        if (eventType != NativeMethods.EVENT_SYSTEM_FOREGROUND ||
+            idObject != NativeMethods.OBJID_WINDOW ||
+            idChild != 0 ||
+            hwnd == IntPtr.Zero)
+        {
+            return;
+        }
         SafeTrigger("foreground", hwnd);
     }
 

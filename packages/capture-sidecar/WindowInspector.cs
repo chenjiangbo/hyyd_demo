@@ -68,9 +68,19 @@ internal sealed class WindowInspector
             return null;
         }
 
+        var title = GetWindowTitle(hwnd);
+        var className = GetClassName(hwnd);
+
         if (!NativeMethods.GetWindowRect(hwnd, out var rect))
         {
             throw new InvalidOperationException($"GetWindowRect failed for {processName}.");
+        }
+
+        if (IsFullScreenCaptureOverlay(processName, title, rect))
+        {
+            Console.Error.WriteLine(
+                $"[capture] 跳过全屏截图遮罩 process={processName} class={className} {rect.Width}x{rect.Height}");
+            return null;
         }
 
         // 太小的多半是表情/通知/输入法等弹窗，不是主聊天窗 → 静默跳过（不抛异常，否则会被
@@ -86,10 +96,39 @@ internal sealed class WindowInspector
             hwnd,
             channel,
             processName,
-            GetWindowTitle(hwnd),
+            title,
             rect,
             "normal"
         );
+    }
+
+    private static bool IsFullScreenCaptureOverlay(string processName, string title, WinRect rect)
+    {
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            return false;
+        }
+
+        if (!processName.Equals("Weixin.exe", StringComparison.OrdinalIgnoreCase) &&
+            !processName.Equals("WeChat.exe", StringComparison.OrdinalIgnoreCase) &&
+            !processName.Equals("WXWork.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var vx = NativeMethods.GetSystemMetrics(NativeMethods.SM_XVIRTUALSCREEN);
+        var vy = NativeMethods.GetSystemMetrics(NativeMethods.SM_YVIRTUALSCREEN);
+        var vw = NativeMethods.GetSystemMetrics(NativeMethods.SM_CXVIRTUALSCREEN);
+        var vh = NativeMethods.GetSystemMetrics(NativeMethods.SM_CYVIRTUALSCREEN);
+        if (vw <= 0 || vh <= 0)
+        {
+            return false;
+        }
+
+        return Math.Abs(rect.Left - vx) <= 2 &&
+            Math.Abs(rect.Top - vy) <= 2 &&
+            Math.Abs(rect.Width - vw) <= 4 &&
+            Math.Abs(rect.Height - vh) <= 4;
     }
 
     private static string GetWindowTitle(IntPtr hwnd)

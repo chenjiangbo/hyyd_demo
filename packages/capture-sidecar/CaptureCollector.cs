@@ -331,7 +331,7 @@ internal sealed class CaptureCollector : IDisposable
         // 关键：抠图前重新读取最新窗口位置/大小，并确认窗口没在移动。
         // 否则用旧 rect 的屏幕坐标 CopyFromScreen，会截到窗口旧位置(此刻是桌面/别的窗口)。
         var stable = targetCameFromForegroundEvent
-            ? target
+            ? await GetStableTargetByWindowAsync(target, cancellationToken)
             : await GetStableForegroundTargetAsync(target.Channel, cancellationToken);
         if (stable is null)
         {
@@ -387,8 +387,8 @@ internal sealed class CaptureCollector : IDisposable
             Diag.Line($"OCR[{ocr.Status}] {t.Length}字: {(t.Length > 160 ? t.Substring(0, 160) + "…" : t)}");
         }
 
-        // 给每个词块采样气泡填充色（像素只有本机有）。结构化在 sidecar 本地做，
-        // 判说话人时把一条消息所有词块的颜色样本平均、算 HSV 饱和度做辅助（位置为主）。
+        // 给每个词块采样气泡填充色（像素只有本机有），随 OCR 块上传供调试页查看。
+        // 注意：说话人判定只看气泡位置，不再用颜色；颜色仅用于「找气泡」（DetectBubbleRegions）。
         if (ocr.Status == "success" && ocr.Blocks.Count > 0)
         {
             ocr = ocr with { Blocks = BlockColorSampler.Enrich(bitmap, ocr.Blocks) };
@@ -396,9 +396,27 @@ internal sealed class CaptureCollector : IDisposable
 
         // 分区 + 结构化（sidecar 本地完成）：切聊天区 → 拼行 → 顶行=标题 → 判说话人 → 抽昵称。
         // OCR 失败时跳过结构化，保留该帧以免漏采（title=null）。
-        var structure = ocr.Status == "success"
-            ? MessageStructurer.Build(bitmap, ocr.Blocks, target.Channel)
-            : new StructureResult(null, Array.Empty<StructuredMessage>());
+        // 结构化失败（分区/气泡检测抛异常）不再吞掉整帧：捕获异常、记录堆栈，仍把帧吐给 tray-app
+        // （走非客户路径，保留原图+OCR 供调试页排查），异常文本随帧上报到调试页右侧。
+        StructureResult structure;
+        string? structureError = null;
+        if (ocr.Status == "success")
+        {
+            try
+            {
+                structure = MessageStructurer.Build(bitmap, ocr.Blocks, target.Channel);
+            }
+            catch (Exception ex)
+            {
+                structure = new StructureResult(null, Array.Empty<StructuredMessage>());
+                structureError = ex.ToString();
+                Diag.Line($"结构化失败（保留该帧供调试）：{ex.Message}");
+            }
+        }
+        else
+        {
+            structure = new StructureResult(null, Array.Empty<StructuredMessage>());
+        }
 
         // 客户会话判断：只看聊天区**标题行**（群名含"就医服务群" 或 标题含订单号）。
         // OCR 失败时不过滤（保留该帧）。
@@ -429,7 +447,8 @@ internal sealed class CaptureCollector : IDisposable
                 ChatX1: structure.ChatX1,
                 InputCutY: structure.InputCutY,
                 InputCut: structure.InputCut,
-                DroppedBlockCount: structure.DroppedBlockCount
+                DroppedBlockCount: structure.DroppedBlockCount,
+                StructureError: structureError
             ));
             return;
         }
@@ -475,7 +494,8 @@ internal sealed class CaptureCollector : IDisposable
             ChatX1: structure.ChatX1,
             InputCutY: structure.InputCutY,
             InputCut: structure.InputCut,
-            DroppedBlockCount: structure.DroppedBlockCount
+            DroppedBlockCount: structure.DroppedBlockCount,
+            StructureError: structureError
         );
 
         _keptCount++;
@@ -504,12 +524,20 @@ internal sealed class CaptureCollector : IDisposable
 
     private async Task<TargetWindow?> GetStableTargetByWindowAsync(TargetWindow target, CancellationToken ct)
     {
+        if (NativeMethods.GetForegroundWindow() != target.Hwnd)
+        {
+            return null;
+        }
         var a = SafeGetTargetFromHwnd(target.Hwnd);
         if (a is null || !string.Equals(a.Channel, target.Channel, StringComparison.Ordinal))
         {
             return null;
         }
         await Task.Delay(StableCheckDelay, ct);
+        if (NativeMethods.GetForegroundWindow() != target.Hwnd)
+        {
+            return null;
+        }
         var b = SafeGetTargetFromHwnd(target.Hwnd);
         if (b is null || !string.Equals(b.Channel, target.Channel, StringComparison.Ordinal))
         {
