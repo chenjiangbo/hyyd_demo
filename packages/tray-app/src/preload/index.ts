@@ -37,6 +37,10 @@ const api = {
   // 【临时·采集调试页】最近原始帧（含结构化 messages/orderNo/conversationKind）
   getCaptureDebugFrames: (limit?: number) => ipcRenderer.invoke('capture:debug-frames', limit),
   clearCaptureDebugFrames: () => ipcRenderer.invoke('capture:debug-clear'),
+  // 调试：上传一张本地图片跑结构化（pickCaptureImage 选文件 → runCaptureOnImage 跑并注入调试帧）
+  pickCaptureImage: () => ipcRenderer.invoke('capture:pick-image'),
+  runCaptureOnImage: (imagePath: string, channel?: string) =>
+    ipcRenderer.invoke('capture:run-on-image', imagePath, channel),
   getDiagLogs: (limit?: number) => ipcRenderer.invoke('capture:diag-logs', limit),
   clearDiagLogs: () => ipcRenderer.invoke('capture:diag-clear'),
   reconstructCaptureAi: (

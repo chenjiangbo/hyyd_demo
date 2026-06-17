@@ -277,6 +277,58 @@ export class CaptureSidecarClient {
     return reconstructor.reconstruct(inputs, list, channel ?? 'wxwork')
   }
 
+  /**
+   * 调试用：对一张磁盘上的 PNG 跑一次完整结构化（一次性拉起 sidecar `--frame-image`），
+   * 把结果当成一帧塞进调试环形缓冲，让调试页能像看实时帧一样查看上传图片的分区/气泡/消息。
+   * 不入库、不上报。返回该帧（失败返回 null）。
+   */
+  async runOnImage(imagePath: string, channel = 'wxwork'): Promise<CaptureFrameEvent | null> {
+    if (!existsSync(imagePath)) throw new Error(`图片不存在: ${imagePath}`)
+    const sidecarPath = this.resolveSidecarPath()
+    return await new Promise<CaptureFrameEvent | null>((resolve) => {
+      const child = spawn(sidecarPath, ['--frame-image', imagePath, '--channel', channel], {
+        windowsHide: true
+      })
+      let buf = ''
+      let frame: CaptureFrameEvent | null = null
+      child.stdout.on('data', (chunk: Buffer) => {
+        buf += chunk.toString('utf8')
+        let nl = buf.indexOf('\n')
+        while (nl >= 0) {
+          const line = buf.slice(0, nl).trim()
+          buf = buf.slice(nl + 1)
+          if (line) {
+            try {
+              const msg = JSON.parse(line) as { type?: string }
+              if (msg.type === 'frame') frame = msg as unknown as CaptureFrameEvent
+            } catch {
+              /* 非 JSON 行忽略 */
+            }
+          }
+          nl = buf.indexOf('\n')
+        }
+      })
+      child.stderr.on('data', (chunk: Buffer) => {
+        const t = chunk.toString('utf8').trim()
+        if (t) this.addLog('sidecar', t.replace(/^\d{2}:\d{2}:\d{2}\.\d{3} /, ''))
+      })
+      child.on('error', (e) => {
+        this.addLog('error', `上传图片测试失败: ${e.message}`)
+        resolve(null)
+      })
+      child.on('close', () => {
+        if (frame) {
+          this.debugFrames.unshift(frame)
+          if (this.debugFrames.length > CaptureSidecarClient.DEBUG_RING_MAX) {
+            this.debugFrames.length = CaptureSidecarClient.DEBUG_RING_MAX
+          }
+          this.addLog('structure', `上传图片测试 → "${frame.title ?? ''}" ${frame.messages?.length ?? 0}条消息`)
+        }
+        resolve(frame)
+      })
+    })
+  }
+
   private framesRoot(): string {
     const localAppData = process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local')
     return join(localAppData, 'HyydCaptureSidecar', 'frames')

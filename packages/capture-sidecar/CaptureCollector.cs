@@ -91,7 +91,7 @@ internal sealed class CaptureCollector : IDisposable
     /// 单聊：标题含订单号（fwyy 或 COD/CCOD/OD）——会话名可被改成订单号。
     /// 命中其一 → 客户会话。标题为空（OCR 没读到/分区失败）→ 非客户。
     /// </summary>
-    private static ConversationClass ClassifyTitle(string? title)
+    internal static ConversationClass ClassifyTitle(string? title)
     {
         // 去掉所有空白后再匹配（OCR 会在字符间塞空格，否则订单号/关键词会被截断）
         var compact = WhitespaceRegex.Replace(title ?? string.Empty, string.Empty);
@@ -427,7 +427,7 @@ internal sealed class CaptureCollector : IDisposable
             _filteredCount++;
             _lastError = null;
             Diag.Line($"非客户会话，不入库（保留截图供调试）标题=\"{structure.Title}\" → {image.Path}");
-            await _writer.WriteAsync(new FramePayload(
+            var filteredPayload = new FramePayload(
                 "frame",
                 target.Channel,
                 target.ProcessName,
@@ -448,8 +448,14 @@ internal sealed class CaptureCollector : IDisposable
                 InputCutY: structure.InputCutY,
                 InputCut: structure.InputCut,
                 DroppedBlockCount: structure.DroppedBlockCount,
-                StructureError: structureError
-            ));
+                StructureError: structureError,
+                ScanY0: structure.ScanY0,
+                ScanY1: structure.ScanY1,
+                ContactRight: structure.ContactRight,
+                Bubbles: structure.Bubbles
+            );
+            _writer.WriteDebugFileSafe(DebugJsonPath(image.Path), filteredPayload);
+            await _writer.WriteAsync(filteredPayload);
             return;
         }
 
@@ -495,12 +501,25 @@ internal sealed class CaptureCollector : IDisposable
             InputCutY: structure.InputCutY,
             InputCut: structure.InputCut,
             DroppedBlockCount: structure.DroppedBlockCount,
-            StructureError: structureError
+            StructureError: structureError,
+            ScanY0: structure.ScanY0,
+            ScanY1: structure.ScanY1,
+            ContactRight: structure.ContactRight,
+            Bubbles: structure.Bubbles
         );
 
         _keptCount++;
         _lastError = null;
+        _writer.WriteDebugFileSafe(DebugJsonPath(image.Path), payload);
         await _writer.WriteAsync(payload);
+    }
+
+    // 截图旁边的调试文件：<同名>.debug.json（含分区/扫描带/全部气泡/OCR块+采样色/消息判据）。
+    private static string DebugJsonPath(string pngPath)
+    {
+        var dir = System.IO.Path.GetDirectoryName(pngPath) ?? ".";
+        var name = System.IO.Path.GetFileNameWithoutExtension(pngPath);
+        return System.IO.Path.Combine(dir, name + ".debug.json");
     }
 
     // 读取当前前台目标窗口，并确认它"没在移动/缩放"：间隔 150ms 读两次，rect 一致才算稳定。

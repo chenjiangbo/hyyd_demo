@@ -46,11 +46,23 @@ internal sealed record FramePayload(
     int? ChatX1 = null,            // 聊天区右界
     int? InputCutY = null,         // 输入框上沿 Y（此下被切），无则 null
     InputCutDebug? InputCut = null,// 输入区定位候选与最终依据（调试页展示）
-    int? DroppedBlockCount = null  // 聊天区外被丢弃的词块数（联系人区/图标栏/成员区）
+    int? DroppedBlockCount = null, // 聊天区外被丢弃的词块数（联系人区/图标栏/成员区）
+    // 结构化失败时的异常文本（含堆栈）。非 null 表示分区/气泡检测抛了异常——该帧仍输出（保留原图+OCR
+    // 供调试），messages 为空。调试页应把它显示在右侧、可复制，便于排查。
+    string? StructureError = null,
+    // ── 气泡扫描调试（调试页"气泡"视图 + .debug.json）──
+    int? ScanY0 = null,
+    int? ScanY1 = null,
+    int? ContactRight = null,
+    IReadOnlyList<DebugBubble>? Bubbles = null
 );
 
 /// 词块/气泡的外接框（调试用）。
 internal sealed record MsgBox(int X, int Y, int W, int H);
+
+/// 检测到的一个气泡连通域（调试用，含没归到任何文字的空气泡，便于排查误检/漏检）。
+/// Speaker: 按相对中线左右判的 self/other。HasText: 是否有 OCR 行落进来成为消息正文。
+internal sealed record DebugBubble(int X, int Y, int W, int H, int Area, string Speaker, bool HasText);
 
 /// 一条结构化消息。Speaker: 'self'（本员工）| 'other'（客户/群成员）| 'system'（时间/通知）。
 /// Name: 群聊里对方的昵称（能识别时），单聊/自己为 null。
@@ -85,4 +97,8 @@ internal sealed record StructureResult(
     int ChatX1 = 0,
     int? InputCutY = null,
     InputCutDebug? InputCut = null,
-    int DroppedBlockCount = 0);
+    int DroppedBlockCount = 0,
+    int ScanY0 = 0,                          // 气泡扫描带上沿（标题下方）
+    int ScanY1 = 0,                          // 气泡扫描带下沿（发送按钮上方/保守下界）
+    int? ContactRight = null,                // 联系人列表右界（chatX0 = 此 + padding）
+    IReadOnlyList<DebugBubble>? Bubbles = null); // 检测到的所有气泡（含空气泡）

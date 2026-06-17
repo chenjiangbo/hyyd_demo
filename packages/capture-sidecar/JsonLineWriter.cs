@@ -33,6 +33,21 @@ internal sealed class JsonLineWriter
         });
     }
 
+    // 把一帧的完整调试数据写到截图旁的 .debug.json（缩进、易读，供人/AI 直接打开分析）。
+    // 失败不影响采集主流程。
+    public void WriteDebugFileSafe(string path, object payload)
+    {
+        try
+        {
+            var opts = new JsonSerializerOptions(_jsonOptions) { WriteIndented = true };
+            File.WriteAllText(path, JsonSerializer.Serialize(payload, opts));
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[capture] 写调试文件失败: {ex.Message}");
+        }
+    }
+
     public async Task WriteAsync(object message)
     {
         if (Muted)

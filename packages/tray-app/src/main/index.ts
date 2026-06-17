@@ -10,8 +10,12 @@ import { MaterialSyncWorker } from './material-sync'
 
 loadRootEnv()
 
+// 应用显示名：否则 Windows 任务栏/托盘会显示默认 "Electron"
+app.setName('智能寰宇')
+
 if (process.platform === 'win32') {
-  app.disableHardwareAcceleration()
+app.disableHardwareAcceleration()
+app.setAppUserModelId('com.huanyu.trayapp')
 }
 
 let mainWindow: BrowserWindow | null = null
@@ -112,17 +116,29 @@ function showMainWindow(): void {
   createWindow()
 }
 
+// 登录态用小窗（聚焦工号输入），登录后放大到工作台尺寸。两套尺寸都居中显示。
+const LOGIN_SIZE = { width: 960, height: 640 }
+const MAIN_SIZE = { width: 1320, height: 880 }
+
+function applyWindowStage(stage: 'login' | 'main'): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMaximized()) return // 用户已手动最大化则不打扰
+  const size = stage === 'main' ? MAIN_SIZE : LOGIN_SIZE
+  mainWindow.setSize(size.width, size.height, true)
+  mainWindow.center()
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 1120,
-    height: 760,
-    minWidth: 960,
-    minHeight: 640,
+    width: LOGIN_SIZE.width,
+    height: LOGIN_SIZE.height,
+    minWidth: 760,
+    minHeight: 560,
     show: false,
     frame: false, // 去掉 Windows 原生标题栏，用 v2 自绘标题栏 + 窗口按钮
     autoHideMenuBar: true,
-    title: '寰宇医道 - 采集工作台',
-    ...(process.platform === 'linux' ? { icon } : {}),
+    title: '智能寰宇',
+    icon, // Windows 任务栏/窗口图标（否则显示 Electron 默认图标）
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
@@ -216,6 +232,8 @@ if (!gotLock) {
       else mainWindow.maximize()
     })
     ipcMain.handle('window:is-maximized', () => mainWindow?.isMaximized() ?? false)
+    // 登录态/工作台态切换窗口尺寸（渲染层根据是否已登录调用）
+    ipcMain.on('window:set-stage', (_e, stage: 'login' | 'main') => applyWindowStage(stage))
     ipcMain.on('app:quit', () => {
       isQuitting = true
       app.quit()
@@ -245,6 +263,21 @@ if (!gotLock) {
       captureSidecar.listDebugFrames(limit ?? 60)
     )
     ipcMain.handle('capture:debug-clear', () => captureSidecar.clearDebugFrames())
+    // 调试：选一张本地 PNG，返回路径（取消返回 null）
+    ipcMain.handle('capture:pick-image', async () => {
+      const r = await dialog.showOpenDialog({
+        title: '选择要测试的聊天截图',
+        properties: ['openFile'],
+        filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'bmp'] }]
+      })
+      return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
+    })
+    // 调试：对上传图片跑一次完整结构化，结果注入调试帧缓冲
+    ipcMain.handle('capture:run-on-image', (_e, imagePath: string, channel?: string) =>
+      captureSidecar.runOnImage(imagePath, channel ?? 'wxwork')
+    )
+    ipcMain.handle('capture:diag-logs', (_e, limit?: number) => captureSidecar.listDiagLog(limit))
+    ipcMain.handle('capture:diag-clear', () => captureSidecar.clearDiagLog())
     // AI 还原验证：把选中关键帧发给多个模型还原消息
     ipcMain.handle(
       'capture:ai-reconstruct',

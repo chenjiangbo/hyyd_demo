@@ -71,6 +71,19 @@ export interface CaptureDebugFrame {
     removedLinePreview?: string[]
   } | null
   droppedBlockCount?: number | null
+  structureError?: string | null
+  scanY0?: number | null
+  scanY1?: number | null
+  contactRight?: number | null
+  bubbles?: Array<{
+    x: number
+    y: number
+    w: number
+    h: number
+    area: number
+    speaker: 'self' | 'other'
+    hasText: boolean
+  }> | null
 }
 
 export interface DiagLogEntry {
@@ -130,6 +143,8 @@ declare global {
       // 【临时·采集调试页】
       getCaptureDebugFrames: (limit?: number) => Promise<CaptureDebugFrame[]>
       clearCaptureDebugFrames: () => Promise<{ cleared: number }>
+      pickCaptureImage: () => Promise<string | null>
+      runCaptureOnImage: (imagePath: string, channel?: string) => Promise<CaptureDebugFrame | null>
       getDiagLogs: (limit?: number) => Promise<DiagLogEntry[]>
       clearDiagLogs: () => Promise<{ cleared: number }>
       // 现场采集素材

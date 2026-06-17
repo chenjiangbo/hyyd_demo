@@ -5,11 +5,15 @@ namespace Hyyd.CaptureSidecar;
 
 /// <summary>
 /// 把一张聊天截图的 OCR 词块 + 像素，结构化成「标题 + 带说话人的消息列表」。
-/// 全在 sidecar 本地做（分区→拼行→判说话人→抽昵称），后端不再二次结构化。
+/// 全在 sidecar 本地做，后端不再二次结构化。
 ///
-/// 判说话人不靠 AI 猜，靠确定性的**左右位置**规则（见 §9.2）：
-///   - 气泡靠右 → self（自己/专员）；靠左 → other（对方/客户）；居中且窄 → system（时间/通知）
-///   - 颜色（气泡底色饱和度）仅在左右几乎对称的模糊带里做辅助，不同机器色差不影响主判据
+/// 流程（见文档 §四/§六/§七）：
+///   1. 分区：联系人列表行右端的重复值 + 常量 → 聊天区左界；企微"群成员"锚点 → 右界。
+///   2. 标题：聊天区跳过窗口系统按钮后的顶行。
+///   3. 气泡：在聊天区按气泡底色做连通域，得到一条条消息气泡的包围盒。
+///   4. 归属：OCR 行中心落进哪个气泡就属于哪条消息。
+///   5. 说话人：只看气泡相对聊天区中线的左右位置——靠右 self、靠左 other；
+///      没进任何气泡且相对居中的行 → system（time/notice/other）。颜色只用于「找气泡」，不判说话人。
 ///
 /// 阈值都走环境变量，便于在真实截图上标定（默认值见各 EnvD）。
 /// </summary>
@@ -48,7 +52,7 @@ internal static class MessageStructurer
     }
 
     /// 选聊天区：左界来自联系人列表行右端的重复最大值；企微右界只认"群成员"文字锚点。
-    private static (int x0, int x1) DetectChatXRange(IReadOnlyList<OcrBlock> blocks, int w, string channel)
+    private static (int x0, int x1, int contactRight) DetectChatXRange(IReadOnlyList<OcrBlock> blocks, int w, string channel)
     {
         var contactRight = DetectContactRight(blocks, w);
         var leftPadding = (int)EnvD("HYYD_CHAT_LEFT_PADDING", 15);
@@ -68,7 +72,7 @@ internal static class MessageStructurer
         {
             throw new InvalidOperationException($"聊天区分区失败：右界 {chatX1} 不大于左界 {chatX0}。");
         }
-        return (chatX0, chatX1);
+        return (chatX0, chatX1, contactRight);
     }
 
     private static int DetectContactRight(IReadOnlyList<OcrBlock> blocks, int w)
@@ -87,39 +91,57 @@ internal static class MessageStructurer
             throw new InvalidOperationException("聊天区分区失败：左侧联系人候选 OCR 块为空。");
         }
 
-        var rightCounts = ToLines(contactBlocks)
-            .Select(l => l.MaxX)
-            .GroupBy(x => x)
-            .Select(g => new { Right = g.Key, Count = g.Count() })
-            .OrderByDescending(g => g.Right)
-            .ToList();
-
-        var selected = rightCounts.FirstOrDefault(g => g.Count >= minSupport);
-        if (selected == null)
+        // 找「多行联系人右端对齐」形成的那条竖线当联系人右界。联系人列表每行右边有右对齐的时间戳，
+        // 十几行的右端会对齐成一条线 → 行数最多的那一簇就是它。把右端排序，相邻相差 ≤tolerance(默认2px)
+        // 归为一簇；取**支持行数最多**（≥minSupport）的那簇——不是最靠右的那簇，否则聊天区里偶尔
+        // 两三条短消息右端凑在一起会被误选、把 chatX0 推进聊天区。同分行数时取更靠右的。
+        var tolerance = Math.Max(1, (int)EnvD("HYYD_CONTACT_RIGHT_TOLERANCE", 2));
+        var rights = ToLines(contactBlocks).Select(l => l.MaxX).OrderBy(x => x).ToList();
+        var clusters = new List<List<int>>();
+        foreach (var x in rights)
         {
-            var debug = string.Join(", ", rightCounts.Select(g => $"{g.Right}×{g.Count}"));
-            throw new InvalidOperationException($"聊天区分区失败：联系人右边界没有重复值（{debug}）。");
-        }
-
-        return selected.Right;
-    }
-
-    private static int? DetectGroupMemberLeft(IReadOnlyList<OcrBlock> blocks, int chatX0)
-    {
-        foreach (var line in ToLines(blocks))
-        {
-            var words = line.Words.OrderBy(w => w.Bbox.X).ToList();
-            for (int i = 0; i < words.Count; i++)
+            if (clusters.Count > 0 && x - clusters[^1][^1] <= tolerance)
             {
-                if (words[i].Bbox.X <= chatX0) continue;
-                var text = string.Join(string.Empty, words.Skip(i).Take(8).Select(w => w.Text));
-                if (text.Contains("群成员", StringComparison.Ordinal))
-                {
-                    return words[i].Bbox.X;
-                }
+                clusters[^1].Add(x);
+            }
+            else
+            {
+                clusters.Add(new List<int> { x });
             }
         }
-        return null;
+
+        var selected = clusters
+            .Where(c => c.Count >= minSupport)
+            .OrderByDescending(c => c.Count)
+            .ThenByDescending(c => c[^1])
+            .FirstOrDefault();
+        if (selected == null)
+        {
+            var debug = string.Join(", ", clusters.OrderByDescending(c => c.Count).Select(c => $"~{c[^1]}×{c.Count}"));
+            throw new InvalidOperationException(
+                $"聊天区分区失败：联系人右端没有 ≥{minSupport} 行对齐的边界（tol={tolerance}，候选簇 {debug}）。");
+        }
+
+        return selected[^1];
+    }
+
+    // 企微右侧成员区左界：用"发送企业名片"按钮里的"企业名片"几个字定位（真实企微没有"群成员"字样）。
+    // 关键词可用 HYYD_WXWORK_MEMBER_KEYWORD 覆盖。取所有命中行里最靠左的 X 当成员区左界 = 聊天区右界。
+    private static int? DetectGroupMemberLeft(IReadOnlyList<OcrBlock> blocks, int chatX0)
+    {
+        var keyword = Environment.GetEnvironmentVariable("HYYD_WXWORK_MEMBER_KEYWORD");
+        if (string.IsNullOrWhiteSpace(keyword)) keyword = "企业名片";
+
+        int? memberLeft = null;
+        foreach (var b in blocks)
+        {
+            if (b.Bbox.X <= chatX0) continue;
+            if (b.Text.Replace(" ", string.Empty).Contains(keyword, StringComparison.Ordinal))
+            {
+                memberLeft = memberLeft == null ? b.Bbox.X : Math.Min(memberLeft.Value, b.Bbox.X);
+            }
+        }
+        return memberLeft;
     }
 
     private static int? DetectSendButtonY(IReadOnlyList<Line> lines, int chatX0, int chatX1, int h)
@@ -149,7 +171,7 @@ internal static class MessageStructurer
         public string Text => string.Join(string.Empty, Words.OrderBy(w => w.Bbox.X).Select(w => w.Text));
     }
 
-    private sealed record BubbleRegion(int X, int Y, int W, int H, int Area, int MaxRow)
+    private sealed record BubbleRegion(int X, int Y, int W, int H, int Area, int MaxRow, string Speaker)
     {
         public int MaxX => X + W;
         public int MaxY => Y + H;
@@ -175,21 +197,34 @@ internal static class MessageStructurer
         return lines;
     }
 
+    // self / other 各按自己的颜色分别找气泡，互不合并——气泡是什么颜色就是谁说的（不看位置）。
     private static List<BubbleRegion> DetectBubbleRegions(Bitmap bmp, int chatX0, int chatX1, int y0, int y1, string channel)
     {
-        var width = bmp.Width;
         var height = bmp.Height;
+        var width = bmp.Width;
         y0 = Math.Clamp(y0, 0, height - 1);
         y1 = Math.Clamp(y1, y0 + 1, height);
         chatX0 = Math.Clamp(chatX0, 0, width - 1);
         chatX1 = Math.Clamp(chatX1, chatX0 + 1, width);
+
+        var regions = new List<BubbleRegion>();
+        regions.AddRange(DetectRegionsForColor(bmp, chatX0, chatX1, y0, y1, p => IsSelfFill(p, channel), "self"));
+        regions.AddRange(DetectRegionsForColor(bmp, chatX0, chatX1, y0, y1, p => IsOtherFill(p, channel), "other"));
+        return regions.OrderBy(r => r.Y).ThenBy(r => r.X).ToList();
+    }
+
+    private static List<BubbleRegion> DetectRegionsForColor(
+        Bitmap bmp, int chatX0, int chatX1, int y0, int y1, Func<Color, bool> match, string speaker)
+    {
+        var width = bmp.Width;
+        var height = bmp.Height;
 
         var mask = new bool[width, height];
         for (int y = y0; y < y1; y++)
         {
             for (int x = chatX0; x < chatX1; x++)
             {
-                if (IsBubbleFill(bmp.GetPixel(x, y), channel))
+                if (match(bmp.GetPixel(x, y)))
                 {
                     mask[x, y] = true;
                 }
@@ -255,29 +290,40 @@ internal static class MessageStructurer
 
                 if (IsLikelyBubbleRegion(minX, minY, w, h, chatX0, chatX1, y0, y1))
                 {
-                    regions.Add(new BubbleRegion(minX, minY, w, h, area, maxRow));
+                    regions.Add(new BubbleRegion(minX, minY, w, h, area, maxRow, speaker));
                 }
             }
         }
 
-        return regions.OrderBy(r => r.Y).ThenBy(r => r.X).ToList();
+        return regions;
     }
 
-    private static bool IsBubbleFill(Color p, string channel)
+    // 气泡底色 = 已知的"对方/自己"基准色 ± 容差（兼容不同显示器色差）。基准色（Windows 上取色）：
+    //   企微 other #E4E7EB(228,231,235) / self #C9E7FF(201,231,255)
+    //   微信 other #EEEEF0(238,238,240) / self #9DF29F(157,242,159)
+    // "自己"气泡底色：企微浅蓝 #C9E7FF / 微信浅绿 #9DF29F。饱和、离背景远，容差可大。
+    private static bool IsSelfFill(Color p, string channel)
     {
         if (p.A < 200) return false;
-        if (string.Equals(channel, "wxwork", StringComparison.OrdinalIgnoreCase))
-        {
-            return p.R >= 188 && p.R <= 215 &&
-                   p.G >= 220 && p.G <= 240 &&
-                   p.B >= 248 && p.B <= 255;
-        }
-
-        var neutral = Math.Abs(p.R - p.G) <= 4 && Math.Abs(p.G - p.B) <= 5;
-        var lightGrayBubble = neutral && p.R >= 228 && p.R <= 246 && p.G >= 228 && p.G <= 246 && p.B >= 228 && p.B <= 247;
-        var greenBubble = p.G >= 220 && p.G <= 248 && p.R >= 145 && p.R <= 185 && p.B >= 145 && p.B <= 185;
-        return lightGrayBubble || greenBubble;
+        var selfTol = (int)EnvD("HYYD_BUBBLE_SELF_TOL", 16);
+        return string.Equals(channel, "wxwork", StringComparison.OrdinalIgnoreCase)
+            ? NearColor(p, 201, 231, 255, selfTol)
+            : NearColor(p, 157, 242, 159, selfTol);
     }
+
+    // "对方"气泡底色：企微浅灰 #E4E7EB / 微信浅灰 #EEEEF0。和聊天背景接近，容差小且压上限。
+    private static bool IsOtherFill(Color p, string channel)
+    {
+        if (p.A < 200) return false;
+        var grayTol = (int)EnvD("HYYD_BUBBLE_GRAY_TOL", 9);
+        var grayCap = (int)EnvD("HYYD_BUBBLE_GRAY_CAP", 243);
+        return string.Equals(channel, "wxwork", StringComparison.OrdinalIgnoreCase)
+            ? NearColor(p, 228, 231, 235, grayTol) && p.R <= grayCap && p.G <= grayCap && p.B <= grayCap + 1
+            : NearColor(p, 238, 238, 240, grayTol) && p.R <= grayCap && p.G <= grayCap && p.B <= grayCap;
+    }
+
+    private static bool NearColor(Color p, int r, int g, int b, int tol)
+        => Near(p.R, r, tol) && Near(p.G, g, tol) && Near(p.B, b, tol);
 
     private static bool IsLikelyBubbleRegion(int x, int y, int w, int h, int chatX0, int chatX1, int y0, int y1)
     {
@@ -351,7 +397,7 @@ internal static class MessageStructurer
         int w = bmp.Width;
 
         // 1) 分区：切出聊天区（已排除图标栏/联系人列表/(企微)成员区）
-        var (chatX0, chatX1) = DetectChatXRange(blocks, w, channel);
+        var (chatX0, chatX1, contactRight) = DetectChatXRange(blocks, w, channel);
         double W = Math.Max(1, chatX1 - chatX0);
 
         var inChat = blocks.Where(b =>
@@ -366,9 +412,10 @@ internal static class MessageStructurer
         var lines = ToLines(inChat);
         if (lines.Count == 0) return new StructureResult(null, Array.Empty<StructuredMessage>(), chatX0, chatX1, null, null, dropped);
 
-        // 3) 标题 = 跳过窗口系统按钮后的聊天区顶行。RapidOCR 会识别右上角 □/×，
-        // 这些不属于聊天区标题。
-        var topChromeY = Math.Max(28, (int)(bmp.Height * 0.04));
+        // 3) 标题 = 跳过窗口系统按钮(□/×，y≈1)后、聊天区里最靠上的一行（=会话名）。
+        // 注意阈值别太大：之前 0.04(=32px) 把 y=31 的真标题也切掉了，导致标题取成下面的系统提示、
+        // 扫描带也跟着下沉。这里压到很小，只够排除最顶端的窗口按钮行。
+        var topChromeY = Math.Max(12, (int)(bmp.Height * 0.018));
         var contentLines = lines.Where(l => l.MinY >= topChromeY).ToList();
         if (contentLines.Count == 0)
         {
@@ -401,25 +448,24 @@ internal static class MessageStructurer
         var scanY1 = sendLine == null
             ? Math.Min(bmp.Height, (int)(bmp.Height * 0.92))
             : Math.Clamp(sendLine.MinY - 4, scanY0 + 1, bmp.Height);
+        // 没扫到气泡是正常情况（空会话/全是图片/纯灰文字主题/滚动位置），不再抛错丢帧——
+        // 照常返回标题+分区，气泡消息为空，下面的居中 system 行仍会被收集。
         var regions = DetectBubbleRegions(bmp, chatX0, chatX1, scanY0, scanY1, channel);
-        if (regions.Count == 0)
-        {
-            throw new InvalidOperationException($"消息气泡检测失败：聊天区 {chatX0}-{chatX1}，扫描 Y={scanY0}-{scanY1}。");
-        }
 
         // 5) 气泡内文字 → 消息；气泡外且相对居中的文字 → system。
         var result = new List<StructuredMessage>();
         var usedLines = new HashSet<Line>();
+        var debugBubbles = new List<DebugBubble>(); // 所有检测到的气泡（含没有文字的空气泡），供调试
         foreach (var region in regions)
         {
+            var speaker = region.Speaker; // 颜色即发送者：蓝/绿=self，灰=other（不看位置）
             var inside = visibleBodyLines
                 .Where(l => LineInsideRegion(l, region, pad: 6))
                 .OrderBy(l => l.MinY)
                 .ThenBy(l => l.MinX)
                 .ToList();
+            debugBubbles.Add(new DebugBubble(region.X, region.Y, region.W, region.H, region.Area, speaker, inside.Count > 0));
             if (inside.Count == 0) continue;
-
-            var speaker = region.CenterX >= midX ? "self" : "other";
             string? sender = null;
             if (speaker == "other")
             {
@@ -458,7 +504,8 @@ internal static class MessageStructurer
             .OrderBy(m => m.Box?.Y ?? 0)
             .ThenBy(m => m.Box?.X ?? 0)
             .ToList();
-        return new StructureResult(title, result, chatX0, chatX1, null, null, dropped);
+        return new StructureResult(title, result, chatX0, chatX1, null, null, dropped,
+            scanY0, scanY1, contactRight, debugBubbles);
     }
 
     private static bool IsInputNoiseLine(Line line, Line? sendLine)
@@ -531,6 +578,8 @@ internal static class MessageStructurer
         var centerDistance = Math.Abs(line.CenterX - center);
         return centerDistance <= chatW * 0.16 && width <= chatW * CenterWidthFrac;
     }
+
+    private static bool Near(int value, int target, int tol) => Math.Abs(value - target) <= tol;
 
     private static int Median(List<int> xs)
     {

@@ -52,6 +52,18 @@ internal static class Program
             return;
         }
 
+        // 调试页"上传图片测试"模式：对一张 PNG 跑完整结构化，输出**一条 FramePayload JSON** 到 stdout
+        //（与实时帧同结构，screenshotPath 指向该图），并在图旁写 .debug.json。tray-app 读这条 frame 注入调试缓冲。
+        //   用法：hyyd-capture-sidecar.exe --frame-image <png> [--channel wxwork|wechat]
+        var fiIdx = Array.FindIndex(args, a => string.Equals(a, "--frame-image", StringComparison.OrdinalIgnoreCase));
+        if (fiIdx >= 0 && fiIdx + 1 < args.Length)
+        {
+            var chIdx = Array.FindIndex(args, a => string.Equals(a, "--channel", StringComparison.OrdinalIgnoreCase));
+            var channel = chIdx >= 0 && chIdx + 1 < args.Length ? args[chIdx + 1] : "wxwork";
+            await RunFrameImageAsync(writer, args[fiIdx + 1], channel);
+            return;
+        }
+
         if (standalone)
         {
             writer.Muted = true; // 静音 stdout JSON（含 OCR 逐字 bbox），只看 stderr 简洁事件
@@ -133,6 +145,60 @@ internal static class Program
             Console.Error.WriteLine($"  [{m.Speaker}{(m.Kind != null ? ":" + m.Kind : "")}]{(m.Name != null ? " " + m.Name : "")} {t}");
         }
         Console.Error.WriteLine("============ 测试结束 ============");
+    }
+
+    // 对一张 PNG 跑完整结构化，构造并输出一条 FramePayload（供调试页"上传图片测试"）。
+    private static async Task RunFrameImageAsync(JsonLineWriter writer, string path, string channel)
+    {
+        path = System.IO.Path.GetFullPath(path);
+        if (!System.IO.File.Exists(path))
+        {
+            await writer.WriteErrorAsync($"上传图片不存在: {path}");
+            return;
+        }
+        OcrPayload ocr;
+        try
+        {
+            ocr = await OcrEngineFactory.CreateDefault().RecognizeAsync(path);
+        }
+        catch (Exception ex)
+        {
+            await writer.WriteErrorAsync("上传图片 OCR 失败: " + ex.Message);
+            return;
+        }
+
+        using var bmp = new System.Drawing.Bitmap(path);
+        var enriched = ocr with { Blocks = BlockColorSampler.Enrich(bmp, ocr.Blocks) };
+        StructureResult structure;
+        string? structureError = null;
+        try
+        {
+            structure = MessageStructurer.Build(bmp, enriched.Blocks, channel);
+        }
+        catch (Exception ex)
+        {
+            structure = new StructureResult(null, Array.Empty<StructuredMessage>());
+            structureError = ex.ToString();
+        }
+
+        var conv = CaptureCollector.ClassifyTitle(structure.Title);
+        var payload = new FramePayload(
+            "frame", channel, "(test-image)", structure.Title,
+            DateTimeOffset.UtcNow.ToString("O"),
+            new WindowPayload(0, 0, bmp.Width, bmp.Height, "normal"),
+            path, null, enriched, "test-image", 0,
+            conv.Kind, conv.OrderNo, structure.Messages,
+            Filtered: !conv.IsCustomer,
+            ChatX0: structure.ChatX0, ChatX1: structure.ChatX1,
+            InputCutY: structure.InputCutY, InputCut: structure.InputCut,
+            DroppedBlockCount: structure.DroppedBlockCount, StructureError: structureError,
+            ScanY0: structure.ScanY0, ScanY1: structure.ScanY1,
+            ContactRight: structure.ContactRight, Bubbles: structure.Bubbles);
+
+        var dir = System.IO.Path.GetDirectoryName(path) ?? ".";
+        var name = System.IO.Path.GetFileNameWithoutExtension(path);
+        writer.WriteDebugFileSafe(System.IO.Path.Combine(dir, name + ".debug.json"), payload);
+        await writer.WriteAsync(payload);
     }
 
     private static async Task RunStandaloneAsync(CaptureCollector collector)

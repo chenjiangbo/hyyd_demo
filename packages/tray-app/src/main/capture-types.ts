@@ -57,6 +57,25 @@ export interface CaptureFrameEvent {
   inputCutY?: number | null
   inputCut?: CaptureInputCutDebug | null
   droppedBlockCount?: number | null
+  /** 结构化失败时的异常文本（含堆栈）。非空表示分区/气泡检测抛了异常，messages 为空，原图+OCR 仍保留。 */
+  structureError?: string | null
+  /** 气泡扫描带上/下沿 Y。 */
+  scanY0?: number | null
+  scanY1?: number | null
+  /** 联系人列表右界（chatX0 = 此 + padding）。 */
+  contactRight?: number | null
+  /** 检测到的所有气泡连通域（含没有文字的空气泡），供「气泡」视图独立查看。 */
+  bubbles?: CaptureDebugBubble[] | null
+}
+
+export interface CaptureDebugBubble {
+  x: number
+  y: number
+  w: number
+  h: number
+  area: number
+  speaker: 'self' | 'other'
+  hasText: boolean
 }
 
 export interface CaptureInputCutDebug {

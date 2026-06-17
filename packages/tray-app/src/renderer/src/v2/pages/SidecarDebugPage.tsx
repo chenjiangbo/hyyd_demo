@@ -55,6 +55,11 @@ interface DbgFrame {
     removedLinePreview?: string[]
   } | null
   droppedBlockCount?: number | null
+  structureError?: string | null
+  scanY0?: number | null
+  scanY1?: number | null
+  contactRight?: number | null
+  bubbles?: Array<{ x: number; y: number; w: number; h: number; area: number; speaker: 'self' | 'other'; hasText: boolean }> | null
 }
 
 interface SidecarStatus {
@@ -110,6 +115,8 @@ type CaptureApi = {
   getCaptureScreenshot: (path: string) => Promise<string | null>
   getDiagLogs: (limit?: number) => Promise<DiagEntry[]>
   clearDiagLogs: () => Promise<{ cleared: number }>
+  pickCaptureImage: () => Promise<string | null>
+  runCaptureOnImage: (imagePath: string, channel?: string) => Promise<DbgFrame | null>
 }
 
 function getApi(): CaptureApi | null {
@@ -444,7 +451,13 @@ export default function SidecarDebugPage(): React.JSX.Element {
           </div>
         </div>
       ) : (
-        <OcrView frames={frames} loadShot={api.getCaptureScreenshot} />
+        <OcrView
+          frames={frames}
+          loadShot={api.getCaptureScreenshot}
+          pickImage={api.pickCaptureImage}
+          runOnImage={api.runCaptureOnImage}
+          onRefresh={refresh}
+        />
       )}
     </div>
   )
@@ -971,16 +984,37 @@ function MessageBubble({ m }: { m: DbgMessage }): React.JSX.Element {
 function OcrView({
   frames,
   loadShot,
+  pickImage,
+  runOnImage,
+  onRefresh,
 }: {
   frames: DbgFrame[]
   loadShot: (path: string) => Promise<string | null>
+  pickImage: () => Promise<string | null>
+  runOnImage: (imagePath: string, channel?: string) => Promise<DbgFrame | null>
+  onRefresh: () => Promise<void>
 }): React.JSX.Element {
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [shotData, setShotData] = useState<string | null>(null)
   const [shotLoading, setShotLoading] = useState(false)
   const [showLabels, setShowLabels] = useState(true)
-  const [overlayMode, setOverlayMode] = useState<'zones' | 'blocks'>('zones')
+  const [overlayMode, setOverlayMode] = useState<'blocks' | 'zones' | 'bubbles' | 'messages'>('zones')
   const [copiedBlocks, setCopiedBlocks] = useState(false)
+  const [copiedJson, setCopiedJson] = useState(false)
+  const [uploadChannel, setUploadChannel] = useState<'wxwork' | 'wechat'>('wxwork')
+  const [uploading, setUploading] = useState(false)
+  const uploadTest = useCallback(async () => {
+    const p = await pickImage()
+    if (!p) return
+    setUploading(true)
+    try {
+      await runOnImage(p, uploadChannel)
+      await onRefresh()
+      setSelectedIdx(0) // 新跑的帧排在最前
+    } finally {
+      setUploading(false)
+    }
+  }, [pickImage, runOnImage, onRefresh, uploadChannel])
 
   const frame = frames[selectedIdx] ?? null
   const blocks = frame?.ocr?.blocks ?? []
@@ -990,6 +1024,12 @@ function OcrView({
     setCopiedBlocks(true)
     window.setTimeout(() => setCopiedBlocks(false), 1200)
   }, [blockCopyText])
+  const copyFullJson = useCallback(async () => {
+    if (!frame) return
+    await navigator.clipboard.writeText(JSON.stringify(frame, null, 2))
+    setCopiedJson(true)
+    window.setTimeout(() => setCopiedJson(false), 1200)
+  }, [frame])
 
   useEffect(() => {
     if (!frame?.screenshotPath) { setShotData(null); return }
@@ -1004,8 +1044,25 @@ function OcrView({
 
   if (frames.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center text-body-sm text-text-muted">
-        暂无帧数据，需要保留帧（客户会话）才能在此查看 OCR 结果
+      <div className="flex-1 flex flex-col items-center justify-center gap-3 text-body-sm text-text-muted">
+        <span>暂无帧数据。可实时采集，或上传一张截图测试结构化。</span>
+        <div className="flex items-center gap-2">
+          <select
+            value={uploadChannel}
+            onChange={(e) => setUploadChannel(e.target.value as 'wxwork' | 'wechat')}
+            className="px-2 py-1 rounded border border-border-subtle text-body-sm bg-white"
+          >
+            <option value="wxwork">企微</option>
+            <option value="wechat">微信</option>
+          </select>
+          <button
+            onClick={uploadTest}
+            disabled={uploading}
+            className="px-3 py-1.5 rounded bg-primary text-white text-body-sm disabled:opacity-60"
+          >
+            {uploading ? '识别中…' : '上传图片测试'}
+          </button>
+        </div>
       </div>
     )
   }
@@ -1065,7 +1122,7 @@ function OcrView({
               )}
               <div className="ml-auto flex items-center gap-2">
                 <div className="flex rounded border border-border-subtle overflow-hidden">
-                  {(['zones', 'blocks'] as const).map((mode) => (
+                  {(['blocks', 'zones', 'bubbles', 'messages'] as const).map((mode) => (
                     <button
                       key={mode}
                       onClick={() => setOverlayMode(mode)}
@@ -1074,7 +1131,7 @@ function OcrView({
                         (overlayMode === mode ? 'bg-primary text-white' : 'bg-white text-text-muted hover:text-primary')
                       }
                     >
-                      {mode === 'zones' ? '分区+气泡' : '词块'}
+                      {mode === 'blocks' ? '词块' : mode === 'zones' ? '分区' : mode === 'bubbles' ? '气泡' : '消息'}
                     </button>
                   ))}
                 </div>
@@ -1083,6 +1140,30 @@ function OcrView({
                   className="px-2.5 py-1 rounded border border-border-subtle text-body-sm text-text-muted hover:text-primary"
                 >
                   {showLabels ? '隐藏标签' : '显示标签'}
+                </button>
+                <button
+                  onClick={copyFullJson}
+                  title="复制本帧完整调试 JSON（与截图旁的 .debug.json 同内容）"
+                  className="px-2.5 py-1 rounded border border-border-subtle text-body-sm text-text-muted hover:text-primary"
+                >
+                  {copiedJson ? '已复制' : '复制调试JSON'}
+                </button>
+                <select
+                  value={uploadChannel}
+                  onChange={(e) => setUploadChannel(e.target.value as 'wxwork' | 'wechat')}
+                  title="上传图片按哪个渠道的气泡色识别"
+                  className="px-1.5 py-1 rounded border border-border-subtle text-body-sm bg-white text-text-muted"
+                >
+                  <option value="wxwork">企微</option>
+                  <option value="wechat">微信</option>
+                </select>
+                <button
+                  onClick={uploadTest}
+                  disabled={uploading}
+                  title="选一张本地截图跑结构化（结果作为新帧出现在最前）"
+                  className="px-2.5 py-1 rounded border border-border-subtle text-body-sm text-text-muted hover:text-primary disabled:opacity-60"
+                >
+                  {uploading ? '识别中…' : '上传图片测试'}
                 </button>
               </div>
             </div>
@@ -1097,13 +1178,47 @@ function OcrView({
               </b></span>
               <span>词块 <b className="text-text-main">{blocks.length}</b></span>
               {frame.droppedBlockCount != null && <span>丢弃 <b className="text-text-main">{frame.droppedBlockCount}</b></span>}
-              <span>输入区 <b className="text-text-main">
-                {frame.inputCutY != null ? `${frame.inputCutY} · ${frame.inputCut?.finalReason ?? 'unknown'}` : '未切'}
-              </b></span>
+              {frame.contactRight != null && <span>联系人右界 <b className="text-text-main">{frame.contactRight}</b></span>}
+              {(frame.scanY0 != null || frame.scanY1 != null) && (
+                <span>扫描带 <b className="text-text-main">Y[{frame.scanY0 ?? '?'},{frame.scanY1 ?? '?'})</b></span>
+              )}
+              <span>气泡 <b className="text-text-main">{frame.bubbles?.length ?? 0}</b></span>
               <span>消息 <b className="text-text-main">{frame.messages?.length ?? 0}</b></span>
             </div>
 
+            {/* 结构化失败：把异常堆栈显示在这里，可复制发给开发排查（原图+OCR 仍在下方可看） */}
+            {frame.structureError && (
+              <div className="rounded border border-red-300 bg-red-50">
+                <div className="flex items-center justify-between px-3 py-1.5 border-b border-red-200">
+                  <span className="text-label-caps font-semibold text-red-700">结构化失败（分区/气泡检测异常）</span>
+                  <button
+                    onClick={() => { void navigator.clipboard.writeText(frame.structureError ?? '') }}
+                    className="px-2 py-0.5 rounded border border-red-300 text-body-sm text-red-700 hover:bg-red-100"
+                  >
+                    复制
+                  </button>
+                </div>
+                <pre className="px-3 py-2 text-[11px] leading-snug text-red-900 whitespace-pre-wrap break-all max-h-48 overflow-auto font-mono">
+                  {frame.structureError}
+                </pre>
+              </div>
+            )}
+
             {overlayMode === 'zones' && (
+              <div className="flex items-center gap-3 flex-wrap text-label-caps text-text-muted">
+                <span className="inline-flex items-center gap-1"><i className="w-3 h-3" style={{ borderLeft: '2px dashed rgba(216,90,48,0.9)' }} />聊天区左右界</span>
+                <span className="inline-flex items-center gap-1"><i className="w-3 h-3" style={{ borderTop: '2px dashed rgba(37,99,235,0.9)' }} />气泡扫描带上下沿</span>
+                <span className="inline-flex items-center gap-1"><i className="w-3 h-3 bg-gray-500/30" />联系人区（丢弃）</span>
+              </div>
+            )}
+            {overlayMode === 'bubbles' && (
+              <div className="flex items-center gap-3 flex-wrap text-label-caps text-text-muted">
+                <span className="inline-flex items-center gap-1"><i className="w-3 h-3 rounded-sm border-2 border-emerald-600 bg-emerald-500/10" />self 气泡</span>
+                <span className="inline-flex items-center gap-1"><i className="w-3 h-3 rounded-sm border-2 border-slate-600 bg-slate-500/10" />other 气泡</span>
+                <span className="inline-flex items-center gap-1"><i className="w-3 h-3 rounded-sm border-2 border-dashed border-rose-500 bg-rose-500/10" />空气泡（没归到文字）</span>
+              </div>
+            )}
+            {overlayMode === 'messages' && (
               <div className="flex items-center gap-3 flex-wrap text-label-caps text-text-muted">
                 <span className="inline-flex items-center gap-1"><i className="w-3 h-3 rounded-sm border-2 border-emerald-600 bg-emerald-500/10" />self 消息</span>
                 <span className="inline-flex items-center gap-1"><i className="w-3 h-3 rounded-sm border-2 border-slate-600 bg-slate-500/10" />other 消息</span>
@@ -1167,6 +1282,17 @@ function OcrView({
                       {frame.chatX1 != null && (
                         <div style={{ position: 'absolute', left: `${(frame.chatX1 / fw) * 100}%`, top: 0, width: 0, height: '100%', borderLeft: '2px dashed rgba(216,90,48,0.6)' }} />
                       )}
+                      {/* 气泡扫描带上/下沿 */}
+                      {frame.scanY0 != null && (
+                        <div style={{ position: 'absolute', left: `${((frame.chatX0 ?? 0) / fw) * 100}%`, top: `${(frame.scanY0 / fh) * 100}%`, width: `${(((frame.chatX1 ?? fw) - (frame.chatX0 ?? 0)) / fw) * 100}%`, height: 0, borderTop: '2px dashed rgba(37,99,235,0.85)' }}>
+                          {showLabels && <span style={{ fontSize: '8px', color: '#1D4ED8', background: 'rgba(219,234,254,0.92)', padding: '0 2px' }}>扫描上沿 {frame.scanY0}</span>}
+                        </div>
+                      )}
+                      {frame.scanY1 != null && (
+                        <div style={{ position: 'absolute', left: `${((frame.chatX0 ?? 0) / fw) * 100}%`, top: `${(frame.scanY1 / fh) * 100}%`, width: `${(((frame.chatX1 ?? fw) - (frame.chatX0 ?? 0)) / fw) * 100}%`, height: 0, borderTop: '2px dashed rgba(37,99,235,0.55)' }}>
+                          {showLabels && <span style={{ fontSize: '8px', color: '#1D4ED8', background: 'rgba(219,234,254,0.92)', padding: '0 2px' }}>扫描下沿 {frame.scanY1}</span>}
+                        </div>
+                      )}
                       {/* input cut region (below inputCutY) */}
                       {frame.inputCutY != null && (
                         <div style={{ position: 'absolute', left: `${((frame.chatX0 ?? 0) / fw) * 100}%`, top: `${(frame.inputCutY / fh) * 100}%`, width: `${(((frame.chatX1 ?? fw) - (frame.chatX0 ?? 0)) / fw) * 100}%`, height: `${((fh - frame.inputCutY) / fh) * 100}%`, backgroundColor: 'rgba(216,90,48,0.16)', borderTop: '1.5px dashed rgba(216,90,48,0.8)' }}>
@@ -1193,7 +1319,38 @@ function OcrView({
                           {showLabels && <span style={{ fontSize: '8px', color: '#9A3412', background: 'rgba(255,237,213,0.92)', padding: '0 2px' }}>最后消息 {frame.inputCut.lastBubbleBottomY}</span>}
                         </div>
                       )}
-                      {/* message bubble boxes */}
+                    </>
+                  )}
+
+                  {/* 气泡视图：只画检测到的气泡连通域（含没归到文字的空气泡） */}
+                  {overlayMode === 'bubbles' && (frame.bubbles ?? []).map((bb, i) => {
+                    const col = bb.speaker === 'self' ? '15,110,86' : '51,65,85'
+                    const empty = !bb.hasText
+                    return (
+                      <div
+                        key={`bubble-${i}`}
+                        title={`${bb.speaker} 气泡 ${bb.w}×${bb.h} area=${bb.area}${empty ? '（空·无文字）' : ''}`}
+                        style={{
+                          position: 'absolute',
+                          left: `${(bb.x / fw) * 100}%`, top: `${(bb.y / fh) * 100}%`,
+                          width: `${(bb.w / fw) * 100}%`, height: `${(bb.h / fh) * 100}%`,
+                          border: empty ? '2px dashed rgba(244,63,94,0.9)' : `2px solid rgba(${col},0.95)`,
+                          backgroundColor: empty ? 'rgba(244,63,94,0.10)' : `rgba(${col},0.12)`,
+                          boxSizing: 'border-box',
+                        }}
+                      >
+                        {showLabels && (
+                          <span style={{ fontSize: '9px', lineHeight: '1.2', color: '#fff', background: empty ? 'rgba(244,63,94,0.95)' : `rgba(${col},0.95)`, padding: '1px 3px', display: 'inline-block', whiteSpace: 'nowrap' }}>
+                            {bb.speaker}{empty ? '·空' : ''} {bb.w}×{bb.h}
+                          </span>
+                        )}
+                      </div>
+                    )
+                  })}
+
+                  {/* 消息视图：最终消息框 + 发送人框 */}
+                  {overlayMode === 'messages' && (
+                    <>
                       {(frame.messages ?? []).map((m, i) => {
                         if (!m.box) return null
                         const col = m.speaker === 'self' ? '15,110,86' : m.speaker === 'system' ? '186,117,23' : '51,65,85'
