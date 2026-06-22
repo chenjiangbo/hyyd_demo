@@ -16,9 +16,29 @@ class AppPrefs(context: Context) {
         get() = prefs.getString("employee_code", BuildConfig.EMPLOYEE_CODE).orEmpty()
         set(value) = prefs.edit().putString("employee_code", value.trim()).apply()
 
+    var collectionEnabled: Boolean
+        get() = prefs.getBoolean("collection_enabled", false)
+        set(value) = prefs.edit().putBoolean("collection_enabled", value).apply()
+
+    var lastBackgroundWorkStartedAt: Long
+        get() = prefs.getLong("last_background_work_started_at", 0L)
+        set(value) = prefs.edit().putLong("last_background_work_started_at", value).apply()
+
+    var lastBackgroundWorkFinishedAt: Long
+        get() = prefs.getLong("last_background_work_finished_at", 0L)
+        set(value) = prefs.edit().putLong("last_background_work_finished_at", value).apply()
+
+    var lastBackgroundWorkStatus: String
+        get() = prefs.getString("last_background_work_status", "未运行").orEmpty()
+        set(value) = prefs.edit().putString("last_background_work_status", value.take(300)).apply()
+
     var lastCallLogTs: Long
         get() = prefs.getLong("last_call_log_ts", 0L)
         set(value) = prefs.edit().putLong("last_call_log_ts", value).apply()
+
+    var recordingScanFloorTs: Long
+        get() = prefs.getLong("recording_scan_floor_ts", 0L)
+        set(value) = prefs.edit().putLong("recording_scan_floor_ts", value).apply()
 
     var serviceStartedAt: Long
         get() = prefs.getLong("service_started_at", 0L)
@@ -71,6 +91,26 @@ class AppPrefs(context: Context) {
     var lastUploadedRecordingText: String
         get() = prefs.getString("last_uploaded_recording_text", "无").orEmpty()
         set(value) = prefs.edit().putString("last_uploaded_recording_text", value.take(300)).apply()
+
+    var lastHeartbeatStartedAt: Long
+        get() = prefs.getLong("last_heartbeat_started_at", 0L)
+        set(value) = prefs.edit().putLong("last_heartbeat_started_at", value).apply()
+
+    var lastHeartbeatFinishedAt: Long
+        get() = prefs.getLong("last_heartbeat_finished_at", 0L)
+        set(value) = prefs.edit().putLong("last_heartbeat_finished_at", value).apply()
+
+    var lastHeartbeatTarget: String
+        get() = prefs.getString("last_heartbeat_target", "").orEmpty()
+        set(value) = prefs.edit().putString("last_heartbeat_target", value.take(300)).apply()
+
+    var lastHeartbeatStatus: String
+        get() = prefs.getString("last_heartbeat_status", "未发送").orEmpty()
+        set(value) = prefs.edit().putString("last_heartbeat_status", value.take(80)).apply()
+
+    var lastHeartbeatResponse: String
+        get() = prefs.getString("last_heartbeat_response", "").orEmpty()
+        set(value) = prefs.edit().putString("last_heartbeat_response", value.take(600)).apply()
 
     fun isRecordingUploaded(path: String): Boolean = prefs.getBoolean("uploaded:$path", false)
 

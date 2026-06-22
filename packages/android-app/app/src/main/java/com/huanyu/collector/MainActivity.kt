@@ -2,7 +2,9 @@ package com.huanyu.collector
 
 import android.Manifest
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.app.ActivityManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -15,6 +17,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
@@ -39,10 +42,12 @@ class MainActivity : Activity() {
     private lateinit var backendInput: EditText
     private lateinit var employeeCodeInput: EditText
     private var currentTab = Tab.OVERVIEW
+    private var lastForegroundHeartbeatAt = 0L
 
     private val handler = Handler(Looper.getMainLooper())
     private val refreshTicker = object : Runnable {
         override fun run() {
+            sendForegroundHeartbeatIfNeeded()
             refreshStatus()
             handler.postDelayed(this, 2_000)
         }
@@ -51,11 +56,20 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildUi()
+        val prefs = AppPrefs(this)
+        if (prefs.collectionEnabled) {
+            try {
+                CollectorWorkScheduler.ensureScheduled(this)
+            } catch (e: Exception) {
+                prefs.lastBackgroundWorkStatus = "调度失败: ${e.message ?: e.javaClass.simpleName}"
+            }
+        }
         refreshStatus()
     }
 
     override fun onResume() {
         super.onResume()
+        sendForegroundHeartbeatIfNeeded(force = true)
         handler.post(refreshTicker)
         refreshStatus()
     }
@@ -172,12 +186,21 @@ class MainActivity : Activity() {
     }
 
     private fun renderOverview(prefs: AppPrefs) {
+        val serviceText = when {
+            isCollectorRunning() -> "前台服务运行中"
+            prefs.collectionEnabled -> "后台采集已启用"
+            else -> "未启用"
+        }
         content.addView(sectionTitle("运行状态"))
         content.addView(kvSection(listOf(
-            "服务" to if (isCollectorRunning()) "运行中" else "未运行",
+            "服务" to serviceText,
             "同步" to if (isSyncing(prefs)) "正在扫描/上传" else "空闲",
             "员工 ID" to prefs.employeeCode.ifBlank { "未配置" },
             "启动时间" to formatTs(prefs.serviceStartedAt),
+            "历史补采起点" to formatTs(prefs.recordingScanFloorTs),
+            "后台任务" to prefs.lastBackgroundWorkStatus,
+            "后台任务开始" to formatTs(prefs.lastBackgroundWorkStartedAt),
+            "后台任务完成" to formatTs(prefs.lastBackgroundWorkFinishedAt),
             "最近同步开始" to formatTs(prefs.lastSyncStartedAt),
             "最近同步完成" to formatTs(prefs.lastSyncFinishedAt),
             "最近错误" to prefs.lastSyncError.ifBlank { "无" }
@@ -188,6 +211,15 @@ class MainActivity : Activity() {
             "地址" to prefs.backendUrl,
             "健康检查" to prefs.lastBackendHealth,
             "检查时间" to formatTs(prefs.lastBackendHealthAt)
+        )))
+
+        content.addView(sectionTitle("心跳"))
+        content.addView(kvSection(listOf(
+            "状态" to prefs.lastHeartbeatStatus,
+            "发送给" to prefs.lastHeartbeatTarget.ifBlank { "无" },
+            "发送时间" to formatTs(prefs.lastHeartbeatStartedAt),
+            "完成时间" to formatTs(prefs.lastHeartbeatFinishedAt),
+            "后端反馈" to prefs.lastHeartbeatResponse.ifBlank { "无" }
         )))
 
         content.addView(sectionTitle("最近一轮"))
@@ -256,7 +288,27 @@ class MainActivity : Activity() {
         box.addView(backendInput)
         box.addView(employeeCodeInput)
         box.addView(button("保存配置") { saveConfig(showToast = true) })
+        box.addView(button("立即发送心跳") {
+            if (saveConfig(showToast = false)) {
+                Thread {
+                    sendHeartbeat("手动")
+                    runOnUiThread {
+                        Toast.makeText(this, "心跳已发送：${AppPrefs(this).lastHeartbeatStatus}", Toast.LENGTH_SHORT).show()
+                        refreshStatus()
+                    }
+                }.start()
+            }
+        })
         content.addView(box)
+
+        content.addView(sectionTitle("最近心跳"))
+        content.addView(kvSection(listOf(
+            "状态" to prefs.lastHeartbeatStatus,
+            "发送给" to prefs.lastHeartbeatTarget.ifBlank { "无" },
+            "发送时间" to formatTs(prefs.lastHeartbeatStartedAt),
+            "完成时间" to formatTs(prefs.lastHeartbeatFinishedAt),
+            "后端反馈" to prefs.lastHeartbeatResponse.ifBlank { "无" }
+        )))
 
         content.addView(sectionTitle("权限"))
         content.addView(kvSection(listOf(
@@ -267,20 +319,29 @@ class MainActivity : Activity() {
         )))
         content.addView(button("申请基础权限") { requestRuntimePermissions() })
         content.addView(button("打开全部文件访问权限") { openAllFilesAccessSettings() })
-        content.addView(emptyText("系统里还需要开启：电话自动录音、自启动、允许后台运行、关闭电池优化。"))
+        content.addView(button("通知设置") { openNotificationSettings() })
+        content.addView(button("申请忽略电池优化") { requestIgnoreBatteryOptimizations() })
+        content.addView(button("应用详情 / 后台运行") { openAppDetailsSettings() })
+        content.addView(button("华为应用启动管理") { openHuaweiStartupManager() })
+        content.addView(emptyText("系统里还需要开启电话自动录音；华为应用启动管理中关闭自动管理，并允许自启动、关联启动和后台活动。"))
     }
 
     private fun refreshStatus() {
         val prefs = AppPrefs(this)
-        val service = if (isCollectorRunning()) "运行中" else "未运行"
+        val serviceRunning = isCollectorRunning()
+        val service = when {
+            serviceRunning -> "前台服务运行中"
+            prefs.collectionEnabled -> "后台采集已启用"
+            else -> "未启用"
+        }
         val sync = if (isSyncing(prefs)) "同步中" else "空闲"
         val hasError = prefs.lastSyncError.isNotBlank()
         val pending = prefs.pendingCallCount()
         statusIcon.setTextColor(
             when {
-                !isCollectorRunning() -> Color.rgb(148, 163, 184)
+                !prefs.collectionEnabled -> Color.rgb(148, 163, 184)
                 hasError -> Color.rgb(239, 68, 68)
-                pending > 0 || isSyncing(prefs) -> Color.rgb(245, 158, 11)
+                !serviceRunning || pending > 0 || isSyncing(prefs) -> Color.rgb(245, 158, 11)
                 else -> Color.rgb(16, 185, 129)
             }
         )
@@ -325,6 +386,43 @@ class MainActivity : Activity() {
         startActivity(intent)
     }
 
+    private fun openNotificationSettings() {
+        startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+            putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+        })
+    }
+
+    private fun requestIgnoreBatteryOptimizations() {
+        val powerManager = getSystemService(PowerManager::class.java)
+        if (powerManager.isIgnoringBatteryOptimizations(packageName)) {
+            Toast.makeText(this, "已经忽略电池优化", Toast.LENGTH_SHORT).show()
+            return
+        }
+        startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = Uri.parse("package:$packageName")
+        })
+    }
+
+    private fun openAppDetailsSettings() {
+        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.parse("package:$packageName")
+        })
+    }
+
+    private fun openHuaweiStartupManager() {
+        val intent = Intent().apply {
+            component = ComponentName(
+                "com.huawei.systemmanager",
+                "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"
+            )
+        }
+        try {
+            startActivity(intent)
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, "当前手机没有华为应用启动管理页面", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun startCollectorService() {
         if (currentTab == Tab.SETTINGS && !saveConfig(showToast = false)) return
         try {
@@ -335,17 +433,30 @@ class MainActivity : Activity() {
             refreshStatus()
             return
         }
-        val intent = Intent(this, CollectorService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+        val prefs = AppPrefs(this)
+        try {
+            prefs.collectionEnabled = true
+            CollectorWorkScheduler.ensureScheduled(this)
+            val intent = Intent(this, CollectorService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } catch (e: Exception) {
+            prefs.collectionEnabled = false
+            CollectorWorkScheduler.cancel(this)
+            Toast.makeText(this, "启动采集失败: ${e.message ?: e.javaClass.simpleName}", Toast.LENGTH_LONG).show()
+            refreshStatus()
+            return
         }
         Toast.makeText(this, "采集服务已启动", Toast.LENGTH_SHORT).show()
         refreshStatus()
     }
 
     private fun stopCollectorService() {
+        AppPrefs(this).collectionEnabled = false
+        CollectorWorkScheduler.cancel(this)
         stopService(Intent(this, CollectorService::class.java))
         Toast.makeText(this, "采集服务已停止", Toast.LENGTH_SHORT).show()
         refreshStatus()
@@ -380,7 +491,10 @@ class MainActivity : Activity() {
 
         Thread {
             val (ok, result) = try {
-                true to BackendClient(prefs.backendUrl, prefs.employeeCode).health()
+                val backend = BackendClient(prefs.backendUrl, prefs.employeeCode)
+                val text = backend.health()
+                sendHeartbeat("检查后端")
+                true to text
             } catch (e: Exception) {
                 false to "失败：${e.message ?: e.javaClass.simpleName}"
             }
@@ -395,6 +509,39 @@ class MainActivity : Activity() {
                 refreshStatus()
             }
         }.start()
+    }
+
+    private fun sendForegroundHeartbeatIfNeeded(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastForegroundHeartbeatAt < 20_000) return
+        val prefs = AppPrefs(this)
+        try {
+            prefs.validateConfig()
+        } catch (_: Exception) {
+            return
+        }
+        lastForegroundHeartbeatAt = now
+        Thread { sendHeartbeat("前台") }.start()
+    }
+
+    private fun sendHeartbeat(source: String) {
+        val prefs = AppPrefs(this)
+        val target = "${prefs.backendUrl}/api/v1/me/mobile-heartbeat"
+        prefs.lastHeartbeatStartedAt = System.currentTimeMillis()
+        prefs.lastHeartbeatTarget = "$target · 员工 ${prefs.employeeCode.ifBlank { "未配置" }} · $source"
+        prefs.lastHeartbeatStatus = "发送中"
+        prefs.lastHeartbeatResponse = ""
+        try {
+            prefs.validateConfig()
+            val response = BackendClient(prefs.backendUrl, prefs.employeeCode).heartbeat(source)
+            prefs.lastHeartbeatFinishedAt = System.currentTimeMillis()
+            prefs.lastHeartbeatStatus = "成功"
+            prefs.lastHeartbeatResponse = response
+        } catch (e: Exception) {
+            prefs.lastHeartbeatFinishedAt = System.currentTimeMillis()
+            prefs.lastHeartbeatStatus = "失败"
+            prefs.lastHeartbeatResponse = e.message ?: e.javaClass.simpleName
+        }
     }
 
     private fun sectionTitle(text: String): TextView {

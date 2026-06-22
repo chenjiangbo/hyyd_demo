@@ -25,7 +25,25 @@ class BackendClient(
         return text
     }
 
-    fun postCall(call: LocalCall): SyncedCall {
+    fun heartbeat(source: String): String {
+        return postJson(
+            "/api/v1/me/mobile-heartbeat",
+            JSONObject().put("source", source)
+        ).toString()
+    }
+
+    fun matchCallPhone(phone: String): CallPhoneMatch {
+        val data = postJson("/api/v1/calls/match", JSONObject().put("phone", phone)).getJSONObject("data")
+        if (!data.optBoolean("matched")) return CallPhoneMatch(matched = false)
+        val order = data.getJSONObject("order")
+        return CallPhoneMatch(
+            matched = true,
+            orderId = order.getInt("id"),
+            sourceOrderNo = order.optString("sourceOrderNo", "")
+        )
+    }
+
+    fun postCall(call: LocalCall, orderId: Int? = null): SyncedCall {
         val body = JSONObject()
             .put("phone", call.phone)
             .put("contactName", call.contactName)
@@ -33,6 +51,7 @@ class BackendClient(
             .put("callStatus", call.callStatus)
             .put("durationSec", call.durationSec)
             .put("startedAt", Instant.ofEpochMilli(call.startedAtMillis).toString())
+        if (orderId != null) body.put("orderId", orderId)
 
         val data = postJson("/api/v1/calls", body).getJSONObject("data")
         val contactName = if (data.isNull("contactName")) null else data.optString("contactName")
@@ -44,6 +63,27 @@ class BackendClient(
             callStatus = data.optString("callStatus", call.callStatus),
             startedAtMillis = call.startedAtMillis,
             durationSec = data.optInt("durationSec", call.durationSec)
+        )
+    }
+
+    fun lookupCall(phone: String, startedAtMillis: Long): SyncedCall? {
+        val response = postJson(
+            "/api/v1/calls/lookup",
+            JSONObject()
+                .put("phone", phone)
+                .put("startedAtMillis", startedAtMillis)
+        )
+        if (response.isNull("data")) return null
+        val data = response.getJSONObject("data")
+        val contactName = if (data.isNull("contactName")) null else data.optString("contactName")
+        return SyncedCall(
+            id = data.getInt("id"),
+            phone = data.getString("phone"),
+            contactName = contactName,
+            direction = data.optString("direction", ""),
+            callStatus = data.optString("callStatus", ""),
+            startedAtMillis = Instant.parse(data.getString("startedAt")).toEpochMilli(),
+            durationSec = data.optInt("durationSec", 0)
         )
     }
 
@@ -96,3 +136,9 @@ class BackendClient(
         return JSONObject(text)
     }
 }
+
+data class CallPhoneMatch(
+    val matched: Boolean,
+    val orderId: Int? = null,
+    val sourceOrderNo: String = ""
+)

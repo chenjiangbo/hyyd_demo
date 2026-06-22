@@ -8,7 +8,7 @@ import java.util.Locale
 class RecordingScanner {
     private val timestampFormat = SimpleDateFormat("yyyyMMddHHmmss", Locale.CHINA)
 
-    fun scan(): List<LocalRecording> {
+    fun scanSince(sinceMillis: Long): List<LocalRecording> {
         val root = Environment.getExternalStorageDirectory()
         val dirs = listOf(
             File(root, "Sounds/CallRecord"),
@@ -19,9 +19,14 @@ class RecordingScanner {
 
         return dirs
             .filter { it.exists() && it.isDirectory }
-            .flatMap { dir -> dir.walkTopDown().filter { it.isFile }.toList() }
+            .flatMap { dir ->
+                dir.walkTopDown()
+                    .filter { it.isFile && it.lastModified() >= sinceMillis }
+                    .toList()
+            }
             .filter { it.extension.lowercase(Locale.ROOT) in setOf("m4a", "mp3", "aac", "wav", "amr") }
             .mapNotNull { parseRecording(it) }
+            .filter { it.timestampMillis >= sinceMillis }
             .sortedBy { it.timestampMillis }
     }
 
