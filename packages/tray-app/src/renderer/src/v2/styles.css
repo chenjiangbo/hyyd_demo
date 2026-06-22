@@ -32,11 +32,11 @@
   --color-error: #ba1a1a;
 
   /* 表面 / 文字 / 描边 */
-  --color-surface: #faf9ff;
-  --color-surface-bg: #f8fafc;
-  --color-surface-container-low: #f2f3fd;
-  --color-surface-container: #ededf7;
-  --color-surface-variant: #e1e2eb;
+  --color-surface: #ffffff;
+  --color-surface-bg: #f6f8fb;
+  --color-surface-container-low: #f1f5f9;
+  --color-surface-container: #e8edf5;
+  --color-surface-variant: #dbe3ee;
   --color-on-surface: #191b22;
   --color-text-main: #1e293b;
   --color-text-muted: #64748b;
@@ -74,6 +74,53 @@
   --text-label-caps--line-height: 16px;
   --text-label-caps--font-weight: 700;
   --text-label-caps--letter-spacing: 0.05em;
+}
+
+/* ─── 深色主题 ─────────────────────────────────────────────
+   覆盖语义 token；UI 绝大多数用语义类(bg-surface*/text-text-*/border-border-subtle)，
+   会自动跟随。少数硬编码 bg-white 用下面一条规则翻成深色表面；text-white(在彩色按钮上)保持白。 */
+:root[data-theme='dark'] {
+  --color-primary: #6ea8ff;
+  --color-primary-container: #1d4ed8;
+  --color-primary-fixed: #1f3b63;
+  --color-primary-fixed-dim: #24476f;
+  --color-on-primary-fixed: #d8e8ff;
+  --color-secondary-fixed: #35264f;
+  --color-secondary-fixed-dim: #4a3570;
+  --color-on-secondary-fixed-variant: #e3d4ff;
+  --color-surface: #141922;
+  --color-surface-bg: #0b0f16;
+  --color-surface-container-low: #1b2230;
+  --color-surface-container: #252e3d;
+  --color-surface-variant: #334155;
+  --color-on-surface: #e5eaf2;
+  --color-text-main: #eef3f8;
+  --color-text-muted: #9aa8ba;
+  --color-outline: #718096;
+  --color-outline-variant: #3a4657;
+  --color-border-subtle: #2a3443;
+}
+:root[data-theme='dark'] .bg-white {
+  background-color: var(--color-surface) !important;
+}
+/* 浅色描边阴影在深色下太突兀，柔化 */
+:root[data-theme='dark'] .shadow-sm,
+:root[data-theme='dark'] .shadow-lg {
+  --tw-shadow-color: rgba(0, 0, 0, 0.5);
+}
+
+/* ─── 主题切换：圆形扩散动画（View Transitions API）─────────
+   关掉默认淡入淡出，让新主题快照从点击点以圆形揭开。不支持的浏览器自动退化为瞬切。 */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(root) {
+  z-index: 0;
+}
+::view-transition-new(root) {
+  z-index: 1;
 }
 
 /* 全局基础：Inter 为主，中文走系统无衬线 */

@@ -12,6 +12,7 @@ import {
   type Order,
   type OrderAttachment,
   type OrderCall,
+  type OrderMessage,
   type OrderDetailResponse,
   type OrderBrief
 } from '../api'
@@ -112,29 +113,15 @@ export default function OrderDetailPage({
     }
   }, [order.id])
 
-  useEffect(() => {
-    let alive = true
-    loadCaptureLifecycleEvents(order)
-      .then((events) => {
-        if (!alive) return
-        setCaptureEvents(events)
-        setCaptureError(null)
-      })
-      .catch((e) => {
-        if (!alive) return
-        setCaptureEvents([])
-        setCaptureError(e instanceof Error ? e.message : '加载沟通采集数据失败')
-      })
-    return () => {
-      alive = false
-    }
-  }, [order])
-
+  // 通话 + 采集消息都来自后端聚合接口：消息已跨帧去重、按 sortTime 排好（时间链），
+  // 不再读本地采集库（本地只剩整帧去重，不再保留成品消息）。
   useEffect(() => {
     let alive = true
     if (order.id <= 0) {
       setCallEvents([])
       setCallError(null)
+      setCaptureEvents([])
+      setCaptureError(null)
       return
     }
     fetchOrderAggregate(order.id)
@@ -142,11 +129,16 @@ export default function OrderDetailPage({
         if (!alive) return
         setCallEvents(buildCallLifecycleEvents(resp.calls ?? []))
         setCallError(null)
+        setCaptureEvents(buildBackendMessageEvents(resp.messages ?? []))
+        setCaptureError(null)
       })
       .catch((e) => {
         if (!alive) return
+        const msg = e instanceof Error ? e.message : '加载订单聚合数据失败'
         setCallEvents([])
-        setCallError(e instanceof Error ? e.message : '加载通话记录失败')
+        setCallError(msg)
+        setCaptureEvents([])
+        setCaptureError(msg)
       })
     return () => {
       alive = false
@@ -279,89 +271,31 @@ function buildCallLifecycleEvents(calls: OrderCall[]): LifecycleEvent[] {
   }))
 }
 
-async function loadCaptureLifecycleEvents(order: Order): Promise<LifecycleEvent[]> {
-  const api = window.api
-  if (!api?.getCaptureConversations || !api.getCaptureMessages) return []
-
-  const candidates = orderNoCandidates(order)
-  if (candidates.length === 0) return []
-
-  const conversations = await api.getCaptureConversations()
-  const matched = conversations.filter((conversation) => {
-    const orderNo = normalizeOrderNoForMatch(conversation.orderNo)
-    return orderNo ? candidates.includes(orderNo) : false
-  })
-  if (matched.length === 0) return []
-
-  const events: LifecycleEvent[] = []
-  const screenshotUrls = new Map<string, string | null>()
-  for (const conversation of matched) {
-    const messages = await api.getCaptureMessages(conversation.id)
-    for (const message of messages) {
-      if (message.sourceScreenshotPath && !screenshotUrls.has(message.sourceScreenshotPath)) {
-        const url = api.getCaptureScreenshot
-          ? await api.getCaptureScreenshot(message.sourceScreenshotPath)
-          : null
-        screenshotUrls.set(message.sourceScreenshotPath, url)
-        events.push({
-          id: `capture-shot-${conversation.id}-${message.sourceScreenshotPath}`,
-          stage: 'communication',
-          kind: 'image',
-          title: `${channelLabel(conversation.channel)}截图`,
-          occurredAt: message.firstSeenAt,
-          imageUrl: url,
-          channel: normalizeCaptureChannel(conversation.channel)
-        })
-      }
-
-      events.push({
-        id: `capture-message-${message.id}`,
-        stage: 'communication',
-        kind: message.senderType === 'system' ? 'status' : 'message',
-        title: `${channelLabel(conversation.channel)} · ${senderLabel(message)}`,
-        summary: message.content,
-        occurredAt: message.firstSeenAt,
-        channel: normalizeCaptureChannel(conversation.channel),
-        senderType: message.senderType,
-        senderName: message.senderName
-      })
+// 把后端聚合返回的采集消息（已去重、按 sortTime 排好）映射成生命周期事件。
+// occurredAt 用 sortTime（= chatTime ?? capturedAt，后端的排序键），保证时间线顺序与后端一致。
+// 注：截图是本地 PNG、未上传后端，故这里不再有截图缩略图事件——只展示去重排序后的消息链。
+function buildBackendMessageEvents(messages: OrderMessage[]): LifecycleEvent[] {
+  return messages.map((m) => {
+    const ch: LifecycleEvent['channel'] =
+      m.channel === 'wxwork' ? 'wxwork' : m.channel === 'wechat' ? 'wechat' : undefined
+    const senderType: LifecycleEvent['senderType'] =
+      m.senderType === 'self' || m.senderType === 'other' || m.senderType === 'system'
+        ? m.senderType
+        : 'unknown'
+    const chLabel = ch === 'wxwork' ? '企微' : ch === 'wechat' ? '微信' : '采集'
+    const who = senderType === 'system' ? '系统' : senderType === 'self' ? '我' : m.senderName || '对方'
+    return {
+      id: `msg-${m.id}`,
+      stage: 'communication',
+      kind: senderType === 'system' ? 'status' : 'message',
+      title: `${chLabel} · ${who}`,
+      summary: m.contentText,
+      occurredAt: m.sortTime ?? m.capturedAt,
+      channel: ch,
+      senderType,
+      senderName: m.senderName
     }
-  }
-  return events
-}
-
-function orderNoCandidates(order: Order): string[] {
-  const raw = order.rawJson ?? {}
-  const values = [
-    order.sourceOrderNo,
-    readRaw(raw, 'sourceOrderNo'),
-    readRaw(raw, 'subOrderNo'),
-    readRaw(raw, 'applyNo'),
-    readRaw(raw, 'crmApplyNo'),
-    readRaw(raw, 'orderNo'),
-    readRaw(raw, 'orderId')
-  ]
-  return Array.from(new Set(values.map(normalizeOrderNoForMatch).filter(Boolean)))
-}
-
-function normalizeOrderNoForMatch(value: string | null | undefined): string {
-  return (value ?? '').replace(/[^a-z0-9]/gi, '').toLowerCase()
-}
-
-function channelLabel(channel: string): string {
-  return channel === 'wxwork' ? '企微' : channel === 'wechat' ? '微信' : channel
-}
-
-function normalizeCaptureChannel(channel: string): 'wechat' | 'wxwork' | 'manual' {
-  return channel === 'wxwork' ? 'wxwork' : channel === 'wechat' ? 'wechat' : 'manual'
-}
-
-function senderLabel(message: CaptureMessage): string {
-  if (message.senderName) return message.senderName
-  if (message.senderType === 'self') return '自己'
-  if (message.senderType === 'other') return '对方'
-  if (message.senderType === 'system') return '系统'
-  return '未知'
+  })
 }
 
 function eventIcon(kind: LifecycleEventKind): string {
@@ -543,19 +477,24 @@ function LifecycleStep({
   )
 }
 
-type CommunicationFilter = 'all' | 'wechat' | 'wxwork' | 'call' | 'manual'
+// 标签只有 微信/企微/电话/人工录入（各看各的，默认微信）；标签和消息列表下方固定一张
+// AI 总结卡（非白底），把所有渠道一起总结——不用切标签也能看到全局要点。
+type CommunicationFilter = 'wechat' | 'wxwork' | 'call' | 'manual'
+
+const COMM_TABS: Array<{ key: CommunicationFilter; label: string; icon: string; iconColor: string }> = [
+  { key: 'wechat', label: '微信', icon: 'chat', iconColor: 'text-[#07c160]' },
+  { key: 'wxwork', label: '企微', icon: 'groups', iconColor: 'text-[#2e7bff]' },
+  { key: 'call', label: '电话', icon: 'call', iconColor: 'text-[#00a3a3]' },
+  { key: 'manual', label: '人工录入', icon: 'edit_note', iconColor: 'text-[#f59e0b]' }
+]
 
 function CommunicationPanel({ events }: { events: LifecycleEvent[] }): React.JSX.Element {
-  const [active, setActive] = useState<CommunicationFilter>('all')
+  const [active, setActive] = useState<CommunicationFilter>('wechat')
   const [preview, setPreview] = useState<LifecycleEvent | null>(null)
-  const channelEvents = events.filter((event) => {
-    if (active === 'all') return true
-    return (event.channel ?? 'manual') === active
-  })
+  const channelEvents = events.filter((event) => (event.channel ?? 'manual') === active)
   const messages = channelEvents.filter((event) => event.kind !== 'image')
   const screenshots = channelEvents.filter((event) => event.kind === 'image' && event.imageUrl)
   const counts = {
-    all: events.length,
     wechat: events.filter((event) => event.channel === 'wechat').length,
     wxwork: events.filter((event) => event.channel === 'wxwork').length,
     call: events.filter((event) => event.channel === 'call').length,
@@ -565,11 +504,17 @@ function CommunicationPanel({ events }: { events: LifecycleEvent[] }): React.JSX
   return (
     <div className="mt-3 rounded-lg border border-border-subtle bg-surface-container-low overflow-hidden">
       <div className="flex border-b border-border-subtle bg-white overflow-x-auto">
-        <CommunicationTab label="全部" count={counts.all} active={active === 'all'} onClick={() => setActive('all')} />
-        <CommunicationTab label="微信" count={counts.wechat} active={active === 'wechat'} onClick={() => setActive('wechat')} />
-        <CommunicationTab label="企微" count={counts.wxwork} active={active === 'wxwork'} onClick={() => setActive('wxwork')} />
-        <CommunicationTab label="电话" count={counts.call} active={active === 'call'} onClick={() => setActive('call')} />
-        <CommunicationTab label="手工" count={counts.manual} active={active === 'manual'} onClick={() => setActive('manual')} />
+        {COMM_TABS.map((tab) => (
+          <CommunicationTab
+            key={tab.key}
+            label={tab.label}
+            icon={tab.icon}
+            iconColor={tab.iconColor}
+            count={counts[tab.key]}
+            active={active === tab.key}
+            onClick={() => setActive(tab.key)}
+          />
+        ))}
       </div>
 
       <div className="h-72 overflow-y-auto px-3 py-3 bg-[#f3f3f3]">
@@ -579,22 +524,23 @@ function CommunicationPanel({ events }: { events: LifecycleEvent[] }): React.JSX
           </div>
         ) : (
           <div className="space-y-2">
-            {messages.map((event) => (
-              event.kind === 'call'
-                ? <CallTimelineItem key={event.id} event={event} />
-                : <ChatBubble key={event.id} event={event} />
-            ))}
+            {messages.map((event) =>
+              event.kind === 'call' ? (
+                <CallTimelineItem key={event.id} event={event} />
+              ) : (
+                <ChatBubble key={event.id} event={event} />
+              )
+            )}
           </div>
         )}
       </div>
 
-      <CommunicationAiSummary events={events} active={active} />
+      {/* 固定在标签/列表下方：综合所有渠道的 AI 总结（非白底） */}
+      <AiSummaryCard events={events} counts={counts} />
 
-      <div className="border-t border-border-subtle bg-white px-3 py-2">
-        <div className="mb-2 text-[11px] font-medium text-text-muted">截图</div>
-        {screenshots.length === 0 ? (
-          <div className="text-body-sm text-text-muted/70">暂无截图</div>
-        ) : (
+      {screenshots.length > 0 && (
+        <div className="border-t border-border-subtle bg-white px-3 py-2">
+          <div className="mb-2 text-[11px] font-medium text-text-muted">截图</div>
           <div className="flex gap-2 overflow-x-auto pb-1">
             {screenshots.map((event) => (
               <button
@@ -608,8 +554,8 @@ function CommunicationPanel({ events }: { events: LifecycleEvent[] }): React.JSX
               </button>
             ))}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {preview && (
         <ImagePreviewOverlay
@@ -622,82 +568,57 @@ function CommunicationPanel({ events }: { events: LifecycleEvent[] }): React.JSX
   )
 }
 
-function CommunicationAiSummary({
+// 综合所有渠道的 AI 总结卡（淡紫底，固定在沟通区下方）。AI 接入前先用确定性概览占位。
+function AiSummaryCard({
   events,
-  active
+  counts
 }: {
   events: LifecycleEvent[]
-  active: CommunicationFilter
+  counts: { wechat: number; wxwork: number; call: number; manual: number }
 }): React.JSX.Element {
-  const groups = aiSummaryGroups(events, active)
-  if (groups.length === 0) return <></>
+  const textEvents = events.filter((event) => event.kind !== 'image')
+  const sorted = [...textEvents].sort(
+    (a, b) => new Date(a.occurredAt).getTime() - new Date(b.occurredAt).getTime()
+  )
+  const range =
+    sorted.length > 0
+      ? `${formatDateTime(sorted[0].occurredAt)} ~ ${formatDateTime(sorted[sorted.length - 1].occurredAt)}`
+      : null
+
   return (
-    <div className="border-t border-border-subtle bg-white px-3 py-3 space-y-2">
-      {groups.map((group) => (
-        <div key={group.key} className="rounded-lg border border-ai-purple/20 bg-ai-purple/5 px-3 py-2">
-          <div className="flex items-center gap-1.5 text-[12px] font-semibold text-ai-purple">
-            <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>smart_toy</span>
-            {group.title}
-          </div>
-          <p className="mt-1 text-body-sm text-text-main whitespace-pre-wrap break-words">{group.content}</p>
-        </div>
-      ))}
+    <div className="border-t border-ai-purple/20 bg-ai-purple/5 px-3 py-3">
+      <div className="flex items-center gap-1.5 text-ai-purple font-semibold text-body-sm">
+        <span className="material-symbols-outlined" style={{ fontSize: '17px' }}>smart_toy</span>
+        AI 沟通总结
+        <span className="ml-2 text-[11px] font-normal text-text-muted">（综合全部渠道）</span>
+      </div>
+      <p className="mt-1.5 text-body-sm text-text-muted leading-relaxed">
+        AI 总结即将接入——将综合微信 / 企微 / 电话 / 人工录入，自动提炼本订单的沟通要点与下一步。完整简报见右侧「AI 关键信息」。
+      </p>
+      <div className="mt-2 text-body-sm text-text-main">
+        当前共 {textEvents.length} 条沟通：微信 {counts.wechat} · 企微 {counts.wxwork} · 电话 {counts.call} · 人工录入{' '}
+        {counts.manual}
+        {range && <span className="text-text-muted">，时间范围 {range}</span>}
+      </div>
     </div>
   )
 }
 
-function aiSummaryGroups(
-  events: LifecycleEvent[],
-  active: CommunicationFilter
-): Array<{ key: string; title: string; content: string }> {
-  const groups: Array<{ key: string; title: string; channels: Array<NonNullable<LifecycleEvent['channel']>> }> =
-    active === 'all'
-      ? [
-          { key: 'chat', title: '微信 / 企微 AI 总结', channels: ['wechat', 'wxwork'] },
-          { key: 'call', title: '电话 AI 总结', channels: ['call'] },
-          { key: 'manual', title: '手工补录 AI 总结', channels: ['manual'] }
-        ]
-      : active === 'wechat' || active === 'wxwork'
-        ? [{ key: 'chat', title: '微信 / 企微 AI 总结', channels: ['wechat', 'wxwork'] }]
-        : active === 'call'
-          ? [{ key: 'call', title: '电话 AI 总结', channels: ['call'] }]
-          : [{ key: 'manual', title: '手工补录 AI 总结', channels: ['manual'] }]
-
-  return groups
-    .map((group) => {
-      const scoped = events.filter((event) => group.channels.includes(event.channel ?? 'manual') && event.kind !== 'image')
-      if (scoped.length === 0) return null
-      return {
-        key: group.key,
-        title: group.title,
-        content: buildAiSummaryPreview(scoped)
-      }
-    })
-    .filter((item): item is { key: string; title: string; content: string } => item !== null)
-}
-
-function buildAiSummaryPreview(events: LifecycleEvent[]): string {
-  const sorted = [...events].sort((a, b) => new Date(a.occurredAt).getTime() - new Date(b.occurredAt).getTime())
-  const first = sorted[0]
-  const last = sorted[sorted.length - 1]
-  const textItems = sorted
-    .map((event) => event.summary || event.title)
-    .filter(Boolean)
-    .slice(0, 3)
-  const windowText = first && last
-    ? `${formatDateTime(first.occurredAt)} - ${formatDateTime(last.occurredAt)}`
-    : '暂无时间'
-  return `共 ${sorted.length} 条记录，时间范围 ${windowText}。\n要点：${textItems.join('；')}`
-}
-
+// 「AI 总结」标签内容：AI 接入前先占位，下方给一份确定性的"当前沟通概览"（真实条数/时间范围），不骗人。
+// 「总体」标签内容：各沟通渠道一张总结卡，让人不用逐个标签翻消息就能看全。
+// AI 接入前先用确定性概览占位（条数 + 时间范围 + 最近几条要点）；完整 AI 简报在右侧「AI 关键信息」。
 function CommunicationTab({
   label,
+  icon,
+  iconColor,
   count,
   active,
   onClick
 }: {
   label: string
-  count: number
+  icon?: string
+  iconColor?: string
+  count?: number
   active: boolean
   onClick: () => void
 }): React.JSX.Element {
@@ -706,14 +627,16 @@ function CommunicationTab({
       type="button"
       onClick={onClick}
       className={
-        'shrink-0 min-w-[72px] h-10 px-3 text-body-sm border-b-2 transition-colors ' +
+        'shrink-0 inline-flex items-center gap-1 min-w-[68px] h-10 px-3 text-body-sm border-b-2 transition-colors ' +
         (active
-          ? 'border-primary text-primary font-semibold bg-surface-container-low'
-          : 'border-transparent text-text-muted hover:bg-surface-container-low')
+          ? 'border-primary text-text-main font-semibold bg-surface-container-low'
+          : 'border-transparent text-text-main/80 hover:bg-surface-container-low')
       }
     >
+      {/* 图标用渠道彩色，看起来可点；标签文字用偏深色（不再灰蒙蒙像禁用） */}
+      {icon && <span className={'material-symbols-outlined ' + (iconColor ?? '')} style={{ fontSize: '16px' }}>{icon}</span>}
       {label}
-      <span className="ml-1 text-[11px] text-text-muted">{count}</span>
+      {count !== undefined && <span className="ml-0.5 text-[11px] text-text-muted">{count}</span>}
     </button>
   )
 }
@@ -1254,14 +1177,6 @@ function fileTypeLabel(type: string): string {
     '5009': '过程资料'
   }
   return labels[type] ?? `类型 ${type}`
-}
-
-function readRaw(raw: Record<string, unknown>, key: string): string {
-  const value = raw[key]
-  if (value === null || value === undefined) return ''
-  if (typeof value === 'string') return value
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  return ''
 }
 
 function pick(

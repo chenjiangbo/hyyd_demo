@@ -18,6 +18,7 @@ const UNIFY_BASE = 'https://ccm.taikang.com/ccm-unify/ccm-unify/ccm-unify';
 const SYSTEM_BASE = 'https://ccm.taikang.com/ccm-unify/hssrmp';
 // 挂号协助有独立的池接口；其余所有绿通业务走通用 individualPool。
 const REGISTER_SERVICE_TYPE = '2000709';
+const PROVIDER = '3'; // 公共池接口的 provider 入参
 // 与泰康订单详情页一致拉取常见附件类型。HAR 实测详情页会请求这些 fileType；
 // 空结果由泰康接口正常返回，插件只保存真正带 fileUrl/fileId 的附件。
 const FETCH_FILE_TYPES = ['40', '41', '5000', '5001', '5002', '100', '99', '5010', '5008', '5009'];
@@ -179,7 +180,36 @@ async function fetchAllOrders(userId: number, userName: string): Promise<any[]> 
   const byOrderNo = new Map<string, any>();
   for (const o of [...others, ...register]) {
     // register 后写入会覆盖 general，保证挂号优先
-    if (o?.subOrderNo) byOrderNo.set(o.subOrderNo, o);
+    if (o?.subOrderNo) {
+      o.__pool = 'personal';
+      byOrderNo.set(o.subOrderNo, o);
+    }
+  }
+  return [...byOrderNo.values()];
+}
+
+// 公共池（待申领订单，所有泰康账号都能看到，无归属）。
+// 接口同样分两套：挂号协助 registerWaitingPool + 其余绿通 waitingPool。
+// 每台插件都采、不设主采集者；后端按 sourceOrderNo upsert 天然去重。
+async function fetchPublicOrders(userName: string): Promise<any[]> {
+  const [register, others] = await Promise.all([
+    fetchPoolAll(
+      'medicalmanager/registerWaitingPool',
+      { provider: PROVIDER, serviceType: REGISTER_SERVICE_TYPE },
+      'register'
+    ),
+    fetchPoolAll(
+      'medicalmanager/waitingPool',
+      { provider: PROVIDER, userName },
+      'general'
+    ),
+  ]);
+  const byOrderNo = new Map<string, any>();
+  for (const o of [...others, ...register]) {
+    if (o?.subOrderNo) {
+      o.__pool = 'public';
+      byOrderNo.set(o.subOrderNo, o);
+    }
   }
   return [...byOrderNo.values()];
 }
@@ -237,16 +267,29 @@ async function fetchOrderDetail(userId: number, order: any): Promise<any> {
 
 // ─── 列表项 → 上报给后端的精简结构 ──────────────────────────
 function toReportedOrder(o: any) {
+  const taikangOrderState = o.orderState == null ? null : String(o.orderState);
+  const taikangOrderStateName = o.orderStateName == null ? null : String(o.orderStateName);
+  const taikangCaseStatus = o.caseStatus == null ? null : String(o.caseStatus);
+  const taikangWaitType = o.waitType == null ? null : String(o.waitType);
+  const taikangServState = o.servState == null ? null : String(o.servState);
+
   return {
     sourceOrderNo: o.subOrderNo,
     orderId: o.subOrderNo, // 兼容旧字段
+    pool: o.__pool || 'personal', // 'personal' 个人池(已申领) | 'public' 公共池(待申领)
     poolType: o.__poolType, // 'register' | 'general'，给 trayapp 分 tab 用
     applyNo: o.applyNo,
     crmApplyNo: o.crmApplyNo,
     caseId: o.caseId,
-    status: o.orderStateName,
-    orderState: o.orderState,
-    caseStatus: o.caseStatus,
+    // 保留泰康原始状态字段名。status/orderState/caseStatus 只作为旧后端兼容字段保留。
+    taikangOrderState,
+    taikangOrderStateName,
+    taikangCaseStatus,
+    taikangWaitType,
+    taikangServState,
+    status: taikangOrderStateName,
+    orderState: taikangOrderState,
+    caseStatus: taikangCaseStatus,
     serviceType: o.serviceName || o.itemName, // 业务可读名（陪诊/住院/挂号协助...）
     patientName: o.patientName,
     insurName: o.insurName,
@@ -275,6 +318,7 @@ function toReportedOrder(o: any) {
     applyTime: o.applyDate || o.applicationDate || null,
     applicationDate: o.applicationDate,
     mmgrApplyDate: o.mmgrApplyDate,
+    taikangRawJson: o,
     rawJson: o,
   };
 }
@@ -303,7 +347,7 @@ async function loadFingerprints(): Promise<void> {
       for (const [k, v] of Object.entries(obj)) {
         if (typeof v === 'string') lastFingerprint.set(k, v);
       }
-      console.log(`[寰宇探针] 已加载 ${lastFingerprint.size} 条订单指纹缓存`);
+      console.log(`[寰宇探针][本地缓存] 加载 ${lastFingerprint.size} 条订单指纹`);
     }
   } catch (e) {
     console.warn('[寰宇探针] 加载指纹缓存失败:', e);
@@ -318,6 +362,11 @@ async function saveFingerprints(): Promise<void> {
   } catch (e) {
     console.warn('[寰宇探针] 保存指纹缓存失败:', e);
   }
+}
+
+async function isCollectPaused(): Promise<boolean> {
+  const cfg = await chrome.storage.local.get('collectPaused');
+  return !!cfg.collectPaused;
 }
 
 // 把本地已知的全部指纹推给后端对账（不只新抓的）。
@@ -337,6 +386,10 @@ async function pollOnce(): Promise<void> {
   if (polling) return;
   polling = true;
   try {
+    if (await isCollectPaused()) {
+      console.log('[寰宇探针] 采集已暂停，跳过本轮');
+      return; // finally 会复位 polling
+    }
     const user = await getUser();
     if (!user) {
       console.warn('[寰宇探针] 未获取到泰康用户信息，跳过本轮');
@@ -344,24 +397,36 @@ async function pollOnce(): Promise<void> {
     }
     const { userId, userName } = user;
 
-    // 列表接口能成功拉到 = 登录态有效。登录判定只看这里，
-    // 详情阶段的个别失败不上升为"全局过期"。
-    const orders = await fetchAllOrders(userId, userName);
+    // 个人池(已申领，要抓详情)能成功拉到 = 登录态有效。登录判定只看个人池，
+    // 详情阶段、公共池的个别失败都不上升为"全局过期"。
+    const personal = await fetchAllOrders(userId, userName);
+    // 公共池(待申领，只上报列表不抓详情)，失败不影响个人池主流程
+    let publicOrders: any[] = [];
+    try {
+      publicOrders = await fetchPublicOrders(userName);
+    } catch (e) {
+      if (e instanceof TaikangAuthError) throw e;
+      console.warn('[寰宇探针] 公共池采集失败（忽略本轮公共池）:', e);
+    }
     onAuthOk();
 
-    // 1. 上报全量列表（后端 upsert）
+    // 1. 上报全量列表（个人池 + 公共池）。同号去重，个人池优先（有归属、有详情）
+    const byNo = new Map<string, any>();
+    for (const o of [...publicOrders, ...personal]) {
+      if (o?.subOrderNo) byNo.set(o.subOrderNo, o);
+    }
     chrome.runtime.sendMessage({
       type: 'SYNC_ORDERS',
-      payload: orders.map(toReportedOrder),
+      payload: [...byNo.values()].map(toReportedOrder),
     });
 
-    // 2. 增量筛选需要抓详情的订单
-    const changed = orders.filter((o) => {
+    // 2. 增量筛选需要抓详情的订单（只对个人池——公共池待申领无详情可抓）
+    const changed = personal.filter((o) => {
       if (!o.subOrderNo) return false;
       return lastFingerprint.get(o.subOrderNo) !== fingerprint(o);
     });
     console.log(
-      `[寰宇探针] 个人池 ${orders.length} 条，需抓详情 ${changed.length} 条`
+      `[寰宇探针] 个人池 ${personal.length} 条 / 公共池 ${publicOrders.length} 条，需抓详情 ${changed.length} 条`
     );
 
     // 3. 串行抓详情（限流）。详情失败（含鉴权）只跳过该单，不报全局过期。
@@ -369,6 +434,10 @@ async function pollOnce(): Promise<void> {
     // 被刷新/抖断时整轮进度丢失、下次又全量重抓。
     let savedSinceFlush = 0;
     for (const o of changed) {
+      if (await isCollectPaused()) {
+        console.log('[寰宇探针] 采集已暂停，中断本轮详情抓取');
+        break;
+      }
       try {
         const fp = fingerprint(o);
         const bundle = await fetchOrderDetail(userId, o);
@@ -385,7 +454,7 @@ async function pollOnce(): Promise<void> {
         lastFingerprint.set(o.subOrderNo, fp);
         savedSinceFlush++;
         console.log(
-          `[寰宇探针] 详情已上报: ${o.subOrderNo} 附件=${bundle.attachments.length}`
+          `[寰宇探针] 详情已交后台转发: ${o.subOrderNo} 附件=${bundle.attachments.length}`
         );
         if (savedSinceFlush >= 10) {
           await saveFingerprints();
@@ -507,12 +576,18 @@ chrome.runtime.onMessage.addListener((msg) => {
       }
     }
     console.log(
-      `[寰宇探针] 已从后端载入指纹基线 ${Object.keys(msg.payload).length} 条（合并新增 ${added}）`
+      `[寰宇探针][后端] 载入指纹基线 ${Object.keys(msg.payload).length} 条（合并新增 ${added}）`
     );
     void saveFingerprints();
     // 反向对账：把本地有、后端可能缺的指纹补推给后端
     syncFingerprintsToBackend();
     startPolling();
+  }
+
+  if (msg?.type === 'CLEAR_LOCAL_CACHE') {
+    lastFingerprint.clear();
+    void chrome.storage.local.remove(FINGERPRINT_STORAGE_KEY);
+    console.log('[寰宇探针][本地缓存] 已清理订单指纹缓存');
   }
 });
 

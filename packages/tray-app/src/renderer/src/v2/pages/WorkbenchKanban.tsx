@@ -111,6 +111,7 @@ export default function WorkbenchKanban({
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [view, setView] = useState<View>('board')
+  const [typeFilter, setTypeFilter] = useState<string>('all')
 
   useEffect(() => {
     let alive = true
@@ -132,35 +133,53 @@ export default function WorkbenchKanban({
     }
   }, [employeeCode])
 
-  // 搜索过滤（客户名 / 医院 / 单号 / 手机号）
+  // 订单类型标签（按当前订单实际出现的业务类型动态生成，带计数）
+  const typeTags = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const o of orders) {
+      const t = bizType(o)
+      counts.set(t, (counts.get(t) ?? 0) + 1)
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([label, count]) => ({ label, count }))
+  }, [orders])
+
+  // 类型过滤失效（订单刷新后该类型已不存在）时回到全部
+  useEffect(() => {
+    if (typeFilter !== 'all' && !typeTags.some((t) => t.label === typeFilter)) setTypeFilter('all')
+  }, [typeTags, typeFilter])
+
+  // 搜索 + 类型过滤（客户名 / 医院 / 单号 / 手机号）
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return orders
-    return orders.filter(
-      (o) =>
+    return orders.filter((o) => {
+      if (typeFilter !== 'all' && bizType(o) !== typeFilter) return false
+      if (!q) return true
+      return Boolean(
         o.customerName?.toLowerCase().includes(q) ||
-        o.hospital?.toLowerCase().includes(q) ||
-        o.sourceOrderNo?.toLowerCase().includes(q) ||
-        o.customerPhone?.includes(q)
-    )
-  }, [orders, query])
+          o.hospital?.toLowerCase().includes(q) ||
+          o.sourceOrderNo?.toLowerCase().includes(q) ||
+          o.customerPhone?.includes(q)
+      )
+    })
+  }, [orders, query, typeFilter])
 
   const boardOrders = useMemo(() => filtered.filter(isBoardVisibleOrder), [filtered])
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* 工具条：搜索 + 视图切换 + 筛选 + 新建 */}
-      <div className="shrink-0 bg-white border-b border-border-subtle px-6 py-3 flex justify-between items-center gap-4">
-        <div className="flex gap-3 items-center flex-1 max-w-2xl">
-          <div className="relative w-full max-w-md">
+      {/* 工具条：搜索 + 视图切换 + 类型标签筛选 + 新建 */}
+      <div className="shrink-0 bg-white border-b border-border-subtle px-6 py-3 flex items-start justify-between gap-4">
+        <div className="flex gap-3 items-center flex-wrap flex-1 min-w-0">
+          {/* 搜索框（收窄，给类型标签让出空间） */}
+          <div className="relative w-56 shrink-0">
             <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-outline text-[20px]">
               search
             </span>
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="搜索客户姓名、医院或单号…"
-              className="w-full pl-10 pr-4 py-2 bg-surface-bg border border-border-subtle rounded-lg text-body-md focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all"
+              placeholder="搜索客户 / 医院 / 单号…"
+              className="w-full pl-10 pr-3 py-2 bg-surface-bg border border-border-subtle rounded-lg text-body-md focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all"
             />
           </div>
           {/* 视图切换：看板 / 列表 */}
@@ -181,8 +200,21 @@ export default function WorkbenchKanban({
               </button>
             ))}
           </div>
+          {/* 订单类型标签筛选（动态、可换行） */}
+          <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+            <TypeTag label="全部" count={orders.length} on={typeFilter === 'all'} onClick={() => setTypeFilter('all')} />
+            {typeTags.map((t) => (
+              <TypeTag
+                key={t.label}
+                label={t.label}
+                count={t.count}
+                on={typeFilter === t.label}
+                onClick={() => setTypeFilter(t.label)}
+              />
+            ))}
+          </div>
         </div>
-        <button className="bg-primary text-white px-4 py-2 rounded-lg text-body-md font-medium hover:opacity-90 transition-opacity flex items-center gap-1.5">
+        <button className="shrink-0 bg-primary text-white px-4 py-2 rounded-lg text-body-md font-medium hover:opacity-90 transition-opacity flex items-center gap-1.5">
           <span className="material-symbols-outlined filled text-[18px]">add</span>
           新建工单
         </button>
@@ -204,6 +236,34 @@ export default function WorkbenchKanban({
         <ListView orders={filtered} onOpen={onOpenOrder} />
       )}
     </div>
+  )
+}
+
+// 订单类型筛选标签（pill）
+function TypeTag({
+  label,
+  count,
+  on,
+  onClick
+}: {
+  label: string
+  count: number
+  on: boolean
+  onClick: () => void
+}): React.JSX.Element {
+  return (
+    <button
+      onClick={onClick}
+      className={
+        'px-2.5 py-1 rounded-full text-body-sm transition-colors flex items-center gap-1 shrink-0 ' +
+        (on
+          ? 'bg-primary text-white'
+          : 'bg-surface-bg border border-border-subtle text-text-muted hover:text-text-main')
+      }
+    >
+      {label}
+      <span className={'text-label-caps ' + (on ? 'opacity-80' : 'text-text-muted/60')}>{count}</span>
+    </button>
   )
 }
 

@@ -225,21 +225,24 @@ export class CaptureStore {
     structuredMessages: CaptureStructuredMessage[] | null = null
   ): InsertFrameResult {
     const ocrTextHash = hashText(frame.ocr.text)
-    const duplicate = this.isDuplicateFrame(frame, ocrTextHash)
+    // 同屏判重改用"这一屏的结构化消息内容"哈希：聊天区可见消息没变就是同一屏。
+    // （旧实现用整图字节哈希 image_hash，时钟跳一分钟/光标闪一下就变，基本判不出同屏。）
+    const chatTextHash = hashChatMessages(structuredMessages)
+    const duplicate = this.isDuplicateFrame(frame, chatTextHash)
     const row = this.db
       .prepare(
         `
         INSERT INTO capture_frames (
           channel, process_name, window_title, captured_at,
           window_left, window_top, window_width, window_height, window_show_state,
-          screenshot_path, image_hash, ocr_text_hash, layout_version_id,
+          screenshot_path, image_hash, ocr_text_hash, chat_text_hash, layout_version_id,
           ocr_engine, ocr_status, ocr_text, ocr_blocks_json,
           frame_status, created_at
         )
         VALUES (
           @channel, @processName, @windowTitle, @capturedAt,
           @windowLeft, @windowTop, @windowWidth, @windowHeight, @windowShowState,
-          @screenshotPath, @imageHash, @ocrTextHash, @layoutVersionId,
+          @screenshotPath, @imageHash, @ocrTextHash, @chatTextHash, @layoutVersionId,
           @ocrEngine, @ocrStatus, @ocrText, @ocrBlocksJson,
           @frameStatus, @createdAt
         )
@@ -258,6 +261,7 @@ export class CaptureStore {
         screenshotPath: frame.screenshotPath,
         imageHash: frame.imageHash ?? null,
         ocrTextHash,
+        chatTextHash: chatTextHash || null,
         layoutVersionId,
         ocrEngine: frame.ocr.engine,
         ocrStatus: frame.ocr.status,
@@ -340,11 +344,14 @@ export class CaptureStore {
     return Number(row.lastInsertRowid)
   }
 
-  private isDuplicateFrame(frame: CaptureFrameEvent, ocrTextHash: string): boolean {
+  // 同屏判重：同一会话的上一帧，聊天区可见消息内容哈希若一致，就是同一屏，整帧跳过。
+  // 没有结构化消息（chatTextHash 为空，如结构化失败/空会话）时不在这里判重，交给后续逻辑。
+  private isDuplicateFrame(frame: CaptureFrameEvent, chatTextHash: string): boolean {
+    if (!chatTextHash) return false
     const latest = this.db
       .prepare(
         `
-        SELECT image_hash, ocr_text_hash
+        SELECT chat_text_hash
         FROM capture_frames
         WHERE channel = @channel
           AND process_name = @processName
@@ -357,10 +364,10 @@ export class CaptureStore {
         channel: frame.channel,
         processName: frame.processName,
         windowTitle: (frame.title ?? frame.windowTitle ?? null)
-      }) as { image_hash: string | null; ocr_text_hash: string | null } | undefined
+      }) as { chat_text_hash: string | null } | undefined
 
     if (!latest) return false
-    return Boolean(frame.imageHash && latest.image_hash === frame.imageHash && latest.ocr_text_hash === ocrTextHash)
+    return latest.chat_text_hash === chatTextHash
   }
 
   private upsertConversationThread(frame: CaptureFrameEvent): number {
@@ -433,8 +440,9 @@ export class CaptureStore {
     const contentHash = hashText(normalizedContent)
     const dedupeKey = `${threadId}:${message.senderType}:${contentHash}`
     const now = new Date().toISOString()
-    const shortTextCutoff = new Date(new Date(frame.capturedAt).getTime() - 2 * 60_000).toISOString()
 
+    // 去重只看"会话+说话人+内容"，不再卡 2 分钟时间窗：同一会话里已经存过这条一模一样的，
+    // 就算重复（合并、不重复上报）。代价是客户隔很久又发一句一字不差的话会被合并掉——可接受。
     const recent = this.db
       .prepare(
         `
@@ -442,12 +450,11 @@ export class CaptureStore {
         FROM message_blocks
         WHERE thread_id = @threadId
           AND dedupe_key = @dedupeKey
-          AND first_seen_at >= @shortTextCutoff
         ORDER BY first_seen_at DESC
         LIMIT 1
         `
       )
-      .get({ threadId, dedupeKey, shortTextCutoff }) as
+      .get({ threadId, dedupeKey }) as
       | { id: number; seen_count: number; source_frame_ids: string | null }
       | undefined
 
@@ -612,6 +619,7 @@ export class CaptureStore {
       CREATE INDEX IF NOT EXISTS idx_capture_frames_captured_at ON capture_frames(captured_at);
       CREATE INDEX IF NOT EXISTS idx_capture_frames_channel_time ON capture_frames(channel, captured_at);
     `)
+    this.ensureColumn('capture_frames', 'chat_text_hash', 'TEXT')
     this.ensureColumn('message_blocks', 'channel', 'TEXT')
     this.ensureColumn('message_blocks', 'process_name', 'TEXT')
     this.ensureColumn('message_blocks', 'sender_name', 'TEXT')
@@ -710,6 +718,16 @@ export interface CaptureLayoutDebugRow {
 
 function hashText(text: string): string {
   return createHash('sha256').update(text).digest('hex')
+}
+
+// 这一屏的"内容指纹"：把结构化消息按 说话人:归一内容 拼起来再哈希。
+// 用于整帧同屏判重——可见消息没变就视为同一屏（比整图字节哈希稳，扛得住时钟/光标抖动）。
+function hashChatMessages(messages: CaptureStructuredMessage[] | null): string {
+  if (!messages?.length) return ''
+  const joined = messages
+    .map((m) => `${m.speaker}:${normalizeContentForHash(m.text)}`)
+    .join('\n')
+  return hashText(joined)
 }
 
 function normalizeTitle(title: string): string {

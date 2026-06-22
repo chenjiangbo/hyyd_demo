@@ -19,6 +19,13 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     internal static extern bool GetWindowRect(IntPtr hWnd, out WinRect rect);
 
+    // DWM 可见边界：排除 Win10+ 窗口四周那圈隐形 resize 边框/阴影（GetWindowRect 会把它们算进去，
+    // 导致截图带一圈周围背景）。返回 0(S_OK) 表示成功；WinRect 与 DWM 的 RECT 同布局(4×int)。
+    internal const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+
+    [DllImport("dwmapi.dll")]
+    internal static extern int DwmGetWindowAttribute(IntPtr hWnd, int dwAttribute, out WinRect pvAttribute, int cbAttribute);
+
     [DllImport("user32.dll")]
     internal static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 
@@ -137,6 +144,8 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     internal static extern int GetSystemMetrics(int nIndex);
 
+    internal const int SM_CXSCREEN = 0;
+    internal const int SM_CYSCREEN = 1;
     internal const int SM_XVIRTUALSCREEN = 76;
     internal const int SM_YVIRTUALSCREEN = 77;
     internal const int SM_CXVIRTUALSCREEN = 78;

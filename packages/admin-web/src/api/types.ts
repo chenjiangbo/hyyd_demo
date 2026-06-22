@@ -234,7 +234,19 @@ export interface OrderFull {
 export interface HealthInfo {
   process: { uptimeSec: number; nodeVersion: string; pid: number }
   db: { ok: boolean; rows: { order: number; material: number; call: number; attachment: number } }
-  minio: { buckets: Array<{ name: string; ok: boolean }> }
+  minio: { buckets: Array<{ name: string; ok: boolean; objectCount: number; sizeBytes: number }> }
   websocket: { total: number; ext: number; tray: number }
-  asr: { pending: number; processing: number }
+  asr: {
+    pending: number
+    processing: number
+    last24h: { done: number; total: number; rate: number | null }
+  }
+  extReports: Array<{
+    employeeId: number
+    name: string
+    extConnected: boolean
+    lastReportAt: string | null
+    tokenOk: boolean | null
+    tokenLastCheckAt: string | null
+  }>
 }

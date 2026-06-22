@@ -6,7 +6,8 @@ internal sealed record TargetWindow(
     string ProcessName,
     string WindowTitle,
     WinRect Rect,
-    string ShowState
+    string ShowState,
+    string ClassName = ""
 );
 
 internal sealed record CaptureRect(int X, int Y, int Width, int Height);

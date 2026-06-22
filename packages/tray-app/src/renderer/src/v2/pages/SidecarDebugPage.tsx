@@ -80,6 +80,7 @@ interface CaptureSession {
   channel: 'wechat' | 'wxwork' | 'unknown'
   windowTitle: string
   windowSize: string
+  windowClass?: string
   trigger: string
   result: SessionResult
   // step: dedup
@@ -138,6 +139,7 @@ function parseSessions(logs: DiagEntry[], frames: DbgFrame[]): CaptureSession[] 
   let winTitle = ''
   let winChannel: CaptureSession['channel'] = 'unknown'
   let winSize = ''
+  let winClass = ''
 
   let cur: CaptureSession | null = null
   const sessions: CaptureSession[] = []
@@ -153,6 +155,7 @@ function parseSessions(logs: DiagEntry[], frames: DbgFrame[]): CaptureSession[] 
     channel: winChannel,
     windowTitle: winTitle,
     windowSize: winSize,
+    windowClass: winClass,
     trigger,
     result,
     uploads: [],
@@ -163,12 +166,13 @@ function parseSessions(logs: DiagEntry[], frames: DbgFrame[]): CaptureSession[] 
       let m: RegExpMatchArray | null
 
       // ① Window context update (not a capture attempt itself)
-      // Format: 命中目标窗口 [channel] "title" WxH
-      m = msg.match(/^命中目标窗口 \[(\w+)\] "(.+?)" (\d+x\d+)/)
+      // Format: 命中目标窗口 [channel] "title" class=XXX WxH（class= 可能不存在，兼容旧日志）
+      m = msg.match(/^命中目标窗口 \[(\w+)\] "(.+?)"(?: class=(\S+))? (\d+x\d+)/)
       if (m) {
         winChannel = m[1] === 'wechat' ? 'wechat' : m[1] === 'wxwork' ? 'wxwork' : 'unknown'
         winTitle = m[2]
-        winSize = m[3]
+        winClass = m[3] ?? ''
+        winSize = m[4]
         continue
       }
 
@@ -209,7 +213,16 @@ function parseSessions(logs: DiagEntry[], frames: DbgFrame[]): CaptureSession[] 
       }
 
       // ⑥ Customer filter: failed → 非客户会话（保留截图供调试）
-      // Format: 非客户会话，不入库（保留截图供调试）标题="T" → <fullpath>
+      // Format: 非客户会话，不入库（保留截图供调试）标题="T" 触发=Z → <fullpath>
+      m = msg.match(/^非客户会话[^"]*"(.*?)"[^→]*触发=(\S+) → (.+)/)
+      if (m && cur) {
+        cur.result = 'filtered'
+        if (m[1]) cur.windowTitle = m[1]
+        cur.trigger = m[2]
+        cur.screenshotPath = m[3].trim()
+        continue
+      }
+      // 兼容旧日志（无 触发=）
       m = msg.match(/^非客户会话[^"]*"(.*?)"[^→]*→ (.+)/)
       if (m && cur) {
         cur.result = 'filtered'
@@ -688,6 +701,11 @@ function SessionDetail({
         {s.windowSize && (
           <span className="text-body-sm text-text-muted">{s.windowSize}</span>
         )}
+        {s.windowClass && (
+          <span className="text-body-sm text-text-muted font-mono" title="窗口类名（用于排查非主窗口被截）">
+            class={s.windowClass}
+          </span>
+        )}
         <span className="ml-auto text-body-sm text-text-muted">{time}</span>
       </div>
 
@@ -838,7 +856,7 @@ function SessionDetail({
             <p className="text-body-sm text-text-muted">等待入库…</p>
           ) : s.insertDuplicate ? (
             <p className="text-body-sm text-text-muted">
-              TS 层已存在（imageHash 相同，TS-level 去重）
+              同屏跳过（聊天内容未变，本地去重）
             </p>
           ) : (
             <div className="text-body-sm space-y-1">

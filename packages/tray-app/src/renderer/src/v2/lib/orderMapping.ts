@@ -23,12 +23,21 @@ export const LANES: LaneDef[] = [
 
 /** 把订单原始状态映射到泳道 */
 export function laneOf(o: Order): LaneKey {
-  const s = o.status || ''
-  if (s.includes('完成') || s.includes('已回填') || s.includes('归档')) return 'done'
-  // 待确认回填：依赖后端的「AI 提取完成、待人工核对」标记，目前数据里还没有该字段
-  // （等接入 AI 后在这里加判断，例如 o.aiBackfillReady === true）
-  if (['候选', '待一次推送', '待处理', '已申领'].includes(s)) return 'todo'
-  // 待分配医学陪诊 / 待就诊 / 待服务 等活动态，以及未知状态，都归入进行中
+  if (
+    o.workbenchLane === 'todo' ||
+    o.workbenchLane === 'doing' ||
+    o.workbenchLane === 'await_backfill' ||
+    o.workbenchLane === 'done'
+  ) {
+    return o.workbenchLane
+  }
+
+  const s = o.taikangOrderStateName || o.status || ''
+  if (['已完成', '已取消', '爽约'].includes(s)) return 'done'
+  if (['待录入', '取消待确认', '点名待确认', '爽约待确认', '关闭待确认', '待退款'].includes(s)) {
+    return 'await_backfill'
+  }
+  if (['待处理', '确认申请', '更改申请', '待补充资料', '已申领'].includes(s)) return 'todo'
   return 'doing'
 }
 

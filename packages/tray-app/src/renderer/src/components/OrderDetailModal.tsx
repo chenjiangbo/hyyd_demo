@@ -332,7 +332,13 @@ const FILE_TYPE_LABELS: Record<string, string> = {
   '40': '身份证',
   '41': '社保卡',
   '5000': '病历',
-  '5001': '其他附件'
+  '5001': '其他附件',
+  '5002': '补充资料',
+  '100': '影像资料',
+  '99': '历史资料',
+  '5010': '服务结果',
+  '5008': '回填资料',
+  '5009': '过程资料'
 }
 function fileTypeLabel(t: string): string {
   return FILE_TYPE_LABELS[t] ?? `类型 ${t}`
@@ -351,7 +357,7 @@ function AttachmentGallery({
     arr.push(a)
     groups.set(a.fileType, arr)
   }
-  const knownOrder = ['40', '41', '5001', '5000']
+  const knownOrder = ['40', '41', '5001', '5000', '5002', '100', '99', '5010', '5008', '5009']
   const sortedTypes = Array.from(groups.keys()).sort((a, b) => {
     const ia = knownOrder.indexOf(a)
     const ib = knownOrder.indexOf(b)

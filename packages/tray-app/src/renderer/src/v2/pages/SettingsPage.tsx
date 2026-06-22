@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { getBackendUrl, setBackendUrl } from '../api'
 
 type CloseBehavior = 'ask' | 'minimize' | 'quit'
 
@@ -39,6 +40,11 @@ function getWindowApi(): WindowApi | null {
 
 export default function SettingsPage(): React.JSX.Element {
   const api = getWindowApi()
+  const [backendUrl, setBackendUrlInput] = useState(getBackendUrl())
+  const [backendSaved, setBackendSaved] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<'ok' | 'fail' | null>(null)
+  const [testMsg, setTestMsg] = useState('')
   const [closeBehavior, setCloseBehavior] = useState<CloseBehavior>('ask')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState<CloseBehavior | null>(null)
@@ -82,6 +88,50 @@ export default function SettingsPage(): React.JSX.Element {
       .finally(() => setSaving(null))
   }
 
+  async function testBackend(): Promise<void> {
+    const url = backendUrl.trim().replace(/\/+$/, '')
+    if (!url) {
+      setTestResult('fail')
+      setTestMsg('请先填写服务器地址')
+      return
+    }
+    setTesting(true)
+    setTestResult(null)
+    setTestMsg('')
+    try {
+      const ctrl = new AbortController()
+      const timer = window.setTimeout(() => ctrl.abort(), 5000)
+      const res = await fetch(`${url}/health`, { signal: ctrl.signal })
+      window.clearTimeout(timer)
+      if (res.ok) {
+        setTestResult('ok')
+        setTestMsg('连接正常')
+      } else {
+        setTestResult('fail')
+        setTestMsg(`服务器有响应但返回 ${res.status}`)
+      }
+    } catch {
+      setTestResult('fail')
+      setTestMsg('连不上：请检查地址是否正确、服务器是否已启动、两台机器是否在同一网络')
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  function saveBackendUrl(e: React.FormEvent): void {
+    e.preventDefault()
+    try {
+      const normalized = setBackendUrl(backendUrl)
+      setBackendUrlInput(normalized)
+      setBackendSaved(true)
+      setError(null)
+      window.setTimeout(() => setBackendSaved(false), 1800)
+    } catch (err) {
+      setBackendSaved(false)
+      setError(err instanceof Error ? err.message : '保存后端地址失败')
+    }
+  }
+
   return (
     <div className="flex-1 min-h-0 overflow-y-auto bg-surface-bg">
       <div className="mx-auto max-w-3xl p-6">
@@ -89,6 +139,69 @@ export default function SettingsPage(): React.JSX.Element {
           <h1 className="text-h2-header text-text-main">设置</h1>
           <p className="mt-1 text-body-sm text-text-muted">调整客户端窗口和采集相关行为。</p>
         </div>
+
+        <section className="mb-4 rounded-lg border border-border-subtle bg-white">
+          <div className="border-b border-border-subtle px-4 py-3">
+            <h2 className="text-h3-title text-text-main">后端连接</h2>
+          </div>
+
+          <form className="p-4" onSubmit={saveBackendUrl}>
+            <label className="block text-label-caps text-text-muted uppercase" htmlFor="backendUrl">
+              后端地址
+            </label>
+            <div className="mt-1 flex gap-2">
+              <div className="relative min-w-0 flex-1">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <span className="material-symbols-outlined text-outline" style={{ fontSize: '19px' }}>dns</span>
+                </div>
+                <input
+                  id="backendUrl"
+                  type="text"
+                  value={backendUrl}
+                  onChange={(e) => setBackendUrlInput(e.target.value)}
+                  placeholder="http://192.168.x.x:13000"
+                  className="block w-full pl-10 pr-3 py-2.5 border border-outline-variant rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-trust-blue focus:border-transparent text-body-md text-text-main transition-colors duration-200"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={testBackend}
+                disabled={testing}
+                className="shrink-0 rounded-lg border border-outline-variant bg-surface px-4 py-2 text-body-md font-medium text-text-main hover:bg-surface-container-low transition-colors disabled:opacity-50"
+              >
+                {testing ? '测试中…' : '测试'}
+              </button>
+              <button
+                type="submit"
+                className="shrink-0 rounded-lg bg-primary px-4 py-2 text-body-md font-semibold text-white hover:bg-trust-blue transition-colors"
+              >
+                保存
+              </button>
+            </div>
+            <p className="mt-2 text-body-sm text-text-muted">
+              数据服务器地址。修改后建议先点「测试」确认能连通，再保存。
+            </p>
+            {testResult && (
+              <div
+                className={
+                  'mt-2 flex items-center gap-1.5 text-body-sm ' +
+                  (testResult === 'ok' ? 'text-success' : 'text-error')
+                }
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>
+                  {testResult === 'ok' ? 'check_circle' : 'error'}
+                </span>
+                {testMsg}
+              </div>
+            )}
+            {backendSaved && (
+              <div className="mt-2 flex items-center gap-1.5 text-body-sm text-success">
+                <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>check_circle</span>
+                已保存，采集上传和页面请求会使用新地址。
+              </div>
+            )}
+          </form>
+        </section>
 
         <section className="rounded-lg border border-border-subtle bg-white">
           <div className="border-b border-border-subtle px-4 py-3">

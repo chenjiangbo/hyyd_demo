@@ -50,6 +50,28 @@ function applyNoOf(o: { rawJson?: unknown; detailJson?: unknown }): string | nul
   )
 }
 
+// 遍历某个 bucket，统计对象数与总占用字节。失败/异常返回 -1（前端显示"未知"）。
+function bucketStat(
+  client: Minio.Client,
+  name: string
+): Promise<{ objectCount: number; sizeBytes: number }> {
+  return new Promise((resolve) => {
+    let objectCount = 0
+    let sizeBytes = 0
+    try {
+      const stream = client.listObjectsV2(name, '', true)
+      stream.on('data', (o: any) => {
+        objectCount++
+        sizeBytes += o.size || 0
+      })
+      stream.on('end', () => resolve({ objectCount, sizeBytes }))
+      stream.on('error', () => resolve({ objectCount: -1, sizeBytes: -1 }))
+    } catch {
+      resolve({ objectCount: -1, sizeBytes: -1 })
+    }
+  })
+}
+
 // 今天 0 点（服务器本地时区）。统计"今日"口径用。
 function startOfToday(): Date {
   const d = new Date()
@@ -1049,15 +1071,34 @@ export function registerAdminRoutes(
     // ───── 4. 系统健康 ─────
     fastify.get('/api/v1/admin/health', async (_request, reply) => {
       try {
-        const [orderCount, materialCount, callCount, attachmentCount, asrPending, asrProcessing] =
-          await Promise.all([
-            prisma.order.count(),
-            prisma.material.count(),
-            prisma.call.count(),
-            prisma.orderAttachment.count(),
-            prisma.call.count({ where: { asrStatus: 'pending' } }),
-            prisma.call.count({ where: { asrStatus: 'processing' } })
-          ])
+        const since24 = new Date(Date.now() - 24 * 3600_000)
+        const [
+          orderCount,
+          materialCount,
+          callCount,
+          attachmentCount,
+          asrPending,
+          asrProcessing,
+          asr24Done,
+          asr24Failed,
+          asr24Manual,
+          employees
+        ] = await Promise.all([
+          prisma.order.count(),
+          prisma.material.count(),
+          prisma.call.count(),
+          prisma.orderAttachment.count(),
+          prisma.call.count({ where: { asrStatus: 'pending' } }),
+          prisma.call.count({ where: { asrStatus: 'processing' } }),
+          // 近 24h 完成转写的终态计数（按 asrFinishedAt）
+          prisma.call.count({ where: { asrFinishedAt: { gte: since24 }, asrStatus: 'done' } }),
+          prisma.call.count({ where: { asrFinishedAt: { gte: since24 }, asrStatus: 'failed' } }),
+          prisma.call.count({ where: { asrFinishedAt: { gte: since24 }, asrStatus: 'requires_manual' } }),
+          prisma.employee.findMany({ select: { id: true, name: true }, orderBy: { id: 'asc' } })
+        ])
+
+        const asr24Total = asr24Done + asr24Failed + asr24Manual
+        const asr24Rate = asr24Total ? Math.round((asr24Done / asr24Total) * 100) : null
 
         // WebSocket 连接分布
         let extConns = 0
@@ -1067,14 +1108,35 @@ export function registerAdminRoutes(
           if (conn.tray) trayConns++
         }
 
-        // MinIO 各 bucket 是否存在（对象计数代价高，先只报存活）
+        // MinIO 各 bucket：存活 + 对象数 + 占用字节
         const buckets = ['order-attachments', 'recordings', 'screenshots', 'materials']
         const bucketStatus = await Promise.all(
-          buckets.map(async (name) => ({
-            name,
-            ok: await minioPublicClient.bucketExists(name).catch(() => false)
-          }))
+          buckets.map(async (name) => {
+            const ok = await minioPublicClient.bucketExists(name).catch(() => false)
+            if (!ok) return { name, ok, objectCount: -1, sizeBytes: -1 }
+            const stat = await bucketStat(minioPublicClient, name)
+            return { name, ok, objectCount: stat.objectCount, sizeBytes: stat.sizeBytes }
+          })
         )
+
+        // Chrome 插件每员工最近一次上报（来自 WS PRESENCE 心跳）+ token 状态
+        const extReports = employees
+          .map((e) => {
+            const info = presenceMap.get(e.id)
+            const conn = activeConnections.get(e.id)
+            return {
+              employeeId: e.id,
+              name: e.name,
+              extConnected: !!conn?.ext,
+              lastReportAt: info ? new Date(info.lastSeenAt).toISOString() : null,
+              tokenOk: info?.tokenOk ?? null,
+              tokenLastCheckAt: info?.tokenLastCheckAt
+                ? new Date(info.tokenLastCheckAt).toISOString()
+                : null
+            }
+          })
+          // 最近上报的排前，从未上报的沉底
+          .sort((a, b) => (b.lastReportAt ?? '').localeCompare(a.lastReportAt ?? ''))
 
         return reply.send({
           data: {
@@ -1094,7 +1156,12 @@ export function registerAdminRoutes(
             },
             minio: { buckets: bucketStatus },
             websocket: { total: extConns + trayConns, ext: extConns, tray: trayConns },
-            asr: { pending: asrPending, processing: asrProcessing }
+            asr: {
+              pending: asrPending,
+              processing: asrProcessing,
+              last24h: { done: asr24Done, total: asr24Total, rate: asr24Rate }
+            },
+            extReports
           }
         })
       } catch (err: any) {

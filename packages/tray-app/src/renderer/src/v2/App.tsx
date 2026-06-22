@@ -9,7 +9,14 @@ import KnowledgePage from './pages/KnowledgePage'
 import CustomersPage from './pages/CustomersPage'
 import AppShell, { type NavKey } from './components/AppShell'
 import TitleBar from './components/TitleBar'
-import { getBackendUrl, getSession, clearSession, type Session, type Order } from './api'
+import {
+  BACKEND_CONFIG_CHANGED,
+  clearSession,
+  getBackendUrl,
+  getSession,
+  type Order,
+  type Session
+} from './api'
 
 /**
  * v2 应用根。顶部为自绘标题栏（无 Windows 原生边框），下方是页面内容。
@@ -20,11 +27,21 @@ export default function App(): React.JSX.Element {
   const [nav, setNav] = useState<NavKey>('workbench')
   const [openOrder, setOpenOrder] = useState<Order | null>(null)
 
+  // 登录态用小窗，登录后放大到工作台尺寸
+  useEffect(() => {
+    window.api?.setWindowStage?.(session ? 'main' : 'login')
+  }, [session])
+
   useEffect(() => {
     if (!session) return
-    const cfg = { backendUrl: getBackendUrl(), employeeCode: session.employeeCode }
-    void window.api?.materialsSetConfig?.(cfg)
-    void window.api?.captureSetConfig?.(cfg)
+    const pushConfig = (): void => {
+      const cfg = { backendUrl: getBackendUrl(), employeeCode: session.employeeCode }
+      void window.api?.materialsSetConfig?.(cfg)
+      void window.api?.captureSetConfig?.(cfg)
+    }
+    pushConfig()
+    window.addEventListener(BACKEND_CONFIG_CHANGED, pushConfig)
+    return () => window.removeEventListener(BACKEND_CONFIG_CHANGED, pushConfig)
   }, [session])
 
   let content: React.JSX.Element

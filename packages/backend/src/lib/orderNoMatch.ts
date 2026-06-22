@@ -85,23 +85,31 @@ export function levenshtein(a: string, b: string, max: number): number {
 export interface OrderNoEntry {
   orderId: number
   nos: string[] // 该订单已知的所有订单号（sourceOrderNo / applyNo / crmApplyNo …）
+  name?: string | null // 订单客户名，用于"靠容差匹配上"时拿来在标题里二次校验
 }
 
 export type ResolveResult =
   | { status: 'matched'; orderId: number; dist: number; matchedNo: string }
   | { status: 'none'; bestDist: number }
   | { status: 'ambiguous'; bestDist: number; orderIds: number[] }
+  // 订单号靠容差(距离≥1)匹配上了某单，但该单的客户名没出现在标题里 → 可疑，疑似认错号撞上别人
+  | { status: 'name_mismatch'; orderId: number; dist: number; matchedNo: string }
 
 /**
  * 在候选订单集合里找与 candidate 最接近的订单。
- * 唯一最近且距离 ≤ maxDist → matched；多个订单并列最近 → ambiguous；都超阈值 → none。
+ * - 唯一最近且距离 ≤ maxDist → matched；多个订单并列最近 → ambiguous；都超阈值 → none。
+ * - 传了 title 时加一道名字校验：距离=0 的精确匹配直接信；距离 1~2 的容差匹配要求订单客户名
+ *   出现在 title 里才算 matched，否则 name_mismatch；ambiguous 时用"名字在标题里"破平。
  */
-export function resolveOrder(candidate: string, entries: OrderNoEntry[], maxDist = 2): ResolveResult {
+export function resolveOrder(
+  candidate: string,
+  entries: OrderNoEntry[],
+  maxDist = 2,
+  title?: string | null
+): ResolveResult {
   const c = canonicalize(candidate)
   let bestDist = Infinity
-  let bestOrderId = -1
-  let bestNo = ''
-  const tiedOrderIds = new Set<number>()
+  let tied: { orderId: number; name?: string | null; no: string }[] = []
 
   for (const e of entries) {
     for (const no of e.nos) {
@@ -115,17 +123,31 @@ export function resolveOrder(candidate: string, entries: OrderNoEntry[], maxDist
       )
       if (d < bestDist) {
         bestDist = d
-        bestOrderId = e.orderId
-        bestNo = no
-        tiedOrderIds.clear()
-        tiedOrderIds.add(e.orderId)
+        tied = [{ orderId: e.orderId, name: e.name, no }]
       } else if (d === bestDist) {
-        tiedOrderIds.add(e.orderId)
+        // 同一订单的多个号只记一次
+        if (!tied.some((t) => t.orderId === e.orderId)) tied.push({ orderId: e.orderId, name: e.name, no })
       }
     }
   }
 
   if (bestDist > maxDist) return { status: 'none', bestDist: bestDist === Infinity ? -1 : bestDist }
-  if (tiedOrderIds.size > 1) return { status: 'ambiguous', bestDist, orderIds: [...tiedOrderIds] }
-  return { status: 'matched', orderId: bestOrderId, dist: bestDist, matchedNo: bestNo }
+
+  const nameInTitle = (name?: string | null): boolean => !!name && !!title && title.includes(name)
+
+  // 多单并列：用"客户名是否出现在标题里"破平，只有一个命中才敢选
+  if (tied.length > 1) {
+    const hit = tied.filter((t) => nameInTitle(t.name))
+    if (hit.length === 1) return { status: 'matched', orderId: hit[0].orderId, dist: bestDist, matchedNo: hit[0].no }
+    return { status: 'ambiguous', bestDist, orderIds: tied.map((t) => t.orderId) }
+  }
+
+  // 唯一最近
+  const best = tied[0]
+  if (bestDist === 0) return { status: 'matched', orderId: best.orderId, dist: 0, matchedNo: best.no }
+  // 容差匹配：能验证（有客户名且传了标题）时，名字不在标题里 → 判可疑；否则维持 matched
+  if (best.name && title && !nameInTitle(best.name)) {
+    return { status: 'name_mismatch', orderId: best.orderId, dist: bestDist, matchedNo: best.no }
+  }
+  return { status: 'matched', orderId: best.orderId, dist: bestDist, matchedNo: best.no }
 }

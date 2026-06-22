@@ -6,9 +6,11 @@ import { broadcastAdmin } from './adminBus.js'
 import { summarizeCall, summarizeMessages, summarizeFull } from '../llm/summaryService.js'
 import { getEnv } from '../env.js'
 import { extractOrderCandidate, resolveOrder, type OrderNoEntry } from '../lib/orderNoMatch.js'
+import { parseChatTime } from '../lib/chatTimeParser.js'
 import { extractKeyInfo, type KeyInfoMessage, type KeyInfoContext } from '../llm/keyInfoService.js'
 import { structureMessages, type StructInput } from '../lib/messageStructure.js'
 import { refreshOrderBrief } from '../jobs/orderBriefRunner.js'
+import { createHash } from 'node:crypto'
 import {
   CreateOrderPayload,
   ClaimOrderPayload, 
@@ -79,6 +81,53 @@ type MatchedOrderPhone = {
   updated_at: Date
 }
 
+type WorkbenchLane = 'todo' | 'doing' | 'await_backfill' | 'done'
+type ServiceStage = 'claimed' | 'communicating' | 'delivering' | 'settlement' | 'closing'
+
+const TODO_STATUS = new Set(['待处理', '确认申请', '更改申请', '待补充资料', '已申领'])
+const AWAIT_BACKFILL_STATUS = new Set(['待录入', '取消待确认', '点名待确认', '爽约待确认', '关闭待确认', '待退款'])
+const DONE_STATUS = new Set(['已完成', '已取消', '爽约'])
+
+function stringOrNull(value: unknown): string | null {
+  if (value == null) return null
+  const text = String(value).trim()
+  return text || null
+}
+
+function taikangOrderStateNameOf(raw: Record<string, unknown>, fallback: unknown): string {
+  return (
+    stringOrNull(raw.taikangOrderStateName) ??
+    stringOrNull(raw.orderStateName) ??
+    stringOrNull(raw.status) ??
+    stringOrNull(fallback) ??
+    '未知'
+  )
+}
+
+function taikangOrderStateOf(raw: Record<string, unknown>, fallback: unknown): string | null {
+  return stringOrNull(raw.taikangOrderState) ?? stringOrNull(raw.orderState) ?? stringOrNull(fallback)
+}
+
+function deriveWorkbenchLane(statusName: string): WorkbenchLane {
+  if (DONE_STATUS.has(statusName)) return 'done'
+  if (AWAIT_BACKFILL_STATUS.has(statusName)) return 'await_backfill'
+  if (TODO_STATUS.has(statusName)) return 'todo'
+  return 'doing'
+}
+
+function deriveServiceStage(lane: WorkbenchLane): ServiceStage {
+  switch (lane) {
+    case 'todo':
+      return 'communicating'
+    case 'doing':
+      return 'delivering'
+    case 'await_backfill':
+      return 'settlement'
+    case 'done':
+      return 'closing'
+  }
+}
+
 export function normalizeEmployeeCode(value: unknown): string {
   if (typeof value !== 'string') return ''
   return value.trim()
@@ -138,6 +187,7 @@ export function registerApiRoutes(
       request.url === '/health' ||
       request.url.startsWith('/ws') ||
       request.url.startsWith('/api/v1/admin') ||
+      request.url.startsWith('/api/v1/order-attachments/') ||
       request.url.startsWith('/admin') ||
       request.url.startsWith('/ext') // 插件分发文件（.crx / update.xml），公开资源
     ) {
@@ -296,19 +346,23 @@ export function registerApiRoutes(
   })
 
   // 4. 查询订单 GET /api/v1/orders
-  fastify.get<{ Querystring: { source?: string; status?: string; assignedEmployeeId?: string; assignedEmployeeCode?: string } }>(
+  fastify.get<{ Querystring: { source?: string; status?: string; pool?: string; assignedEmployeeId?: string; assignedEmployeeCode?: string } }>(
     '/api/v1/orders',
     async (request, reply) => {
-      const { source, status, assignedEmployeeId, assignedEmployeeCode } = request.query
+      const { source, status, pool, assignedEmployeeId, assignedEmployeeCode } = request.query
 
       const where: any = {}
       if (source) where.source = source
       if (status) where.status = status
+      if (pool) where.rawJson = { path: ['pool'], equals: pool }
       if (assignedEmployeeId) {
         where.assignedEmployeeId = parseInt(assignedEmployeeId, 10)
       } else if (assignedEmployeeCode) {
         const employee = await ensureEmployeeByCode(prisma, assignedEmployeeCode)
         where.assignedEmployeeId = employee.id
+      } else if (pool !== 'public') {
+        if (!request.employee) return reply.status(401).send({ error: '未登录' })
+        where.assignedEmployeeId = request.employee.id
       }
 
       try {
@@ -340,6 +394,13 @@ export function registerApiRoutes(
         //   - lastMaterialAt：任何素材的最近一次入库时间（取 max(call, material)）
         const data = orders.map((o: any) => {
           const raw = (o.rawJson ?? {}) as Record<string, unknown>
+          const taikangOrderStateName = taikangOrderStateNameOf(raw, o.status)
+          const taikangOrderState = taikangOrderStateOf(raw, o.orderState)
+          const taikangCaseStatus = stringOrNull(raw.taikangCaseStatus) ?? stringOrNull(raw.caseStatus)
+          const taikangWaitType = stringOrNull(raw.taikangWaitType) ?? stringOrNull(raw.waitType)
+          const taikangServState = stringOrNull(raw.taikangServState) ?? stringOrNull(raw.servState)
+          const workbenchLane = deriveWorkbenchLane(taikangOrderStateName)
+          const serviceStage = deriveServiceStage(workbenchLane)
           // chrome 插件抓的详情扁平挂在 detailJson.recommendations 下
           const rec = ((o.detailJson as any)?.recommendations ?? {}) as Record<string, unknown>
           const claimedAt =
@@ -405,6 +466,13 @@ export function registerApiRoutes(
           void materials
           return {
             ...rest,
+            taikangOrderState,
+            taikangOrderStateName,
+            taikangCaseStatus,
+            taikangWaitType,
+            taikangServState,
+            workbenchLane,
+            serviceStage,
             customerPhone: customerPhoneRow,
             hospital: hospitalRow,
             dept: deptRow,
@@ -455,6 +523,11 @@ export function registerApiRoutes(
           assignedEmployeeId: employeeId
         }
       })
+
+      // skipTaikang：待申领页"只展示、先不写泰康"——只在我方库里标记申领，不下发插件指令、不操作泰康。
+      if (request.body?.skipTaikang) {
+        return reply.send({ data: { order: updatedOrder, commandId: null, taikangSkipped: true } })
+      }
 
       // 创建一个发给插件 (ext) 的申领控制指令
       const command = await prisma.command.create({
@@ -630,7 +703,7 @@ export function registerApiRoutes(
       try {
         const messages = await prisma.message.findMany({
           where: { employeeId, channel, conversationName },
-          orderBy: { capturedAt: 'asc' }
+          orderBy: [{ sortTime: { sort: 'asc', nulls: 'last' } }, { capturedAt: 'asc' }]
         })
         // 取该会话最近一条关联的订单
         const latestWithOrder = [...messages].reverse().find((m) => m.orderId !== null)
@@ -714,37 +787,58 @@ export function registerApiRoutes(
 
   // 8. 上报微信消息 POST /api/v1/messages
   fastify.post<{ Body: CreateMessagePayload }>('/api/v1/messages', async (request, reply) => {
-    const { channel, conversationName, senderName, contentText, screenshotOssKey, capturedAt, employeeId, orderId } = request.body
+    const { channel, conversationName, senderName, contentText, screenshotOssKey, capturedAt, orderId, orderNoCandidate } = request.body
+    // 优先用鉴权头对应的员工（sidecar 采集上报时只带工号，不带 employeeId）
+    const employeeId = request.employee?.id ?? request.body.employeeId
+    if (!employeeId) return reply.status(401).send({ error: '未登录或缺少 employeeId' })
 
     try {
       let finalOrderId = orderId ?? null
+      // 调试信息：记录每一步匹配过程，随响应返回给客户端（tray-app 展示在采集调试日志里）
+      const _debug: {
+        matchMethod: string; candidate?: string; dist?: number
+        matchedOrderId?: number | null; reason?: string
+      } = { matchMethod: 'none' }
 
       // 关联策略（优先级）：
-      //  1) 标题里抽到订单号候选(COD/CCOD/OD/fwyy) → 在该员工订单里"归一+编辑距离≤2"模糊解析
+      //  1) 订单号候选(COD/CCOD/OD/fwyy) → 在该员工订单里”归一+编辑距离≤2”模糊解析（容忍 OCR 误差）
+      //     候选来源：sidecar 从整屏 OCR 抽的 orderNoCandidate（更可靠）> 会话标题里抽取
       //     - 唯一最近 → 关联
       //     - 找不到(none)/多单并列(ambiguous) → 存 UnmatchedOrderRef 待客户/人工确认
       //  2) 没有订单号候选 → 退回按 conversationName(客户姓名) 模糊匹配
       if (!finalOrderId) {
-        const cand = extractOrderCandidate(conversationName)
+        const cand = extractOrderCandidate(orderNoCandidate) ?? extractOrderCandidate(conversationName)
         if (cand) {
+          _debug.candidate = cand.raw
           // 取该员工所有订单的已知订单号（列 source_order_no + rawJson.applyNo / crmApplyNo）
           const orders = await prisma.order.findMany({
             where: { assignedEmployeeId: employeeId },
-            select: { id: true, sourceOrderNo: true, rawJson: true }
+            select: { id: true, sourceOrderNo: true, rawJson: true, customerName: true }
           })
           const entries: OrderNoEntry[] = orders.map((o) => {
             const raw = (o.rawJson ?? {}) as Record<string, unknown>
             const nos = [o.sourceOrderNo, raw.applyNo, raw.crmApplyNo].filter(
               (x): x is string => typeof x === 'string' && x.length > 0
             )
-            return { orderId: o.id, nos }
+            return { orderId: o.id, nos, name: o.customerName }
           })
-          const r = resolveOrder(cand.raw, entries, 2)
+          // 传入会话标题：距离 1~2 的容差匹配会再用"订单客户名是否出现在标题里"做一道校验
+          const r = resolveOrder(cand.raw, entries, 2, conversationName)
           if (r.status === 'matched') {
             finalOrderId = r.orderId
-            fastify.log.info(`订单号模糊解析命中: "${cand.raw}" → 订单 ${r.orderId}（距离 ${r.dist}）`)
+            _debug.matchMethod = 'fuzzy_order_no'
+            _debug.dist = r.dist
+            _debug.matchedOrderId = r.orderId
+            fastify.log.info(`订单号模糊解析命中: “${cand.raw}” → 订单 ${r.orderId}（距离 ${r.dist}）`)
           } else {
-            // 有订单号但解析不到 → 存待确认（同一员工+候选去重，重复出现则计数+刷新截图/时间）
+            // 解析不到 / 多单并列 / 号匹配上但客户名对不上 → 存待确认（同一员工+候选去重，重复则计数）
+            // reason: no_match 找不到 | ambiguous 多单并列 | name_mismatch 号匹配但客户名不在标题里
+            const reason =
+              r.status === 'ambiguous' ? 'ambiguous' : r.status === 'name_mismatch' ? 'name_mismatch' : 'no_match'
+            const bestDist = r.status === 'name_mismatch' ? r.dist : r.bestDist
+            const candidateOrderIds = r.status === 'ambiguous' ? r.orderIds : undefined
+            _debug.matchMethod = 'unmatched_ref'
+            _debug.reason = reason
             await prisma.unmatchedOrderRef.upsert({
               where: { employee_candidate: { employeeId, candidate: cand.raw } },
               create: {
@@ -753,26 +847,26 @@ export function registerApiRoutes(
                 conversationName,
                 candidate: cand.raw,
                 candidateKind: cand.kind,
-                reason: r.status === 'ambiguous' ? 'ambiguous' : 'no_match',
-                bestDist: r.status === 'ambiguous' ? r.bestDist : r.bestDist,
-                candidateOrderIds: r.status === 'ambiguous' ? r.orderIds : undefined,
+                reason,
+                bestDist,
+                candidateOrderIds,
                 screenshotOssKey: screenshotOssKey ?? null,
                 capturedAt: new Date(capturedAt)
               },
               update: {
                 seenCount: { increment: 1 },
                 conversationName,
-                reason: r.status === 'ambiguous' ? 'ambiguous' : 'no_match',
-                bestDist: r.status === 'ambiguous' ? r.bestDist : r.bestDist,
-                candidateOrderIds: r.status === 'ambiguous' ? r.orderIds : Prisma.JsonNull,
+                reason,
+                bestDist,
+                candidateOrderIds: candidateOrderIds ?? Prisma.JsonNull,
                 screenshotOssKey: screenshotOssKey ?? null,
                 capturedAt: new Date(capturedAt)
               }
             })
-            fastify.log.info(`订单号待确认: "${cand.raw}" (${r.status})，已存 UnmatchedOrderRef`)
+            fastify.log.info(`订单号待确认: “${cand.raw}” (${reason})，已存 UnmatchedOrderRef`)
           }
         } else {
-          // 没抽到订单号 → 退回按客户姓名模糊匹配“已申领/进行中”的最近订单
+          // 没抽到订单号 → 退回按客户姓名模糊匹配”已申领/进行中”的最近订单
           const matchedOrder = await prisma.order.findFirst({
             where: {
               assignedEmployeeId: employeeId,
@@ -783,9 +877,16 @@ export function registerApiRoutes(
           })
           if (matchedOrder) {
             finalOrderId = matchedOrder.id
+            _debug.matchMethod = 'name_match'
+            _debug.matchedOrderId = matchedOrder.id
             fastify.log.info(`按姓名关联微信消息至订单: ${matchedOrder.sourceOrderNo} (ID: ${finalOrderId})`)
+          } else {
+            _debug.matchMethod = 'no_candidate'
           }
         }
+      } else {
+        _debug.matchMethod = 'provided'
+        _debug.matchedOrderId = finalOrderId
       }
 
       const message = await prisma.message.create({
@@ -801,7 +902,7 @@ export function registerApiRoutes(
         }
       })
 
-      return reply.send({ data: message })
+      return reply.send({ data: message, _debug })
     } catch (err: any) {
       fastify.log.error('微信消息上报失败:', err)
       return reply.status(500).send({ error: '微信消息上报失败: ' + err.message })
@@ -864,6 +965,147 @@ export function registerApiRoutes(
       return reply.send({ data: { ok: true } })
     }
   )
+
+  // 8.4 整帧上报（新链路）——sidecar 出结构化、tray 逐帧转发全部 messages（含 system），
+  //     后端做跨帧单消息去重 + 订单关联（+ 时间链 chatTime 在后续步骤填）。
+  //     去重键 = 员工+会话名+说话人+内容哈希；命中只累加 seenCount，不重复入库/进时间线。
+  //     与旧的逐条 /api/v1/messages 暂时并存：tray 切到本接口后再废弃旧接口。
+  interface CaptureFrameBody {
+    channel: string
+    conversationName: string
+    orderNoCandidate?: string
+    screenshotOssKey?: string
+    capturedAt: string
+    messages: Array<{ speaker: string; name?: string | null; text: string; kind?: string | null }>
+  }
+
+  // 订单关联：候选订单号 → 归一+编辑距离匹配（带客户名校验）；匹配不到/并列/名字对不上 → 存待确认。
+  // 抽不到订单号 → 退回按客户姓名模糊匹配。返回最终 orderId（或 null）。整帧只算一次。
+  async function resolveOrderForConversation(
+    employeeId: number,
+    channel: string,
+    conversationName: string,
+    orderNoCandidate: string | undefined,
+    screenshotOssKey: string | null,
+    capturedAt: Date
+  ): Promise<number | null> {
+    const cand = extractOrderCandidate(orderNoCandidate) ?? extractOrderCandidate(conversationName)
+    if (!cand) {
+      const matchedOrder = await prisma.order.findFirst({
+        where: {
+          assignedEmployeeId: employeeId,
+          status: { in: ['已申领', '进行中'] },
+          customerName: { contains: conversationName }
+        },
+        orderBy: { updatedAt: 'desc' }
+      })
+      return matchedOrder?.id ?? null
+    }
+    const orders = await prisma.order.findMany({
+      where: { assignedEmployeeId: employeeId },
+      select: { id: true, sourceOrderNo: true, rawJson: true, customerName: true }
+    })
+    const entries: OrderNoEntry[] = orders.map((o) => {
+      const raw = (o.rawJson ?? {}) as Record<string, unknown>
+      const nos = [o.sourceOrderNo, raw.applyNo, raw.crmApplyNo].filter(
+        (x): x is string => typeof x === 'string' && x.length > 0
+      )
+      return { orderId: o.id, nos, name: o.customerName }
+    })
+    const r = resolveOrder(cand.raw, entries, 2, conversationName)
+    if (r.status === 'matched') return r.orderId
+    const reason = r.status === 'ambiguous' ? 'ambiguous' : r.status === 'name_mismatch' ? 'name_mismatch' : 'no_match'
+    const bestDist = r.status === 'name_mismatch' ? r.dist : r.bestDist
+    const candidateOrderIds = r.status === 'ambiguous' ? r.orderIds : undefined
+    await prisma.unmatchedOrderRef.upsert({
+      where: { employee_candidate: { employeeId, candidate: cand.raw } },
+      create: {
+        employeeId, channel, conversationName, candidate: cand.raw, candidateKind: cand.kind,
+        reason, bestDist, candidateOrderIds, screenshotOssKey, capturedAt
+      },
+      update: {
+        seenCount: { increment: 1 }, conversationName, reason, bestDist,
+        candidateOrderIds: candidateOrderIds ?? Prisma.JsonNull, screenshotOssKey, capturedAt
+      }
+    })
+    return null
+  }
+
+  fastify.post<{ Body: CaptureFrameBody }>('/api/v1/capture/frame', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录或缺少工号' })
+    const employeeId = request.employee.id
+    const { channel, conversationName, orderNoCandidate, screenshotOssKey, capturedAt, messages } = request.body
+    if (!Array.isArray(messages)) return reply.status(400).send({ error: 'messages 必填且为数组' })
+    const capAt = new Date(capturedAt)
+
+    // 订单关联：整帧只算一次
+    const orderId = await resolveOrderForConversation(
+      employeeId, channel, conversationName, orderNoCandidate, screenshotOssKey ?? null, capAt
+    )
+
+    let created = 0
+    let merged = 0
+    // 时间链：messages 已是屏幕从上到下的顺序；遇到时间锚点(system:time)就更新 anchor，
+    // 其下方的消息 chatTime = 最近一个 anchor（往上翻看的历史消息靠它定位真实时间）。
+    let anchor: Date | null = null
+    for (const m of messages) {
+      const content = (m.text ?? '').trim()
+      if (!content) continue
+      const senderType = m.speaker === 'self' || m.speaker === 'system' ? m.speaker : 'other'
+      let chatTime: Date | null = anchor
+      if (senderType === 'system' && m.kind === 'time') {
+        const parsed = parseChatTime(content, capAt)
+        if (parsed) {
+          anchor = parsed
+          chatTime = parsed
+        }
+      }
+      const normalized = content.replace(/\s+/g, '')
+      const contentHash = createHash('sha256').update(normalized).digest('hex')
+      const dedupeKey = createHash('sha256')
+        .update(`${employeeId}|${conversationName}|${senderType}|${contentHash}`)
+        .digest('hex')
+
+      const existing = await prisma.message.findUnique({
+        where: { dedupeKey },
+        select: { id: true, orderId: true, chatTime: true }
+      })
+      if (existing) {
+        // 跨帧重复：累加次数 + 刷新最近时刻；订单/时间后补（之前没算出来、这次算出来了就补上）
+        await prisma.message.update({
+          where: { dedupeKey },
+          data: {
+            seenCount: { increment: 1 },
+            lastSeenAt: capAt,
+            orderId: existing.orderId ?? orderId,
+            chatTime: existing.chatTime ?? chatTime,
+            // 之前没算出真实时间、这次算出来了 → 把排序键从 capturedAt 升级成真实 chatTime
+            ...(existing.chatTime == null && chatTime != null ? { sortTime: chatTime } : {})
+          }
+        })
+        merged++
+      } else {
+        await prisma.message.create({
+          data: {
+            orderId, channel, conversationName,
+            senderName: m.name ?? null,
+            contentText: content,
+            screenshotOssKey: screenshotOssKey ?? null,
+            capturedAt: capAt,
+            employeeId,
+            senderType,
+            kind: senderType === 'system' ? (m.kind ?? 'other') : null,
+            chatTime,
+            sortTime: chatTime ?? capAt, // 排序键：有真实聊天时间用它，否则退回截图时刻
+            contentHash, dedupeKey,
+            seenCount: 1, firstSeenAt: capAt, lastSeenAt: capAt
+          }
+        })
+        created++
+      }
+    }
+    return reply.send({ data: { orderId, created, merged } })
+  })
 
   // 8.3 关键信息抽取（路线1 的 AI 环节）—— 后端调百炼文本 LLM，从"带说话人的对话"抽可回填关键字段。
   //     接口已建好、可独立调（body 直接传 messages），但不自动触发（先测 sidecar 结构化效果）。
@@ -1319,7 +1561,7 @@ export function registerApiRoutes(
       // 聚合查询关联的 messages, calls, aiSummaries
       const messages = await prisma.message.findMany({
         where: { orderId },
-        orderBy: { capturedAt: 'asc' }
+        orderBy: [{ sortTime: { sort: 'asc', nulls: 'last' } }, { capturedAt: 'asc' }]
       })
 
       const calls = await prisma.call.findMany({
@@ -1368,6 +1610,7 @@ export function registerApiRoutes(
 
   // 9. 订单详情（caseInfo + 附件 presigned URLs）GET /api/v1/orders/:id/detail
   fastify.get<{ Params: { id: string } }>('/api/v1/orders/:id/detail', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
     const orderId = parseInt(request.params.id, 10)
     try {
       const order = await prisma.order.findUnique({ where: { id: orderId } })
@@ -1378,14 +1621,19 @@ export function registerApiRoutes(
         orderBy: { id: 'asc' }
       })
 
-      const attachmentsOut = await Promise.all(attachments.map(async (a) => ({
+      const proto = String(request.headers['x-forwarded-proto'] ?? 'http').split(',')[0].trim()
+      const host = request.headers.host
+      if (!host) throw new Error('缺少 Host 请求头，无法生成附件访问地址')
+      const attachmentBase = `${proto}://${host}`
+      const employeeCode = encodeURIComponent(request.employee.token)
+      const attachmentsOut = attachments.map((a) => ({
         id: a.id,
         fileType: a.fileType,
         fileName: a.fileName,
         mimeType: a.mimeType,
         byteSize: a.byteSize,
-        url: await minioPublicClient.presignedGetObject(a.minioBucket, a.minioKey, 60 * 60)
-      })))
+        url: `${attachmentBase}/api/v1/order-attachments/${a.id}/content?employeeCode=${employeeCode}`
+      }))
 
       return reply.send({
         data: {
@@ -1404,6 +1652,39 @@ export function registerApiRoutes(
       return reply.status(500).send({ error: '查询订单详情失败: ' + err.message })
     }
   })
+
+  // 9.1 附件内容代理。img 标签无法携带 X-Employee-Code，所以详情接口把 employeeCode 放到查询参数里。
+  fastify.get<{ Params: { id: string }; Querystring: { employeeCode?: string } }>(
+    '/api/v1/order-attachments/:id/content',
+    async (request, reply) => {
+      const attachmentId = parseInt(request.params.id, 10)
+      const employeeCode = normalizeEmployeeCode(request.query.employeeCode)
+      if (!employeeCode) return reply.status(401).send({ error: '缺少 employeeCode' })
+
+      try {
+        const employee = await ensureEmployeeByCode(prisma, employeeCode)
+        const attachment = await prisma.orderAttachment.findUnique({
+          where: { id: attachmentId },
+          include: { order: { select: { assignedEmployeeId: true, rawJson: true } } }
+        })
+        if (!attachment) return reply.status(404).send({ error: '附件不存在' })
+
+        const pool = (attachment.order.rawJson as any)?.pool
+        if (attachment.order.assignedEmployeeId && attachment.order.assignedEmployeeId !== employee.id && pool !== 'public') {
+          return reply.status(403).send({ error: '无权访问该附件' })
+        }
+
+        const stream = await minioClient.getObject(attachment.minioBucket, attachment.minioKey)
+        reply.header('Content-Type', attachment.mimeType)
+        reply.header('Content-Length', String(attachment.byteSize))
+        reply.header('Cache-Control', 'private, max-age=3600')
+        return reply.send(stream)
+      } catch (err: any) {
+        fastify.log.error('读取订单附件失败:', err)
+        return reply.status(500).send({ error: '读取订单附件失败: ' + err.message })
+      }
+    }
+  )
 
   // 10. 手动重抓详情 POST /api/v1/orders/:id/refresh-detail
   // 给当前申领该订单的员工的插件下发一条 fetch-only 的指令
@@ -1497,7 +1778,7 @@ export function registerApiRoutes(
 
       const messages = await prisma.message.findMany({
         where: { orderId },
-        orderBy: { capturedAt: 'asc' },
+        orderBy: [{ sortTime: { sort: 'asc', nulls: 'last' } }, { capturedAt: 'asc' }],
       })
       if (!messages.length) return reply.status(400).send({ error: '该订单暂无微信消息' })
 
@@ -1534,7 +1815,7 @@ export function registerApiRoutes(
 
       const [calls, messages] = await Promise.all([
         prisma.call.findMany({ where: { orderId }, orderBy: { startedAt: 'asc' } }),
-        prisma.message.findMany({ where: { orderId }, orderBy: { capturedAt: 'asc' } }),
+        prisma.message.findMany({ where: { orderId }, orderBy: [{ sortTime: { sort: 'asc', nulls: 'last' } }, { capturedAt: 'asc' }] }),
       ])
 
       const { content, model } = await summarizeFull({

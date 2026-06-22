@@ -1,5 +1,8 @@
-import { type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { initials } from '../lib/orderMapping'
+import { getTheme, toggleTheme, type Theme } from '../lib/theme'
+import { fetchUnmatchedOrderRefs, dismissUnmatchedOrderRef, type UnmatchedOrderRef } from '../api'
+import StatusBar from './StatusBar'
 import type { Session } from '../api'
 
 export type NavKey = 'claim' | 'workbench' | 'customers' | 'knowledge' | 'dashboard' | 'debug' | 'settings'
@@ -61,24 +64,21 @@ export default function AppShell({
           </nav>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button className="p-2 text-text-muted hover:bg-surface-container-low rounded-full transition-colors" title="通知">
-            <span className="material-symbols-outlined">notifications</span>
-          </button>
-          <button className="p-2 text-text-muted hover:bg-surface-container-low rounded-full transition-colors" title="帮助">
-            <span className="material-symbols-outlined">help</span>
-          </button>
+        <div className="flex items-center gap-0.5">
+          <ThemeToggle />
+          <NotificationBell />
+          <IconBtn icon="help" title="帮助" />
           <button
             onClick={() => onNavigate('settings')}
             className={
-              'p-2 hover:bg-surface-container-low rounded-full transition-colors ' +
+              'p-1.5 hover:bg-surface-container-low rounded-full transition-colors ' +
               (active === 'settings' ? 'text-primary bg-surface-container-low' : 'text-text-muted')
             }
             title="设置"
           >
-            <span className="material-symbols-outlined">settings</span>
+            <span className="material-symbols-outlined" style={{ fontSize: '19px' }}>settings</span>
           </button>
-          <div className="group relative">
+          <div className="group relative ml-1">
             <button className="w-8 h-8 rounded-full bg-primary text-white flex items-center justify-center text-body-sm font-semibold">
               {initials(session.displayName)}
             </button>
@@ -99,6 +99,140 @@ export default function AppShell({
 
       {/* 业务内容区 */}
       <div className="flex-1 min-h-0 flex flex-col">{children}</div>
+
+      {/* 底部状态栏：后端 / Chrome 插件 / 移动端 App */}
+      <StatusBar session={session} />
     </div>
+  )
+}
+
+/**
+ * 右上角通知铃铛：展示"识别到订单号却没关联到订单"的异常（后端 UnmatchedOrderRef，只看 pending）。
+ * 角标显示待处理条数；下拉列表里每条可「标记已处理」(后端 reject)。每 60s 轮询一次。
+ */
+function NotificationBell(): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [items, setItems] = useState<UnmatchedOrderRef[]>([])
+  const [loading, setLoading] = useState(false)
+
+  const load = async (): Promise<void> => {
+    try {
+      setLoading(true)
+      setItems(await fetchUnmatchedOrderRefs('pending'))
+    } catch {
+      // 未登录/网络异常时静默，不打扰
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    load()
+    const t = setInterval(load, 60_000)
+    return () => clearInterval(t)
+  }, [])
+
+  const dismiss = async (id: number): Promise<void> => {
+    try {
+      await dismissUnmatchedOrderRef(id)
+      setItems((prev) => prev.filter((x) => x.id !== id))
+    } catch {
+      /* 失败保留，下次刷新再试 */
+    }
+  }
+
+  const count = items.length
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => {
+          const next = !open
+          setOpen(next)
+          if (next) load()
+        }}
+        className="relative p-1.5 text-text-muted hover:bg-surface-container-low rounded-full transition-colors"
+        title="通知"
+      >
+        <span className="material-symbols-outlined" style={{ fontSize: '19px' }}>notifications</span>
+        {count > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-red-500 text-white text-[10px] leading-4 text-center font-semibold">
+            {count > 99 ? '99+' : count}
+          </span>
+        )}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-10 w-96 max-h-[28rem] overflow-auto bg-white border border-border-subtle rounded-lg shadow-lg z-50">
+            <div className="px-4 py-2.5 border-b border-border-subtle flex items-center justify-between sticky top-0 bg-white">
+              <span className="text-body-lg font-semibold text-text-main">待确认订单号</span>
+              <span className="text-body-sm text-text-muted">{count} 条</span>
+            </div>
+            {count === 0 ? (
+              <div className="px-4 py-8 text-center text-body-sm text-text-muted">
+                {loading ? '加载中…' : '没有待处理的异常'}
+              </div>
+            ) : (
+              <ul className="divide-y divide-border-subtle">
+                {items.map((it) => (
+                  <li key={it.id} className="px-4 py-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-body-sm font-medium text-text-main truncate" title={it.conversationName}>
+                          {it.conversationName || '(无会话名)'}
+                        </p>
+                        <p className="text-body-sm text-text-muted mt-0.5">
+                          订单号 <span className="font-mono text-text-main">{it.candidate}</span>
+                          {' · '}
+                          {it.channel === 'wxwork' ? '企微' : '微信'}
+                          {it.seenCount > 1 ? ` · 出现 ${it.seenCount} 次` : ''}
+                        </p>
+                        <p className="text-body-sm text-amber-600 mt-0.5">
+                          {it.reason === 'ambiguous'
+                            ? '多个订单并列，需人工确认'
+                            : it.reason === 'name_mismatch'
+                              ? '订单号匹配上但客户名对不上，需人工确认'
+                              : '找不到对应订单，需人工确认'}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => dismiss(it.id)}
+                        className="shrink-0 text-body-sm text-text-muted hover:text-primary px-2 py-1 rounded hover:bg-surface-container-low"
+                      >
+                        标记已处理
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function IconBtn({ icon, title }: { icon: string; title: string }): React.JSX.Element {
+  return (
+    <button className="p-1.5 text-text-muted hover:bg-surface-container-low rounded-full transition-colors" title={title}>
+      <span className="material-symbols-outlined" style={{ fontSize: '19px' }}>{icon}</span>
+    </button>
+  )
+}
+
+function ThemeToggle(): React.JSX.Element {
+  const [theme, setTheme] = useState<Theme>(getTheme())
+  return (
+    <button
+      onClick={(e) => setTheme(toggleTheme(e))}
+      className="p-1.5 text-text-muted hover:bg-surface-container-low rounded-full transition-colors"
+      title={theme === 'dark' ? '切换到浅色' : '切换到深色'}
+    >
+      <span className="material-symbols-outlined" style={{ fontSize: '19px' }}>
+        {theme === 'dark' ? 'light_mode' : 'dark_mode'}
+      </span>
+    </button>
   )
 }

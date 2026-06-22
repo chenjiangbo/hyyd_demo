@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { login, saveSession, type Session } from '../api'
+import { getBackendUrl, login, saveSession, setBackendUrl, type Session } from '../api'
 import { loginHeroUrl } from '../assets/loginHero'
 
 export default function LoginPage({
@@ -8,6 +8,7 @@ export default function LoginPage({
   onLoggedIn: (s: Session) => void
 }): React.JSX.Element {
   const [account, setAccount] = useState('')
+  const [backendUrl, setBackendUrlInput] = useState(getBackendUrl())
   const [password, setPassword] = useState('')
   const [showPwd, setShowPwd] = useState(false)
   const [remember, setRemember] = useState(true)
@@ -19,6 +20,7 @@ export default function LoginPage({
     setError(null)
     setLoading(true)
     try {
+      setBackendUrl(backendUrl)
       const me = await login(account)
       const session = { employeeCode: me.employeeCode, displayName: me.displayName }
       if (remember) saveSession(session)
@@ -71,6 +73,25 @@ export default function LoginPage({
             </div>
 
             <form className="space-y-4" onSubmit={handleSubmit}>
+              <div className="space-y-1">
+                <label className="block text-label-caps text-text-muted uppercase" htmlFor="backendUrl">
+                  后端地址
+                </label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <span className="material-symbols-outlined text-outline">dns</span>
+                  </div>
+                  <input
+                    id="backendUrl"
+                    type="text"
+                    value={backendUrl}
+                    onChange={(e) => setBackendUrlInput(e.target.value)}
+                    placeholder="http://192.168.x.x:13000"
+                    className="block w-full pl-10 pr-3 py-2.5 border border-outline-variant rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-trust-blue focus:border-transparent text-body-md text-text-main transition-colors duration-200"
+                  />
+                </div>
+              </div>
+
               {/* 工号 */}
               <div className="space-y-1">
                 <label className="block text-label-caps text-text-muted uppercase" htmlFor="account">

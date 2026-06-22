@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace Hyyd.CaptureSidecar;
@@ -71,7 +72,21 @@ internal sealed class WindowInspector
         var title = GetWindowTitle(hwnd);
         var className = GetClassName(hwnd);
 
-        if (!NativeMethods.GetWindowRect(hwnd, out var rect))
+        // 企微：只截主聊天窗（class=WeWorkWindow），跳过登录窗(WeChatLogin)等其它窗口。
+        // 可用 HYYD_WXWORK_MAIN_CLASS 覆盖（万一以后版本改了类名）。
+        // 微信：主窗和登录窗 class 一样(Qt51514QWindowIcon，且带版本号会变)，无法靠类名区分 → 不限制，照旧全截。
+        if (channel == "wxwork")
+        {
+            var mainClass = Environment.GetEnvironmentVariable("HYYD_WXWORK_MAIN_CLASS");
+            if (string.IsNullOrWhiteSpace(mainClass)) mainClass = "WeWorkWindow";
+            if (!string.Equals(className, mainClass, StringComparison.Ordinal))
+            {
+                Console.Error.WriteLine($"[capture] 跳过企微非主窗口 class={className}（仅截 {mainClass}）");
+                return null;
+            }
+        }
+
+        if (!TryGetVisibleRect(hwnd, out var rect))
         {
             throw new InvalidOperationException($"GetWindowRect failed for {processName}.");
         }
@@ -98,17 +113,29 @@ internal sealed class WindowInspector
             processName,
             title,
             rect,
-            "normal"
+            "normal",
+            className
         );
     }
 
+    // 优先用 DWM 可见边界（排除隐形边框/阴影，截图不带周围背景）；DWM 失败或拿到空 rect 时回退 GetWindowRect。
+    private static bool TryGetVisibleRect(IntPtr hwnd, out WinRect rect)
+    {
+        if (NativeMethods.DwmGetWindowAttribute(
+                hwnd, NativeMethods.DWMWA_EXTENDED_FRAME_BOUNDS, out rect, Marshal.SizeOf<WinRect>()) == 0
+            && rect.Width > 0 && rect.Height > 0)
+        {
+            return true;
+        }
+        return NativeMethods.GetWindowRect(hwnd, out rect);
+    }
+
+    // 微信/企微的"截图工具遮罩"是一个覆盖整块屏幕的窗口（连任务栏都盖住）。它和主窗口同 class
+    // (Qt51514QWindowIcon)、也可能有标题，所以不能靠 class/标题区分；改用"尺寸≈整块屏幕"判定。
+    // 关键：只比**整屏**(SM_CXSCREEN/CYSCREEN 或虚拟屏)，不比工作区——这样"最大化的主窗口"(只占
+    // 工作区、比整屏矮一截任务栏)不会被误判为遮罩。
     private static bool IsFullScreenCaptureOverlay(string processName, string title, WinRect rect)
     {
-        if (!string.IsNullOrWhiteSpace(title))
-        {
-            return false;
-        }
-
         if (!processName.Equals("Weixin.exe", StringComparison.OrdinalIgnoreCase) &&
             !processName.Equals("WeChat.exe", StringComparison.OrdinalIgnoreCase) &&
             !processName.Equals("WXWork.exe", StringComparison.OrdinalIgnoreCase))
@@ -116,16 +143,21 @@ internal sealed class WindowInspector
             return false;
         }
 
+        // 整块主屏
+        var pw = NativeMethods.GetSystemMetrics(NativeMethods.SM_CXSCREEN);
+        var ph = NativeMethods.GetSystemMetrics(NativeMethods.SM_CYSCREEN);
+        if (pw > 0 && ph > 0 && Math.Abs(rect.Width - pw) <= 4 && Math.Abs(rect.Height - ph) <= 4)
+        {
+            return true;
+        }
+
+        // 整块虚拟屏（多显示器）
         var vx = NativeMethods.GetSystemMetrics(NativeMethods.SM_XVIRTUALSCREEN);
         var vy = NativeMethods.GetSystemMetrics(NativeMethods.SM_YVIRTUALSCREEN);
         var vw = NativeMethods.GetSystemMetrics(NativeMethods.SM_CXVIRTUALSCREEN);
         var vh = NativeMethods.GetSystemMetrics(NativeMethods.SM_CYVIRTUALSCREEN);
-        if (vw <= 0 || vh <= 0)
-        {
-            return false;
-        }
-
-        return Math.Abs(rect.Left - vx) <= 2 &&
+        return vw > 0 && vh > 0 &&
+            Math.Abs(rect.Left - vx) <= 2 &&
             Math.Abs(rect.Top - vy) <= 2 &&
             Math.Abs(rect.Width - vw) <= 4 &&
             Math.Abs(rect.Height - vh) <= 4;

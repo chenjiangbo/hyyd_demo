@@ -501,62 +501,64 @@ export class CaptureSidecarClient {
       }
       this.status.lastTextPreview = message.ocr.text.replace(/\s+/g, ' ').slice(0, 120)
 
-      // 把本帧"首次出现"的消息上报后端 → 按屏幕订单号(容忍 OCR 误差)模糊匹配挂到订单，
-      // 进入订单的「需求沟通」时间线。只传新消息(本地已去重)，避免重复刷屏导致后端灌水。
-      if (!result.duplicate && result.newMessages.length > 0) {
-        void this.uploadNewMessages(message, result)
+      // 整帧没变（chat_text_hash 命中）就不重复上报；变了就把整帧消息(含 system)发后端，
+      // 由后端做跨帧单消息去重 + 时间链还原 + 订单关联。
+      if (!result.duplicate) {
+        void this.uploadFrame(message)
       }
     }
   }
 
-  /** 上报本帧新消息到后端（失败不影响采集，仅记日志）。订单关联由后端按 orderNoCandidate 模糊解析。 */
-  private async uploadNewMessages(frame: CaptureFrameEvent, result: import('./capture-store').InsertFrameResult): Promise<void> {
+  /**
+   * 整帧上报后端（新链路）：把这一帧的全部结构化消息（含 system/时间锚点）原样发给
+   * `/api/v1/capture/frame`，由后端做跨帧单消息去重 + 时间链还原 + 订单关联。
+   * tray 这边不再做单消息去重，只靠整帧去重（chat_text_hash，见 capture-store）挡掉"同屏没变"的帧、省流量。
+   * 失败不影响采集，仅记日志。
+   */
+  private async uploadFrame(frame: CaptureFrameEvent): Promise<void> {
     if (!this.backendConfig) return
     const { backendUrl, employeeCode } = this.backendConfig
-    const conversationName = result.conversationName || frame.title || frame.processName
-    for (const m of result.newMessages) {
-      // 系统提示(时间戳/撤回提示等)不入订单沟通时间线
-      if (m.senderType === 'system') continue
-      const body = {
-        channel: frame.channel,
-        conversationName,
-        senderName: m.senderName ?? undefined,
-        contentText: m.content,
-        capturedAt: frame.capturedAt,
-        orderNoCandidate: result.orderNo ?? undefined
-      }
-      const preview = m.content.replace(/\s+/g, ' ').slice(0, 40)
-      try {
-        const res = await fetch(`${backendUrl}/api/v1/messages`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Employee-Code': employeeCode },
-          body: JSON.stringify(body)
-        })
-        const json = await res.json().catch(() => null) as {
-          data?: { id?: number; orderId?: number | null }
-          _debug?: { matchMethod?: string; candidate?: string; dist?: number; matchedOrderId?: number | null; reason?: string }
-          error?: string
-        } | null
-        if (res.ok && json?.data) {
-          const d = json.data
-          const dbg = json._debug
-          const orderInfo = d.orderId
-            ? `→ 订单${d.orderId}${dbg?.matchMethod ? `(${dbg.matchMethod}${dbg?.dist != null ? ` dist=${dbg.dist}` : ''})` : ''}`
-            : dbg?.matchMethod
-              ? `→ 未关联订单(${dbg.matchMethod}${dbg?.reason ? `:${dbg.reason}` : ''})`
-              : '→ 未关联订单'
-          this.addLog('upload', `✓ ${m.senderType} "${preview}" 候选=${body.orderNoCandidate ?? '无'} ${orderInfo} msgId=${d.id}`)
-        } else {
-          const errText = json?.error ?? res.statusText
-          const errMsg = `✗ ${m.senderType} "${preview}" → HTTP ${res.status}: ${errText.slice(0, 120)}`
-          console.error(`[capture] 上报消息失败: ${errMsg}`)
-          this.addLog('upload', errMsg)
-        }
-      } catch (e) {
-        const errMsg = `✗ ${m.senderType} "${preview}" → 网络异常: ${(e as Error).message}`
-        console.error('[capture] 上报消息异常:', errMsg)
+    const messages = (frame.messages ?? []).map((m) => ({
+      speaker: m.speaker,
+      name: m.name ?? null,
+      text: m.text,
+      kind: m.kind ?? null
+    }))
+    if (messages.length === 0) return
+    const conversationName = frame.title ?? frame.windowTitle ?? frame.processName
+    const body = {
+      channel: frame.channel,
+      conversationName,
+      orderNoCandidate: frame.orderNo ?? undefined,
+      capturedAt: frame.capturedAt,
+      messages
+    }
+    try {
+      const res = await fetch(`${backendUrl}/api/v1/capture/frame`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Employee-Code': employeeCode },
+        body: JSON.stringify(body)
+      })
+      const json = (await res.json().catch(() => null)) as {
+        data?: { orderId?: number | null; created?: number; merged?: number }
+        error?: string
+      } | null
+      const conv = conversationName.replace(/\s+/g, ' ').slice(0, 20)
+      if (res.ok && json?.data) {
+        const d = json.data
+        this.addLog(
+          'upload',
+          `✓ 整帧 "${conv}" 新${d.created ?? 0}/合并${d.merged ?? 0} 候选=${frame.orderNo ?? '无'} → ${d.orderId ? `订单${d.orderId}` : '未关联'}`
+        )
+      } else {
+        const errMsg = `✗ 整帧 "${conv}" → HTTP ${res.status}: ${(json?.error ?? res.statusText).slice(0, 120)}`
+        console.error(`[capture] 整帧上报失败: ${errMsg}`)
         this.addLog('upload', errMsg)
       }
+    } catch (e) {
+      const errMsg = `✗ 整帧上报网络异常: ${(e as Error).message}`
+      console.error('[capture] 整帧上报异常:', errMsg)
+      this.addLog('upload', errMsg)
     }
   }
 

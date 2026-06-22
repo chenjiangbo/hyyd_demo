@@ -420,12 +420,26 @@ function EmptyHint({
   hasAny: boolean
   pool: PoolTab
 }): React.JSX.Element {
+  const { backendUrl, employeeCode } = getClientConfig()
   if (loading) return <p className="text-center text-fg-subtle text-sm py-12">加载中…</p>
   if (!hasAny)
     return (
-      <p className="text-center text-fg-subtle text-sm py-12">
-        {pool === 'register' ? '挂号协助' : '绿通业务'}池里没有当前员工的订单。请确认 Chrome 插件已登录泰康，等待下一轮采集（每 2 分钟），或直接 F5 泰康标签页立刻触发一次。
-      </p>
+      <div className="text-center text-sm py-12 max-w-lg mx-auto space-y-3">
+        <p className="text-fg-muted">
+          当前员工 <span className="font-mono">{employeeCode}</span> 在「
+          {pool === 'register' ? '挂号协助' : '绿通业务'}」池里**暂无订单**。
+        </p>
+        <p className="text-fg-subtle text-[12px] leading-relaxed">
+          订单数据全部来自后端服务器（<span className="font-mono">{backendUrl}</span>
+          ）。可能原因：
+        </p>
+        <ul className="text-fg-subtle text-[12px] leading-relaxed text-left list-disc pl-6 space-y-1">
+          <li>这位员工本身就没有「{pool === 'register' ? '挂号协助' : '绿通业务'}」这类业务的订单，可以切到另一个 tab 看看</li>
+          <li>tray-app 里设的员工 ID 跟 Chrome 插件 popup 里设的<strong>不一致</strong>，去设置 ⚙ 检查</li>
+          <li>Chrome 插件还没采过：去 Chrome 打开泰康 ccm.taikang.com 登录，插件每 2 分钟自动采一轮，F5 立刻触发</li>
+          <li>后端连不通（看右下角"后端"指示灯）</li>
+        </ul>
+      </div>
     )
   return (
     <p className="text-center text-fg-subtle text-sm py-12">没有符合搜索条件的订单。</p>

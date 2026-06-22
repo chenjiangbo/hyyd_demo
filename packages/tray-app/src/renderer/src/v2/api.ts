@@ -7,15 +7,37 @@
 
 const LS_EMPLOYEE = 'hyyd.v2.employeeCode'
 const LS_DISPLAYNAME = 'hyyd.v2.displayName'
+const LS_BACKEND_URL = 'huanyu.backendUrl'
 
-// 后端地址写死、不可配置：
-// tray-app 运行在员工 Windows 机（现为公司内网的荣耀笔记本），通过内网访问跑在 Mac 上的后端。
-// Mac 内网 IP 当前为 192.168.2.227（后端监听 0.0.0.0，对 Mac 自身浏览器预览同样可达）。
-// 注意：Mac 是 DHCP，IP 变了这里要同步改；建议给 Mac 绑固定内网 IP。
-const BACKEND_URL = 'http://192.168.2.227:13000'
+export const BACKEND_CONFIG_CHANGED = 'hyyd:v2-backend-config-changed'
+export const DEFAULT_BACKEND_URL = 'http://127.0.0.1:13000'
 
 export function getBackendUrl(): string {
-  return BACKEND_URL
+  return localStorage.getItem(LS_BACKEND_URL) || DEFAULT_BACKEND_URL
+}
+
+export function normalizeBackendUrl(value: string): string {
+  const trimmed = value.trim().replace(/\/+$/, '')
+  if (!trimmed) throw new Error('请输入后端地址')
+  if (!/^https?:\/\//.test(trimmed)) {
+    throw new Error('后端地址必须以 http:// 或 https:// 开头')
+  }
+  try {
+    const url = new URL(trimmed)
+    if (!url.hostname || !url.port) {
+      throw new Error('后端地址必须包含主机和端口，例如 http://192.168.2.227:13000')
+    }
+  } catch {
+    throw new Error('后端地址格式不正确，例如 http://192.168.2.227:13000')
+  }
+  return trimmed
+}
+
+export function setBackendUrl(value: string): string {
+  const normalized = normalizeBackendUrl(value)
+  localStorage.setItem(LS_BACKEND_URL, normalized)
+  window.dispatchEvent(new CustomEvent(BACKEND_CONFIG_CHANGED, { detail: { backendUrl: normalized } }))
+  return normalized
 }
 
 export interface Session {
@@ -57,6 +79,13 @@ export interface Order {
   doctor: string | null
   status: string // 泰康/平安原始状态名
   orderState?: string | null
+  taikangOrderState?: string | null
+  taikangOrderStateName?: string | null
+  taikangCaseStatus?: string | null
+  taikangWaitType?: string | null
+  taikangServState?: string | null
+  workbenchLane?: 'todo' | 'doing' | 'await_backfill' | 'done'
+  serviceStage?: 'claimed' | 'communicating' | 'delivering' | 'settlement' | 'closing'
   intendDate: string | null
   claimedAt: string | null
   createdAt?: string
@@ -103,9 +132,25 @@ export interface OrderCall {
   asrFinishedAt?: string | null
 }
 
+// 订单关联的采集消息（后端已跨帧去重、按 sortTime 排好）。日期字段是 ISO 字符串。
+export interface OrderMessage {
+  id: number
+  channel: 'wechat' | 'wxwork' | string
+  conversationName: string
+  senderType: 'self' | 'other' | 'system' | string
+  senderName: string | null
+  contentText: string
+  kind: string | null
+  chatTime: string | null
+  sortTime: string | null
+  capturedAt: string
+  seenCount: number
+}
+
 export interface OrderAggregateResponse {
   id: number
   calls: OrderCall[]
+  messages: OrderMessage[]
 }
 
 async function authedGet<T>(path: string): Promise<T> {
@@ -124,14 +169,15 @@ export function fetchOrders(): Promise<Order[]> {
   return authedGet<Order[]>('/api/v1/orders')
 }
 
-/** 待申领池：全局"候选"状态订单（任何员工可申领） */
+/** 待申领池：泰康公共池订单（任何员工可申领） */
 export function fetchClaimableOrders(): Promise<Order[]> {
-  return authedGet<Order[]>('/api/v1/orders?status=候选')
+  return authedGet<Order[]>('/api/v1/orders?pool=public')
 }
 
-/** 申领一张订单（→ 已申领，分配给当前登录员工） */
-export function claimOrder(orderId: number): Promise<{ order: Order; commandId: number }> {
-  return authedSend<{ order: Order; commandId: number }>(`/api/v1/orders/${orderId}/claim`, 'POST', {})
+/** 申领一张订单（→ 已申领，分配给当前登录员工）。
+ *  skipTaikang=true：当前待申领页只展示，不对泰康做写操作（不下发插件指令）。 */
+export function claimOrder(orderId: number): Promise<{ order: Order; commandId: number | null }> {
+  return authedSend(`/api/v1/orders/${orderId}/claim`, 'POST', { skipTaikang: true })
 }
 
 /** 手工建单（→ 候选，进入待申领池）。sourceOrderNo 缺省自动生成。 */
@@ -263,6 +309,36 @@ export function addImageMaterial(orderId: number, mimeType: string, base64: stri
 
 export function deleteMaterial(id: number): Promise<unknown> {
   return authedSend(`/api/v1/materials/${id}`, 'DELETE')
+}
+
+// ─── 订单号待确认（右上角铃铛通知）──────────────────────────
+// 采集到的会话识别出了订单号，但后端归一+编辑距离仍匹配不到真实订单 → 异常，需人工确认。
+export interface UnmatchedOrderRef {
+  id: number
+  channel: string // 'wechat' | 'wxwork'
+  conversationName: string
+  candidate: string // 抽到的订单号候选
+  candidateKind: string
+  reason: string // 'no_match' 找不到 | 'ambiguous' 多单并列
+  bestDist: number | null
+  screenshotOssKey: string | null
+  capturedAt: string
+  seenCount: number // 同一候选重复出现次数
+  status: string // 'pending' | 'confirmed' | 'rejected'
+  createdAt: string
+  updatedAt: string
+}
+
+/** 拉取"识别到订单号却没关联到订单"的异常（默认只看待处理） */
+export function fetchUnmatchedOrderRefs(status = 'pending'): Promise<UnmatchedOrderRef[]> {
+  return authedGet<UnmatchedOrderRef[]>(
+    `/api/v1/unmatched-order-refs?status=${encodeURIComponent(status)}`
+  )
+}
+
+/** 标记已处理（忽略）：status → rejected */
+export function dismissUnmatchedOrderRef(id: number): Promise<{ ok: boolean }> {
+  return authedSend(`/api/v1/unmatched-order-refs/${id}/reject`, 'POST')
 }
 
 /**

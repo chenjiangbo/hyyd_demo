@@ -412,23 +412,48 @@ internal static class MessageStructurer
         var lines = ToLines(inChat);
         if (lines.Count == 0) return new StructureResult(null, Array.Empty<StructuredMessage>(), chatX0, chatX1, null, null, dropped);
 
-        // 3) 标题 = 跳过窗口系统按钮(□/×，y≈1)后、聊天区里最靠上的一行（=会话名）。
-        // 注意阈值别太大：之前 0.04(=32px) 把 y=31 的真标题也切掉了，导致标题取成下面的系统提示、
-        // 扫描带也跟着下沉。这里压到很小，只够排除最顶端的窗口按钮行。
+        // 3) 标题 = 聊天区顶栏里"最靠左"的那一行（会话名）。
+        // 先用很小的 topChromeY 排除最顶端窗口按钮行(□/×，y≈1)；阈值别太大，
+        // 之前 0.04(=32px) 把 y=31 的真标题也切掉了，导致标题取成下面的系统提示、扫描带跟着下沉。
         var topChromeY = Math.Max(12, (int)(bmp.Height * 0.018));
         var contentLines = lines.Where(l => l.MinY >= topChromeY).ToList();
         if (contentLines.Count == 0)
         {
             return new StructureResult(null, Array.Empty<StructuredMessage>(), chatX0, chatX1, null, null, dropped);
         }
-        var titleLine = contentLines[0];
+
+        var lineH = Median(contentLines.Select(l => l.Height).Where(x => x > 0).ToList());
+        if (lineH <= 0) lineH = 20;
+
+        // 顶栏里：左边是会话名、右边常有成员数/工具按钮等小图标（"… 个"、右上角窗口/表情按钮等），
+        // 它们和会话名几乎同一排、偶尔还高几像素。所以不能取"最靠上的一行"（会被右侧图标抢走），
+        // 而是取顶排里 MinX 最小（最靠左、贴着聊天区左界）的那一行当会话名。
+        var firstRowY = contentLines.Min(l => l.MinY);
+        var titleLine = contentLines
+            .Where(l => l.MinY <= firstRowY + lineH * 0.6)
+            .OrderBy(l => l.MinX)
+            .First();
         var title = titleLine.Text;
 
         // 4) 像素 → 气泡。OCR 只提供文字行；消息边界以截图里的气泡/卡片底色为准。
         // 输入区分区先不参与正式结果，但发送按钮同一行及其下方的工具栏 OCR 需要丢弃。
-        var lineH = Median(contentLines.Select(l => l.Height).Where(x => x > 0).ToList());
-        if (lineH <= 0) lineH = 20;
-        var bodyLines = contentLines.Skip(1).ToList();
+        var bodyLines = contentLines.Where(l => !ReferenceEquals(l, titleLine)).ToList();
+
+        // 企微输入区上沿锚点：输入区顶排右上角有"快速会议"四个字（微信没有这种锚点，保持原方案）。
+        // 命中时它的 Y 就是输入区上沿——这一排(工具栏图标)及其下方全是输入区噪声，整体丢掉，
+        // 避免那排图标被 OCR 成文字、误判成 system。关键词可用 HYYD_WXWORK_INPUT_ANCHOR 覆盖。
+        int? inputTopY = null;
+        if (string.Equals(channel, "wxwork", StringComparison.Ordinal))
+        {
+            var anchorKw = Environment.GetEnvironmentVariable("HYYD_WXWORK_INPUT_ANCHOR");
+            if (string.IsNullOrWhiteSpace(anchorKw)) anchorKw = "快速会议";
+            var anchor = contentLines
+                .Where(l => l.Text.Replace(" ", string.Empty).Contains(anchorKw, StringComparison.Ordinal))
+                .Where(l => l.CenterY >= bmp.Height * 0.5)
+                .OrderBy(l => l.MinY)
+                .FirstOrDefault();
+            if (anchor != null) inputTopY = anchor.MinY;
+        }
 
         var sendLine = contentLines
             .Where(l => l.Text.Replace(" ", string.Empty).Contains("发送", StringComparison.Ordinal))
@@ -437,6 +462,7 @@ internal static class MessageStructurer
             .FirstOrDefault();
         var visibleBodyLines = bodyLines
             .Where(l => !IsInputNoiseLine(l, sendLine))
+            .Where(l => inputTopY == null || l.MinY < inputTopY.Value - 4) // 企微：输入区上沿（快速会议）以下全丢
             .ToList();
         if (visibleBodyLines.Count == 0)
         {
@@ -445,9 +471,13 @@ internal static class MessageStructurer
 
         var midX = (chatX0 + chatX1) / 2.0;
         var scanY0 = Math.Min(bmp.Height - 1, Math.Max(titleLine.MaxY + 4, topChromeY + 20));
-        var scanY1 = sendLine == null
+        var scanY1base = sendLine == null
             ? Math.Min(bmp.Height, (int)(bmp.Height * 0.92))
             : Math.Clamp(sendLine.MinY - 4, scanY0 + 1, bmp.Height);
+        // 企微：用"快速会议"锚点把扫描下沿再收紧到输入区上沿之上（比"发送"更高，连工具栏图标行一起排除）
+        var scanY1 = inputTopY != null
+            ? Math.Clamp(Math.Min(scanY1base, inputTopY.Value - 4), scanY0 + 1, bmp.Height)
+            : scanY1base;
         // 没扫到气泡是正常情况（空会话/全是图片/纯灰文字主题/滚动位置），不再抛错丢帧——
         // 照常返回标题+分区，气泡消息为空，下面的居中 system 行仍会被收集。
         var regions = DetectBubbleRegions(bmp, chatX0, chatX1, scanY0, scanY1, channel);

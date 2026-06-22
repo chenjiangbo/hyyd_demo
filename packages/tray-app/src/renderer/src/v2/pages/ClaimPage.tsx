@@ -170,7 +170,7 @@ export default function ClaimPage(): React.JSX.Element {
             </p>
           </div>
         ) : (
-          <div className="max-w-5xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }}>
             {visible.map((o) => (
               <ClaimCard
                 key={o.id}

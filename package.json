@@ -19,6 +19,7 @@
     "db:migrate": "pnpm --filter backend db:migrate",
     "db:seed": "pnpm --filter backend db:seed",
     "deploy:win": "node scripts/deploy-win.js",
+    "package:win": "node scripts/build-installer-win.js",
     "sidecar:build:win": "node scripts/build-sidecar-win.js"
   },
   "devDependencies": {

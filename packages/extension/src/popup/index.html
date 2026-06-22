@@ -23,6 +23,7 @@
       .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
       .dot-green { background: #10b981; }
       .dot-red { background: #ef4444; }
+      .dot-amber { background: #f59e0b; }
       .dot-gray { background: #9ca3af; }
       .separator { height: 1px; background: #e5e7eb; margin: 10px 0; }
       .config-section { padding: 10px; background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; }
@@ -30,12 +31,19 @@
       .config-section label span { display: block; color: #6b7280; font-size: 11px; margin-bottom: 4px; }
       .config-section input { width: 100%; border: 1px solid #d1d5db; border-radius: 4px; padding: 6px 8px; font-size: 12px; }
       .config-section button { width: 100%; border: 0; border-radius: 4px; padding: 7px 8px; background: #059669; color: white; font-size: 12px; cursor: pointer; }
+      .debug-section { padding: 10px; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 6px; }
+      .debug-title { font-size: 12px; font-weight: 600; color: #9a3412; margin-bottom: 8px; }
+      .debug-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .debug-buttons button { border: 0; border-radius: 4px; padding: 7px 8px; color: #fff; font-size: 12px; cursor: pointer; }
+      #toggle-collect { background: #d97706; }
+      #clear-cache { background: #dc2626; }
+      .debug-note { margin-top: 8px; color: #9a3412; font-size: 11px; line-height: 1.45; }
     </style>
   </head>
   <body>
     <div class="header">
       <h1>寰宇医道探针</h1>
-      <span class="ver" id="ver">v1.2.0</span>
+      <span class="ver" id="ver">v1.2.1</span>
     </div>
 
     <div class="row">
@@ -51,6 +59,24 @@
         <span class="dot dot-gray" id="tk-dot"></span>
         <span id="tk-text">检查中…</span>
       </span>
+    </div>
+
+    <div class="separator"></div>
+
+    <div class="debug-section">
+      <div class="debug-title">调试工具</div>
+      <div class="row">
+        <span class="label">采集</span>
+        <span class="value">
+          <span class="dot dot-gray" id="collect-dot"></span>
+          <span id="collect-text">检查中…</span>
+        </span>
+      </div>
+      <div class="debug-buttons">
+        <button id="toggle-collect">暂停采集</button>
+        <button id="clear-cache">清理本地缓存</button>
+      </div>
+      <div class="debug-note">清理会删除本机订单指纹缓存；下次恢复采集会重新按后端基线/泰康状态判断。</div>
     </div>
 
     <div class="separator"></div>

@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Threading.Channels;
 
 namespace Hyyd.CaptureSidecar;
 
@@ -10,8 +11,9 @@ internal sealed class CaptureCollector : IDisposable
     private static readonly TimeSpan FirstFrameDelay = TimeSpan.FromMilliseconds(700);
     // 抠图前用它做"窗口是否稳定"检查：两次读取 rect 间隔，避免截到正在拖动/缩放中的窗口
     private static readonly TimeSpan StableCheckDelay = TimeSpan.FromMilliseconds(150);
-    // 尾沿防抖：事件触发后等输入停顿这么久再截，避免连续打字/滚动时狂截
-    private static readonly TimeSpan DebounceDelay = TimeSpan.FromMilliseconds(600);
+    // 尾沿防抖：事件触发后等输入停顿这么久再截，避免连续打字/滚动时狂截。
+    // 调小到 200ms：抓得更快，松手翻动后能赶在画面回弹/变化前截到。
+    private static readonly TimeSpan DebounceDelay = TimeSpan.FromMilliseconds(200);
     // 两次截图的最小间隔，进一步压制事件风暴（去重已能省存储，这个省 CPU/OCR）
     private static readonly TimeSpan MinCaptureInterval = TimeSpan.FromMilliseconds(1000);
     // 打字静默期：兜底定时截图若发现最近这么久内还有按键，判定"用户正在打字"，跳过本轮，
@@ -37,6 +39,7 @@ internal sealed class CaptureCollector : IDisposable
     private CancellationTokenSource? _captureCts;
     private Task? _captureTask;
     private string? _lastWindowKey;
+    private IntPtr _lastForegroundHwnd = IntPtr.Zero; // 上次抓图的目标窗口句柄；变了=刚激活，给重绘缓冲
     private DateTimeOffset _targetWindowFirstSeenAt = DateTimeOffset.MinValue;
     private string? _lastError;
     private long _keptCount;
@@ -44,6 +47,21 @@ internal sealed class CaptureCollector : IDisposable
 
     // 事件触发：钩子线程置信号，采集循环醒来。SemaphoreSlim(0,1) 当"可合并的唤醒信号"用。
     private readonly SemaphoreSlim _wake = new(0, 1);
+
+    // 抓图与 OCR 解耦：采集循环只负责"快速抓像素 + 去重判定"，命中的关键帧丢进这个有界队列；
+    // 后台 worker 慢慢做 落盘 + OCR + 结构化 + 上报，不阻塞下一次抓图。
+    // 这样"切到企微/微信就能立刻抓到图"，不会被上一帧的 OCR（几百ms~1s）卡住。
+    private sealed record CaptureJob(
+        Bitmap Bitmap,
+        TargetWindow Target,
+        string TriggerReason, // 触发原因：foreground/click/wheel/key-enter/interval
+        string KeepReason,    // 去重判定保留原因：first_frame/visual_changed/heartbeat…
+        double DiffScore,
+        DateTimeOffset CapturedAt);
+    // 队列容量小（抓图最快 1/秒，OCR ~1s，基本跟得上）；满了就丢这一帧（TryWrite 返回 false），不阻塞循环。
+    private Channel<CaptureJob>? _jobs;
+    private Task? _processTask;
+
     private InputEventMonitor? _inputMonitor;
     private DateTimeOffset _lastCaptureAt = DateTimeOffset.MinValue;
     private volatile string _lastTriggerReason = "interval";
@@ -159,6 +177,17 @@ internal sealed class CaptureCollector : IDisposable
         }
 
         _captureCts = CancellationTokenSource.CreateLinkedTokenSource(_disposeCts.Token);
+
+        // 后台处理队列：满了 TryWrite 返回 false（FullMode.Wait 下不阻塞），抓图侧据此丢帧、不卡循环。
+        _jobs = Channel.CreateBounded<CaptureJob>(new BoundedChannelOptions(3)
+        {
+            SingleReader = true,
+            SingleWriter = true,
+            FullMode = BoundedChannelFullMode.Wait
+        });
+        var jobs = _jobs;
+        _processTask = Task.Run(() => ProcessLoopAsync(jobs, _disposeCts.Token));
+
         _captureTask = Task.Run(() => RunAsync(_captureCts.Token));
 
         _inputMonitor ??= new InputEventMonitor(OnInputTrigger);
@@ -175,8 +204,14 @@ internal sealed class CaptureCollector : IDisposable
         _captureCts = null;
         _captureTask = null;
         _lastWindowKey = null;
+        _lastForegroundHwnd = IntPtr.Zero;
         _targetWindowFirstSeenAt = DateTimeOffset.MinValue;
         _dedup.ResetAll();
+
+        // 不再接收新帧；后台 worker 会把队列里剩余的帧处理完后自然退出（WaitToReadAsync 返回 false）。
+        _jobs?.Writer.TryComplete();
+        _jobs = null;
+        _processTask = null;
 
         _inputMonitor?.Dispose();
         _inputMonitor = null;
@@ -321,11 +356,16 @@ internal sealed class CaptureCollector : IDisposable
             _targetWindowFirstSeenAt = now;
             captureReason = "foreground";
             await _writer.WriteStatusAsync(true);
-            Diag.Line($"命中目标窗口 [{target.Channel}] \"{target.WindowTitle}\" {target.Rect.Width}x{target.Rect.Height}");
-            if (!targetCameFromForegroundEvent)
-            {
-                await Task.Delay(FirstFrameDelay, cancellationToken);
-            }
+            Diag.Line($"命中目标窗口 [{target.Channel}] \"{target.WindowTitle}\" class={target.ClassName} {target.Rect.Width}x{target.Rect.Height}");
+        }
+
+        // 窗口刚被激活（前台句柄变了）→ 给重绘缓冲再抓。微信/企微是 CEF，激活后内容要等一会儿才重绘，
+        // 抓太早会截到上一个会话的旧画面（点未激活窗口尤其明显）。不论是前台事件还是点击激活，都补这个延迟。
+        var justActivated = target.Hwnd != _lastForegroundHwnd;
+        _lastForegroundHwnd = target.Hwnd;
+        if (justActivated)
+        {
+            await Task.Delay(FirstFrameDelay, cancellationToken);
         }
 
         // 关键：抠图前重新读取最新窗口位置/大小，并确认窗口没在移动。
@@ -339,8 +379,9 @@ internal sealed class CaptureCollector : IDisposable
         }
         target = stable;
 
-        // 先截到内存，算缩略图指纹，做去重判定；只有保留的关键帧才落盘 + OCR + 上报
-        using var bitmap = _windowCapture.CaptureBitmap(target);
+        // 抓像素（快）+ 算指纹去重。命中的关键帧丢进后台队列，慢的 OCR/落盘/上报由 worker 做，
+        // 不卡这条循环（否则 OCR 期间切来的事件全被堵住、丢图）。bitmap 所有权转移给 worker，这里别 using/dispose。
+        var bitmap = _windowCapture.CaptureBitmap(target);
 
         if (IsLikelyBlank(bitmap))
         {
@@ -358,13 +399,64 @@ internal sealed class CaptureCollector : IDisposable
 
         if (decision.Action == DedupAction.Skip)
         {
-            _skippedCount++;
+            Interlocked.Increment(ref _skippedCount);
             _lastError = null;
             Diag.Line($"跳过·近似重复 diff={decision.DiffScore:0.###}（reason={captureReason}）");
+            bitmap.Dispose();
             return; // 近似重复：不落盘、不 OCR、不上报
         }
 
-        var capturedAt = DateTimeOffset.UtcNow;
+        // 命中关键帧 → 入后台队列。队列满（OCR 跟不上）就丢这一帧，不堆内存、不卡循环。
+        var job = new CaptureJob(bitmap, target, captureReason, decision.Reason, decision.DiffScore, DateTimeOffset.UtcNow);
+        if (_jobs is null || !_jobs.Writer.TryWrite(job))
+        {
+            bitmap.Dispose();
+            Diag.Line("处理队列忙，跳过本帧（OCR 跟不上）");
+        }
+    }
+
+    // 后台 worker：从队列取关键帧，串行做 落盘 + OCR + 结构化 + 客户会话判断 + 写帧（保持帧顺序）。
+    private async Task ProcessLoopAsync(Channel<CaptureJob> jobs, CancellationToken ct)
+    {
+        var reader = jobs.Reader;
+        try
+        {
+            while (await reader.WaitToReadAsync(ct))
+            {
+                while (reader.TryRead(out var job))
+                {
+                    try
+                    {
+                        await ProcessJobAsync(job, ct);
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        await WriteErrorOnceAsync(ex.Message);
+                    }
+                    finally
+                    {
+                        job.Bitmap.Dispose();
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // 队列被取消（进程退出），正常退出
+        }
+    }
+
+    // 处理一帧关键帧（后台线程）：落盘 + OCR + 结构化 + 判客户会话 + 写帧。bitmap 由 ProcessLoopAsync 统一释放。
+    private async Task ProcessJobAsync(CaptureJob job, CancellationToken cancellationToken)
+    {
+        var target = job.Target;
+        var bitmap = job.Bitmap;
+        var captureReason = job.TriggerReason;
+        var capturedAt = job.CapturedAt;
         var image = _windowCapture.Persist(bitmap, target, capturedAt);
 
         // OCR（RecognizeAsync 只接受文件路径，所以先落盘再 OCR；不命中客户会话再删）
@@ -424,9 +516,9 @@ internal sealed class CaptureCollector : IDisposable
         if (!conv.IsCustomer)
         {
             // 非客户会话：不入库、不上报，但保留截图、仍把整帧吐给 tray-app（Filtered=true），供调试页看截图+OCR。
-            _filteredCount++;
+            Interlocked.Increment(ref _filteredCount);
             _lastError = null;
-            Diag.Line($"非客户会话，不入库（保留截图供调试）标题=\"{structure.Title}\" → {image.Path}");
+            Diag.Line($"非客户会话，不入库（保留截图供调试）标题=\"{structure.Title}\" 触发={captureReason} → {image.Path}");
             var filteredPayload = new FramePayload(
                 "frame",
                 target.Channel,
@@ -437,8 +529,8 @@ internal sealed class CaptureCollector : IDisposable
                 image.Path,
                 image.Sha256,
                 ocr,
-                decision.Reason,
-                decision.DiffScore,
+                job.KeepReason,
+                job.DiffScore,
                 null,
                 null,
                 structure.Messages,
@@ -460,8 +552,8 @@ internal sealed class CaptureCollector : IDisposable
         }
 
         Diag.Line(
-            $"保留关键帧 [{decision.Reason}] {conv.Kind ?? "?"} 标题=\"{structure.Title}\" 订单号={conv.OrderNo ?? "无"} " +
-            $"diff={decision.DiffScore:0.###} 触发={captureReason} → {image.Path}");
+            $"保留关键帧 [{job.KeepReason}] {conv.Kind ?? "?"} 标题=\"{structure.Title}\" 订单号={conv.OrderNo ?? "无"} " +
+            $"diff={job.DiffScore:0.###} 触发={captureReason} → {image.Path}");
 
         if (Diag.Verbose && structure.Messages.Count > 0)
         {
@@ -490,8 +582,8 @@ internal sealed class CaptureCollector : IDisposable
             image.Path,
             image.Sha256,
             ocr,
-            decision.Reason,
-            decision.DiffScore,
+            job.KeepReason,
+            job.DiffScore,
             conv.Kind,
             conv.OrderNo,
             structure.Messages,
@@ -508,7 +600,7 @@ internal sealed class CaptureCollector : IDisposable
             Bubbles: structure.Bubbles
         );
 
-        _keptCount++;
+        Interlocked.Increment(ref _keptCount);
         _lastError = null;
         _writer.WriteDebugFileSafe(DebugJsonPath(image.Path), payload);
         await _writer.WriteAsync(payload);

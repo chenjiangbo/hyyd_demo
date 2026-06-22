@@ -134,6 +134,18 @@ model Message {
   employeeId       Int      @map("employee_id")
   employee         Employee @relation(fields: [employeeId], references: [id])
 
+  // 跨帧去重 + 时间链还原（sidecar 出结构化、tray 逐帧转发、后端做跨帧处理）：
+  senderType  String    @default("other") @map("sender_type") // self | other | system
+  kind        String?   @map("kind") // system 细分：time | notice | other
+  chatTime    DateTime? @map("chat_time") // 时间锚点折算的真实聊天时间；算不出为 null（透明保留"是否估算"）
+  sortTime    DateTime? @map("sort_time") // 排序键 = chatTime ?? capturedAt；时间线统一按它排
+  contentHash String?   @map("content_hash") // 归一内容哈希
+  dedupeKey   String?   @unique @map("dedupe_key") // 员工+会话名+说话人+内容哈希 → 跨帧去重
+  seenCount   Int       @default(1) @map("seen_count") // 同一条消息被截到的次数
+  firstSeenAt DateTime? @map("first_seen_at") // 首次截到
+  lastSeenAt  DateTime? @map("last_seen_at") // 最近截到
+
+  @@index([orderId, sortTime])
   @@map("messages")
 }
 

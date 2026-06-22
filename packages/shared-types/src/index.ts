@@ -94,6 +94,8 @@ export interface ApiResponse<T> {
 
 export interface ClaimOrderPayload {
   employeeId: number
+  // true=只在我方库标记申领，不下发插件指令、不对泰康做写操作（待申领页"只展示"模式）
+  skipTaikang?: boolean
 }
 
 export interface CreateOrderPayload {
@@ -114,8 +116,14 @@ export interface CreateMessagePayload {
   contentText: string
   screenshotOssKey?: string
   capturedAt: string
-  employeeId: number
+  /** 已登录时可省略：后端优先用鉴权头 X-Employee-Code 对应的员工 */
+  employeeId?: number
   orderId?: number
+  /**
+   * 屏幕上 OCR 抽到的订单号候选（可能含 OCR 误差，如把 1 认成 l）。
+   * 后端用「易混字符归一 + 编辑距离 ≤2」在该员工订单里模糊解析，优先级高于按会话标题抽取。
+   */
+  orderNoCandidate?: string
 }
 
 export interface CreateCallPayload {

@@ -4,14 +4,16 @@
  */
 
 const $ = (id: string) => document.getElementById(id)!;
+const FINGERPRINT_STORAGE_KEY = 'orderFingerprints';
 
 // 后端 WS 地址有默认；员工 ID 不给默认，必须手工填，
 // 否则数据可能错误归到默认员工名下。
-async function getConfig(): Promise<{ backendWsUrl: string; employeeCode: string }> {
-  const r = await chrome.storage.local.get(['backendWsUrl', 'employeeCode']);
+async function getConfig(): Promise<{ backendWsUrl: string; employeeCode: string; collectPaused: boolean }> {
+  const r = await chrome.storage.local.get(['backendWsUrl', 'employeeCode', 'collectPaused']);
   return {
     backendWsUrl: (r.backendWsUrl as string) || 'ws://47.95.14.233:9093/ws',
     employeeCode: ((r.employeeCode as string) || '').trim(),
+    collectPaused: !!r.collectPaused,
   };
 }
 
@@ -31,6 +33,9 @@ async function setConfig() {
 }
 
 async function refreshStatus() {
+  const cfg = await chrome.storage.local.get('collectPaused');
+  renderCollectStatus(!!cfg.collectPaused);
+
   // 后端连接状态：通过 background 查询
   chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (resp) => {
     const wsDot = $('ws-dot');
@@ -62,13 +67,64 @@ async function refreshStatus() {
   }
 }
 
+function renderCollectStatus(paused: boolean) {
+  const collectDot = $('collect-dot');
+  const collectText = $('collect-text');
+  const toggleButton = $('toggle-collect') as HTMLButtonElement;
+  if (paused) {
+    collectDot.className = 'dot dot-amber';
+    collectText.textContent = '已暂停';
+    toggleButton.textContent = '恢复采集';
+  } else {
+    collectDot.className = 'dot dot-green';
+    collectText.textContent = '运行中';
+    toggleButton.textContent = '暂停采集';
+  }
+}
+
+async function toggleCollectPaused() {
+  const r = await chrome.storage.local.get('collectPaused');
+  const next = !r.collectPaused;
+  await chrome.storage.local.set({ collectPaused: next });
+  renderCollectStatus(next);
+}
+
+async function clearLocalCache() {
+  if (!confirm('确定清理本地订单指纹缓存？\n清理后后续采集可能重新拉取订单详情。')) return;
+
+  await chrome.storage.local.remove(FINGERPRINT_STORAGE_KEY);
+
+  const tabs = await chrome.tabs.query({ url: '*://ccm.taikang.com/*' });
+  const tabIds = tabs.map((t) => t.id).filter((id): id is number => typeof id === 'number');
+  await Promise.all(
+    tabIds.map((tabId) => chrome.tabs.sendMessage(tabId, { type: 'CLEAR_LOCAL_CACHE' }))
+  );
+
+  alert(`本地缓存已清理。已通知 ${tabIds.length} 个泰康标签页。`);
+}
+
 (async function init() {
   const config = await getConfig();
   ($('backend-ws-url') as HTMLInputElement).value = config.backendWsUrl;
   ($('employee-code') as HTMLInputElement).value = config.employeeCode;
+  renderCollectStatus(config.collectPaused);
   await refreshStatus();
 
   $('save-config').addEventListener('click', () => {
     setConfig().catch((e) => console.error(e));
+  });
+
+  $('toggle-collect').addEventListener('click', () => {
+    toggleCollectPaused().catch((e) => {
+      console.error(e);
+      alert(`切换采集状态失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('clear-cache').addEventListener('click', () => {
+    clearLocalCache().catch((e) => {
+      console.error(e);
+      alert(`清理本地缓存失败：${e instanceof Error ? e.message : String(e)}`);
+    });
   });
 })();

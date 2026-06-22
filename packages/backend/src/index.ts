@@ -164,15 +164,24 @@ async function start() {
               const orders = message.payload
               if (Array.isArray(orders)) {
                 for (const orderData of orders) {
-                  // 个人池里的订单本就是"已申领到当前员工"的，
-                  // 必须 assign 到 employeeId，否则 trayapp"我的工作台"
-                  // 按 assignedEmployeeCode 过滤会查不到。
+                  // 归属规则：
+                  // - 个人池(pool=personal)：订单已申领到当前员工，assign 到 employeeId，
+                  //   否则 trayapp"我的工作台"按 assignedEmployeeCode 过滤会查不到。
+                  // - 公共池(pool=public)：待申领订单，所有账号都看得到、还没人申领，
+                  //   不归属任何员工。create 时 assignedEmployeeId=null；update 时
+                  //   【不动】assignedEmployeeId，避免把已被别人申领的订单归属抢回 null。
                   //
-                  // status 直接存泰康原文 orderStateName（如"待处理 / 待就诊
-                  // / 待支付 / 已完成"等），trayapp 单列列表当标签展示。
-                  // 旧的"候选/已申领"四态枚举不再使用。
-                  const taikangStatus = orderData.status ?? '未知'
-                  const newState = orderData.orderState != null ? String(orderData.orderState) : null
+                  const pool = orderData.pool === 'public' ? 'public' : 'personal'
+                  const taikangStatus = orderData.taikangOrderStateName ?? orderData.status ?? '未知'
+                  const newState = orderData.taikangOrderState ?? (orderData.orderState != null ? String(orderData.orderState) : null)
+                  const rawJson = {
+                    ...orderData,
+                    taikangOrderState: newState,
+                    taikangOrderStateName: taikangStatus,
+                    taikangCaseStatus: orderData.taikangCaseStatus ?? orderData.caseStatus ?? null,
+                    taikangWaitType: orderData.taikangWaitType ?? null,
+                    taikangServState: orderData.taikangServState ?? null
+                  }
 
                   // 先取旧状态码，用于判断是否需要记一条状态变更历史
                   const existing = await prisma.order.findUnique({
@@ -191,18 +200,18 @@ async function start() {
                     },
                     update: {
                       status: taikangStatus,
-                      assignedEmployeeId: employeeId,
                       orderState: newState,
-                      rawJson: orderData
+                      rawJson,
+                      assignedEmployeeId: pool === 'personal' ? employeeId : null
                     },
                     create: {
                       source: 'taikang',
                       sourceOrderNo: orderData.orderId,
                       customerName: orderData.patientName || '未知',
                       status: taikangStatus,
-                      assignedEmployeeId: employeeId,
+                      assignedEmployeeId: pool === 'personal' ? employeeId : null,
                       orderState: newState,
-                      rawJson: orderData
+                      rawJson
                     }
                   })
 
