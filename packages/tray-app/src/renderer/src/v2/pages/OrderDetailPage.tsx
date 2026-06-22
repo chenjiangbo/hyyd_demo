@@ -8,6 +8,9 @@ import {
   deleteMaterial,
   fetchOrderBrief,
   refreshOrderBrief,
+  fetchCallRecordingUrl,
+  fetchCallTranscript,
+  retranscribeCall,
   type Material,
   type Order,
   type OrderAttachment,
@@ -202,6 +205,7 @@ export default function OrderDetailPage({
                   index={i}
                   current={stage}
                   isLast={i === LIFECYCLE_STAGES.length - 1}
+                  orderId={order.id}
                   timestamp={STAGE_KEYS[i] === 'claimed' ? order.claimedAt || order.createdAt || order.updatedAt : null}
                   events={lifecycleEvents.filter((event) => event.stage === STAGE_KEYS[i])}
                   error={STAGE_KEYS[i] === 'communication' ? [materialsError, captureError, callError].filter(Boolean).join('；') || null : null}
@@ -377,6 +381,7 @@ function LifecycleStep({
   index,
   current,
   isLast,
+  orderId,
   timestamp,
   events,
   error
@@ -386,6 +391,7 @@ function LifecycleStep({
   index: number
   current: number
   isLast: boolean
+  orderId: number
   timestamp: string | null
   events: LifecycleEvent[]
   error: string | null
@@ -444,7 +450,7 @@ function LifecycleStep({
         )}
 
         {stageKey === 'communication' ? (
-          <CommunicationPanel events={events} />
+          <CommunicationPanel events={events} orderId={orderId} />
         ) : images.length > 0 && (
           <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
             {images.slice(0, 8).map((event) => (
@@ -488,7 +494,7 @@ const COMM_TABS: Array<{ key: CommunicationFilter; label: string; icon: string; 
   { key: 'manual', label: '人工录入', icon: 'edit_note', iconColor: 'text-[#f59e0b]' }
 ]
 
-function CommunicationPanel({ events }: { events: LifecycleEvent[] }): React.JSX.Element {
+function CommunicationPanel({ events, orderId }: { events: LifecycleEvent[]; orderId: number }): React.JSX.Element {
   const [active, setActive] = useState<CommunicationFilter>('wechat')
   const [preview, setPreview] = useState<LifecycleEvent | null>(null)
   const channelEvents = events.filter((event) => (event.channel ?? 'manual') === active)
@@ -536,7 +542,7 @@ function CommunicationPanel({ events }: { events: LifecycleEvent[] }): React.JSX
       </div>
 
       {/* 固定在标签/列表下方：综合所有渠道的 AI 总结（非白底） */}
-      <AiSummaryCard events={events} counts={counts} />
+      <AiSummaryCard orderId={orderId} events={events} counts={counts} />
 
       {screenshots.length > 0 && (
         <div className="border-t border-border-subtle bg-white px-3 py-2">
@@ -568,22 +574,50 @@ function CommunicationPanel({ events }: { events: LifecycleEvent[] }): React.JSX
   )
 }
 
-// 综合所有渠道的 AI 总结卡（淡紫底，固定在沟通区下方）。AI 接入前先用确定性概览占位。
+// 综合所有渠道的 AI 总结卡（淡紫底，固定在沟通区下方）。
+// 读后端「订单滚动简报」(brief.summary)——和右侧「AI 关键信息」是同一次 LLM 调用的两个展示。
+// 简报由后端自动触发（静默5分钟 / 攒够10条微信企微消息 / 通话转写完成 → 全量重跑），这里只读不触发。
 function AiSummaryCard({
+  orderId,
   events,
   counts
 }: {
+  orderId: number
   events: LifecycleEvent[]
   counts: { wechat: number; wxwork: number; call: number; manual: number }
 }): React.JSX.Element {
+  const [brief, setBrief] = useState<OrderBrief | null>(null)
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+
+  useEffect(() => {
+    if (orderId <= 0) return
+    let alive = true
+    fetchOrderBrief(orderId)
+      .then((r) => {
+        if (!alive) return
+        setBrief(r.brief)
+        setUpdatedAt(r.updatedAt)
+      })
+      .catch(() => {/* 简报读取失败不打扰，保持占位 */})
+    return () => {
+      alive = false
+    }
+  }, [orderId])
+
+  const doRefresh = (): void => {
+    if (orderId <= 0 || refreshing) return
+    setRefreshing(true)
+    refreshOrderBrief(orderId)
+      .then((b) => {
+        setBrief(b)
+        setUpdatedAt(new Date().toISOString())
+      })
+      .catch(() => {/* 忽略，保持原状 */})
+      .finally(() => setRefreshing(false))
+  }
+
   const textEvents = events.filter((event) => event.kind !== 'image')
-  const sorted = [...textEvents].sort(
-    (a, b) => new Date(a.occurredAt).getTime() - new Date(b.occurredAt).getTime()
-  )
-  const range =
-    sorted.length > 0
-      ? `${formatDateTime(sorted[0].occurredAt)} ~ ${formatDateTime(sorted[sorted.length - 1].occurredAt)}`
-      : null
 
   return (
     <div className="border-t border-ai-purple/20 bg-ai-purple/5 px-3 py-3">
@@ -591,15 +625,44 @@ function AiSummaryCard({
         <span className="material-symbols-outlined" style={{ fontSize: '17px' }}>smart_toy</span>
         AI 沟通总结
         <span className="ml-2 text-[11px] font-normal text-text-muted">（综合全部渠道）</span>
+        {orderId > 0 && (
+          <button
+            type="button"
+            onClick={doRefresh}
+            disabled={refreshing}
+            className="ml-auto text-[11px] font-normal text-ai-purple hover:underline disabled:opacity-50"
+          >
+            {refreshing ? '生成中…' : '刷新'}
+          </button>
+        )}
       </div>
-      <p className="mt-1.5 text-body-sm text-text-muted leading-relaxed">
-        AI 总结即将接入——将综合微信 / 企微 / 电话 / 人工录入，自动提炼本订单的沟通要点与下一步。完整简报见右侧「AI 关键信息」。
-      </p>
-      <div className="mt-2 text-body-sm text-text-main">
-        当前共 {textEvents.length} 条沟通：微信 {counts.wechat} · 企微 {counts.wxwork} · 电话 {counts.call} · 人工录入{' '}
-        {counts.manual}
-        {range && <span className="text-text-muted">，时间范围 {range}</span>}
-      </div>
+
+      {brief?.summary ? (
+        <>
+          <p className="mt-1.5 text-body-sm text-text-main leading-relaxed whitespace-pre-wrap">{brief.summary}</p>
+          {brief.nextActions.length > 0 && (
+            <div className="mt-2 text-body-sm text-text-main">
+              <span className="text-text-muted">下一步：</span>
+              {brief.nextActions.join('；')}
+            </div>
+          )}
+          {updatedAt && (
+            <div className="mt-1.5 text-[11px] text-text-muted">
+              更新于 {formatDateTime(updatedAt)}{brief.model ? ` · ${brief.model}` : ''} · 详见右侧「AI 关键信息」
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <p className="mt-1.5 text-body-sm text-text-muted leading-relaxed">
+            暂无 AI 总结。攒够沟通内容或通话转写完成后会自动生成，也可点右上角「刷新」立即生成。
+          </p>
+          <div className="mt-2 text-body-sm text-text-main">
+            当前共 {textEvents.length} 条沟通：微信 {counts.wechat} · 企微 {counts.wxwork} · 电话 {counts.call} · 人工录入{' '}
+            {counts.manual}
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -641,10 +704,58 @@ function CommunicationTab({
   )
 }
 
+const CALL_POLL_MS = 5000
+
 function CallTimelineItem({ event }: { event: LifecycleEvent }): React.JSX.Element {
   const call = event.call
+  // 转写状态/文本本地维护：打开时用聚合带来的初值，转写中则轮询刷新（不用重开详情）
+  const [asrStatus, setAsrStatus] = useState<string>(call?.asrStatus ?? 'no_recording')
+  const [asrText, setAsrText] = useState<string | null>(call?.asrText ?? null)
+  const [recordingUrl, setRecordingUrl] = useState<string | null>(null)
+  const [retrying, setRetrying] = useState(false)
+  const callId = call?.id ?? 0
+  const hasRecording = !!call?.recordingOssKey
+
+  // 录音 URL（有录音才拉，给 <audio> 播放）
+  useEffect(() => {
+    if (!hasRecording || callId <= 0) return
+    let alive = true
+    fetchCallRecordingUrl(callId)
+      .then((r) => alive && setRecordingUrl(r.url))
+      .catch(() => {/* 拉不到 URL 不打扰 */})
+    return () => {
+      alive = false
+    }
+  }, [callId, hasRecording])
+
+  // 转写中 → 轮询直到 done/failed
+  useEffect(() => {
+    if (callId <= 0) return
+    if (asrStatus !== 'pending' && asrStatus !== 'processing') return
+    const t = setInterval(() => {
+      fetchCallTranscript(callId)
+        .then((r) => {
+          setAsrStatus(r.asrStatus)
+          setAsrText(r.asrText)
+        })
+        .catch(() => {/* 静默重试 */})
+    }, CALL_POLL_MS)
+    return () => clearInterval(t)
+  }, [callId, asrStatus])
+
+  const doRetry = (): void => {
+    if (callId <= 0 || retrying) return
+    setRetrying(true)
+    retranscribeCall(callId)
+      .then(() => setAsrStatus('pending'))
+      .catch(() => {/* 忽略 */})
+      .finally(() => setRetrying(false))
+  }
+
   if (!call) return <ChatBubble event={event} />
   const answered = call.callStatus === 'answered'
+  const transcribing = asrStatus === 'pending' || asrStatus === 'processing'
+
   return (
     <div className="flex justify-center">
       <div className="w-full rounded-lg border border-border-subtle bg-white px-3 py-2 shadow-sm">
@@ -660,18 +771,40 @@ function CallTimelineItem({ event }: { event: LifecycleEvent }): React.JSX.Eleme
               </div>
             </div>
           </div>
-          <div className="shrink-0 text-[11px] text-text-muted">
-            {call.recordingOssKey ? '有录音' : '无录音'} · {asrStatusLabel(call.asrStatus)}
+          <div className="shrink-0 flex items-center gap-1.5 text-[11px] text-text-muted">
+            <span className={transcribing ? 'text-amber-600 animate-pulse' : ''}>
+              {hasRecording ? '有录音' : '无录音'} · {asrStatusLabel(asrStatus)}
+            </span>
+            {asrStatus === 'failed' && (
+              <button
+                type="button"
+                onClick={doRetry}
+                disabled={retrying}
+                className="text-primary hover:underline disabled:opacity-50"
+              >
+                {retrying ? '提交中…' : '重新转写'}
+              </button>
+            )}
           </div>
         </div>
-        {call.asrText && (
+
+        {/* 录音播放器：controlsList 禁下载，避免误下客户隐私 */}
+        {hasRecording && recordingUrl && (
+          <audio controls preload="metadata" controlsList="nodownload" className="mt-2 w-full h-9">
+            <source src={recordingUrl} />
+          </audio>
+        )}
+
+        {asrText ? (
           <details className="mt-2">
             <summary className="cursor-pointer text-[11px] text-primary select-none">查看转写文本</summary>
             <p className="mt-1 max-h-32 overflow-y-auto text-body-sm text-text-muted whitespace-pre-wrap break-words">
-              {call.asrText}
+              {asrText}
             </p>
           </details>
-        )}
+        ) : transcribing && hasRecording ? (
+          <div className="mt-2 text-[11px] text-text-muted">转写中，完成后自动显示…</div>
+        ) : null}
       </div>
     </div>
   )

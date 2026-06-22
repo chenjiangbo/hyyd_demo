@@ -94,8 +94,14 @@ function emptyBrief(): OrderBrief {
 }
 
 /**
- * 刷新某订单简报（增量）。
- * @param opts.force 忽略"无新内容"的预过滤，强制重算（手动按钮可传）
+ * 刷新某订单简报。
+ *
+ * 全量重算：每次都把该订单**全部**的微信/企微消息 + 通话/录音转写 + 手工补录一起喂给 LLM，
+ * 不做增量喂（信息量不大，全量更准，也不会出现"只总结了新增那几条"的问题）。
+ * `briefLastMsgId/CallId/MaterialId` 仅作"上次跑到哪了"的记号——只用来判断"自上次以来有没有新内容"
+ * （扫描器据此避免对同一状态重复跑），不参与喂给 LLM 的范围。
+ *
+ * @param opts.force 忽略"自上次以来无新内容"的判断，强制重算（手动按钮 / 转写完成后可传）
  */
 export async function refreshOrderBrief(
   prisma: PrismaClient,
@@ -106,40 +112,45 @@ export async function refreshOrderBrief(
   const order = await prisma.order.findUnique({ where: { id: orderId } })
   if (!order) return null
 
+  // 上次跑到哪了（仅用于判断"有没有新内容"，不用于裁剪喂给 LLM 的范围）
   const lastMsgId = order.briefLastMsgId ?? 0
   const lastCallId = order.briefLastCallId ?? 0
   const lastMaterialId = order.briefLastMaterialId ?? 0
-  const prevBrief = (order.aiBriefJson as OrderBrief | null) ?? null
 
+  // 全量取：该订单名下所有消息/通话/手工补录
   const msgs = await prisma.message.findMany({
-    where: { orderId, id: { gt: lastMsgId } },
+    where: { orderId },
     orderBy: { id: 'asc' }
   })
   const calls = await prisma.call.findMany({
-    where: { orderId, id: { gt: lastCallId } },
+    where: { orderId },
     orderBy: { id: 'asc' }
   })
   // 手工补录素材（专员主动记录，补无感采集之漏）
   const mats = await prisma.material.findMany({
-    where: { orderId, id: { gt: lastMaterialId } },
+    where: { orderId },
     orderBy: { id: 'asc' }
   })
 
-  // 便宜预过滤：没有"有内容"的新消息/通话/手工补录 → 不调 AI
-  const hasContent =
-    msgs.some((m) => (m.contentText ?? '').trim().length > 0) ||
-    calls.some((c) => (c.asrText ?? '').trim().length > 0 || (c.durationSec ?? 0) > 0) ||
-    mats.some((m) => m.type === 'image' || (m.textContent ?? '').trim().length > 0)
-  if (!hasContent && !opts.force) {
-    // 有新行但都没营养 → 不调 AI，但推进水位，避免扫描器每轮重复评估同一单
-    if (msgs.length > 0 || calls.length > 0 || mats.length > 0) {
+  const maxMsgId = msgs.length > 0 ? msgs[msgs.length - 1].id : lastMsgId
+  const maxCallId = calls.length > 0 ? calls[calls.length - 1].id : lastCallId
+  const maxMaterialId = mats.length > 0 ? mats[mats.length - 1].id : lastMaterialId
+
+  // 自上次跑之后有没有"有内容的"新东西（便宜预过滤：纯时间戳/系统提示/空转写不算）
+  const hasNewContent =
+    msgs.some((m) => m.id > lastMsgId && (m.contentText ?? '').trim().length > 0) ||
+    calls.some((c) => c.id > lastCallId && ((c.asrText ?? '').trim().length > 0 || (c.durationSec ?? 0) > 0)) ||
+    mats.some((m) => m.id > lastMaterialId && (m.type === 'image' || (m.textContent ?? '').trim().length > 0))
+
+  const prevBrief = (order.aiBriefJson as OrderBrief | null) ?? null
+
+  if (!hasNewContent && !opts.force) {
+    // 自上次以来没有有营养的新内容 → 不调 LLM，但把记号推进到最新，避免扫描器每轮重复评估同一单
+    const hasNewRows = maxMsgId > lastMsgId || maxCallId > lastCallId || maxMaterialId > lastMaterialId
+    if (hasNewRows) {
       await prisma.order.update({
         where: { id: orderId },
-        data: {
-          briefLastMsgId: msgs.length > 0 ? msgs[msgs.length - 1].id : lastMsgId,
-          briefLastCallId: calls.length > 0 ? calls[calls.length - 1].id : lastCallId,
-          briefLastMaterialId: mats.length > 0 ? mats[mats.length - 1].id : lastMaterialId
-        }
+        data: { briefLastMsgId: maxMsgId, briefLastCallId: maxCallId, briefLastMaterialId: maxMaterialId }
       })
     }
     return { brief: prevBrief, skipped: true, reason: 'no_new_content' }
@@ -180,13 +191,11 @@ export async function refreshOrderBrief(
     createdAt: m.createdAt
   }))
 
-  const res = await buildOrderBrief(ctx, prevBrief, briefMsgs, briefCalls, briefMats)
+  // 全量重算：prevBrief 传 null，让 LLM 看到全部对话后重新产出整份简报，不做增量合并。
+  void prevBrief
+  const res = await buildOrderBrief(ctx, null, briefMsgs, briefCalls, briefMats)
 
-  const newLastMsgId = msgs.length > 0 ? msgs[msgs.length - 1].id : lastMsgId
-  const newLastCallId = calls.length > 0 ? calls[calls.length - 1].id : lastCallId
-  const newLastMaterialId = mats.length > 0 ? mats[mats.length - 1].id : lastMaterialId
-
-  // 存储：简报字段 + 水位 + 模型，便于前端展示与追溯
+  // 存储：简报字段 + 记号(本次跑到的最新 id) + 模型，便于前端展示与追溯
   const stored = {
     summary: res.summary,
     stage: res.stage,
@@ -196,7 +205,7 @@ export async function refreshOrderBrief(
     risks: res.risks,
     keyInfo: res.keyInfo,
     model: res.model,
-    updatedFrom: { lastMessageId: newLastMsgId, lastCallId: newLastCallId, lastMaterialId: newLastMaterialId }
+    updatedFrom: { lastMessageId: maxMsgId, lastCallId: maxCallId, lastMaterialId: maxMaterialId }
   }
 
   await prisma.order.update({
@@ -204,9 +213,9 @@ export async function refreshOrderBrief(
     data: {
       aiBriefJson: stored,
       briefUpdatedAt: new Date(),
-      briefLastMsgId: newLastMsgId,
-      briefLastCallId: newLastCallId,
-      briefLastMaterialId: newLastMaterialId
+      briefLastMsgId: maxMsgId,
+      briefLastCallId: maxCallId,
+      briefLastMaterialId: maxMaterialId
     }
   })
 

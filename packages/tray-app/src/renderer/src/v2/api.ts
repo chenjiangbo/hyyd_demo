@@ -256,6 +256,31 @@ export function refreshOrderBrief(orderId: number): Promise<OrderBrief> {
   return authedSend<OrderBrief>(`/api/v1/orders/${orderId}/brief/refresh`, 'POST', {})
 }
 
+// ─── 通话录音：转写 + 播放 ───────────────────────────────
+export interface CallTranscript {
+  id: number
+  asrStatus: string
+  asrText: string | null
+  asrFinishedAt: string | null
+  dashscopeTaskId: string | null
+  asrResultJson: unknown
+}
+
+/** 录音 presigned GET URL（给 <audio> 直拉播放） */
+export function fetchCallRecordingUrl(callId: number): Promise<{ url: string; expiresIn: number }> {
+  return authedGet<{ url: string; expiresIn: number }>(`/api/v1/calls/${callId}/recording-url`)
+}
+
+/** 通话转写文本及状态（轮询用） */
+export function fetchCallTranscript(callId: number): Promise<CallTranscript> {
+  return authedGet<CallTranscript>(`/api/v1/calls/${callId}/transcript`)
+}
+
+/** 手动触发重新转写 */
+export function retranscribeCall(callId: number): Promise<{ callId: number; triggered: boolean }> {
+  return authedSend(`/api/v1/calls/${callId}/retranscribe`, 'POST', {})
+}
+
 // ─── 素材（过程数据）─────────────────────────────────────
 export interface Material {
   id: number

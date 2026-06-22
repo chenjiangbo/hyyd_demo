@@ -1,11 +1,13 @@
 /**
  * 订单简报自动触发扫描器。
  *
- * 每 TICK 扫一遍：找"水位之后有新消息/通话(新内容)"且满足触发条件的订单 → 调 refreshOrderBrief。
+ * 每 TICK 扫一遍：找"自上次跑简报以来有新内容"且满足触发条件的订单 → 调 refreshOrderBrief（全量重算）。
  * 触发条件（任一）：
- *   - 静默：最后一条新内容距今 ≥ SILENCE_MIN 分钟（这阵聊完了）
- *   - 阈值：水位之后新增 ≥ THRESHOLD_COUNT 条（聊得多，攒够就抽）
- * 便宜预过滤 + "无营养则推进水位"在 refreshOrderBrief 内部。
+ *   - 静默：最后一条消息/通话距今 ≥ SILENCE_MIN 分钟（这阵聊完了）。跑完后记号推进到最新，
+ *     没有新内容进来就不会再触发，天然不重复。
+ *   - 阈值：自上次跑以来新增 ≥ THRESHOLD_COUNT 条**有内容的微信/企微消息**（聊得多，攒够就跑一次）。
+ * 注：通话录音转写完成会**立即**触发一次（在 asr/transcribeScheduler 里直接调 refreshOrderBrief），不靠本扫描器。
+ * 便宜预过滤（纯时间戳/系统提示/空转写不算数）+ "无营养则只推进记号"在 refreshOrderBrief 内部。
  * 设计见 docs/设计_订单AI滚动简报.md。
  */
 import type { PrismaClient } from '@prisma/client'
@@ -117,15 +119,20 @@ async function tick(prisma: PrismaClient, minio: Minio.Client): Promise<void> {
       )
       const silent = lastAt > 0 && lastAt <= silenceCutoff.getTime()
       if (silent) {
+        // 静默够久 → 跑一次。跑完记号推进到最新，没新内容就不会再被选中（不重复）。
         candidates.push(o.id)
         continue
       }
-      // 未静默 → 看是否攒够 K 条新内容
-      const newCount =
-        (await prisma.message.count({ where: { orderId: o.id, id: { gt: wmMsg } } })) +
-        (await prisma.call.count({ where: { orderId: o.id, id: { gt: wmCall } } })) +
-        (await prisma.material.count({ where: { orderId: o.id, id: { gt: wmMat } } }))
-      if (newCount >= THRESHOLD_COUNT) candidates.push(o.id)
+      // 未静默 → 看是否攒够 K 条**有内容的微信/企微消息**（系统/空消息不计入）
+      const newMsgCount = await prisma.message.count({
+        where: {
+          orderId: o.id,
+          id: { gt: wmMsg },
+          channel: { in: ['wechat', 'wxwork'] },
+          contentText: { not: '' }
+        }
+      })
+      if (newMsgCount >= THRESHOLD_COUNT) candidates.push(o.id)
     }
 
     let done = 0
