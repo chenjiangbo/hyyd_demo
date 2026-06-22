@@ -113,6 +113,11 @@ export interface Presence {
   extConnected: boolean
   taikangTabOpen: boolean
   trackingPoolPageActive: boolean
+  mobileOnline?: boolean
+  mobileState?: 'active' | 'background' | 'stale'
+  mobileOnlineReason?: 'heartbeat' | 'recent_call' | null
+  mobileLastSeenAt?: string | null
+  mobileHeartbeatSource?: string | null
   stale: boolean
   lastSeenAt: string | null
   tokenOk: boolean | null

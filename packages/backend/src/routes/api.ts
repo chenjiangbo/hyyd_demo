@@ -62,6 +62,23 @@ export const presenceMap = new Map<number, PresenceInfo>()
 // 员工ID -> 最近一次 /me/presence 命中的毫秒时间戳
 export const trayRestSeenMap = new Map<number, number>()
 
+// 移动端 App 没有可靠常驻 WS：前台服务高频上报，WorkManager 至少每 15 分钟执行一次。
+export const mobileSeenMap = new Map<number, { lastSeenAt: number; source: string }>()
+const MOBILE_ACTIVE_WINDOW_MS = 2 * 60_000
+const MOBILE_BACKGROUND_WINDOW_MS = 20 * 60_000
+
+function markMobileSeen(employeeId: number, source: string) {
+  mobileSeenMap.set(employeeId, { lastSeenAt: Date.now(), source })
+}
+
+type MatchedOrderPhone = {
+  id: number
+  source_order_no: string
+  customer_name: string | null
+  status: string | null
+  updated_at: Date
+}
+
 export function normalizeEmployeeCode(value: unknown): string {
   if (typeof value !== 'string') return ''
   return value.trim()
@@ -88,6 +105,28 @@ export function registerApiRoutes(
   minioPublicClient: Minio.Client = minioClient
 ) {
   const env = getEnv()
+
+  async function matchOrderByPhone(phone: string): Promise<MatchedOrderPhone | null> {
+    const normPhone = (phone ?? '').replace(/\D/g, '')
+    if (!normPhone) return null
+
+    const matched = await prisma.$queryRaw<MatchedOrderPhone[]>`
+      SELECT id, source_order_no, customer_name, status, updated_at
+        FROM orders
+       WHERE (
+           regexp_replace(COALESCE(customer_phone, ''), '\D', '', 'g') = ${normPhone}
+           OR EXISTS (
+             SELECT 1
+               FROM jsonb_each_text(COALESCE(detail_json->'recommendations', '{}'::jsonb)) AS rec(key, value)
+              WHERE rec.key ~* '(phone|mobile)'
+                AND regexp_replace(COALESCE(rec.value, ''), '\D', '', 'g') = ${normPhone}
+           )
+         )
+       ORDER BY updated_at DESC
+       LIMIT 1
+    `
+    return matched[0] ?? null
+  }
   
   // 1. 鉴权 Hook
   fastify.addHook('preHandler', async (request: FastifyRequest, reply: FastifyReply) => {
@@ -142,6 +181,32 @@ export function registerApiRoutes(
     const conn = activeConnections.get(request.employee.id)
     const HEARTBEAT_TIMEOUT_MS = 30_000
 
+    // 移动端状态：前台联系 2 分钟内为活跃；WorkManager/其他心跳 20 分钟内为后台正常。
+    const mobileSeen = mobileSeenMap.get(request.employee.id)
+    const mobileAge = mobileSeen ? Date.now() - mobileSeen.lastSeenAt : Number.POSITIVE_INFINITY
+    const isWorkerHeartbeat = mobileSeen?.source === 'work_manager'
+    let mobileState: 'active' | 'background' | 'stale' =
+      mobileAge <= MOBILE_ACTIVE_WINDOW_MS && !isWorkerHeartbeat
+        ? 'active'
+        : mobileAge <= MOBILE_BACKGROUND_WINDOW_MS
+          ? 'background'
+          : 'stale'
+    let mobileOnlineReason: 'heartbeat' | 'recent_call' | null =
+      mobileState === 'stale' ? null : 'heartbeat'
+    if (mobileState === 'stale') {
+      const recentCall = await prisma.call.findFirst({
+        where: { employeeId: request.employee.id, startedAt: { gte: new Date(Date.now() - 10 * 60_000) } },
+        select: { id: true }
+      })
+      if (recentCall) {
+        mobileState = 'background'
+        mobileOnlineReason = 'recent_call'
+      }
+    }
+    const mobileOnline = mobileState !== 'stale'
+    const mobileLastSeenAt = mobileSeen ? new Date(mobileSeen.lastSeenAt).toISOString() : null
+    const mobileHeartbeatSource = mobileSeen?.source ?? null
+
     if (!info) {
       // 插件从未上报过 presence
       return reply.send({
@@ -149,6 +214,11 @@ export function registerApiRoutes(
           extConnected: !!conn?.ext,
           taikangTabOpen: false,
           trackingPoolPageActive: false,
+          mobileOnline,
+          mobileState,
+          mobileOnlineReason,
+          mobileLastSeenAt,
+          mobileHeartbeatSource,
           stale: true,
           lastSeenAt: null
         }
@@ -161,6 +231,11 @@ export function registerApiRoutes(
         extConnected: !!conn?.ext,
         taikangTabOpen: info.taikangTabOpen,
         trackingPoolPageActive: info.trackingPoolPageActive,
+        mobileOnline,
+        mobileState,
+        mobileOnlineReason,
+        mobileLastSeenAt,
+        mobileHeartbeatSource,
         stale,
         lastSeenAt: new Date(info.lastSeenAt).toISOString(),
         tokenOk: info.tokenOk ?? null,
@@ -170,6 +245,14 @@ export function registerApiRoutes(
           : null
       }
     })
+  })
+
+  // 2.6 移动端 App 在线心跳：移动端没有 WS，定时 POST 这里上报在线（建议 20~30s 一次）。
+  fastify.post<{ Body: { source?: string } }>('/api/v1/me/mobile-heartbeat', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const source = String(request.body?.source ?? 'heartbeat').trim().slice(0, 50) || 'heartbeat'
+    markMobileSeen(request.employee.id, source)
+    return reply.send({ data: { ok: true } })
   })
 
   // 3. 上报/同步订单 POST /api/v1/orders
@@ -999,39 +1082,108 @@ export function registerApiRoutes(
     }
   })
 
+  // 8.8 移动端通话号码预匹配 POST /api/v1/calls/match
+  // 隐私规则：移动端先只提交号码；只有命中任一订单联系人电话时，才允许继续上传完整通话记录。
+  fastify.post<{ Body: { phone?: string } }>('/api/v1/calls/match', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const phone = request.body?.phone ?? ''
+    try {
+      markMobileSeen(request.employee.id, 'phone_match')
+      const matched = await matchOrderByPhone(phone)
+      if (!matched) {
+        return reply.send({ data: { matched: false } })
+      }
+      return reply.send({
+        data: {
+          matched: true,
+          order: {
+            id: matched.id,
+            sourceOrderNo: matched.source_order_no,
+            customerName: matched.customer_name,
+            status: matched.status
+          }
+        }
+      })
+    } catch (err: any) {
+      fastify.log.error('通话号码匹配失败:', err)
+      return reply.status(500).send({ error: '通话号码匹配失败: ' + err.message })
+    }
+  })
+
+  // 8.9 移动端录音反查通话 POST /api/v1/calls/lookup
+  // App 长时间未运行或本地通话缓存被裁剪后，仍可按当前员工 + 号码 + 时间找回 callId。
+  fastify.post<{ Body: { phone?: string; startedAtMillis?: number } }>(
+    '/api/v1/calls/lookup',
+    async (request, reply) => {
+      if (!request.employee) return reply.status(401).send({ error: '未登录' })
+      const phone = (request.body?.phone ?? '').replace(/\D/g, '')
+      const startedAtMillis = Number(request.body?.startedAtMillis)
+      if (!phone || !Number.isFinite(startedAtMillis) || startedAtMillis <= 0) {
+        return reply.status(400).send({ error: 'phone 和 startedAtMillis 必填且有效' })
+      }
+
+      const windowMs = 10 * 60_000
+      const candidates = await prisma.call.findMany({
+        where: {
+          employeeId: request.employee.id,
+          startedAt: {
+            gte: new Date(startedAtMillis - windowMs),
+            lte: new Date(startedAtMillis + windowMs)
+          }
+        }
+      })
+      const matched = candidates
+        .filter((call) => call.phone.replace(/\D/g, '') === phone)
+        .sort(
+          (a, b) =>
+            Math.abs(a.startedAt.getTime() - startedAtMillis) -
+            Math.abs(b.startedAt.getTime() - startedAtMillis)
+        )[0]
+
+      return reply.send({ data: matched ?? null })
+    }
+  )
+
   // 9. 上报通话记录 POST /api/v1/calls
   fastify.post<{ Body: CreateCallPayload }>('/api/v1/calls', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
     const employeeId = request.employee.id
-    const { phone, contactName, direction, callStatus, durationSec, startedAt, orderId } = request.body
+      const { phone, contactName, direction, callStatus, durationSec, startedAt, orderId } = request.body
 
-    try {
-      let finalOrderId = orderId ?? null
+      try {
+        markMobileSeen(employeeId, 'call_upload')
+        let finalOrderId = orderId ?? null
 
-      // 按手机号匹配订单：customer_phone (列) / recommendations.paMobile / recommendations.ecpPhone 三处任一命中。
-      // 状态不做过滤，泰康原文 status 类型很多（"待处理 / 待分配医学陪诊 / 已完成"...），
-      // 旧代码的 status IN ('已申领','进行中') 在新数据下永远 false。
-      // 多条命中时取 updated_at 最新那条作 Call.orderId 兜底；GET /calls 会再列全部匹配。
-      if (!finalOrderId) {
-        const normPhone = (phone ?? '').replace(/\D/g, '')
-        if (normPhone) {
-          const matched = await prisma.$queryRaw<Array<{ id: number; source_order_no: string }>>`
-            SELECT id, source_order_no
-              FROM orders
-             WHERE assigned_employee_id = ${employeeId}
-               AND (
-                 regexp_replace(COALESCE(customer_phone, ''), '\D', '', 'g') = ${normPhone}
-                 OR regexp_replace(COALESCE(detail_json->'recommendations'->>'paMobile', ''), '\D', '', 'g') = ${normPhone}
-                 OR regexp_replace(COALESCE(detail_json->'recommendations'->>'ecpPhone', ''), '\D', '', 'g') = ${normPhone}
-               )
-             ORDER BY updated_at DESC
-             LIMIT 1
-          `
-          if (matched[0]) {
-            finalOrderId = matched[0].id
-            fastify.log.info(`自动关联通话至订单: ${matched[0].source_order_no} (id=${finalOrderId})`)
-          }
+      // 隐私规则：通话必须命中任一订单联系人电话才入库。
+      // 未命中时拒绝保存，避免员工私人电话进入后端。
+      const matched = await matchOrderByPhone(phone)
+      if (!matched) {
+        return reply.status(422).send({ error: '通话号码未命中任何订单联系人，已拒绝入库' })
+      }
+      if (finalOrderId && finalOrderId !== matched.id) {
+        return reply.status(422).send({ error: '通话号码与指定订单不匹配，已拒绝入库' })
+      }
+      finalOrderId = matched.id
+      fastify.log.info(`自动关联通话至订单: ${matched.source_order_no} (id=${finalOrderId})`)
+
+      const startedAtDate = new Date(startedAt)
+      const existingCall = await prisma.call.findFirst({
+        where: {
+          employeeId,
+          phone,
+          direction,
+          startedAt: startedAtDate
         }
+      })
+      if (existingCall) {
+        const idempotentCall =
+          existingCall.orderId == null
+            ? await prisma.call.update({
+                where: { id: existingCall.id },
+                data: { orderId: finalOrderId, contactName: existingCall.contactName ?? contactName ?? null }
+              })
+            : existingCall
+        return reply.send({ data: idempotentCall })
       }
 
       const call = await prisma.call.create({
@@ -1043,7 +1195,7 @@ export function registerApiRoutes(
           direction,
           callStatus,
           durationSec,
-          startedAt: new Date(startedAt),
+          startedAt: startedAtDate,
           asrStatus: 'no_recording'
         }
       })

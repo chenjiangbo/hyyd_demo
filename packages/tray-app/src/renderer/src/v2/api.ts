@@ -165,6 +165,27 @@ export function fetchOrderAggregate(orderId: number): Promise<OrderAggregateResp
   return authedGet<OrderAggregateResponse>(`/api/v1/orders/${orderId}/aggregate`)
 }
 
+// ─── 在线状态（状态栏用）────────────────────────────────
+export interface Presence {
+  extConnected: boolean // Chrome 插件 WebSocket 是否连着
+  taikangTabOpen: boolean // 插件是否打开了泰康页
+  mobileOnline?: boolean // 移动端 App 是否在线（心跳/近期通话上传）
+  mobileState?: 'active' | 'background' | 'stale'
+  mobileOnlineReason?: 'heartbeat' | 'recent_call' | null
+  mobileLastSeenAt?: string | null
+  mobileHeartbeatSource?: string | null
+  stale: boolean
+  lastSeenAt: string | null
+  tokenOk?: boolean | null // 泰康登录保活
+  tokenReason?: string | null
+  tokenLastCheckAt?: string | null
+}
+
+/** 拉当前员工在线状态（也兼作后端健康探测：能拿到=后端在线） */
+export function fetchPresence(): Promise<Presence> {
+  return authedGet<Presence>('/api/v1/me/presence')
+}
+
 // ─── AI 滚动简报 ────────────────────────────────────────
 // 综合微信/企微消息 + 通话/录音转写，由后端 LLM 产出。给员工的现状/阶段/待办/风险 + 回填关键信息。
 export interface OrderBrief {
