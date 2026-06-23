@@ -19,7 +19,10 @@ import type {
   CallItem,
   OrderListItem,
   OrderFull,
-  MaterialOrderGroup
+  MaterialOrderGroup,
+  CaptureQuality,
+  CaptureHealthRow,
+  UnmatchedRefItem
 } from './types'
 
 // 把筛选对象拼成 query string（跳过空值）。
@@ -99,6 +102,17 @@ export const adminApi = {
   },
   dashboardAlerts() {
     return request<AdminAlert[]>('/api/v1/admin/dashboard/alerts')
+  },
+  captureQuality() {
+    return request<CaptureQuality>('/api/v1/admin/dashboard/capture-quality')
+  },
+
+  // ───── 采集监控 ─────
+  captureHealth() {
+    return request<CaptureHealthRow[]>('/api/v1/admin/capture/health')
+  },
+  unmatchedRefs(status = 'pending') {
+    return request<UnmatchedRefItem[]>(`/api/v1/admin/unmatched-order-refs${qs({ status })}`)
   },
 
   // ───── 员工 ─────

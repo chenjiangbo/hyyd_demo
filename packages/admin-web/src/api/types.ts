@@ -5,6 +5,74 @@ export interface DashboardSummary {
   materials: { total: number; text: number; image: number }
   calls: { total: number; done: number; doneRate: number }
   employees: { online: number; total: number }
+  messages: { total: number; self: number; other: number }
+  unmatchedPending: number
+}
+
+// 采集质量 + 简报健康（/dashboard/capture-quality）
+export interface CaptureQuality {
+  quality: {
+    messagesToday: number
+    dedupHit: number // 跨帧去重命中（被合并的重复截取次数）
+    chatTimeMissing: number // 今日算不出真实聊天时间的非系统消息条数
+    image: { today: number; processed: number; successRate: number | null }
+  }
+  brief: {
+    ordersWithMessages: number
+    generated: number
+    stale: number // 简报水位落后于最新消息
+    missing: number // 有消息但还没生成简报
+  }
+}
+
+// 每员工采集健康（/capture/health）
+export interface CaptureHealthRow {
+  employeeId: number
+  name: string
+  online: boolean
+  extOnline: boolean
+  trayOnline: boolean
+  lastSeenAt: string | null
+  tokenOk: boolean | null
+  lastCaptureAt: string | null
+  messages: { hour: number; today: number }
+  materials: { hour: number; today: number }
+  calls: { hour: number; today: number }
+}
+
+// 待确认订单号（/unmatched-order-refs）
+export interface UnmatchedRefItem {
+  id: number
+  employee: { id: number; name: string } | null
+  channel: string
+  conversationName: string
+  candidate: string
+  candidateKind: string
+  reason: string // no_match | ambiguous | name_mismatch
+  bestDist: number | null
+  candidateOrders: Array<{ id: number; sourceOrderNo: string; customerName: string }>
+  seenCount: number
+  status: string
+  capturedAt: string
+  createdAt: string
+  updatedAt: string
+  screenshotUrl: string | null
+}
+
+// 订单详情里的结构化消息
+export interface OrderMessage {
+  id: number
+  channel: string
+  conversationName: string
+  senderName: string | null
+  senderType: string // self | other | system
+  kind: string | null
+  contentText: string
+  chatTime: string | null
+  sortTime: string | null
+  capturedAt: string
+  seenCount: number
+  screenshotUrl: string | null
 }
 
 export interface TimeseriesPoint {
@@ -207,6 +275,14 @@ export interface OrderFull {
     employee: { id: number; name: string; token: string } | null
   }
   recommendations: Record<string, any> | null
+  brief: {
+    json: Record<string, any> | null
+    updatedAt: string | null
+    lastMsgId: number | null
+    lastCallId: number | null
+    lastMaterialId: number | null
+  }
+  messages: OrderMessage[]
   statusHistory: Array<{
     id: number
     orderState: string | null

@@ -9,6 +9,7 @@ import { Lightbox } from '../components/Lightbox'
 import { fmtTime, fmtTimeFull, fmtBytes, fmtDuration } from '../lib/format'
 import { ORDER_FIELD_GROUPS, KNOWN_KEYS, isEmptyVal } from '../lib/orderFields'
 import { AsrBadge } from '../components/badges'
+import type { OrderFull, OrderMessage } from '../api/types'
 
 function Field({ label, value, raw }: { label: string; value: unknown; raw?: boolean }): React.JSX.Element {
   return (
@@ -38,7 +39,8 @@ export default function OrderDetailPage(): React.JSX.Element {
   if (q.error) return <ErrorBlock error={q.error} onRetry={() => void q.refetch()} />
   if (!q.data) return <EmptyBlock />
 
-  const { order, recommendations, attachments, materials, calls, statusHistory } = q.data
+  const { order, recommendations, attachments, materials, calls, statusHistory, brief, messages } =
+    q.data
   const rec = recommendations ?? {}
   // 未知字段：rec 里有值但不在已知映射里的
   const unknownFields = Object.entries(rec).filter(([k, v]) => !KNOWN_KEYS.has(k) && !isEmptyVal(v))
@@ -67,6 +69,9 @@ export default function OrderDetailPage(): React.JSX.Element {
           <Field label="更新时间" value={fmtTimeFull(order.updatedAt)} />
         </div>
       </Card>
+
+      {/* AI 滚动简报 */}
+      <BriefCard brief={brief} />
 
       {/* 状态变更历史 */}
       <Card className="p-5 mb-4">
@@ -185,6 +190,16 @@ export default function OrderDetailPage(): React.JSX.Element {
         )}
       </Card>
 
+      {/* 聊天记录时间线 */}
+      <Card className="p-5 mb-4">
+        <h2 className="text-sm font-semibold mb-3">聊天记录（{messages.length}）</h2>
+        {messages.length === 0 ? (
+          <EmptyBlock label="无采集到的聊天消息" />
+        ) : (
+          <ChatTimeline messages={messages} onOpenImage={setLightbox} />
+        )}
+      </Card>
+
       {/* 通话时间线 */}
       <Card className="p-5 mb-4">
         <h2 className="text-sm font-semibold mb-1">通话（{calls.length}）</h2>
@@ -238,6 +253,152 @@ export default function OrderDetailPage(): React.JSX.Element {
       </Card>
 
       <Lightbox src={lightbox} onClose={() => setLightbox(null)} />
+    </div>
+  )
+}
+
+// AI 滚动简报卡片：综合微信/企微消息 + 通话/录音转写 + 素材一次产出。
+function BriefCard({ brief }: { brief: OrderFull['brief'] }): React.JSX.Element {
+  const b = (brief.json ?? null) as {
+    summary?: string | null
+    stage?: string | null
+    stageEvidence?: string | null
+    hasOpenIssue?: boolean
+    nextActions?: string[]
+    risks?: string[]
+    keyInfo?: Record<string, string | null>
+    model?: string
+  } | null
+
+  return (
+    <Card className="p-5 mb-4">
+      <div className="flex items-center gap-2 mb-3">
+        <h2 className="text-sm font-semibold">AI 滚动简报</h2>
+        {brief.updatedAt ? (
+          <span className="text-xs text-fg-subtle">更新于 {fmtTimeFull(brief.updatedAt)}</span>
+        ) : null}
+      </div>
+      {!b || !brief.updatedAt ? (
+        <EmptyBlock label="该订单尚未生成简报（采集到消息/通话后自动产出）" />
+      ) : (
+        <div className="space-y-3 text-sm">
+          {b.stage && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs px-2 py-0.5 rounded-full bg-accent-soft text-accent-strong font-medium">
+                {b.stage}
+              </span>
+              {b.hasOpenIssue && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-warning/10 text-warning">
+                  有未决事项
+                </span>
+              )}
+              {b.stageEvidence && <span className="text-xs text-fg-subtle">{b.stageEvidence}</span>}
+            </div>
+          )}
+          {b.summary && <p className="text-fg whitespace-pre-wrap leading-relaxed">{b.summary}</p>}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {b.nextActions && b.nextActions.length > 0 && (
+              <div>
+                <div className="text-xs font-medium text-fg-muted mb-1">待办</div>
+                <ul className="list-disc list-inside space-y-0.5 text-fg-muted">
+                  {b.nextActions.map((t, i) => (
+                    <li key={i}>{t}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {b.risks && b.risks.length > 0 && (
+              <div>
+                <div className="text-xs font-medium text-danger mb-1">风险</div>
+                <ul className="list-disc list-inside space-y-0.5 text-danger">
+                  {b.risks.map((t, i) => (
+                    <li key={i}>{t}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+
+          {b.keyInfo && Object.values(b.keyInfo).some((v) => v) && (
+            <div>
+              <div className="text-xs font-medium text-fg-muted mb-1">关键信息</div>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-1">
+                {Object.entries(b.keyInfo)
+                  .filter(([, v]) => v)
+                  .map(([k, v]) => (
+                    <div key={k} className="flex gap-2 text-sm">
+                      <span className="text-fg-muted shrink-0">{k}</span>
+                      <span className="break-all">{v}</span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+          {b.model && <div className="text-xs text-fg-subtle">模型 {b.model}</div>}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+// 聊天记录时间线：self 右、other 左、system 居中；chatTime 算不出时标"估"。
+function ChatTimeline({
+  messages,
+  onOpenImage
+}: {
+  messages: OrderMessage[]
+  onOpenImage: (url: string) => void
+}): React.JSX.Element {
+  return (
+    <div className="space-y-2">
+      {messages.map((m) => {
+        if (m.senderType === 'system') {
+          return (
+            <div key={m.id} className="text-center">
+              <span className="text-xs text-fg-subtle bg-surface-2 rounded-full px-2.5 py-0.5">
+                {m.contentText}
+              </span>
+            </div>
+          )
+        }
+        const self = m.senderType === 'self'
+        const estimated = !m.chatTime
+        const time = fmtTime(m.chatTime ?? m.sortTime ?? m.capturedAt)
+        return (
+          <div key={m.id} className={`flex ${self ? 'justify-end' : 'justify-start'}`}>
+            <div className={`max-w-[78%] ${self ? 'items-end' : 'items-start'} flex flex-col`}>
+              {!self && m.senderName && (
+                <span className="text-xs text-fg-subtle mb-0.5 px-1">{m.senderName}</span>
+              )}
+              <div
+                className={`rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap break-words ${
+                  self
+                    ? 'bg-accent-soft text-accent-strong rounded-br-sm'
+                    : 'bg-surface-2 text-fg rounded-bl-sm'
+                }`}
+              >
+                {m.contentText}
+              </div>
+              <div className="flex items-center gap-1.5 mt-0.5 px-1">
+                <span className="text-[11px] text-fg-subtle">{time}</span>
+                {estimated && <span className="text-[11px] text-warning">估</span>}
+                {m.seenCount > 1 && (
+                  <span className="text-[11px] text-fg-subtle">×{m.seenCount}</span>
+                )}
+                {m.screenshotUrl && (
+                  <button
+                    onClick={() => onOpenImage(m.screenshotUrl as string)}
+                    className="text-[11px] text-fg-subtle hover:text-accent-strong"
+                  >
+                    截图
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }

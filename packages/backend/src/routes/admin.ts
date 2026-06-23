@@ -195,7 +195,9 @@ export function registerAdminRoutes(
           materialsToday,
           callsToday,
           callsTodayDone,
-          totalEmployees
+          totalEmployees,
+          messagesToday,
+          unmatchedPending
         ] = await Promise.all([
           // 今日新增订单（按 poolType 分挂号/绿通，poolType 在 rawJson 里）
           prisma.order.findMany({
@@ -209,7 +211,15 @@ export function registerAdminRoutes(
           }),
           prisma.call.count({ where: { startedAt: { gte: today } } }),
           prisma.call.count({ where: { startedAt: { gte: today }, asrStatus: 'done' } }),
-          prisma.employee.count()
+          prisma.employee.count(),
+          // 今日采集到的结构化聊天消息（按 capturedAt 口径），按 self/other 分
+          prisma.message.groupBy({
+            by: ['senderType'],
+            where: { capturedAt: { gte: today } },
+            _count: { _all: true }
+          }),
+          // 待确认订单号（采到了订单号但关联不上，跨员工 pending 总数）
+          prisma.unmatchedOrderRef.count({ where: { status: 'pending' } })
         ])
 
         // 订单按 poolType 归类
@@ -225,6 +235,17 @@ export function registerAdminRoutes(
         const materialByType: Record<string, number> = { text: 0, image: 0 }
         for (const row of materialsToday) {
           materialByType[row.type] = row._count._all
+        }
+
+        // 今日消息按发送方归类（self=坐席自己发 / other=客户 / system=系统提示）
+        let msgSelf = 0
+        let msgOther = 0
+        let msgTotal = 0
+        for (const row of messagesToday) {
+          const n = row._count._all
+          msgTotal += n
+          if (row.senderType === 'self') msgSelf += n
+          else if (row.senderType === 'other') msgOther += n
         }
 
         // 在线员工：Chrome 插件 WS 活跃 或 Tray REST 心跳活跃（取并集）
@@ -257,7 +278,13 @@ export function registerAdminRoutes(
             employees: {
               online: onlineEmployees,
               total: totalEmployees
-            }
+            },
+            messages: {
+              total: msgTotal,
+              self: msgSelf,
+              other: msgOther
+            },
+            unmatchedPending
           }
         })
       } catch (err: any) {
@@ -342,23 +369,58 @@ export function registerAdminRoutes(
           }
         }
 
-        // 红：连续 6h 无任何素材的员工（仅统计有过素材记录的员工）
-        const SILENCE_HOURS = 6
-        const silenceSince = new Date(Date.now() - SILENCE_HOURS * 3600_000)
-        const lastMaterialByEmp = await prisma.material.groupBy({
-          by: ['employeeId'],
-          _max: { createdAt: true }
-        })
-        for (const row of lastMaterialByEmp) {
-          const last = row._max.createdAt
-          if (last && last < silenceSince) {
+        // 静默告警：按"消息 + 素材"两类各取最近一次采集时间，合成"最近活跃时间"。
+        // 区分两种性质：
+        //   · 在线但近 ONLINE_STALE 分钟无任何新采集 → 红（采集疑似卡住，比离线更可疑）
+        //   · 离线且 ≥ OFFLINE_SILENCE 小时无新采集 → 黄（员工多半下班/离线，提醒即可）
+        const ONLINE_STALE_MIN = 30
+        const OFFLINE_SILENCE_HOURS = 6
+        const onlineStaleSince = new Date(Date.now() - ONLINE_STALE_MIN * 60_000)
+        const offlineSilenceSince = new Date(Date.now() - OFFLINE_SILENCE_HOURS * 3600_000)
+
+        const [lastMaterialByEmp, lastMessageByEmp] = await Promise.all([
+          prisma.material.groupBy({ by: ['employeeId'], _max: { createdAt: true } }),
+          prisma.message.groupBy({ by: ['employeeId'], _max: { capturedAt: true } })
+        ])
+        // 合成每员工最近活跃时间（消息/素材取较新者）
+        const lastActiveByEmp = new Map<number, Date>()
+        const noteLatest = (eid: number, d: Date | null | undefined): void => {
+          if (!d) return
+          const cur = lastActiveByEmp.get(eid)
+          if (!cur || d > cur) lastActiveByEmp.set(eid, d)
+        }
+        for (const r of lastMaterialByEmp) noteLatest(r.employeeId, r._max.createdAt)
+        for (const r of lastMessageByEmp) noteLatest(r.employeeId, r._max.capturedAt)
+
+        for (const [eid, last] of lastActiveByEmp.entries()) {
+          const online = employeeIsOnline(eid)
+          const name = nameOf.get(eid) ?? eid
+          if (online && last < onlineStaleSince) {
             alerts.push({
               level: 'red',
-              kind: 'material_silence',
-              message: `员工「${nameOf.get(row.employeeId) ?? row.employeeId}」已连续 ${SILENCE_HOURS} 小时以上无新素材`,
-              employeeId: row.employeeId
+              kind: 'online_stale',
+              message: `员工「${name}」在线但近 ${ONLINE_STALE_MIN} 分钟无任何新采集（疑似采集卡住）`,
+              employeeId: eid
+            })
+          } else if (!online && last < offlineSilenceSince) {
+            const hours = Math.floor((Date.now() - last.getTime()) / 3600_000)
+            alerts.push({
+              level: 'yellow',
+              kind: 'offline_silence',
+              message: `员工「${name}」已离线，约 ${hours} 小时无新采集`,
+              employeeId: eid
             })
           }
+        }
+
+        // 黄：待确认订单号（采到订单号但关联不上，需人工/客户确认绑定）
+        const unmatchedPending = await prisma.unmatchedOrderRef.count({ where: { status: 'pending' } })
+        if (unmatchedPending > 0) {
+          alerts.push({
+            level: 'yellow',
+            kind: 'unmatched_refs',
+            message: `有 ${unmatchedPending} 条订单号待确认（判为客户会话但未关联到订单）`
+          })
         }
 
         // 黄：asrStatus=failed 的通话数
@@ -838,7 +900,10 @@ export function registerAdminRoutes(
             attachments: { orderBy: { createdAt: 'asc' } },
             materials: { orderBy: { createdAt: 'desc' } },
             calls: { orderBy: { startedAt: 'desc' } },
-            statusHistory: { orderBy: { recordedAt: 'asc' } }
+            statusHistory: { orderBy: { recordedAt: 'asc' } },
+            // 结构化聊天时间线：按排序键(sortTime ?? capturedAt)正序，构成对话气泡流。
+            // 上限 1000 条，足够单笔订单复盘；超量再分页。
+            messages: { orderBy: [{ sortTime: 'asc' }, { id: 'asc' }], take: 1000 }
           }
         })
         if (!order) return reply.status(404).send({ error: '订单不存在' })
@@ -871,6 +936,35 @@ export function registerAdminRoutes(
 
         const rec = (order.detailJson as any)?.recommendations ?? null
 
+        // 结构化消息时间线：self/other/system + 真实聊天时间(chatTime，算不出为 null) + 截图 presigned URL。
+        const messages = await Promise.all(
+          order.messages.map(async (m) => ({
+            id: m.id,
+            channel: m.channel,
+            conversationName: m.conversationName,
+            senderName: m.senderName,
+            senderType: m.senderType,
+            kind: m.kind,
+            contentText: m.contentText,
+            chatTime: iso(m.chatTime),
+            sortTime: iso(m.sortTime ?? m.capturedAt),
+            capturedAt: m.capturedAt.toISOString(),
+            seenCount: m.seenCount,
+            screenshotUrl: m.screenshotOssKey
+              ? await presign('screenshots', m.screenshotOssKey).catch(() => null)
+              : null
+          }))
+        )
+
+        // AI 滚动简报：整份简报 JSON + 水位时间。前端可直接展示摘要/阶段/待办/风险。
+        const brief = {
+          json: order.aiBriefJson ?? null,
+          updatedAt: iso(order.briefUpdatedAt),
+          lastMsgId: order.briefLastMsgId,
+          lastCallId: order.briefLastCallId,
+          lastMaterialId: order.briefLastMaterialId
+        }
+
         // 订单状态变更历史（按时间正序，构成流转时间线）
         const statusHistory = order.statusHistory.map((h) => ({
           id: h.id,
@@ -898,6 +992,8 @@ export function registerAdminRoutes(
               employee: order.assignedEmployee
             },
             recommendations: rec,
+            brief,
+            messages,
             attachments,
             materials,
             calls,
@@ -1065,6 +1161,236 @@ export function registerAdminRoutes(
       } catch (err: any) {
         rootFastify.log.error('admin recording-url 失败:', err)
         return reply.status(500).send({ error: '获取录音 URL 失败: ' + err.message })
+      }
+    })
+
+    // ───── 7.2 采集质量 + 简报健康 ─────
+    // 去重命中、时间链还原失败率、识图成功率，以及 AI 简报 已生成/滞后/缺失。
+    fastify.get('/api/v1/admin/dashboard/capture-quality', async (_request, reply) => {
+      try {
+        const today = startOfToday()
+
+        const [msgAgg, chatTimeMissing, imageToday, imageProcessed, msgMaxByOrder] =
+          await Promise.all([
+            // 今日消息：总条数 + seenCount 之和（差值=被跨帧去重掉的重复截取）
+            prisma.message.aggregate({
+              where: { capturedAt: { gte: today } },
+              _count: { _all: true },
+              _sum: { seenCount: true }
+            }),
+            // 今日非系统消息里算不出真实聊天时间的（时间链还原失败）
+            prisma.message.count({
+              where: { capturedAt: { gte: today }, chatTime: null, senderType: { not: 'system' } }
+            }),
+            prisma.material.count({ where: { createdAt: { gte: today }, type: 'image' } }),
+            prisma.material.count({
+              where: { createdAt: { gte: today }, type: 'image', aiImageProcessedAt: { not: null } }
+            }),
+            // 有消息的订单 → 取每单最大 Message.id，用于和简报水位比对是否滞后
+            prisma.message.groupBy({
+              by: ['orderId'],
+              where: { orderId: { not: null } },
+              _max: { id: true }
+            })
+          ])
+
+        const msgTotal = msgAgg._count._all
+        const seenSum = msgAgg._sum.seenCount ?? 0
+        const dedupHit = Math.max(0, seenSum - msgTotal) // 重复截到、被去重合并的次数
+
+        // 简报健康：以 briefUpdatedAt 是否存在判定"已生成"，briefLastMsgId 落后于最大消息 id 判定"滞后"
+        const orderIds = msgMaxByOrder
+          .map((r) => r.orderId)
+          .filter((x): x is number => typeof x === 'number')
+        const briefOrders = orderIds.length
+          ? await prisma.order.findMany({
+              where: { id: { in: orderIds } },
+              select: { id: true, briefUpdatedAt: true, briefLastMsgId: true }
+            })
+          : []
+        const briefMap = new Map(briefOrders.map((o) => [o.id, o]))
+
+        let briefGenerated = 0
+        let briefStale = 0
+        let briefMissing = 0
+        for (const row of msgMaxByOrder) {
+          const oid = row.orderId
+          if (oid == null) continue
+          const o = briefMap.get(oid)
+          const maxId = row._max.id ?? 0
+          if (!o || o.briefUpdatedAt == null) {
+            briefMissing++
+          } else {
+            briefGenerated++
+            if ((o.briefLastMsgId ?? 0) < maxId) briefStale++
+          }
+        }
+
+        return reply.send({
+          data: {
+            quality: {
+              messagesToday: msgTotal,
+              dedupHit,
+              chatTimeMissing,
+              image: {
+                today: imageToday,
+                processed: imageProcessed,
+                successRate: imageToday ? Math.round((imageProcessed / imageToday) * 100) : null
+              }
+            },
+            brief: {
+              ordersWithMessages: msgMaxByOrder.length,
+              generated: briefGenerated,
+              stale: briefStale,
+              missing: briefMissing
+            }
+          }
+        })
+      } catch (err: any) {
+        rootFastify.log.error('admin capture-quality 失败:', err)
+        return reply.status(500).send({ error: '采集质量统计失败: ' + err.message })
+      }
+    })
+
+    // ───── 7.3 每员工采集健康总览 ─────
+    // 一行一员工：插件/桌面端在线、最近一次采集时间、近 1h 与今日 消息/素材/通话 计数、token。
+    fastify.get('/api/v1/admin/capture/health', async (_request, reply) => {
+      try {
+        const today = startOfToday()
+        const hourAgo = new Date(Date.now() - 3600_000)
+
+        const [
+          employees,
+          msgToday, msgHour, lastMsg,
+          matToday, matHour, lastMat,
+          callToday, callHour, lastCall
+        ] = await Promise.all([
+          prisma.employee.findMany({ select: { id: true, name: true }, orderBy: { id: 'asc' } }),
+          prisma.message.groupBy({ by: ['employeeId'], where: { capturedAt: { gte: today } }, _count: { _all: true } }),
+          prisma.message.groupBy({ by: ['employeeId'], where: { capturedAt: { gte: hourAgo } }, _count: { _all: true } }),
+          prisma.message.groupBy({ by: ['employeeId'], _max: { capturedAt: true } }),
+          prisma.material.groupBy({ by: ['employeeId'], where: { createdAt: { gte: today } }, _count: { _all: true } }),
+          prisma.material.groupBy({ by: ['employeeId'], where: { createdAt: { gte: hourAgo } }, _count: { _all: true } }),
+          prisma.material.groupBy({ by: ['employeeId'], _max: { createdAt: true } }),
+          prisma.call.groupBy({ by: ['employeeId'], where: { startedAt: { gte: today } }, _count: { _all: true } }),
+          prisma.call.groupBy({ by: ['employeeId'], where: { startedAt: { gte: hourAgo } }, _count: { _all: true } }),
+          prisma.call.groupBy({ by: ['employeeId'], _max: { startedAt: true } })
+        ])
+
+        const cnt = (rows: Array<{ employeeId: number; _count: { _all: number } }>): Map<number, number> =>
+          new Map(rows.map((r) => [r.employeeId, r._count._all]))
+        const maxAt = (rows: Array<{ employeeId: number; _max: Record<string, Date | null> }>, field: string): Map<number, Date> => {
+          const m = new Map<number, Date>()
+          for (const r of rows) {
+            const d = r._max[field]
+            if (d) m.set(r.employeeId, d)
+          }
+          return m
+        }
+
+        const mToday = cnt(msgToday), mHour = cnt(msgHour)
+        const matT = cnt(matToday), matH = cnt(matHour)
+        const cToday = cnt(callToday), cHour = cnt(callHour)
+        const lastMsgM = maxAt(lastMsg, 'capturedAt')
+        const lastMatM = maxAt(lastMat, 'createdAt')
+        const lastCallM = maxAt(lastCall, 'startedAt')
+
+        const rows = employees.map((e) => {
+          const info = presenceMap.get(e.id)
+          const extOnline = info ? presenceIsFresh(info.lastSeenAt) : false
+          const tray = trayInfo(e.id)
+          // 最近一次采集 = 消息/素材/通话 最大时间
+          let lastCaptureAt: Date | null = null
+          for (const d of [lastMsgM.get(e.id), lastMatM.get(e.id), lastCallM.get(e.id)]) {
+            if (d && (!lastCaptureAt || d > lastCaptureAt)) lastCaptureAt = d
+          }
+          return {
+            employeeId: e.id,
+            name: e.name,
+            online: extOnline || tray.online,
+            extOnline,
+            trayOnline: tray.online,
+            lastSeenAt: info ? new Date(info.lastSeenAt).toISOString() : tray.lastSeenAt,
+            tokenOk: info?.tokenOk ?? null,
+            lastCaptureAt: iso(lastCaptureAt),
+            messages: { hour: mHour.get(e.id) ?? 0, today: mToday.get(e.id) ?? 0 },
+            materials: { hour: matH.get(e.id) ?? 0, today: matT.get(e.id) ?? 0 },
+            calls: { hour: cHour.get(e.id) ?? 0, today: cToday.get(e.id) ?? 0 }
+          }
+        })
+
+        // 在线优先；其次按最近采集时间倒序（最近活跃的排前）
+        rows.sort((a, b) => {
+          if (a.online !== b.online) return a.online ? -1 : 1
+          return (b.lastCaptureAt ?? '').localeCompare(a.lastCaptureAt ?? '')
+        })
+
+        return reply.send({ data: rows })
+      } catch (err: any) {
+        rootFastify.log.error('admin capture/health 失败:', err)
+        return reply.status(500).send({ error: '采集健康查询失败: ' + err.message })
+      }
+    })
+
+    // ───── 7.4 待确认订单号（跨员工）─────
+    // 采到订单号但模糊匹配不到(no_match)/并列多单(ambiguous)/名字对不上(name_mismatch)，
+    // 列出来让运营看到"采到了但没挂上"的异常。只读，确认/忽略由员工端 tray 做。
+    fastify.get('/api/v1/admin/unmatched-order-refs', async (request, reply) => {
+      try {
+        const status = typeof (request.query as any)?.status === 'string' && (request.query as any).status
+          ? (request.query as any).status
+          : 'pending'
+
+        const rows = await prisma.unmatchedOrderRef.findMany({
+          where: { status },
+          orderBy: { updatedAt: 'desc' },
+          take: 200,
+          include: { employee: { select: { id: true, name: true } } }
+        })
+
+        // ambiguous 时 candidateOrderIds 里是并列的订单 id，批量取回订单基本信息
+        const allOrderIds = new Set<number>()
+        for (const r of rows) {
+          const ids = (r.candidateOrderIds as unknown as number[] | null) ?? []
+          for (const id of ids) if (typeof id === 'number') allOrderIds.add(id)
+        }
+        const candOrders = allOrderIds.size
+          ? await prisma.order.findMany({
+              where: { id: { in: [...allOrderIds] } },
+              select: { id: true, sourceOrderNo: true, customerName: true }
+            })
+          : []
+        const candMap = new Map(candOrders.map((o) => [o.id, o]))
+
+        const items = await Promise.all(
+          rows.map(async (r) => {
+            const ids = (r.candidateOrderIds as unknown as number[] | null) ?? []
+            return {
+              id: r.id,
+              employee: r.employee,
+              channel: r.channel,
+              conversationName: r.conversationName,
+              candidate: r.candidate,
+              candidateKind: r.candidateKind,
+              reason: r.reason,
+              bestDist: r.bestDist,
+              candidateOrders: ids.map((id) => candMap.get(id)).filter(Boolean),
+              seenCount: r.seenCount,
+              status: r.status,
+              capturedAt: r.capturedAt.toISOString(),
+              createdAt: r.createdAt.toISOString(),
+              updatedAt: r.updatedAt.toISOString(),
+              screenshotUrl: r.screenshotOssKey
+                ? await presign('screenshots', r.screenshotOssKey).catch(() => null)
+                : null
+            }
+          })
+        )
+
+        return reply.send({ data: items })
+      } catch (err: any) {
+        rootFastify.log.error('admin unmatched-order-refs 失败:', err)
+        return reply.status(500).send({ error: '待确认订单号查询失败: ' + err.message })
       }
     })
 

@@ -10,6 +10,8 @@ import OrderDetailPage from './pages/OrderDetailPage'
 import MaterialsPage from './pages/MaterialsPage'
 import MaterialDetailPage from './pages/MaterialDetailPage'
 import CallsPage from './pages/CallsPage'
+import CaptureHealthPage from './pages/CaptureHealthPage'
+import UnmatchedRefsPage from './pages/UnmatchedRefsPage'
 import HealthPage from './pages/HealthPage'
 import SettingsPage from './pages/SettingsPage'
 
@@ -38,6 +40,8 @@ export default function App(): React.JSX.Element {
         <Route path="materials" element={<MaterialsPage />} />
         <Route path="materials/:id" element={<MaterialDetailPage />} />
         <Route path="calls" element={<CallsPage />} />
+        <Route path="capture-health" element={<CaptureHealthPage />} />
+        <Route path="unmatched-refs" element={<UnmatchedRefsPage />} />
         <Route path="health" element={<HealthPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />

@@ -10,6 +10,8 @@ const NAV_ITEMS: Array<{ to: string; label: string; icon: string; end?: boolean 
   { to: '/orders', label: '订单', icon: '▤' },
   { to: '/materials', label: '素材', icon: '✎' },
   { to: '/calls', label: '通话', icon: '☎' },
+  { to: '/capture-health', label: '采集健康', icon: '📡' },
+  { to: '/unmatched-refs', label: '待确认订单号', icon: '⚠' },
   { to: '/health', label: '系统健康', icon: '✚' },
   { to: '/settings', label: '设置', icon: '⚙' }
 ]
