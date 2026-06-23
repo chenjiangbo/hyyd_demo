@@ -350,6 +350,10 @@ if (!gotLock) {
         return { ok: true }
       }
     )
+    // 现场验证开关：是否保存采集调试数据（截图 + .debug.json）。切换会重启 sidecar 生效。
+    ipcMain.handle('capture:set-save-debug', (_e, value: boolean) =>
+      captureSidecar.setSaveDebug(!!value)
+    )
 
     createTray()
     createWindow()

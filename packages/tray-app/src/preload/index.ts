@@ -63,6 +63,8 @@ const api = {
     ipcRenderer.invoke('materials:set-config', cfg),
   captureSetConfig: (cfg: { backendUrl: string; employeeCode: string }) =>
     ipcRenderer.invoke('capture:set-config', cfg),
+  setCaptureSaveDebug: (value: boolean) =>
+    ipcRenderer.invoke('capture:set-save-debug', value),
 
   // 系统剪贴板（Electron 原生，绕过 navigator.clipboard 焦点限制）
   clipboardRead: () => ipcRenderer.invoke('clipboard:read')

@@ -70,6 +70,7 @@ interface SidecarStatus {
   lastError: string | null
   capturedFrameCount: number
   skippedDuplicateCount: number
+  saveDebug?: boolean
 }
 
 type SessionResult = 'dedup_skip' | 'typing_skip' | 'filtered' | 'kept' | 'pending'
@@ -118,6 +119,7 @@ type CaptureApi = {
   clearDiagLogs: () => Promise<{ cleared: number }>
   pickCaptureImage: () => Promise<string | null>
   runCaptureOnImage: (imagePath: string, channel?: string) => Promise<DbgFrame | null>
+  setCaptureSaveDebug: (value: boolean) => Promise<{ saveDebug: boolean }>
 }
 
 function getApi(): CaptureApi | null {
@@ -442,6 +444,11 @@ export default function SidecarDebugPage(): React.JSX.Element {
         activeTab={activeTab}
         onTabChange={setActiveTab}
         onToggleAuto={() => setAuto((v) => !v)}
+        onToggleSaveDebug={async () => {
+          await api.setCaptureSaveDebug(!status?.saveDebug)
+          // 切换会重启 sidecar，稍等再刷新状态
+          setTimeout(() => void refresh(), 1500)
+        }}
         onRefresh={() => void refresh()}
         onClear={async () => {
           await Promise.all([api.clearDiagLogs(), api.clearCaptureDebugFrames()])
@@ -480,7 +487,7 @@ export default function SidecarDebugPage(): React.JSX.Element {
 
 function TopBar({
   status, sessionCount, frameCount, loadedAt, auto, activeTab, onTabChange,
-  onToggleAuto, onRefresh, onClear,
+  onToggleAuto, onToggleSaveDebug, onRefresh, onClear,
 }: {
   status: SidecarStatus | null
   sessionCount: number
@@ -490,6 +497,7 @@ function TopBar({
   activeTab: PageTab
   onTabChange: (tab: PageTab) => void
   onToggleAuto: () => void
+  onToggleSaveDebug: () => void
   onRefresh: () => void
   onClear: () => void
 }): React.JSX.Element {
@@ -517,6 +525,18 @@ function TopBar({
         )}
         <div className="ml-auto flex items-center gap-2">
           {loadedAt && <span className="text-label-caps text-text-muted">{loadedAt}</span>}
+          <button
+            onClick={onToggleSaveDebug}
+            title="现场部署验证时打开：保存截图 + 调试帧供本页查看；正常运行关闭（OCR 用完即删图、不留客户聊天截图）。切换会重启采集。"
+            className={
+              'px-2.5 py-1 rounded text-body-sm border transition-colors ' +
+              (status?.saveDebug
+                ? 'bg-amber-500 text-white border-amber-500'
+                : 'bg-white text-text-muted border-border-subtle hover:text-amber-600')
+            }
+          >
+            {status?.saveDebug ? '保存调试·开' : '保存调试·关'}
+          </button>
           <button
             onClick={onToggleAuto}
             className={

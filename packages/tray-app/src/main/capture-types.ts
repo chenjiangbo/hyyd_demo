@@ -114,4 +114,6 @@ export interface CaptureSidecarStatus {
   skippedDuplicateCount: number
   lastTextPreview: string | null
   sidecarPath: string | null
+  // 是否保存采集调试数据（截图 PNG + .debug.json）。现场部署验证时打开，正常运行关闭。
+  saveDebug: boolean
 }

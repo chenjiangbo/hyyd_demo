@@ -12,6 +12,7 @@ interface CaptureSidecarStatus {
   skippedDuplicateCount: number
   lastTextPreview: string | null
   sidecarPath: string | null
+  saveDebug: boolean
 }
 
 interface CaptureConversation {
@@ -186,6 +187,7 @@ interface Window {
     materialsDiscardFailed: () => Promise<{ discarded: number }>
     materialsSetConfig: (cfg: { backendUrl: string; employeeCode: string }) => Promise<{ ok: boolean }>
     captureSetConfig: (cfg: { backendUrl: string; employeeCode: string }) => Promise<{ ok: boolean }>
+    setCaptureSaveDebug: (value: boolean) => Promise<{ saveDebug: boolean }>
     clipboardRead: () => Promise<{ text: string | null; imageDataUrl: string | null }>
   }
 }

@@ -30,6 +30,13 @@ internal sealed class CaptureCollector : IDisposable
         return TimeSpan.FromSeconds(5);
     }
 
+    // 是否保存调试产物（截图 PNG + 同名 .debug.json）。默认关：正常运行只走 截图→OCR→结构化→上报，
+    // OCR 用完即删图、不写 .debug.json（省盘 + 不在员工机留客户聊天截图）。
+    // 现场部署验证时由托盘"保存采集调试数据"开关置 HYYD_SAVE_DEBUG=1（会重启 sidecar 生效），
+    // 保留这些产物供采集调试页看截图/OCR/分区可视化。注意：此开关不影响"手动跑图"调试工具。
+    private static readonly bool SaveDebugArtifacts =
+        Environment.GetEnvironmentVariable("HYYD_SAVE_DEBUG") is "1" or "true" or "TRUE";
+
     private readonly JsonLineWriter _writer;
     private readonly WindowInspector _windowInspector = new();
     private readonly WindowCapture _windowCapture = new();
@@ -89,11 +96,13 @@ internal sealed class CaptureCollector : IDisposable
             .Split(new[] { ',', '，' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
-    // 订单号：高客 fwyy+数字；普客 COD/CCOD/OD + 恰好 16 位 hex。IgnoreCase 容忍 OCR 大小写偏差。
-    // COD/OD 用精确 16 位：去空格后能避免把后面紧邻的时间戳数字也粘进订单号。
-    // body 容忍 OCR 误读（如 fwyy1→fwyyl、hex 位认成字母）：抽到含噪候选即可，后端再做归一+编辑距离精确匹配。
+    // 订单号两条业务线：
+    //  - 医学陪诊：高客 fwyy+数字；普客 COD/CCOD/OD + 16 位 hex。body 容忍 OCR 误读（hex 位认成字母）。
+    //  - 重疾绿通/其他绿通：SO / LT + 14~24 位长数字（如 SO2021…、LT2020…）。SO/LT 是常见英文字母组合，
+    //    故 body 收紧为「数字 + OCR 易混字符(o i s z g l | q)」，避免把 solution 这类词误当订单号。
+    // IgnoreCase 容忍大小写；抽到含噪候选即可，后端再做归一 + 编辑距离精确匹配。
     private static readonly System.Text.RegularExpressions.Regex OrderNoRegex = new(
-        @"fwyy[0-9a-z|]{6,24}|(?:CCOD|COD|OD)[0-9a-z|]{12,18}",
+        @"fwyy[0-9a-z|]{6,24}|(?:CCOD|COD|OD)[0-9a-z|]{12,18}|(?:SO|LT)[0-9oqislzg|]{14,24}",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
 
     // OCR 仍可能把订单号和"就医服务群"拆散或插空白；匹配前先去掉所有空白
@@ -546,8 +555,10 @@ internal sealed class CaptureCollector : IDisposable
                 ContactRight: structure.ContactRight,
                 Bubbles: structure.Bubbles
             );
-            _writer.WriteDebugFileSafe(DebugJsonPath(image.Path), filteredPayload);
+            if (SaveDebugArtifacts)
+                _writer.WriteDebugFileSafe(DebugJsonPath(image.Path), filteredPayload);
             await _writer.WriteAsync(filteredPayload);
+            if (!SaveDebugArtifacts) TryDeleteFrameFile(image.Path);
             return;
         }
 
@@ -602,8 +613,17 @@ internal sealed class CaptureCollector : IDisposable
 
         Interlocked.Increment(ref _keptCount);
         _lastError = null;
-        _writer.WriteDebugFileSafe(DebugJsonPath(image.Path), payload);
+        if (SaveDebugArtifacts)
+            _writer.WriteDebugFileSafe(DebugJsonPath(image.Path), payload);
         await _writer.WriteAsync(payload);
+        if (!SaveDebugArtifacts) TryDeleteFrameFile(image.Path);
+    }
+
+    // 关闭"保存采集调试数据"时：截图只是给 OCR 用的临时文件，OCR 完即删（不在员工机留客户聊天截图）。
+    private static void TryDeleteFrameFile(string pngPath)
+    {
+        try { if (System.IO.File.Exists(pngPath)) System.IO.File.Delete(pngPath); }
+        catch { /* 删不掉不影响主流程 */ }
     }
 
     // 截图旁边的调试文件：<同名>.debug.json（含分区/扫描带/全部气泡/OCR块+采样色/消息判据）。

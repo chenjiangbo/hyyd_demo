@@ -30,10 +30,16 @@ export function canonicalize(s: string): string {
   return out
 }
 
-/** 抽订单号候选：先去空白，再按前缀匹配。body 允许字母（容忍 OCR 把 hex 位认成字母），后续靠归一纠回。 */
-const CANDIDATE_RE = /(?:c?cod|od|fwyy)[0-9a-z|]{6,24}/i
+/**
+ * 抽订单号候选：先去空白，再按前缀匹配。两条业务线的单号格式：
+ *  - 医学陪诊：fwyy+长数字（高客）/ (C)COD、OD + 16 位 hex（普客）。body 允许字母（容忍 OCR 把 hex 位认成字母）。
+ *  - 重疾绿通/其他绿通：SO / LT + 14~24 位长数字（如 SO2021…、LT2020…）。SO/LT 是常见英文字母组合，
+ *    故 body 收紧为「数字 + OCR 易混字符」(o→0/i→1/s→5/z→2/g→9/l→1/|→1/q→0)，避免把 solution 这类词误当订单号。
+ * 后续都靠 canonicalize 归一 + 编辑距离纠回。
+ */
+const CANDIDATE_RE = /(?:c?cod|od|fwyy)[0-9a-z|]{6,24}|(?:so|lt)[0-9oqislzg|]{14,24}/i
 
-export type CandidateKind = 'fwyy' | 'cod' | 'ccod' | 'od' | 'unknown'
+export type CandidateKind = 'fwyy' | 'cod' | 'ccod' | 'od' | 'so' | 'lt' | 'unknown'
 
 export interface ExtractedCandidate {
   raw: string // 去空白后的原始候选（保留大小写，便于展示）
@@ -53,9 +59,13 @@ export function extractOrderCandidate(title: string | null | undefined): Extract
       ? 'ccod'
       : lower.startsWith('cod')
         ? 'cod'
-        : lower.startsWith('od')
-          ? 'od'
-          : 'unknown'
+        : lower.startsWith('so')
+          ? 'so'
+          : lower.startsWith('lt')
+            ? 'lt'
+            : lower.startsWith('od')
+              ? 'od'
+              : 'unknown'
   return { raw, kind }
 }
 

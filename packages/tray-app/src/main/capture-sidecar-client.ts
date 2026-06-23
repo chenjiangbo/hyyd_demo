@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
-import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { app } from 'electron'
@@ -58,8 +58,13 @@ export class CaptureSidecarClient {
     capturedFrameCount: 0,
     skippedDuplicateCount: 0,
     lastTextPreview: null,
-    sidecarPath: null
+    sidecarPath: null,
+    saveDebug: false
   }
+
+  // 现场验证开关：是否让 sidecar 保存调试数据（截图 + .debug.json）。
+  // 持久化到 userData，重启 app 后仍生效；切换时重启 sidecar 让新 env 生效。
+  private saveDebug = false
 
   // 【临时·调试用】最近若干帧的原始事件环形缓冲（含 sidecar 吐出的 messages/orderNo/conversationKind，
   // 这些字段持久化层暂未消费——见交接文档附录 C）。仅供「采集调试」标签页可视化验证，不落库、重启即清。
@@ -97,6 +102,47 @@ export class CaptureSidecarClient {
     const cleared = this.debugFrames.length
     this.debugFrames = []
     return { cleared }
+  }
+
+  constructor() {
+    // 启动时读回"保存采集调试数据"开关，重启 app 后仍生效
+    try {
+      const raw = readFileSync(this.prefsPath(), 'utf8')
+      this.saveDebug = JSON.parse(raw)?.saveDebug === true
+    } catch {
+      this.saveDebug = false
+    }
+    this.status.saveDebug = this.saveDebug
+  }
+
+  private prefsPath(): string {
+    return join(app.getPath('userData'), 'capture-prefs.json')
+  }
+
+  private persistPrefs(): void {
+    try {
+      mkdirSync(app.getPath('userData'), { recursive: true })
+      writeFileSync(this.prefsPath(), JSON.stringify({ saveDebug: this.saveDebug }), 'utf8')
+    } catch (e) {
+      console.error('[capture] 保存调试开关偏好失败', e)
+    }
+  }
+
+  /**
+   * 现场验证开关：是否让 sidecar 保存调试数据（截图 + .debug.json）。
+   * 切换后立刻重启 sidecar，让新的 HYYD_SAVE_DEBUG env 生效。
+   */
+  async setSaveDebug(value: boolean): Promise<{ saveDebug: boolean }> {
+    if (this.saveDebug === value) return { saveDebug: this.saveDebug }
+    this.saveDebug = value
+    this.status.saveDebug = value
+    this.persistPrefs()
+    // 重启 sidecar 应用新 env（仅在本就该跑时）
+    if (this.status.enabled) {
+      this.stop()
+      await this.start()
+    }
+    return { saveDebug: this.saveDebug }
   }
 
   getStatus(): CaptureSidecarStatus {
@@ -351,7 +397,9 @@ export class CaptureSidecarClient {
 
     this.child = spawn(sidecarPath, [], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true
+      windowsHide: true,
+      // 现场验证开关：开=sidecar 保存截图+.debug.json 供调试页查看；关=OCR 用完即删图、不写调试文件
+      env: { ...process.env, HYYD_SAVE_DEBUG: this.saveDebug ? '1' : '0' }
     })
 
     this.addLog('info' as DiagLogEntry['tag'], `sidecar 进程已启动: ${sidecarPath}`)
