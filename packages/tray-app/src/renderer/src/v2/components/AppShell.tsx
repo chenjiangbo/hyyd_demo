@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { initials } from '../lib/orderMapping'
 import { getTheme, toggleTheme, type Theme } from '../lib/theme'
 import { fetchUnmatchedOrderRefs, dismissUnmatchedOrderRef, type UnmatchedOrderRef } from '../api'
@@ -78,22 +78,7 @@ export default function AppShell({
           >
             <span className="material-symbols-outlined" style={{ fontSize: '19px' }}>settings</span>
           </button>
-          <div className="group relative ml-1">
-            <button className="w-8 h-8 rounded-full bg-primary text-white flex items-center justify-center text-body-sm font-semibold">
-              {initials(session.displayName)}
-            </button>
-            <div className="absolute right-0 top-10 hidden group-hover:block bg-white border border-border-subtle rounded-lg shadow-lg py-1 min-w-32 z-50">
-              <div className="px-3 py-1.5 text-body-sm text-text-muted border-b border-border-subtle">
-                {session.displayName}
-              </div>
-              <button
-                onClick={onLogout}
-                className="w-full text-left px-3 py-1.5 text-body-sm text-text-main hover:bg-surface-container-low"
-              >
-                退出登录
-              </button>
-            </div>
-          </div>
+          <UserMenu session={session} onLogout={onLogout} />
         </div>
       </header>
 
@@ -102,6 +87,52 @@ export default function AppShell({
 
       {/* 底部状态栏：后端 / Chrome 插件 / 移动端 App */}
       <StatusBar session={session} />
+    </div>
+  )
+}
+
+/**
+ * 右上角头像菜单：点击展开/收起，点击外部或选择后关闭。
+ * （原来用纯 CSS group-hover，头像与菜单间有 8px 空隙，鼠标移过去就隐藏了，点不到"退出登录"。）
+ */
+function UserMenu({ session, onLogout }: { session: Session; onLogout: () => void }): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDocClick = (e: MouseEvent): void => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [open])
+
+  return (
+    <div className="relative ml-1" ref={ref}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-8 h-8 rounded-full bg-primary text-white flex items-center justify-center text-body-sm font-semibold"
+        title={session.displayName}
+      >
+        {initials(session.displayName)}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-10 bg-white border border-border-subtle rounded-lg shadow-lg py-1 min-w-32 z-50">
+          <div className="px-3 py-1.5 text-body-sm text-text-muted border-b border-border-subtle">
+            {session.displayName}
+          </div>
+          <button
+            onClick={() => {
+              setOpen(false)
+              onLogout()
+            }}
+            className="w-full text-left px-3 py-1.5 text-body-sm text-text-main hover:bg-surface-container-low"
+          >
+            退出登录
+          </button>
+        </div>
+      )}
     </div>
   )
 }
