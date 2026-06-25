@@ -104,7 +104,6 @@ function orderNoCandidates(o: Order): string[] {
   const values = [
     o.sourceOrderNo,
     raw.applyNo,
-    raw.crmApplyNo,
     raw.subOrderNo,
     raw.orderId
   ].filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
@@ -376,19 +375,17 @@ function Copyable({
   )
 }
 
-function OrderNoCopyMenu({
+function OrderNoCopyButtons({
   order,
-  className,
-  placement = 'top'
+  className
 }: {
   order: Order
   className?: string
-  placement?: 'top' | 'bottom'
 }): React.JSX.Element {
-  const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
-  const nos = orderNoCandidates(order)
-  const primary = nos[0] ?? order.sourceOrderNo
+  const primary = order.sourceOrderNo
+  const tail = orderTail8(primary)
+  const tailValue = tail ? `#${tail}` : null
 
   const copy = (value: string): void => {
     if (!value) return
@@ -398,70 +395,42 @@ function OrderNoCopyMenu({
   }
 
   return (
-    <div className={'relative inline-flex min-w-0 ' + (className || '')}>
+    <div className={'inline-flex items-center gap-1 min-w-0 ' + (className || '')}>
       <button
         type="button"
-        title="复制订单号"
+        title={`复制完整订单号 ${primary}`}
         onClick={(e) => {
           e.stopPropagation()
-          setOpen((v) => !v)
+          copy(primary)
         }}
         className="group inline-flex items-center gap-1 min-w-0 hover:text-trust-blue transition-colors"
       >
         <span className="material-symbols-outlined shrink-0" style={{ fontSize: '13px' }}>tag</span>
         <span className="truncate font-mono-data">{primary}</span>
-        <span className="material-symbols-outlined shrink-0 opacity-60 group-hover:opacity-100" style={{ fontSize: '13px' }}>
-          expand_more
+        <span
+          className={
+            'material-symbols-outlined shrink-0 transition-opacity ' +
+            (copied === primary ? 'opacity-100 text-action-green' : 'opacity-0 group-hover:opacity-60')
+          }
+          style={{ fontSize: '13px' }}
+        >
+          {copied === primary ? 'check' : 'content_copy'}
         </span>
       </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div
-            className={
-              'absolute left-0 w-80 max-w-[80vw] bg-white border border-border-subtle rounded-lg shadow-lg z-50 py-1 ' +
-              (placement === 'bottom' ? 'top-full mt-1' : 'bottom-full mb-1')
-            }
-            onClick={(e) => e.stopPropagation()}
-          >
-            {nos.map((no) => {
-              const tail = orderTail8(no)
-              const tailValue = tail ? `#${tail}` : null
-              return (
-                <div key={no} className="px-1 py-1 border-b border-border-subtle last:border-b-0">
-                  <button
-                    type="button"
-                    onClick={() => copy(no)}
-                    className="w-full min-w-0 px-2 py-1.5 rounded hover:bg-surface-container-low flex items-center gap-2 text-left"
-                  >
-                    <span className="material-symbols-outlined text-text-muted shrink-0" style={{ fontSize: '14px' }}>
-                      {copied === no ? 'check' : 'content_copy'}
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block text-[11px] text-text-muted">完整订单号</span>
-                      <span className="block text-body-sm font-mono-data text-text-main truncate">{no}</span>
-                    </span>
-                  </button>
-                  {tailValue && (
-                    <button
-                      type="button"
-                      onClick={() => copy(tailValue)}
-                      className="w-full min-w-0 px-2 py-1.5 rounded hover:bg-surface-container-low flex items-center gap-2 text-left"
-                    >
-                      <span className="material-symbols-outlined text-text-muted shrink-0" style={{ fontSize: '14px' }}>
-                        {copied === tailValue ? 'check' : 'content_copy'}
-                      </span>
-                      <span className="min-w-0">
-                        <span className="block text-[11px] text-text-muted">备注尾号</span>
-                        <span className="block text-body-sm font-mono-data text-text-main truncate">{tailValue}</span>
-                      </span>
-                    </button>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        </>
+      {tailValue && (
+        <button
+          type="button"
+          title={`复制备注尾号 ${tailValue}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            copy(tailValue)
+          }}
+          className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded hover:bg-surface-container-low text-text-muted hover:text-trust-blue transition-colors"
+        >
+          <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>
+            {copied === tailValue ? 'check' : 'tag'}
+          </span>
+        </button>
       )}
     </div>
   )
@@ -587,7 +556,7 @@ function OrderCard({
 
       {/* 订单号（左，可复制） · 日期（恒定右下角） */}
       <div className="flex items-center justify-between gap-2 min-w-0 relative z-10 text-[11px] text-text-muted/80">
-        <OrderNoCopyMenu order={o} className="min-w-0" />
+        <OrderNoCopyButtons order={o} className="min-w-0" />
         <span className="shrink-0 px-1.5 py-0.5 rounded bg-surface-bg text-text-muted">
           {monthDay(o.updatedAt)}
         </span>
@@ -684,7 +653,7 @@ function ListView({ orders, onOpen }: { orders: Order[]; onOpen: (o: Order) => v
                 >
                   <td className="py-2 px-3 font-medium text-text-main whitespace-nowrap">{o.customerName}</td>
                   <td className="py-2 px-3 text-text-muted max-w-[220px]">
-                    <OrderNoCopyMenu order={o} placement="bottom" className="max-w-full" />
+                    <OrderNoCopyButtons order={o} className="max-w-full" />
                   </td>
                   <td className="py-2 px-3 text-text-muted font-mono-data whitespace-nowrap">{o.customerPhone || '—'}</td>
                   <td className="py-2 px-3">

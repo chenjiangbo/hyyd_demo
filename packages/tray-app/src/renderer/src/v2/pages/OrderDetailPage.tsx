@@ -1002,7 +1002,9 @@ function OrderInfoPanel({
       <div className="rounded-lg border border-border-subtle bg-surface-bg px-3 py-2.5 flex items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="text-body-sm font-semibold text-text-main truncate">{order.customerName}</p>
-          <p className="mt-0.5 text-[11px] text-text-muted font-mono-data truncate">{order.sourceOrderNo}</p>
+          <CopyTextButton value={order.sourceOrderNo} className="mt-0.5 text-[11px] text-text-muted font-mono-data max-w-full">
+            <span className="truncate">{order.sourceOrderNo}</span>
+          </CopyTextButton>
         </div>
         <span className="shrink-0 px-2 py-1 rounded-md bg-white border border-border-subtle text-[11px] text-text-muted">
           {loading ? '加载中' : detailResp?.order.detailFetchedAt ? '详情已抓取' : '列表数据'}
@@ -1145,6 +1147,50 @@ function field(label: string, value: React.ReactNode, keys: string[] = [], mono 
   return { label, value, keys, mono }
 }
 
+function copyValueOf(value: React.ReactNode): string | null {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    const text = String(value).trim()
+    return text ? text : null
+  }
+  return null
+}
+
+function CopyTextButton({
+  value,
+  className,
+  children
+}: {
+  value: string
+  className?: string
+  children: React.ReactNode
+}): React.JSX.Element {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      type="button"
+      title={`复制 ${value}`}
+      onClick={(e) => {
+        e.stopPropagation()
+        navigator.clipboard?.writeText(value)
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1200)
+      }}
+      className={'group inline-flex items-center gap-1 min-w-0 text-left hover:text-trust-blue transition-colors ' + (className || '')}
+    >
+      {children}
+      <span
+        className={
+          'material-symbols-outlined shrink-0 transition-opacity ' +
+          (copied ? 'opacity-100 text-action-green' : 'opacity-0 group-hover:opacity-60')
+        }
+        style={{ fontSize: '13px' }}
+      >
+        {copied ? 'check' : 'content_copy'}
+      </span>
+    </button>
+  )
+}
+
 function DetailGroup({
   title,
   rows,
@@ -1167,12 +1213,18 @@ function DetailGroup({
 }
 
 function DetailRow({ row, dense }: { row: DetailField; dense: boolean }): React.JSX.Element {
+  const copyValue = copyValueOf(row.value)
+  const valueClass = (dense ? 'text-[12px]' : 'text-body-sm') + ' mt-0.5 text-text-main break-words ' + (row.mono ? 'font-mono-data' : '')
   return (
     <div className="min-w-0 border-b border-border-subtle/70 pb-1.5">
       <div className="text-[11px] text-text-muted truncate">{row.label}</div>
-      <div className={(dense ? 'text-[12px]' : 'text-body-sm') + ' mt-0.5 text-text-main break-words ' + (row.mono ? 'font-mono-data' : '')}>
-        {hasValue(row.value) ? row.value : '—'}
-      </div>
+      {hasValue(row.value) && copyValue ? (
+        <CopyTextButton value={copyValue} className={valueClass}>
+          <span className="min-w-0 break-words">{row.value}</span>
+        </CopyTextButton>
+      ) : (
+        <div className={valueClass}>{hasValue(row.value) ? row.value : '—'}</div>
+      )}
     </div>
   )
 }

@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { initials } from '../lib/orderMapping'
 import { getTheme, toggleTheme, type Theme } from '../lib/theme'
-import { fetchUnmatchedOrderRefs, dismissUnmatchedOrderRef, type UnmatchedOrderRef } from '../api'
+import {
+  fetchUnmatchedOrderRefs,
+  dismissUnmatchedOrderRef,
+  confirmUnmatchedOrderRef,
+  type UnmatchedOrderRef
+} from '../api'
 import StatusBar from './StatusBar'
 import type { Session } from '../api'
 
@@ -172,6 +177,15 @@ function NotificationBell(): React.JSX.Element {
     }
   }
 
+  const confirm = async (id: number, orderId: number): Promise<void> => {
+    try {
+      await confirmUnmatchedOrderRef(id, orderId)
+      setItems((prev) => prev.filter((x) => x.id !== id))
+    } catch {
+      /* 失败保留，下次刷新再试 */
+    }
+  }
+
   const count = items.length
 
   return (
@@ -229,6 +243,32 @@ function NotificationBell(): React.JSX.Element {
                                 ? '短尾号格式正确，但找不到对应订单'
                                 : '找不到对应订单，需人工确认'}
                         </p>
+                        {it.candidateOrders && it.candidateOrders.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            {it.candidateOrders.map((o) => (
+                              <div
+                                key={o.id}
+                                className="rounded-md border border-border-subtle bg-surface-bg px-2 py-1.5 flex items-center justify-between gap-2"
+                              >
+                                <div className="min-w-0">
+                                  <div className="text-body-sm text-text-main truncate">
+                                    {o.customerName || '未命名'} · <span className="font-mono-data">{o.sourceOrderNo}</span>
+                                  </div>
+                                  <div className="text-[11px] text-text-muted truncate">
+                                    {o.applyNo ? `申请号 ${o.applyNo} · ` : ''}
+                                    {o.status || '无状态'}
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={() => confirm(it.id, o.id)}
+                                  className="shrink-0 text-body-sm text-primary px-2 py-1 rounded hover:bg-primary-container/10"
+                                >
+                                  确认关联
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                       <button
                         onClick={() => dismiss(it.id)}

@@ -155,6 +155,12 @@ export function registerApiRoutes(
 ) {
   const env = getEnv()
 
+  function orderNosForConversationMatch(sourceOrderNo: string, rawJson: unknown): string[] {
+    const raw = (rawJson ?? {}) as Record<string, unknown>
+    // 客户会话匹配只使用泰康订单号和申请号；CRM 申请号可能被多单共用，不能用于自动关联或短尾号关联。
+    return [sourceOrderNo, raw.applyNo].filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+  }
+
   async function matchOrderByPhone(phone: string): Promise<MatchedOrderPhone | null> {
     const normPhone = (phone ?? '').replace(/\D/g, '')
     if (!normPhone) return null
@@ -810,60 +816,68 @@ export function registerApiRoutes(
         const cand = extractOrderCandidate(orderNoCandidate) ?? extractOrderCandidate(conversationName)
         if (cand) {
           _debug.candidate = cand.raw
-          // 取该员工所有订单的已知订单号（列 source_order_no + rawJson.applyNo / crmApplyNo）
-          const orders = await prisma.order.findMany({
-            where: { assignedEmployeeId: employeeId },
-            select: { id: true, sourceOrderNo: true, rawJson: true, customerName: true }
+          const confirmedRef = await prisma.unmatchedOrderRef.findUnique({
+            where: { employee_candidate: { employeeId, candidate: cand.raw } },
+            select: { status: true, resolvedOrderId: true }
           })
-          const entries: OrderNoEntry[] = orders.map((o) => {
-            const raw = (o.rawJson ?? {}) as Record<string, unknown>
-            const nos = [o.sourceOrderNo, raw.applyNo, raw.crmApplyNo].filter(
-              (x): x is string => typeof x === 'string' && x.length > 0
-            )
-            return { orderId: o.id, nos, name: o.customerName }
-          })
-          // 传入会话标题：距离 1~2 的容差匹配会再用"订单客户名是否出现在标题里"做一道校验
-          const r = resolveOrder(cand.raw, entries, 2, conversationName)
-          if (r.status === 'matched') {
-            finalOrderId = r.orderId
-            _debug.matchMethod = 'fuzzy_order_no'
-            _debug.dist = r.dist
-            _debug.matchedOrderId = r.orderId
-            fastify.log.info(`订单号模糊解析命中: “${cand.raw}” → 订单 ${r.orderId}（距离 ${r.dist}）`)
+          if (confirmedRef?.status === 'confirmed' && confirmedRef.resolvedOrderId) {
+            finalOrderId = confirmedRef.resolvedOrderId
+            _debug.matchMethod = 'confirmed_order_ref'
+            _debug.matchedOrderId = finalOrderId
+            fastify.log.info(`订单号已人工确认: “${cand.raw}” → 订单 ${finalOrderId}`)
           } else {
-            // 解析不到 / 多单并列 / 号匹配上但客户名对不上 → 存待确认（同一员工+候选去重，重复则计数）
-            // reason: no_match 找不到 | ambiguous 多单并列 | name_mismatch 号匹配但客户名不在标题里
-            const reason =
-              r.status === 'ambiguous' ? 'ambiguous' : r.status === 'name_mismatch' ? 'name_mismatch' : 'no_match'
-            const bestDist = r.status === 'name_mismatch' ? r.dist : r.bestDist
-            const candidateOrderIds = r.status === 'ambiguous' ? r.orderIds : undefined
-            _debug.matchMethod = 'unmatched_ref'
-            _debug.reason = reason
-            await prisma.unmatchedOrderRef.upsert({
-              where: { employee_candidate: { employeeId, candidate: cand.raw } },
-              create: {
-                employeeId,
-                channel,
-                conversationName,
-                candidate: cand.raw,
-                candidateKind: cand.kind,
-                reason,
-                bestDist,
-                candidateOrderIds,
-                screenshotOssKey: screenshotOssKey ?? null,
-                capturedAt: new Date(capturedAt)
-              },
-              update: {
-                seenCount: { increment: 1 },
-                conversationName,
-                reason,
-                bestDist,
-                candidateOrderIds: candidateOrderIds ?? Prisma.JsonNull,
-                screenshotOssKey: screenshotOssKey ?? null,
-                capturedAt: new Date(capturedAt)
-              }
+            // 取该员工所有订单的已知订单号（source_order_no + rawJson.applyNo；不含 CRM 申请号）
+            const orders = await prisma.order.findMany({
+              where: { assignedEmployeeId: employeeId },
+              select: { id: true, sourceOrderNo: true, rawJson: true, customerName: true }
             })
-            fastify.log.info(`订单号待确认: “${cand.raw}” (${reason})，已存 UnmatchedOrderRef`)
+            const entries: OrderNoEntry[] = orders.map((o) => {
+              const nos = orderNosForConversationMatch(o.sourceOrderNo, o.rawJson)
+              return { orderId: o.id, nos, name: o.customerName }
+            })
+            // 传入会话标题：距离 1~2 的容差匹配会再用"订单客户名是否出现在标题里"做一道校验
+            const r = resolveOrder(cand.raw, entries, 2, conversationName)
+            if (r.status === 'matched') {
+              finalOrderId = r.orderId
+              _debug.matchMethod = 'fuzzy_order_no'
+              _debug.dist = r.dist
+              _debug.matchedOrderId = r.orderId
+              fastify.log.info(`订单号模糊解析命中: “${cand.raw}” → 订单 ${r.orderId}（距离 ${r.dist}）`)
+            } else {
+              // 解析不到 / 多单并列 / 号匹配上但客户名对不上 → 存待确认（同一员工+候选去重，重复则计数）
+              // reason: no_match 找不到 | ambiguous 多单并列 | name_mismatch 号匹配但客户名不在标题里
+              const reason =
+                r.status === 'ambiguous' ? 'ambiguous' : r.status === 'name_mismatch' ? 'name_mismatch' : 'no_match'
+              const bestDist = r.status === 'name_mismatch' ? r.dist : r.bestDist
+              const candidateOrderIds = r.status === 'ambiguous' ? r.orderIds : undefined
+              _debug.matchMethod = 'unmatched_ref'
+              _debug.reason = reason
+              await prisma.unmatchedOrderRef.upsert({
+                where: { employee_candidate: { employeeId, candidate: cand.raw } },
+                create: {
+                  employeeId,
+                  channel,
+                  conversationName,
+                  candidate: cand.raw,
+                  candidateKind: cand.kind,
+                  reason,
+                  bestDist,
+                  candidateOrderIds,
+                  screenshotOssKey: screenshotOssKey ?? null,
+                  capturedAt: new Date(capturedAt)
+                },
+                update: {
+                  seenCount: { increment: 1 },
+                  conversationName,
+                  reason,
+                  bestDist,
+                  candidateOrderIds: candidateOrderIds ?? Prisma.JsonNull,
+                  screenshotOssKey: screenshotOssKey ?? null,
+                  capturedAt: new Date(capturedAt)
+                }
+              })
+              fastify.log.info(`订单号待确认: “${cand.raw}” (${reason})，已存 UnmatchedOrderRef`)
+            }
           }
         } else {
           // 没抽到订单号 → 退回按客户姓名模糊匹配”已申领/进行中”的最近订单
@@ -919,7 +933,33 @@ export function registerApiRoutes(
       where: { employeeId: request.employee.id, status },
       orderBy: { updatedAt: 'desc' }
     })
-    return reply.send({ data: rows })
+    const allOrderIds = new Set<number>()
+    for (const r of rows) {
+      const ids = (r.candidateOrderIds as unknown as number[] | null) ?? []
+      for (const id of ids) if (typeof id === 'number') allOrderIds.add(id)
+    }
+    const candidateOrders = allOrderIds.size
+      ? await prisma.order.findMany({
+          where: { id: { in: [...allOrderIds] }, assignedEmployeeId: request.employee.id },
+          select: { id: true, sourceOrderNo: true, customerName: true, status: true, rawJson: true }
+        })
+      : []
+    const candidateMap = new Map(candidateOrders.map((o) => [o.id, o]))
+    return reply.send({
+      data: rows.map((r) => {
+        const ids = (r.candidateOrderIds as unknown as number[] | null) ?? []
+        return {
+          ...r,
+          candidateOrders: ids.map((id) => candidateMap.get(id)).filter(Boolean).map((o) => ({
+            id: o!.id,
+            sourceOrderNo: o!.sourceOrderNo,
+            customerName: o!.customerName,
+            status: o!.status,
+            applyNo: ((o!.rawJson ?? {}) as Record<string, unknown>).applyNo ?? null
+          }))
+        }
+      })
+    })
   })
 
   // 确认：把某条待确认绑定到指定订单（同时回填该会话下未关联的消息到该订单）
@@ -937,6 +977,9 @@ export function registerApiRoutes(
       }
       const order = await prisma.order.findUnique({ where: { id: orderId } })
       if (!order) return reply.status(404).send({ error: '订单不存在' })
+      if (order.assignedEmployeeId !== request.employee.id) {
+        return reply.status(403).send({ error: '不能确认到其他员工的订单' })
+      }
 
       await prisma.unmatchedOrderRef.update({
         where: { id },
@@ -1001,15 +1044,19 @@ export function registerApiRoutes(
       })
       return matchedOrder?.id ?? null
     }
+    const confirmedRef = await prisma.unmatchedOrderRef.findUnique({
+      where: { employee_candidate: { employeeId, candidate: cand.raw } },
+      select: { status: true, resolvedOrderId: true }
+    })
+    if (confirmedRef?.status === 'confirmed' && confirmedRef.resolvedOrderId) {
+      return confirmedRef.resolvedOrderId
+    }
     const orders = await prisma.order.findMany({
       where: { assignedEmployeeId: employeeId },
       select: { id: true, sourceOrderNo: true, rawJson: true, customerName: true }
     })
     const entries: OrderNoEntry[] = orders.map((o) => {
-      const raw = (o.rawJson ?? {}) as Record<string, unknown>
-      const nos = [o.sourceOrderNo, raw.applyNo, raw.crmApplyNo].filter(
-        (x): x is string => typeof x === 'string' && x.length > 0
-      )
+      const nos = orderNosForConversationMatch(o.sourceOrderNo, o.rawJson)
       return { orderId: o.id, nos, name: o.customerName }
     })
     const r = resolveOrder(cand.raw, entries, 2, conversationName)

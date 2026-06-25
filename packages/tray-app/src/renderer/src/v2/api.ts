@@ -350,6 +350,13 @@ export interface UnmatchedOrderRef {
   capturedAt: string
   seenCount: number // 同一候选重复出现次数
   status: string // 'pending' | 'confirmed' | 'rejected'
+  candidateOrders?: Array<{
+    id: number
+    sourceOrderNo: string
+    customerName: string
+    status: string
+    applyNo?: string | null
+  }>
   createdAt: string
   updatedAt: string
 }
@@ -364,6 +371,14 @@ export function fetchUnmatchedOrderRefs(status = 'pending'): Promise<UnmatchedOr
 /** 标记已处理（忽略）：status → rejected */
 export function dismissUnmatchedOrderRef(id: number): Promise<{ ok: boolean }> {
   return authedSend(`/api/v1/unmatched-order-refs/${id}/reject`, 'POST')
+}
+
+/** 人工确认待关联订单号 → 绑定订单，并回填该会话下未关联消息 */
+export function confirmUnmatchedOrderRef(
+  id: number,
+  orderId: number
+): Promise<{ ok: boolean; backfilledMessages: number }> {
+  return authedSend(`/api/v1/unmatched-order-refs/${id}/confirm`, 'POST', { orderId })
 }
 
 /**
