@@ -160,7 +160,7 @@ model UnmatchedOrderRef {
   channel          String // 'wechat' | 'wxwork'
   conversationName String    @map("conversation_name") // OCR 到的会话标题原文
   candidate        String // 抽到的订单号候选（去空白后）
-  candidateKind    String    @map("candidate_kind") // 'fwyy' | 'cod' | 'ccod' | 'od' | 'unknown'
+  candidateKind    String    @map("candidate_kind") // 'fwyy' | 'cod' | 'ccod' | 'od' | 'so' | 'lt' | 'tail8' | 'unknown'
   reason           String // 'no_match'（找不到） | 'ambiguous'（多单并列）
   bestDist         Int?      @map("best_dist") // 最近编辑距离（none 时是超阈值的最小值，便于排查）
   candidateOrderIds Json?    @map("candidate_order_ids") // ambiguous 时并列的订单 id 列表

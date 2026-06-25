@@ -37,9 +37,9 @@ export function canonicalize(s: string): string {
  *    故 body 收紧为「数字 + OCR 易混字符」(o→0/i→1/s→5/z→2/g→9/l→1/|→1/q→0)，避免把 solution 这类词误当订单号。
  * 后续都靠 canonicalize 归一 + 编辑距离纠回。
  */
-const CANDIDATE_RE = /(?:c?cod|od|fwyy)[0-9a-z|]{6,24}|(?:so|lt)[0-9oqislzg|]{14,24}/i
+const CANDIDATE_RE = /[#＃][0-9a-z|]{8}(?![0-9a-z|])|(?:c?cod|od|fwyy)[0-9a-z|]{6,24}|(?:so|lt)[0-9oqislzg|]{14,24}/i
 
-export type CandidateKind = 'fwyy' | 'cod' | 'ccod' | 'od' | 'so' | 'lt' | 'unknown'
+export type CandidateKind = 'fwyy' | 'cod' | 'ccod' | 'od' | 'so' | 'lt' | 'tail8' | 'unknown'
 
 export interface ExtractedCandidate {
   raw: string // 去空白后的原始候选（保留大小写，便于展示）
@@ -53,7 +53,9 @@ export function extractOrderCandidate(title: string | null | undefined): Extract
   if (!m) return null
   const raw = m[0]
   const lower = raw.toLowerCase()
-  const kind: CandidateKind = lower.startsWith('fwyy')
+  const kind: CandidateKind = lower.startsWith('#') || lower.startsWith('＃')
+    ? 'tail8'
+    : lower.startsWith('fwyy')
     ? 'fwyy'
     : lower.startsWith('ccod')
       ? 'ccod'
@@ -105,6 +107,84 @@ export type ResolveResult =
   // 订单号靠容差(距离≥1)匹配上了某单，但该单的客户名没出现在标题里 → 可疑，疑似认错号撞上别人
   | { status: 'name_mismatch'; orderId: number; dist: number; matchedNo: string }
 
+function uniqueCjkChars(s: string | null | undefined): string[] {
+  if (!s) return []
+  return Array.from(new Set(Array.from(s).filter((ch) => /[\u4e00-\u9fff]/.test(ch))))
+}
+
+function nameHitCount(title: string | null | undefined, name: string | null | undefined): number {
+  if (!title || !name) return 0
+  const titleChars = new Set(uniqueCjkChars(title))
+  if (titleChars.size === 0) return 0
+  let n = 0
+  for (const ch of uniqueCjkChars(name)) {
+    if (titleChars.has(ch)) n++
+  }
+  return n
+}
+
+function nameCandidateFromTitle(title: string | null | undefined): string | null {
+  if (!title) return null
+  const compact = title.replace(/\s+/g, '')
+  const marker = compact.search(/[#＃]/)
+  if (marker <= 0) return null
+  const name = compact.slice(0, marker).replace(/家属/g, '')
+  return name.length > 0 ? name : null
+}
+
+function tail8OfCandidate(candidate: string): string | null {
+  const compact = candidate.replace(/\s+/g, '')
+  if (!/^[#＃][0-9a-z|]{8}$/i.test(compact)) return null
+  return canonicalize(compact.slice(1))
+}
+
+function resolveTail8(tail: string, entries: OrderNoEntry[], title?: string | null, maxDist = 2): ResolveResult {
+  const nameCandidate = nameCandidateFromTitle(title)
+  const tied: { orderId: number; name?: string | null; no: string; dist: number; nameHits: number }[] = []
+  let bestDist = Infinity
+
+  for (const e of entries) {
+    for (const no of e.nos) {
+      if (!no) continue
+      const cn = canonicalize(no)
+      if (cn.length < tail.length) continue
+      const orderTail = cn.slice(-tail.length)
+      const dist = levenshtein(tail, orderTail, maxDist)
+      if (dist > maxDist) continue
+      if (!tied.some((t) => t.orderId === e.orderId)) {
+        tied.push({ orderId: e.orderId, name: e.name, no, dist, nameHits: nameHitCount(nameCandidate, e.name) })
+      } else {
+        const existing = tied.find((t) => t.orderId === e.orderId)
+        if (existing && dist < existing.dist) {
+          existing.dist = dist
+          existing.no = no
+        }
+      }
+      if (dist < bestDist) bestDist = dist
+    }
+  }
+
+  if (tied.length === 0) return { status: 'none', bestDist: -1 }
+  const nearest = tied.filter((t) => t.dist === bestDist)
+  if (nearest.length === 1) {
+    return { status: 'matched', orderId: nearest[0].orderId, dist: nearest[0].dist, matchedNo: nearest[0].no }
+  }
+
+  const oneCharHits = nearest.filter((t) => t.nameHits >= 1)
+  if (oneCharHits.length === 1) {
+    const hit = oneCharHits[0]
+    return { status: 'matched', orderId: hit.orderId, dist: hit.dist, matchedNo: hit.no }
+  }
+
+  const twoCharHits = oneCharHits.filter((t) => t.nameHits >= 2)
+  if (twoCharHits.length === 1) {
+    const hit = twoCharHits[0]
+    return { status: 'matched', orderId: hit.orderId, dist: hit.dist, matchedNo: hit.no }
+  }
+
+  return { status: 'ambiguous', bestDist, orderIds: nearest.map((t) => t.orderId) }
+}
+
 /**
  * 在候选订单集合里找与 candidate 最接近的订单。
  * - 唯一最近且距离 ≤ maxDist → matched；多个订单并列最近 → ambiguous；都超阈值 → none。
@@ -117,6 +197,9 @@ export function resolveOrder(
   maxDist = 2,
   title?: string | null
 ): ResolveResult {
+  const tail8 = tail8OfCandidate(candidate)
+  if (tail8) return resolveTail8(tail8, entries, title, maxDist)
+
   const c = canonicalize(candidate)
   let bestDist = Infinity
   let tied: { orderId: number; name?: string | null; no: string }[] = []
