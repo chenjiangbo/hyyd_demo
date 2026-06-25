@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>待申领 - Medical Green-Channel</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&amp;family=JetBrains+Mono:wght@400&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-error-container": "#93000a",
+                        "primary-fixed-dim": "#afc6ff",
+                        "on-secondary-fixed-variant": "#5516be",
+                        "on-tertiary-fixed-variant": "#7c2e00",
+                        "border-subtle": "#E2E8F0",
+                        "surface-tint": "#0459c5",
+                        "primary": "#00459d",
+                        "inverse-on-surface": "#eff0fa",
+                        "on-error": "#ffffff",
+                        "surface-container-low": "#f2f3fd",
+                        "inverse-surface": "#2e3037",
+                        "surface-variant": "#e1e2eb",
+                        "outline-variant": "#c2c6d5",
+                        "on-tertiary-container": "#ffd3c1",
+                        "inverse-primary": "#afc6ff",
+                        "error-container": "#ffdad6",
+                        "on-primary-container": "#d0dcff",
+                        "primary-fixed": "#d9e2ff",
+                        "tertiary": "#7f3000",
+                        "surface-container-highest": "#e1e2eb",
+                        "surface-bg": "#F8FAFC",
+                        "on-tertiary-fixed": "#351000",
+                        "secondary-fixed": "#e9ddff",
+                        "surface": "#faf9ff",
+                        "surface-dim": "#d9d9e3",
+                        "primary-container": "#0d5cc8",
+                        "on-surface": "#191b22",
+                        "on-primary-fixed-variant": "#004398",
+                        "ai-purple": "#8B5CF6",
+                        "text-main": "#1E293B",
+                        "secondary": "#6b38d4",
+                        "on-secondary-container": "#fffbff",
+                        "on-background": "#191b22",
+                        "surface-container-lowest": "#ffffff",
+                        "surface-container-high": "#e7e7f1",
+                        "on-surface-variant": "#424753",
+                        "secondary-fixed-dim": "#d0bcff",
+                        "on-primary": "#ffffff",
+                        "alert-orange": "#F59E0B",
+                        "surface-bright": "#faf9ff",
+                        "background": "#faf9ff",
+                        "tertiary-fixed": "#ffdbcc",
+                        "on-secondary-fixed": "#23005c",
+                        "tertiary-fixed-dim": "#ffb695",
+                        "on-secondary": "#ffffff",
+                        "on-tertiary": "#ffffff",
+                        "secondary-container": "#8455ef",
+                        "trust-blue": "#0D5CC8",
+                        "surface-container": "#ededf7",
+                        "outline": "#737785",
+                        "error": "#ba1a1a",
+                        "tertiary-container": "#a64100",
+                        "action-green": "#10B981",
+                        "on-primary-fixed": "#001a43",
+                        "text-muted": "#64748B"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "swimlane-width": "320px",
+                        "container-max": "1440px",
+                        "gutter": "16px",
+                        "unit": "4px",
+                        "margin-page": "24px",
+                        "card-padding": "16px"
+                    },
+                    "fontFamily": {
+                        "body-md": ["Inter"],
+                        "h2-header": ["Inter"],
+                        "mono-data": ["JetBrains Mono"],
+                        "body-lg": ["Inter"],
+                        "h3-title": ["Inter"],
+                        "h1-display": ["Inter"],
+                        "label-caps": ["Inter"],
+                        "body-sm": ["Inter"]
+                    },
+                    "fontSize": {
+                        "body-md": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                        "h2-header": ["20px", {"lineHeight": "28px", "fontWeight": "600"}],
+                        "mono-data": ["13px", {"lineHeight": "18px", "fontWeight": "400"}],
+                        "body-lg": ["15px", {"lineHeight": "22px", "fontWeight": "400"}],
+                        "h3-title": ["16px", {"lineHeight": "24px", "fontWeight": "600"}],
+                        "h1-display": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.02em", "fontWeight": "600"}],
+                        "label-caps": ["12px", {"lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "700"}],
+                        "body-sm": ["13px", {"lineHeight": "18px", "fontWeight": "400"}]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .icon-fill {
+            font-variation-settings: 'FILL' 1;
+        }
+    </style>
+</head>
+<body class="bg-surface-bg text-on-surface font-body-md min-h-screen antialiased flex flex-col">
+<!-- TopNavBar -->
+<nav class="bg-surface-container-lowest border-b border-border-subtle shadow-sm flex justify-between items-center w-full px-margin-page h-16 z-50 sticky top-0">
+<!-- Search & Brand (Search on_left per JSON, but typical SaaS places brand first. Following JSON implicitly by grouping left) -->
+<div class="flex items-center gap-8">
+<div class="text-h2-header font-h2-header font-bold text-primary flex items-center gap-2">
+<span class="material-symbols-outlined icon-fill text-[28px]">health_and_safety</span>
+                Medical Green-Channel
+            </div>
+<div class="relative hidden md:block w-64">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-outline text-[18px]">search</span>
+<input class="w-full pl-9 pr-4 py-1.5 bg-surface-container-low border-transparent focus:border-primary focus:ring-1 focus:ring-primary rounded-full text-body-sm font-body-sm text-on-surface placeholder:text-text-muted transition-all" placeholder="搜索订单号或客户姓名" type="text"/>
+</div>
+</div>
+<!-- Navigation Links -->
+<div class="hidden md:flex h-full items-end gap-6">
+<a class="text-primary font-bold border-b-2 border-primary pb-4 px-1 text-body-md font-body-md relative" href="#">
+                待申领
+                <span class="absolute top-0 -right-4 bg-error text-on-error rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none shadow-sm">12</span>
+</a>
+<a class="text-text-muted hover:text-primary pb-4 px-1 text-body-md font-body-md transition-colors hover:bg-surface-container-low opacity-80 duration-150" href="#">工作台</a>
+<a class="text-text-muted hover:text-primary pb-4 px-1 text-body-md font-body-md transition-colors hover:bg-surface-container-low opacity-80 duration-150" href="#">客户档案</a>
+<a class="text-text-muted hover:text-primary pb-4 px-1 text-body-md font-body-md transition-colors hover:bg-surface-container-low opacity-80 duration-150" href="#">知识库</a>
+<a class="text-text-muted hover:text-primary pb-4 px-1 text-body-md font-body-md transition-colors hover:bg-surface-container-low opacity-80 duration-150" href="#">数据看板</a>
+</div>
+<!-- Trailing Actions -->
+<div class="flex items-center gap-4 text-primary">
+<button class="p-2 hover:bg-surface-container-low rounded-full transition-colors relative group">
+<span class="material-symbols-outlined" data-icon="notifications">notifications</span>
+<span class="absolute top-2 right-2 w-2 h-2 bg-alert-orange rounded-full border-2 border-surface-container-lowest"></span>
+</button>
+<button class="p-2 hover:bg-surface-container-low rounded-full transition-colors">
+<span class="material-symbols-outlined" data-icon="help">help</span>
+</button>
+<button class="p-2 hover:bg-surface-container-low rounded-full transition-colors">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+</button>
+<div class="w-8 h-8 rounded-full bg-surface-container-high border border-border-subtle overflow-hidden ml-2 cursor-pointer shadow-sm">
+<img alt="Specialist Profile" class="w-full h-full object-cover" data-alt="A small, professional headshot photo of an Asian medical specialist in a clean clinical environment, used as an avatar. Bright, neutral lighting." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBWiZ-PAxsOx2XFW-sbhiHVoiLLvm5X6FUPUWVGfNxcfjxbtGVsN4RLQfoHxQ8l_JL9VcicG5xRgHB-N9JWNjuLza8L4m0iuMN3oChM2DjmzLLEybQO1D4qKPxRcJp8lqGuISCWExlPEX8t4SeBHpgt6bi3CDj2pclg7F0BB6lkcastBvRt_-sDszIMUeGxSdfakCQwvVE8A4SrxeBfJbH80CDIGQlYVRXg41SwHb2FwrD0Dhys3gfEP4S6Y-Nd6tg4agxzFvd3Vcw"/>
+</div>
+</div>
+</nav>
+<!-- Main Content Canvas -->
+<main class="flex-1 w-full max-w-container-max mx-auto px-margin-page py-6">
+<!-- Header & Controls -->
+<div class="flex justify-between items-end mb-6">
+<div>
+<h1 class="text-h1-display font-h1-display text-on-surface mb-1">公海订单池</h1>
+<p class="text-body-sm font-body-sm text-text-muted">当前共有 <span class="font-mono-data font-bold text-primary">12</span> 笔高优订单待申领，请及时处理。</p>
+</div>
+<div class="flex gap-3">
+<div class="flex items-center bg-surface-container-lowest border border-border-subtle rounded-lg p-1 shadow-sm">
+<button class="px-3 py-1.5 text-body-sm font-body-sm bg-surface-container-low text-on-surface rounded-md font-medium">全部来源</button>
+<button class="px-3 py-1.5 text-body-sm font-body-sm text-text-muted hover:text-on-surface rounded-md transition-colors">泰康人寿</button>
+<button class="px-3 py-1.5 text-body-sm font-body-sm text-text-muted hover:text-on-surface rounded-md transition-colors">平安健康</button>
+</div>
+<button class="flex items-center gap-1.5 px-3 py-1.5 bg-surface-container-lowest border border-border-subtle rounded-lg text-body-sm font-body-sm text-on-surface hover:bg-surface-container-low transition-colors shadow-sm">
+<span class="material-symbols-outlined text-[18px]">filter_list</span>
+                    更多筛选
+                </button>
+</div>
+</div>
+<!-- Data Table (High Density List) -->
+<div class="bg-surface-container-lowest border border-border-subtle rounded-xl shadow-sm overflow-hidden flex flex-col">
+<!-- Table Header -->
+<div class="grid grid-cols-[140px_100px_120px_1fr_120px_100px] gap-4 px-card-padding py-3 bg-surface-container-low border-b border-border-subtle text-label-caps font-label-caps text-on-surface-variant uppercase tracking-wider">
+<div>来源渠道</div>
+<div>客户姓名</div>
+<div>业务类型</div>
+<div>诉求摘要</div>
+<div class="flex items-center gap-1 cursor-pointer hover:text-primary">进入时间 <span class="material-symbols-outlined text-[14px]">arrow_downward</span></div>
+<div class="text-right">操作</div>
+</div>
+<!-- Table Body -->
+<div class="flex flex-col divide-y divide-border-subtle">
+<!-- Row 1: High Priority (Timeout Warning) -->
+<div class="grid grid-cols-[140px_100px_120px_1fr_120px_100px] gap-4 px-card-padding py-3 items-center hover:bg-surface-container-low transition-colors relative group">
+<div class="absolute left-0 top-0 bottom-0 w-1 bg-alert-orange"></div> <!-- Timeout Ribbon -->
+<div class="flex items-center gap-2">
+<div class="w-6 h-6 rounded bg-surface-container-high flex items-center justify-center border border-border-subtle shrink-0">
+<span class="text-[10px] font-bold text-primary">泰康</span>
+</div>
+<span class="text-body-sm font-body-sm text-on-surface truncate">泰康尊享计划</span>
+</div>
+<div class="text-body-sm font-body-sm font-medium text-on-surface">张建国</div>
+<div>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-primary-fixed text-on-primary-fixed-variant border border-primary-fixed-dim">门诊绿通</span>
+</div>
+<div class="text-body-sm font-body-sm text-on-surface-variant truncate pr-4 flex items-center gap-2">
+<span class="material-symbols-outlined text-alert-orange text-[16px]" title="SLA Timeout Imminent">warning</span>
+                        确诊肺部结节，急需安排北京协和医院呼吸内科专家号...
+                    </div>
+<div class="text-mono-data font-mono-data text-alert-orange font-medium">10:05:22</div>
+<div class="text-right">
+<button class="bg-primary hover:bg-primary-container text-on-primary text-body-sm font-body-sm px-4 py-1.5 rounded-lg shadow-sm transition-colors font-medium">申领</button>
+</div>
+</div>
+<!-- Row 2 -->
+<div class="grid grid-cols-[140px_100px_120px_1fr_120px_100px] gap-4 px-card-padding py-3 items-center hover:bg-surface-container-low transition-colors group">
+<div class="flex items-center gap-2">
+<div class="w-6 h-6 rounded bg-surface-container-high flex items-center justify-center border border-border-subtle shrink-0">
+<span class="text-[10px] font-bold text-action-green">平安</span>
+</div>
+<span class="text-body-sm font-body-sm text-on-surface truncate">平安e生保</span>
+</div>
+<div class="text-body-sm font-body-sm font-medium text-on-surface">李娜</div>
+<div>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-secondary-fixed text-on-secondary-fixed border border-secondary-fixed-dim">住院安排</span>
+</div>
+<div class="text-body-sm font-body-sm text-on-surface-variant truncate pr-4">
+                        甲状腺恶性肿瘤待查，需尽快协调上海瑞金医院床位进行手术。
+                    </div>
+<div class="text-mono-data font-mono-data text-text-muted">10:12:45</div>
+<div class="text-right">
+<button class="bg-primary hover:bg-primary-container text-on-primary text-body-sm font-body-sm px-4 py-1.5 rounded-lg shadow-sm transition-colors font-medium">申领</button>
+</div>
+</div>
+<!-- Row 3: AI Highlight -->
+<div class="grid grid-cols-[140px_100px_120px_1fr_120px_100px] gap-4 px-card-padding py-3 items-center hover:bg-surface-container-low transition-colors group relative">
+<div class="absolute left-0 top-0 bottom-0 w-1 bg-ai-purple opacity-0 group-hover:opacity-100 transition-opacity"></div>
+<div class="flex items-center gap-2">
+<div class="w-6 h-6 rounded bg-surface-container-high flex items-center justify-center border border-border-subtle shrink-0">
+<span class="text-[10px] font-bold text-trust-blue">人保</span>
+</div>
+<span class="text-body-sm font-body-sm text-on-surface truncate">人保健康金</span>
+</div>
+<div class="text-body-sm font-body-sm font-medium text-on-surface">王刚</div>
+<div>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-surface-variant text-on-surface-variant border border-outline-variant">多学科会诊</span>
+</div>
+<div class="text-body-sm font-body-sm text-on-surface-variant truncate pr-4 flex items-center gap-1.5">
+<span class="material-symbols-outlined text-ai-purple text-[16px]" title="AI Extracted Intent">smart_toy</span>
+<span class="bg-ai-purple/10 text-text-main px-1 rounded">疑难肠胃病症</span>，申请组织北京三甲医院消化科MDT评估。
+                    </div>
+<div class="text-mono-data font-mono-data text-text-muted">10:28:10</div>
+<div class="text-right">
+<button class="bg-primary hover:bg-primary-container text-on-primary text-body-sm font-body-sm px-4 py-1.5 rounded-lg shadow-sm transition-colors font-medium">申领</button>
+</div>
+</div>
+<!-- Row 4 -->
+<div class="grid grid-cols-[140px_100px_120px_1fr_120px_100px] gap-4 px-card-padding py-3 items-center hover:bg-surface-container-low transition-colors group">
+<div class="flex items-center gap-2">
+<div class="w-6 h-6 rounded bg-surface-container-high flex items-center justify-center border border-border-subtle shrink-0">
+<span class="text-[10px] font-bold text-primary">泰康</span>
+</div>
+<span class="text-body-sm font-body-sm text-on-surface truncate">泰康尊享计划</span>
+</div>
+<div class="text-body-sm font-body-sm font-medium text-on-surface">赵小燕</div>
+<div>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-primary-fixed text-on-primary-fixed-variant border border-primary-fixed-dim">门诊绿通</span>
+</div>
+<div class="text-body-sm font-body-sm text-on-surface-variant truncate pr-4">
+                        骨折术后复查，需预约上海华山医院骨科号源。
+                    </div>
+<div class="text-mono-data font-mono-data text-text-muted">10:35:02</div>
+<div class="text-right">
+<button class="bg-primary hover:bg-primary-container text-on-primary text-body-sm font-body-sm px-4 py-1.5 rounded-lg shadow-sm transition-colors font-medium">申领</button>
+</div>
+</div>
+</div>
+<!-- Pagination / Footer -->
+<div class="px-card-padding py-3 bg-surface-bg border-t border-border-subtle flex justify-between items-center">
+<span class="text-body-sm font-body-sm text-text-muted">显示 1 - 4 条，共 12 条</span>
+<div class="flex items-center gap-2">
+<button class="p-1 rounded text-text-muted hover:bg-surface-container-high disabled:opacity-50" disabled="">
+<span class="material-symbols-outlined text-[18px]">chevron_left</span>
+</button>
+<button class="w-6 h-6 rounded bg-primary text-on-primary text-body-sm font-body-sm flex items-center justify-center">1</button>
+<button class="w-6 h-6 rounded text-on-surface hover:bg-surface-container-high text-body-sm font-body-sm flex items-center justify-center">2</button>
+<button class="w-6 h-6 rounded text-on-surface hover:bg-surface-container-high text-body-sm font-body-sm flex items-center justify-center">3</button>
+<button class="p-1 rounded text-on-surface hover:bg-surface-container-high">
+<span class="material-symbols-outlined text-[18px]">chevron_right</span>
+</button>
+</div>
+</div>
+</div>
+</main>
+</body></html>

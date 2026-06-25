@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+
+<html class="light" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>寰宇绿通工作台 - 知识库</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&amp;family=JetBrains+Mono:wght@400&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "text-muted": "#64748B",
+                        "on-primary-fixed-variant": "#004398",
+                        "background": "#faf9ff",
+                        "tertiary-container": "#a64100",
+                        "text-main": "#1E293B",
+                        "on-error-container": "#93000a",
+                        "alert-orange": "#F59E0B",
+                        "surface-container-low": "#f2f3fd",
+                        "on-secondary-fixed-variant": "#5516be",
+                        "on-secondary-container": "#fffbff",
+                        "primary": "#00459d",
+                        "on-tertiary": "#ffffff",
+                        "primary-fixed": "#d9e2ff",
+                        "outline-variant": "#c2c6d5",
+                        "on-tertiary-fixed": "#351000",
+                        "tertiary-fixed": "#ffdbcc",
+                        "surface-dim": "#d9d9e3",
+                        "secondary-fixed": "#e9ddff",
+                        "ai-purple": "#8B5CF6",
+                        "surface": "#faf9ff",
+                        "surface-bright": "#faf9ff",
+                        "on-primary-container": "#d0dcff",
+                        "on-primary": "#ffffff",
+                        "error-container": "#ffdad6",
+                        "inverse-surface": "#2e3037",
+                        "on-tertiary-container": "#ffd3c1",
+                        "on-error": "#ffffff",
+                        "surface-tint": "#0459c5",
+                        "primary-fixed-dim": "#afc6ff",
+                        "surface-container-high": "#e7e7f1",
+                        "on-surface-variant": "#424753",
+                        "on-tertiary-fixed-variant": "#7c2e00",
+                        "on-primary-fixed": "#001a43",
+                        "secondary": "#6b38d4",
+                        "secondary-fixed-dim": "#d0bcff",
+                        "surface-container-lowest": "#ffffff",
+                        "error": "#ba1a1a",
+                        "surface-container-highest": "#e1e2eb",
+                        "trust-blue": "#0D5CC8",
+                        "tertiary": "#7f3000",
+                        "surface-variant": "#e1e2eb",
+                        "inverse-primary": "#afc6ff",
+                        "tertiary-fixed-dim": "#ffb695",
+                        "on-background": "#191b22",
+                        "surface-bg": "#F8FAFC",
+                        "outline": "#737785",
+                        "surface-container": "#ededf7",
+                        "border-subtle": "#E2E8F0",
+                        "on-secondary-fixed": "#23005c",
+                        "on-surface": "#191b22",
+                        "on-secondary": "#ffffff",
+                        "primary-container": "#0d5cc8",
+                        "inverse-on-surface": "#eff0fa",
+                        "action-green": "#10B981",
+                        "secondary-container": "#8455ef"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "margin-page": "24px",
+                        "unit": "4px",
+                        "gutter": "16px",
+                        "swimlane-width": "320px",
+                        "card-padding": "16px",
+                        "container-max": "1440px"
+                    },
+                    "fontFamily": {
+                        "body-sm": ["Inter"],
+                        "mono-data": ["JetBrains Mono"],
+                        "h2-header": ["Inter"],
+                        "body-md": ["Inter"],
+                        "h1-display": ["Inter"],
+                        "body-lg": ["Inter"],
+                        "label-caps": ["Inter"],
+                        "h3-title": ["Inter"]
+                    },
+                    "fontSize": {
+                        "body-sm": ["13px", {"lineHeight": "18px", "fontWeight": "400"}],
+                        "mono-data": ["13px", {"lineHeight": "18px", "fontWeight": "400"}],
+                        "h2-header": ["20px", {"lineHeight": "28px", "fontWeight": "600"}],
+                        "body-md": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                        "h1-display": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.02em", "fontWeight": "600"}],
+                        "body-lg": ["15px", {"lineHeight": "22px", "fontWeight": "400"}],
+                        "label-caps": ["12px", {"lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "700"}],
+                        "h3-title": ["16px", {"lineHeight": "24px", "fontWeight": "600"}]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+        .bento-grid {
+            display: grid;
+            grid-template-columns: repeat(12, 1fr);
+            gap: 16px;
+        }
+    </style>
+</head>
+<body class="bg-background text-text-main font-body-md antialiased h-screen overflow-hidden flex flex-col">
+<!-- TopNavBar -->
+<nav class="bg-surface dark:bg-on-background fixed top-0 w-full h-16 border-b border-border-subtle dark:border-outline shadow-sm z-50">
+<div class="flex items-center justify-between px-margin-page max-w-container-max mx-auto h-full">
+<div class="flex items-center gap-8 h-full">
+<div class="font-h2-header text-h2-header text-trust-blue dark:text-primary-fixed-dim">寰宇绿通工作台</div>
+<div class="hidden md:flex items-end gap-6 h-full pt-4">
+<a class="font-body-md text-body-md text-text-muted dark:text-on-surface-variant hover:text-text-main pb-4 hover:text-primary transition-colors duration-200 cursor-pointer active:opacity-80" href="#">待申领</a>
+<a class="font-body-md text-body-md text-text-muted dark:text-on-surface-variant hover:text-text-main pb-4 hover:text-primary transition-colors duration-200 cursor-pointer active:opacity-80" href="#">工作台</a>
+<a class="font-body-md text-body-md text-text-muted dark:text-on-surface-variant hover:text-text-main pb-4 hover:text-primary transition-colors duration-200 cursor-pointer active:opacity-80" href="#">客户档案</a>
+<a class="font-body-md text-body-md text-trust-blue dark:text-primary-fixed font-semibold border-b-2 border-trust-blue pb-4 hover:text-primary transition-colors duration-200 cursor-pointer active:opacity-80" href="#">知识库</a>
+<a class="font-body-md text-body-md text-text-muted dark:text-on-surface-variant hover:text-text-main pb-4 hover:text-primary transition-colors duration-200 cursor-pointer active:opacity-80" href="#">数据看板</a>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<div class="relative w-64">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-text-muted text-sm">search</span>
+<input class="w-full pl-9 pr-3 py-1.5 bg-surface-container rounded-full font-body-sm text-body-sm border-none focus:ring-1 focus:ring-trust-blue transition-all" placeholder="搜索医院、科室、专家、经验..." type="text"/>
+</div>
+<div class="flex items-center gap-3">
+<button class="p-1.5 text-text-muted hover:text-primary transition-colors duration-200 cursor-pointer active:opacity-80"><span class="material-symbols-outlined">notifications</span></button>
+<button class="p-1.5 text-text-muted hover:text-primary transition-colors duration-200 cursor-pointer active:opacity-80"><span class="material-symbols-outlined">settings</span></button>
+<div class="w-8 h-8 rounded-full bg-trust-blue flex items-center justify-center text-white font-h3-title text-h3-title ml-2 overflow-hidden border border-border-subtle cursor-pointer">
+<img alt="Specialist Profile" class="w-full h-full object-cover" data-alt="A professional headshot of a medical service specialist in a corporate setting. The specialist is wearing a subtle, modern uniform with a small earpiece, looking confident and approachable. Bright, clean, corporate lighting. High quality, photorealistic." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCLTkR9FrgHm2S67vJJf3TlwIQxX5nrPD1cNAkpIbfSO9_0gJLtHB9-ORzQnl2q4V2FyPvcyBFOIIrAvsW92bePsoCiJCKjp-oSgwllUMLaxk3BwPPwshX8pspCH34TGEjUNqn1_cFAr-ZtIGEU4XoRgVPoJSdo2KJ0K6b9rG0nKFIER-tp-fuGglOQZ7Bd5rMvY5bWlZXWNRZj5GBkkP9qAXWJHO7GR_PbNCirJdHQv7CtnTKeHQZbStAvE-BGXOEH_jpOBYrUBVQ"/>
+</div>
+</div>
+</div>
+</div>
+</nav>
+<div class="flex flex-1 pt-16">
+<!-- SideNavBar -->
+<!-- Main Content -->
+<main class="flex-1 bg-surface-bg p-margin-page overflow-y-auto">
+<div class="max-w-container-max mx-auto h-full flex flex-col">
+<!-- Header & Action -->
+<div class="flex justify-between items-center mb-6">
+<div>
+<h1 class="font-h1-display text-h1-display text-text-main mb-1">资源与经验库</h1>
+<p class="font-body-md text-body-md text-text-muted">沉淀核心医疗资源信息与实战挂号经验。</p>
+</div>
+<button class="bg-white border border-border-subtle text-trust-blue px-4 py-2 rounded-lg font-body-sm text-body-sm font-semibold hover:bg-surface-container-low transition-colors shadow-sm flex items-center gap-2">
+<span class="material-symbols-outlined text-sm">edit_note</span>
+                        手工记录经验
+                    </button>
+</div>
+<!-- Content Bento Grid -->
+<div class="bento-grid flex-1">
+<!-- Left Col: Directory (Base Layer) -->
+<div class="col-span-12 lg:col-span-4 flex flex-col gap-4">
+<!-- Filters -->
+<div class="bg-white rounded-xl border border-border-subtle p-4 shadow-sm">
+<div class="flex gap-2 mb-3">
+<span class="px-3 py-1 bg-primary-fixed text-on-primary-fixed font-label-caps text-label-caps rounded-full cursor-pointer border border-transparent">医院</span>
+<span class="px-3 py-1 bg-surface-container text-text-muted font-label-caps text-label-caps rounded-full cursor-pointer hover:bg-surface-dim transition-colors border border-border-subtle">科室</span>
+<span class="px-3 py-1 bg-surface-container text-text-muted font-label-caps text-label-caps rounded-full cursor-pointer hover:bg-surface-dim transition-colors border border-border-subtle">专家</span>
+</div>
+<div class="relative">
+<span class="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted text-sm">filter_list</span>
+<input class="w-full pl-8 pr-3 py-1.5 bg-surface-bg border border-border-subtle rounded-lg font-body-sm text-body-sm focus:border-trust-blue focus:ring-1 focus:ring-trust-blue transition-all" placeholder="按地区/专科筛选..." type="text"/>
+</div>
+</div>
+<!-- Directory List -->
+<div class="bg-white rounded-xl border border-border-subtle shadow-sm flex-1 overflow-hidden flex flex-col">
+<div class="p-3 border-b border-border-subtle bg-surface-container-low font-h3-title text-h3-title text-text-main flex justify-between items-center">
+<span>核心医院目录</span>
+<span class="material-symbols-outlined text-text-muted text-sm cursor-pointer">sort</span>
+</div>
+<div class="overflow-y-auto flex-1 p-2 space-y-1">
+<!-- Item Active -->
+<div class="p-3 rounded-lg bg-surface-container-low border border-primary-fixed-dim cursor-pointer relative overflow-hidden group">
+<div class="absolute left-0 top-0 bottom-0 w-1 bg-trust-blue"></div>
+<div class="flex justify-between items-start mb-1 pl-2">
+<span class="font-h3-title text-h3-title text-text-main">北京协和医院</span>
+<span class="bg-alert-orange/10 text-alert-orange font-label-caps text-label-caps px-1.5 py-0.5 rounded border border-alert-orange/20">特级</span>
+</div>
+<div class="pl-2 font-body-sm text-body-sm text-text-muted flex items-center gap-1">
+<span class="material-symbols-outlined text-[14px]">location_on</span> 东城区 / 综合三甲
+                                    </div>
+<div class="pl-2 mt-2 flex gap-2">
+<span class="text-[11px] px-1.5 py-0.5 bg-white border border-border-subtle rounded text-text-muted">内分泌科优先</span>
+<span class="text-[11px] px-1.5 py-0.5 bg-white border border-border-subtle rounded text-text-muted">风湿免疫</span>
+</div>
+</div>
+<!-- Items Inactive -->
+<div class="p-3 rounded-lg hover:bg-surface-container-low border border-transparent hover:border-border-subtle cursor-pointer transition-all pl-3">
+<div class="flex justify-between items-start mb-1">
+<span class="font-body-md text-body-md font-semibold text-text-main">四川大学华西医院</span>
+</div>
+<div class="font-body-sm text-body-sm text-text-muted flex items-center gap-1">
+<span class="material-symbols-outlined text-[14px]">location_on</span> 成都 / 综合三甲
+                                    </div>
+</div>
+<div class="p-3 rounded-lg hover:bg-surface-container-low border border-transparent hover:border-border-subtle cursor-pointer transition-all pl-3">
+<div class="flex justify-between items-start mb-1">
+<span class="font-body-md text-body-md font-semibold text-text-main">复旦大学附属中山医院</span>
+</div>
+<div class="font-body-sm text-body-sm text-text-muted flex items-center gap-1">
+<span class="material-symbols-outlined text-[14px]">location_on</span> 上海 / 综合三甲
+                                    </div>
+</div>
+</div>
+</div>
+</div>
+<!-- Right Col: Detail & Experience (Experience Layer) -->
+<div class="col-span-12 lg:col-span-8 flex flex-col gap-4">
+<!-- Base Info Card (Glassmorphism) -->
+<div class="glass-panel rounded-xl p-5 shadow-sm relative overflow-hidden">
+<div class="absolute right-[-20px] top-[-20px] opacity-5">
+<span class="material-symbols-outlined text-[120px]">local_hospital</span>
+</div>
+<div class="flex items-start justify-between relative z-10">
+<div>
+<div class="flex items-center gap-3 mb-2">
+<h2 class="font-h1-display text-h1-display text-text-main">北京协和医院</h2>
+<span class="px-2 py-0.5 bg-green-100 text-action-green font-label-caps text-label-caps rounded border border-green-200">绿通合作网点</span>
+</div>
+<p class="font-body-sm text-body-sm text-text-muted mb-4 max-w-lg">中国最高医学学府附属医院，疑难重症诊治指导中心。国际部门诊可走高端医疗险直付直赔流程。</p>
+<div class="flex gap-6">
+<div>
+<div class="font-label-caps text-label-caps text-text-muted mb-1">院区分布</div>
+<div class="font-body-sm text-body-sm text-text-main font-semibold">东单院区 / 西单院区</div>
+</div>
+<div>
+<div class="font-label-caps text-label-caps text-text-muted mb-1">APP放号时间</div>
+<div class="font-mono-data text-mono-data text-text-main font-semibold">每日 16:00 (提前7天)</div>
+</div>
+<div>
+<div class="font-label-caps text-label-caps text-text-muted mb-1">优势科室</div>
+<div class="font-body-sm text-body-sm text-trust-blue font-semibold cursor-pointer hover:underline">内分泌科、风湿免疫科、妇产科</div>
+</div>
+</div>
+</div>
+<button class="p-2 border border-border-subtle rounded-lg text-text-muted hover:bg-surface-container-low transition-colors">
+<span class="material-symbols-outlined">share</span>
+</button>
+</div>
+</div>
+<!-- Experience Notes Area -->
+<div class="bg-white rounded-xl border border-border-subtle shadow-sm flex-1 flex flex-col overflow-hidden">
+<div class="p-4 border-b border-border-subtle bg-surface flex justify-between items-center">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-trust-blue" style="font-variation-settings: 'FILL' 1;">lightbulb</span>
+<span class="font-h2-header text-h2-header text-text-main">经验注记池</span>
+<span class="ml-2 px-1.5 py-0.5 bg-surface-container-high rounded text-text-muted font-mono-data text-[11px]">12条相关</span>
+</div>
+<div class="flex gap-2">
+<button class="font-body-sm text-body-sm text-text-muted hover:text-trust-blue transition-colors flex items-center gap-1">
+<span class="material-symbols-outlined text-sm">filter_alt</span> 筛选
+                                    </button>
+</div>
+</div>
+<div class="p-4 overflow-y-auto space-y-4 bg-surface-bg flex-1">
+<!-- Note Card 1 (AI Highlighted) -->
+<div class="bg-white border border-border-subtle rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow relative">
+<div class="absolute left-0 top-4 bottom-4 w-1 bg-ai-purple rounded-r"></div>
+<div class="flex justify-between items-start mb-2 pl-2">
+<div class="flex items-center gap-2">
+<span class="px-2 py-0.5 bg-surface-container text-text-muted font-label-caps text-label-caps rounded">科室挂号难度</span>
+<span class="font-body-sm text-body-sm text-text-main font-semibold">内分泌科 - 门诊攻略</span>
+</div>
+<span class="font-mono-data text-text-muted text-[11px]">2023-10-12 • 李专员</span>
+</div>
+<div class="pl-2 font-body-md text-body-md text-text-main leading-relaxed">
+                                        内分泌科普通号极难抢。如果客户急需确诊，建议通过 <span class="bg-ai-purple/10 text-ai-purple px-1 rounded relative group cursor-help">国际部特需门诊<span class="absolute hidden group-hover:block bottom-full left-1/2 -translate-x-1/2 mb-1 w-max bg-inverse-surface text-inverse-on-surface text-[11px] py-1 px-2 rounded shadow-sm z-10">AI提取：高优替代方案</span></span> 预约，通常提前3天有捡漏机会。另外，周二下午的专病门诊放号量稍大，可重点关注。挂号APP必须提前实名认证并绑定医保卡，否则提交时会被卡住。
+                                    </div>
+<div class="pl-2 mt-3 flex items-center gap-4 border-t border-border-subtle pt-2">
+<button class="flex items-center gap-1 text-text-muted hover:text-trust-blue text-[12px] transition-colors">
+<span class="material-symbols-outlined text-[14px]">thumb_up</span> 14 赞同
+                                        </button>
+<button class="flex items-center gap-1 text-text-muted hover:text-trust-blue text-[12px] transition-colors">
+<span class="material-symbols-outlined text-[14px]">chat_bubble</span> 2 评论
+                                        </button>
+<span class="text-text-muted text-[12px] ml-auto flex items-center gap-1">
+<span class="material-symbols-outlined text-[14px] text-ai-purple">auto_awesome</span> AI已验证有效性
+                                        </span>
+</div>
+</div>
+<!-- Note Card 2 -->
+<div class="bg-white border border-border-subtle rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+<div class="flex justify-between items-start mb-2">
+<div class="flex items-center gap-2">
+<span class="px-2 py-0.5 bg-surface-container text-text-muted font-label-caps text-label-caps rounded">专家约号建议</span>
+<span class="font-body-sm text-body-sm text-text-main font-semibold">风湿免疫科 - 张某某主任</span>
+</div>
+<span class="font-mono-data text-text-muted text-[11px]">2023-09-28 • 王主管</span>
+</div>
+<div class="font-body-md text-body-md text-text-main leading-relaxed">
+                                        张主任主要看系统性红斑狼疮的疑难杂症。初诊客户不建议直接约张主任的号，可以先约科室其他主治医师，完成基础免疫筛查（ANA、ENA等全套，大概需要3-5个工作日出结果）。拿到报告后再通过院内转诊或加号方式找张主任看诊，效率最高。
+                                    </div>
+<div class="mt-3 flex items-center gap-4 border-t border-border-subtle pt-2">
+<button class="flex items-center gap-1 text-text-muted hover:text-trust-blue text-[12px] transition-colors">
+<span class="material-symbols-outlined text-[14px]">thumb_up</span> 8 赞同
+                                        </button>
+<button class="flex items-center gap-1 text-text-muted hover:text-trust-blue text-[12px] transition-colors">
+<span class="material-symbols-outlined text-[14px]">chat_bubble</span> 添加评论
+                                        </button>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+</div>
+</body></html>

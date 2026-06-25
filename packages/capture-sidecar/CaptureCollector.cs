@@ -100,9 +100,10 @@ internal sealed class CaptureCollector : IDisposable
     //  - 医学陪诊：高客 fwyy+数字；普客 COD/CCOD/OD + 16 位 hex。body 容忍 OCR 误读（hex 位认成字母）。
     //  - 重疾绿通/其他绿通：SO / LT + 14~24 位长数字（如 SO2021…、LT2020…）。SO/LT 是常见英文字母组合，
     //    故 body 收紧为「数字 + OCR 易混字符(o i s z g l | q)」，避免把 solution 这类词误当订单号。
-    // IgnoreCase 容忍大小写；抽到含噪候选即可，后端再做归一 + 编辑距离精确匹配。
+    // 另支持短备注：客户名/客户名家属 + #订单尾8（企微备注 20 字限制）。
+    // IgnoreCase 容忍大小写；抽到含噪候选即可，后端再做归一 + 精确/待确认匹配。
     private static readonly System.Text.RegularExpressions.Regex OrderNoRegex = new(
-        @"fwyy[0-9a-z|]{6,24}|(?:CCOD|COD|OD)[0-9a-z|]{12,18}|(?:SO|LT)[0-9oqislzg|]{14,24}",
+        @"[#＃][0-9a-z|]{8}(?![0-9a-z|])|fwyy[0-9a-z|]{6,24}|(?:CCOD|COD|OD)[0-9a-z|]{12,18}|(?:SO|LT)[0-9oqislzg|]{14,24}",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
 
     // OCR 仍可能把订单号和"就医服务群"拆散或插空白；匹配前先去掉所有空白
@@ -115,7 +116,7 @@ internal sealed class CaptureCollector : IDisposable
     /// <summary>
     /// 判断是否"与客户的会话"，并尽量抽订单号——**只看聊天区标题行**（不再用全图 OCR，避免左侧联系人列表污染）。
     /// 群聊：标题含"就医服务群"关键词。
-    /// 单聊：标题含订单号（fwyy 或 COD/CCOD/OD）——会话名可被改成订单号。
+    /// 单聊：标题含订单号（fwyy 或 COD/CCOD/OD）或短备注 #订单尾8。
     /// 命中其一 → 客户会话。标题为空（OCR 没读到/分区失败）→ 非客户。
     /// </summary>
     internal static ConversationClass ClassifyTitle(string? title)

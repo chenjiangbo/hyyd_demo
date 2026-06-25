@@ -337,14 +337,14 @@ export function deleteMaterial(id: number): Promise<unknown> {
 }
 
 // ─── 订单号待确认（右上角铃铛通知）──────────────────────────
-// 采集到的会话识别出了订单号，但后端归一+编辑距离仍匹配不到真实订单 → 异常，需人工确认。
+// 采集到的会话识别出了订单号/短尾号，但后端仍匹配不到真实订单 → 异常，需人工确认。
 export interface UnmatchedOrderRef {
   id: number
   channel: string // 'wechat' | 'wxwork'
   conversationName: string
   candidate: string // 抽到的订单号候选
-  candidateKind: string
-  reason: string // 'no_match' 找不到 | 'ambiguous' 多单并列
+  candidateKind: string // 'fwyy' | 'cod' | 'ccod' | 'od' | 'so' | 'lt' | 'tail8'
+  reason: string // 'no_match' 找不到 | 'ambiguous' 多单并列 | 'name_mismatch' 名字校验未过
   bestDist: number | null
   screenshotOssKey: string | null
   capturedAt: string
@@ -354,7 +354,7 @@ export interface UnmatchedOrderRef {
   updatedAt: string
 }
 
-/** 拉取"识别到订单号却没关联到订单"的异常（默认只看待处理） */
+/** 拉取"识别到订单号/短尾号却没关联到订单"的异常（默认只看待处理） */
 export function fetchUnmatchedOrderRefs(status = 'pending'): Promise<UnmatchedOrderRef[]> {
   return authedGet<UnmatchedOrderRef[]>(
     `/api/v1/unmatched-order-refs?status=${encodeURIComponent(status)}`

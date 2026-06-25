@@ -14,7 +14,7 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
-        buildConfigField("String", "BACKEND_URL", "\"http://192.168.21.96:13000\"")
+        buildConfigField("String", "BACKEND_URL", "\"http://47.95.14.233:9093\"")
         buildConfigField("String", "EMPLOYEE_CODE", "\"\"")
     }
 

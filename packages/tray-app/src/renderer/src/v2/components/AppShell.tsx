@@ -138,7 +138,7 @@ function UserMenu({ session, onLogout }: { session: Session; onLogout: () => voi
 }
 
 /**
- * 右上角通知铃铛：展示"识别到订单号却没关联到订单"的异常（后端 UnmatchedOrderRef，只看 pending）。
+ * 右上角通知铃铛：展示"识别到订单号/短尾号却没关联到订单"的异常（后端 UnmatchedOrderRef，只看 pending）。
  * 角标显示待处理条数；下拉列表里每条可「标记已处理」(后端 reject)。每 60s 轮询一次。
  */
 function NotificationBell(): React.JSX.Element {
@@ -214,7 +214,8 @@ function NotificationBell(): React.JSX.Element {
                           {it.conversationName || '(无会话名)'}
                         </p>
                         <p className="text-body-sm text-text-muted mt-0.5">
-                          订单号 <span className="font-mono text-text-main">{it.candidate}</span>
+                          {it.candidateKind === 'tail8' ? '订单尾号' : '订单号'}{' '}
+                          <span className="font-mono text-text-main">{it.candidate}</span>
                           {' · '}
                           {it.channel === 'wxwork' ? '企微' : '微信'}
                           {it.seenCount > 1 ? ` · 出现 ${it.seenCount} 次` : ''}
@@ -224,7 +225,9 @@ function NotificationBell(): React.JSX.Element {
                             ? '多个订单并列，需人工确认'
                             : it.reason === 'name_mismatch'
                               ? '订单号匹配上但客户名对不上，需人工确认'
-                              : '找不到对应订单，需人工确认'}
+                              : it.candidateKind === 'tail8'
+                                ? '短尾号格式正确，但找不到对应订单'
+                                : '找不到对应订单，需人工确认'}
                         </p>
                       </div>
                       <button

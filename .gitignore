@@ -1,10 +1,13 @@
 node_modules/
 dist/
 build/
+debug/
+dist-artifacts/
 .env
 .env.local
 .env.*.local
 *.log
+*.pid
 .DS_Store
 Thumbs.db
 
@@ -28,11 +31,16 @@ packages/android-app/build/
 
 # pnpm
 .pnpm-store/
+*.tsbuildinfo
 
 # Chrome 扩展签名私钥（绝不提交）
 packages/extension/key.pem
 packages/extension/.ext-meta.json
 packages/extension/*.crx
+packages/extension/dist.zip
+
+# Local agent/session state
+.claude/
 
 # 本地 OCR 模型缓存，由 scripts/ensure-sidecar-ocr-models.js 按 hash 下载校验
 packages/capture-sidecar/models/

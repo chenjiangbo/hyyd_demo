@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+
+<html class="light" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>寰宇绿通工作台 - 数据看板</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "text-muted": "#64748B",
+                        "on-primary-fixed-variant": "#004398",
+                        "background": "#faf9ff",
+                        "tertiary-container": "#a64100",
+                        "text-main": "#1E293B",
+                        "on-error-container": "#93000a",
+                        "alert-orange": "#F59E0B",
+                        "surface-container-low": "#f2f3fd",
+                        "on-secondary-fixed-variant": "#5516be",
+                        "on-secondary-container": "#fffbff",
+                        "primary": "#00459d",
+                        "on-tertiary": "#ffffff",
+                        "primary-fixed": "#d9e2ff",
+                        "outline-variant": "#c2c6d5",
+                        "on-tertiary-fixed": "#351000",
+                        "tertiary-fixed": "#ffdbcc",
+                        "surface-dim": "#d9d9e3",
+                        "secondary-fixed": "#e9ddff",
+                        "ai-purple": "#8B5CF6",
+                        "surface": "#faf9ff",
+                        "surface-bright": "#faf9ff",
+                        "on-primary-container": "#d0dcff",
+                        "on-primary": "#ffffff",
+                        "error-container": "#ffdad6",
+                        "inverse-surface": "#2e3037",
+                        "on-tertiary-container": "#ffd3c1",
+                        "on-error": "#ffffff",
+                        "surface-tint": "#0459c5",
+                        "primary-fixed-dim": "#afc6ff",
+                        "surface-container-high": "#e7e7f1",
+                        "on-surface-variant": "#424753",
+                        "on-tertiary-fixed-variant": "#7c2e00",
+                        "on-primary-fixed": "#001a43",
+                        "secondary": "#6b38d4",
+                        "secondary-fixed-dim": "#d0bcff",
+                        "surface-container-lowest": "#ffffff",
+                        "error": "#ba1a1a",
+                        "surface-container-highest": "#e1e2eb",
+                        "trust-blue": "#0D5CC8",
+                        "tertiary": "#7f3000",
+                        "surface-variant": "#e1e2eb",
+                        "inverse-primary": "#afc6ff",
+                        "tertiary-fixed-dim": "#ffb695",
+                        "on-background": "#191b22",
+                        "surface-bg": "#F8FAFC",
+                        "outline": "#737785",
+                        "surface-container": "#ededf7",
+                        "border-subtle": "#E2E8F0",
+                        "on-secondary-fixed": "#23005c",
+                        "on-surface": "#191b22",
+                        "on-secondary": "#ffffff",
+                        "primary-container": "#0d5cc8",
+                        "inverse-on-surface": "#eff0fa",
+                        "action-green": "#10B981",
+                        "secondary-container": "#8455ef"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "margin-page": "24px",
+                        "unit": "4px",
+                        "gutter": "16px",
+                        "card-padding": "16px",
+                        "container-max": "1600px"
+                    },
+                    "fontFamily": {
+                        "body-sm": ["Inter"],
+                        "mono-data": ["JetBrains Mono"],
+                        "h2-header": ["Inter"],
+                        "body-md": ["Inter"],
+                        "h1-display": ["Inter"],
+                        "body-lg": ["Inter"],
+                        "label-caps": ["Inter"],
+                        "h3-title": ["Inter"]
+                    },
+                    "fontSize": {
+                        "body-sm": ["13px", { "lineHeight": "18px", "fontWeight": "400" }],
+                        "mono-data": ["13px", { "lineHeight": "18px", "fontWeight": "400" }],
+                        "h2-header": ["20px", { "lineHeight": "28px", "fontWeight": "600" }],
+                        "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "h1-display": ["24px", { "lineHeight": "32px", "letterSpacing": "-0.02em", "fontWeight": "600" }],
+                        "body-lg": ["15px", { "lineHeight": "22px", "fontWeight": "400" }],
+                        "label-caps": ["12px", { "lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "700" }],
+                        "h3-title": ["16px", { "lineHeight": "24px", "fontWeight": "600" }]
+                    }
+                }
+            }
+        }
+    </script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+        body { font-family: 'Inter', sans-serif; background-color: #F8FAFC; color: #1E293B; }
+        .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+        .material-symbols-outlined.fill-1 { font-variation-settings: 'FILL' 1; }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-surface-bg text-text-main antialiased min-h-screen flex flex-col pt-16">
+<!-- TopNavBar -->
+<nav class="fixed top-0 w-full h-16 bg-surface border-b border-border-subtle shadow-sm flex items-center justify-between px-margin-page mx-auto z-50 left-0">
+<div class="flex items-center gap-8">
+<div class="font-h2-header text-h2-header text-trust-blue flex items-center gap-2">
+<span class="material-symbols-outlined text-[28px] fill-1">health_and_safety</span>
+                寰宇绿通工作台
+            </div>
+<div class="hidden md:flex items-center gap-6 h-full mt-auto">
+<a class="font-body-md text-body-md text-text-muted hover:text-text-main pb-4 pt-5 hover:text-primary transition-colors duration-200" href="#">待申领</a>
+<a class="font-body-md text-body-md text-text-muted hover:text-text-main pb-4 pt-5 hover:text-primary transition-colors duration-200" href="#">工作台</a>
+<a class="font-body-md text-body-md text-text-muted hover:text-text-main pb-4 pt-5 hover:text-primary transition-colors duration-200" href="#">客户档案</a>
+<a class="font-body-md text-body-md text-text-muted hover:text-text-main pb-4 pt-5 hover:text-primary transition-colors duration-200" href="#">知识库</a>
+<a class="font-body-md text-body-md text-trust-blue font-semibold border-b-2 border-trust-blue pb-4 pt-5" href="#">数据看板</a>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<div class="relative hidden lg:block">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-text-muted text-[20px]">search</span>
+<input class="pl-10 pr-4 py-2 bg-surface-container border border-border-subtle rounded-xl font-body-sm text-body-sm focus:outline-none focus:border-trust-blue focus:ring-1 focus:ring-trust-blue transition-all w-64" placeholder="搜索工单/客户..." type="text"/>
+</div>
+<button class="text-text-muted hover:text-primary transition-colors duration-200 p-2 rounded-full hover:bg-surface-container relative">
+<span class="material-symbols-outlined">notifications</span>
+<span class="absolute top-2 right-2 w-2 h-2 bg-alert-orange rounded-full"></span>
+</button>
+<button class="text-text-muted hover:text-primary transition-colors duration-200 p-2 rounded-full hover:bg-surface-container">
+<span class="material-symbols-outlined">settings</span>
+</button>
+<div class="w-8 h-8 rounded-full bg-primary-fixed flex items-center justify-center border border-border-subtle overflow-hidden">
+<img alt="Specialist Profile" class="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuD2JVubJoemxm3a5kZ5Q8ZUbRW0sDRheU33GCSq7RtsaOyYx4wPcFc3Gcr1TNz2nVF_skS1umyBMB20Fu21hvJNQgQxwWb-aMvr1Od35-uhoNOczwzd_bylJnzN4fLGmT1GlAzDfNLKY_MaaK3JiPKZ8fc30cRG5XgNla-9T0OB18bnpLkJz__Dfc6OC1sOIFDpSxkod7yUYL9sbfWuYlJGk-vZfenLl4ZdgwIgtdcN7ff887T3FqAQnUjNGZz2Ig9ibfZWydu5unM"/>
+</div>
+</div>
+</nav>
+<!-- Main Content -->
+<main class="w-full max-w-container-max mx-auto p-margin-page overflow-y-auto">
+<div class="flex items-center justify-between mb-8">
+<div>
+<h1 class="font-h1-display text-h1-display text-text-main mb-2">全维业务监控与调度</h1>
+<p class="font-body-md text-body-md text-text-muted">实时掌控业务流转、人员负荷及系统异常情况。</p>
+</div>
+<div class="flex gap-3">
+<select class="bg-surface border border-border-subtle rounded-lg font-body-sm text-body-sm px-3 py-2 text-text-main focus:outline-none focus:border-trust-blue">
+<option>今日 (实时)</option>
+<option>近 7 天</option>
+<option>近 30 天</option>
+<option>自定义时间范围</option>
+</select>
+<button class="flex items-center gap-2 bg-surface border border-border-subtle px-4 py-2 rounded-lg font-body-sm text-body-sm hover:bg-surface-container transition-colors text-text-main">
+<span class="material-symbols-outlined text-[18px]">download</span>
+                    导出报告
+                </button>
+</div>
+</div>
+<!-- Section 4: Data Source Status -->
+<div class="mb-6 flex flex-wrap items-center gap-6 bg-surface border border-border-subtle px-card-padding py-3 rounded-xl">
+<span class="font-h3-title text-h3-title text-text-main">数据源状态:</span>
+<div class="flex items-center gap-2">
+<span class="w-2.5 h-2.5 rounded-full bg-action-green"></span>
+<span class="font-body-sm text-body-sm text-text-main">核心系统 (正常)</span>
+</div>
+<div class="flex items-center gap-2">
+<span class="w-2.5 h-2.5 rounded-full bg-action-green"></span>
+<span class="font-body-sm text-body-sm text-text-main">客服平台 (正常)</span>
+</div>
+<div class="flex items-center gap-2">
+<span class="w-2.5 h-2.5 rounded-full bg-alert-orange"></span>
+<span class="font-body-sm text-body-sm text-text-main">保司接口 (延迟)</span>
+</div>
+<div class="flex items-center gap-2">
+<span class="w-2.5 h-2.5 rounded-full bg-error"></span>
+<span class="font-body-sm text-body-sm text-text-main">外部影像 (异常)</span>
+</div>
+</div>
+<!-- Section 1: Key Metrics Cards -->
+<div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4 mb-8">
+<!-- Metric Card Template -->
+<div class="bg-surface border border-border-subtle p-4 rounded-xl flex flex-col justify-between">
+<div class="font-body-sm text-body-sm text-text-muted mb-1">今日新增</div>
+<div class="font-mono-data text-2xl font-semibold text-text-main mb-1">342</div>
+<div class="flex items-center gap-1 font-body-sm text-xs">
+<span class="text-action-green font-semibold">+5%</span>
+<span class="text-text-muted">环比</span>
+</div>
+</div>
+<div class="bg-surface border border-border-subtle p-4 rounded-xl flex flex-col justify-between">
+<div class="font-body-sm text-body-sm text-text-muted mb-1">进行中</div>
+<div class="font-mono-data text-2xl font-semibold text-text-main mb-1">1,205</div>
+<div class="flex items-center gap-1 font-body-sm text-xs">
+<span class="text-error font-semibold">-2%</span>
+<span class="text-text-muted">环比</span>
+</div>
+</div>
+<div class="bg-surface border border-border-subtle p-4 rounded-xl flex flex-col justify-between">
+<div class="font-body-sm text-body-sm text-text-muted mb-1">今日完成</div>
+<div class="font-mono-data text-2xl font-semibold text-text-main mb-1">289</div>
+<div class="flex items-center gap-1 font-body-sm text-xs">
+<span class="text-action-green font-semibold">+8%</span>
+<span class="text-text-muted">环比</span>
+</div>
+</div>
+<div class="bg-surface border border-border-subtle p-4 rounded-xl flex flex-col justify-between relative overflow-hidden group">
+<div class="absolute inset-0 bg-error/5 opacity-50"></div>
+<div class="relative z-10 font-body-sm text-body-sm text-text-muted mb-1">超时</div>
+<div class="relative z-10 font-mono-data text-2xl font-semibold text-error mb-1">12</div>
+<div class="relative z-10 flex items-center gap-1 font-body-sm text-xs">
+<span class="text-error font-semibold">+3%</span>
+<span class="text-text-muted">环比</span>
+</div>
+</div>
+<div class="bg-surface border border-border-subtle p-4 rounded-xl flex flex-col justify-between">
+<div class="font-body-sm text-body-sm text-text-muted mb-1">待上传证据</div>
+<div class="font-mono-data text-2xl font-semibold text-text-main mb-1">45</div>
+<div class="flex items-center gap-1 font-body-sm text-xs">
+<span class="text-text-muted font-semibold">-1%</span>
+<span class="text-text-muted">环比</span>
+</div>
+</div>
+<div class="bg-surface border border-border-subtle p-4 rounded-xl flex flex-col justify-between">
+<div class="font-body-sm text-body-sm text-text-muted mb-1">异常</div>
+<div class="font-mono-data text-2xl font-semibold text-alert-orange mb-1">8</div>
+<div class="flex items-center gap-1 font-body-sm text-xs">
+<span class="text-action-green font-semibold">-12%</span>
+<span class="text-text-muted">环比</span>
+</div>
+</div>
+<div class="bg-surface border border-border-subtle p-4 rounded-xl flex flex-col justify-between">
+<div class="font-body-sm text-body-sm text-text-muted mb-1">挂号数</div>
+<div class="font-mono-data text-2xl font-semibold text-trust-blue mb-1">180</div>
+<div class="flex items-center gap-1 font-body-sm text-xs">
+<span class="text-action-green font-semibold">+4%</span>
+<span class="text-text-muted">环比</span>
+</div>
+</div>
+<div class="bg-surface border border-border-subtle p-4 rounded-xl flex flex-col justify-between">
+<div class="font-body-sm text-body-sm text-text-muted mb-1">绿通数</div>
+<div class="font-mono-data text-2xl font-semibold text-trust-blue mb-1">162</div>
+<div class="flex items-center gap-1 font-body-sm text-xs">
+<span class="text-action-green font-semibold">+6%</span>
+<span class="text-text-muted">环比</span>
+</div>
+</div>
+</div>
+<!-- Section 2: Business Overview Charts -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+<!-- Chart 1: 挂号绿通占比 -->
+<div class="bg-surface border border-border-subtle rounded-xl p-card-padding flex flex-col h-80">
+<h2 class="font-h3-title text-h3-title text-text-main mb-4">挂号绿通占比</h2>
+<div class="flex-1 relative w-full h-full pb-2">
+<canvas id="ratioChart"></canvas>
+</div>
+</div>
+<!-- Chart 2: 甲方订单分布 -->
+<div class="bg-surface border border-border-subtle rounded-xl p-card-padding flex flex-col h-80">
+<h2 class="font-h3-title text-h3-title text-text-main mb-4">甲方订单分布</h2>
+<div class="flex-1 relative w-full h-full pb-2">
+<canvas id="clientDistributionChart"></canvas>
+</div>
+</div>
+<!-- Chart 3: 生命周期阶段分布 -->
+<div class="bg-surface border border-border-subtle rounded-xl p-card-padding flex flex-col h-80">
+<h2 class="font-h3-title text-h3-title text-text-main mb-4">生命周期阶段分布</h2>
+<div class="flex-1 relative w-full h-full pb-2">
+<canvas id="lifecycleChart"></canvas>
+</div>
+</div>
+</div>
+<!-- Section 3: Personnel Workload Table -->
+<div class="bg-surface border border-border-subtle rounded-xl overflow-hidden mb-8">
+<div class="px-6 py-4 border-b border-border-subtle flex justify-between items-center bg-surface-bg">
+<div>
+<h2 class="font-h3-title text-h3-title text-text-main">人员工作负荷</h2>
+<p class="font-body-sm text-xs text-text-muted mt-1">注: "绿通"项目可进一步细分为具体服务类型。</p>
+</div>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="bg-surface-container-low font-label-caps text-label-caps text-text-muted border-b border-border-subtle">
+<th class="px-6 py-3 font-semibold">员工姓名</th>
+<th class="px-6 py-3 font-semibold">当前处理</th>
+<th class="px-6 py-3 font-semibold">待初联</th>
+<th class="px-6 py-3 font-semibold">待执行</th>
+<th class="px-6 py-3 font-semibold">待回填</th>
+<th class="px-6 py-3 font-semibold">待归档</th>
+<th class="px-6 py-3 font-semibold text-error">超时</th>
+<th class="px-6 py-3 font-semibold">今日完成</th>
+<th class="px-6 py-3 font-semibold">平均处理时长</th>
+</tr>
+</thead>
+<tbody class="font-body-sm text-body-sm text-text-main divide-y divide-border-subtle">
+<tr class="hover:bg-surface-bg transition-colors">
+<td class="px-6 py-4 font-medium">张医生</td>
+<td class="px-6 py-4 font-mono-data">5</td>
+<td class="px-6 py-4 font-mono-data">2</td>
+<td class="px-6 py-4 font-mono-data">8</td>
+<td class="px-6 py-4 font-mono-data">1</td>
+<td class="px-6 py-4 font-mono-data">0</td>
+<td class="px-6 py-4 font-mono-data text-error">1</td>
+<td class="px-6 py-4 font-mono-data text-action-green">14</td>
+<td class="px-6 py-4">18m</td>
+</tr>
+<tr class="hover:bg-surface-bg transition-colors">
+<td class="px-6 py-4 font-medium">李护士</td>
+<td class="px-6 py-4 font-mono-data">3</td>
+<td class="px-6 py-4 font-mono-data">1</td>
+<td class="px-6 py-4 font-mono-data">5</td>
+<td class="px-6 py-4 font-mono-data">2</td>
+<td class="px-6 py-4 font-mono-data">4</td>
+<td class="px-6 py-4 font-mono-data text-text-muted">0</td>
+<td class="px-6 py-4 font-mono-data text-action-green">22</td>
+<td class="px-6 py-4">12m</td>
+</tr>
+<tr class="hover:bg-surface-bg transition-colors">
+<td class="px-6 py-4 font-medium">王专员</td>
+<td class="px-6 py-4 font-mono-data">7</td>
+<td class="px-6 py-4 font-mono-data">4</td>
+<td class="px-6 py-4 font-mono-data">12</td>
+<td class="px-6 py-4 font-mono-data">0</td>
+<td class="px-6 py-4 font-mono-data">1</td>
+<td class="px-6 py-4 font-mono-data text-error">3</td>
+<td class="px-6 py-4 font-mono-data text-action-green">9</td>
+<td class="px-6 py-4">25m</td>
+</tr>
+<tr class="hover:bg-surface-bg transition-colors">
+<td class="px-6 py-4 font-medium">赵调度</td>
+<td class="px-6 py-4 font-mono-data">2</td>
+<td class="px-6 py-4 font-mono-data">0</td>
+<td class="px-6 py-4 font-mono-data">3</td>
+<td class="px-6 py-4 font-mono-data">5</td>
+<td class="px-6 py-4 font-mono-data">8</td>
+<td class="px-6 py-4 font-mono-data text-text-muted">0</td>
+<td class="px-6 py-4 font-mono-data text-action-green">31</td>
+<td class="px-6 py-4">8m</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<!-- Section 5: Management Attention (Top 5 Lists) -->
+<h2 class="font-h2-header text-h2-header text-text-main mb-4">管理关注焦点 (Top 5)</h2>
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mb-8">
+<!-- List: 高客 -->
+<div class="bg-surface border border-border-subtle rounded-xl flex flex-col overflow-hidden">
+<div class="bg-surface-container-low px-4 py-3 border-b border-border-subtle flex items-center justify-between">
+<span class="font-h3-title text-h3-title text-text-main flex items-center gap-2"><span class="material-symbols-outlined text-trust-blue text-[18px]">star</span> 高客工单</span>
+<span class="bg-trust-blue text-on-primary text-xs px-2 py-0.5 rounded-full">5</span>
+</div>
+<div class="p-2 space-y-1">
+<div class="px-3 py-2 hover:bg-surface-container-high rounded-lg cursor-pointer flex justify-between items-center text-sm">
+<span class="text-text-main truncate max-w-[150px]">VIP-20231015-001</span>
+<span class="text-text-muted text-xs">10分钟前</span>
+</div>
+<div class="px-3 py-2 hover:bg-surface-container-high rounded-lg cursor-pointer flex justify-between items-center text-sm">
+<span class="text-text-main truncate max-w-[150px]">VIP-20231015-042</span>
+<span class="text-text-muted text-xs">1小时前</span>
+</div>
+</div>
+</div>
+<!-- List: 超时 -->
+<div class="bg-surface border border-border-subtle rounded-xl flex flex-col overflow-hidden border-t-4 border-t-error">
+<div class="bg-surface-container-low px-4 py-3 border-b border-border-subtle flex items-center justify-between">
+<span class="font-h3-title text-h3-title text-text-main flex items-center gap-2"><span class="material-symbols-outlined text-error text-[18px]">timer</span> 超时告警</span>
+<span class="bg-error text-on-error text-xs px-2 py-0.5 rounded-full">12</span>
+</div>
+<div class="p-2 space-y-1">
+<div class="px-3 py-2 hover:bg-surface-container-high rounded-lg cursor-pointer flex justify-between items-center text-sm">
+<span class="text-text-main truncate max-w-[150px]">ORD-9921-X</span>
+<span class="text-error text-xs font-semibold">超2小时</span>
+</div>
+<div class="px-3 py-2 hover:bg-surface-container-high rounded-lg cursor-pointer flex justify-between items-center text-sm">
+<span class="text-text-main truncate max-w-[150px]">ORD-8123-Y</span>
+<span class="text-error text-xs font-semibold">超45分</span>
+</div>
+</div>
+</div>
+<!-- List: 凭证缺失 -->
+<div class="bg-surface border border-border-subtle rounded-xl flex flex-col overflow-hidden">
+<div class="bg-surface-container-low px-4 py-3 border-b border-border-subtle flex items-center justify-between">
+<span class="font-h3-title text-h3-title text-text-main flex items-center gap-2"><span class="material-symbols-outlined text-alert-orange text-[18px]">scan_delete</span> 凭证缺失</span>
+<span class="bg-alert-orange text-white text-xs px-2 py-0.5 rounded-full">8</span>
+</div>
+<div class="p-2 space-y-1">
+<div class="px-3 py-2 hover:bg-surface-container-high rounded-lg cursor-pointer flex justify-between items-center text-sm">
+<span class="text-text-main truncate max-w-[150px]">CLM-2391</span>
+<span class="text-text-muted text-xs">缺发票</span>
+</div>
+</div>
+</div>
+<!-- List: 可能亏损 -->
+<div class="bg-surface border border-border-subtle rounded-xl flex flex-col overflow-hidden">
+<div class="bg-surface-container-low px-4 py-3 border-b border-border-subtle flex items-center justify-between">
+<span class="font-h3-title text-h3-title text-text-main flex items-center gap-2"><span class="material-symbols-outlined text-error text-[18px]">trending_down</span> 可能亏损</span>
+<span class="bg-error text-on-error text-xs px-2 py-0.5 rounded-full">3</span>
+</div>
+<div class="p-2 space-y-1">
+<div class="px-3 py-2 hover:bg-surface-container-high rounded-lg cursor-pointer flex justify-between items-center text-sm">
+<span class="text-text-main truncate max-w-[150px]">ORD-7762</span>
+<span class="text-error text-xs">高额垫付</span>
+</div>
+</div>
+</div>
+<!-- List: 采集异常 -->
+<div class="bg-surface border border-border-subtle rounded-xl flex flex-col overflow-hidden">
+<div class="bg-surface-container-low px-4 py-3 border-b border-border-subtle flex items-center justify-between">
+<span class="font-h3-title text-h3-title text-text-main flex items-center gap-2"><span class="material-symbols-outlined text-alert-orange text-[18px]">cloud_off</span> 采集异常</span>
+<span class="bg-alert-orange text-white text-xs px-2 py-0.5 rounded-full">6</span>
+</div>
+<div class="p-2 space-y-1">
+<div class="px-3 py-2 hover:bg-surface-container-high rounded-lg cursor-pointer flex justify-between items-center text-sm">
+<span class="text-text-main truncate max-w-[150px]">API-Sync-Pingan</span>
+<span class="text-text-muted text-xs">超时重试</span>
+</div>
+</div>
+</div>
+<!-- List: 取消变更 -->
+<div class="bg-surface border border-border-subtle rounded-xl flex flex-col overflow-hidden">
+<div class="bg-surface-container-low px-4 py-3 border-b border-border-subtle flex items-center justify-between">
+<span class="font-h3-title text-h3-title text-text-main flex items-center gap-2"><span class="material-symbols-outlined text-text-muted text-[18px]">cancel</span> 取消变更</span>
+<span class="bg-surface-variant text-text-main text-xs px-2 py-0.5 rounded-full">15</span>
+</div>
+<div class="p-2 space-y-1">
+<div class="px-3 py-2 hover:bg-surface-container-high rounded-lg cursor-pointer flex justify-between items-center text-sm">
+<span class="text-text-main truncate max-w-[150px]">ORD-1102</span>
+<span class="text-text-muted text-xs">客户自愿取消</span>
+</div>
+</div>
+</div>
+<!-- List: 投诉风险 -->
+<div class="bg-surface border border-border-subtle rounded-xl flex flex-col overflow-hidden border-t-4 border-t-error">
+<div class="bg-surface-container-low px-4 py-3 border-b border-border-subtle flex items-center justify-between">
+<span class="font-h3-title text-h3-title text-text-main flex items-center gap-2"><span class="material-symbols-outlined text-error text-[18px]">warning</span> 投诉风险</span>
+<span class="bg-error text-on-error text-xs px-2 py-0.5 rounded-full">2</span>
+</div>
+<div class="p-2 space-y-1">
+<div class="px-3 py-2 hover:bg-surface-container-high rounded-lg cursor-pointer flex justify-between items-center text-sm">
+<span class="text-text-main truncate max-w-[150px]">CST-0091</span>
+<span class="text-error text-xs">多次催促</span>
+</div>
+</div>
+</div>
+</div>
+</main>
+<script>
+        // Chart.js Configuration
+        Chart.defaults.font.family = "'Inter', sans-serif";
+        Chart.defaults.color = '#64748B';
+
+        // 1. 挂号绿通占比
+        const ctxRatio = document.getElementById('ratioChart').getContext('2d');
+        new Chart(ctxRatio, {
+            type: 'doughnut',
+            data: {
+                labels: ['挂号服务', '绿通服务'],
+                datasets: [{
+                    data: [52, 48],
+                    backgroundColor: ['#0D5CC8', '#10B981'],
+                    borderWidth: 0,
+                    hoverOffset: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                cutout: '75%',
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: { padding: 15, usePointStyle: true, boxWidth: 8 }
+                    }
+                }
+            }
+        });
+
+        // 2. 甲方订单分布
+        const ctxClient = document.getElementById('clientDistributionChart').getContext('2d');
+        new Chart(ctxClient, {
+            type: 'bar',
+            data: {
+                labels: ['平安健康', '泰康人寿', '太保', '中国人寿', '其他'],
+                datasets: [{
+                    label: '订单量',
+                    data: [450, 320, 280, 210, 150],
+                    backgroundColor: '#d9e2ff',
+                    borderColor: '#00459d',
+                    borderWidth: 1,
+                    borderRadius: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { grid: { display: false } },
+                    y: { grid: { borderDash: [4, 4], color: '#E2E8F0' } }
+                }
+            }
+        });
+
+        // 3. 生命周期阶段分布
+        const ctxLifecycle = document.getElementById('lifecycleChart').getContext('2d');
+        new Chart(ctxLifecycle, {
+            type: 'bar',
+            data: {
+                labels: ['新建', '待分配', '处理中', '待评价', '已完成'],
+                datasets: [{
+                    label: '工单数',
+                    data: [120, 80, 350, 90, 500],
+                    backgroundColor: '#e9ddff',
+                    borderColor: '#6b38d4',
+                    borderWidth: 1,
+                    borderRadius: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                indexAxis: 'y',
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { grid: { borderDash: [4, 4], color: '#E2E8F0' } },
+                    y: { grid: { display: false } }
+                }
+            }
+        });
+    </script>
+</body></html>

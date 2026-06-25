@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>寰宇绿通工作台 - 客户档案</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&amp;family=JetBrains+Mono&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "text-muted": "#64748B",
+                        "on-primary-fixed-variant": "#004398",
+                        "background": "#faf9ff",
+                        "tertiary-container": "#a64100",
+                        "text-main": "#1E293B",
+                        "on-error-container": "#93000a",
+                        "alert-orange": "#F59E0B",
+                        "surface-container-low": "#f2f3fd",
+                        "on-secondary-fixed-variant": "#5516be",
+                        "on-secondary-container": "#fffbff",
+                        "primary": "#00459d",
+                        "on-tertiary": "#ffffff",
+                        "primary-fixed": "#d9e2ff",
+                        "outline-variant": "#c2c6d5",
+                        "on-tertiary-fixed": "#351000",
+                        "tertiary-fixed": "#ffdbcc",
+                        "surface-dim": "#d9d9e3",
+                        "secondary-fixed": "#e9ddff",
+                        "ai-purple": "#8B5CF6",
+                        "surface": "#faf9ff",
+                        "surface-bright": "#faf9ff",
+                        "on-primary-container": "#d0dcff",
+                        "on-primary": "#ffffff",
+                        "error-container": "#ffdad6",
+                        "inverse-surface": "#2e3037",
+                        "on-tertiary-container": "#ffd3c1",
+                        "on-error": "#ffffff",
+                        "surface-tint": "#0459c5",
+                        "primary-fixed-dim": "#afc6ff",
+                        "surface-container-high": "#e7e7f1",
+                        "on-surface-variant": "#424753",
+                        "on-tertiary-fixed-variant": "#7c2e00",
+                        "on-primary-fixed": "#001a43",
+                        "secondary": "#6b38d4",
+                        "secondary-fixed-dim": "#d0bcff",
+                        "surface-container-lowest": "#ffffff",
+                        "error": "#ba1a1a",
+                        "surface-container-highest": "#e1e2eb",
+                        "trust-blue": "#0D5CC8",
+                        "tertiary": "#7f3000",
+                        "surface-variant": "#e1e2eb",
+                        "inverse-primary": "#afc6ff",
+                        "tertiary-fixed-dim": "#ffb695",
+                        "on-background": "#191b22",
+                        "surface-bg": "#F8FAFC",
+                        "outline": "#737785",
+                        "surface-container": "#ededf7",
+                        "border-subtle": "#E2E8F0",
+                        "on-secondary-fixed": "#23005c",
+                        "on-surface": "#191b22",
+                        "on-secondary": "#ffffff",
+                        "primary-container": "#0d5cc8",
+                        "inverse-on-surface": "#eff0fa",
+                        "action-green": "#10B981",
+                        "secondary-container": "#8455ef"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "margin-page": "24px",
+                        "unit": "4px",
+                        "gutter": "16px",
+                        "swimlane-width": "320px",
+                        "card-padding": "16px",
+                        "container-max": "1440px"
+                    },
+                    "fontFamily": {
+                        "body-sm": ["Inter"],
+                        "mono-data": ["JetBrains Mono"],
+                        "h2-header": ["Inter"],
+                        "body-md": ["Inter"],
+                        "h1-display": ["Inter"],
+                        "body-lg": ["Inter"],
+                        "label-caps": ["Inter"],
+                        "h3-title": ["Inter"]
+                    },
+                    "fontSize": {
+                        "body-sm": ["13px", {"lineHeight": "18px", "fontWeight": "400"}],
+                        "mono-data": ["13px", {"lineHeight": "18px", "fontWeight": "400"}],
+                        "h2-header": ["20px", {"lineHeight": "28px", "fontWeight": "600"}],
+                        "body-md": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                        "h1-display": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.02em", "fontWeight": "600"}],
+                        "body-lg": ["15px", {"lineHeight": "22px", "fontWeight": "400"}],
+                        "label-caps": ["12px", {"lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "700"}],
+                        "h3-title": ["16px", {"lineHeight": "24px", "fontWeight": "600"}]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        body { background-color: #F8FAFC; }
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(12px);
+            border: 1px solid #E2E8F0;
+        }
+        .ai-pulse {
+            animation: pulse-glow 2s infinite;
+        }
+        @keyframes pulse-glow {
+            0% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.4); }
+            70% { box-shadow: 0 0 0 6px rgba(139, 92, 246, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0); }
+        }
+    </style>
+</head>
+<body class="font-body-md text-body-md text-text-main overflow-x-hidden">
+<!-- TopNavBar -->
+<header class="bg-surface dark:bg-on-background fixed top-0 w-full h-16 border-b border-border-subtle dark:border-outline shadow-sm z-50">
+<div class="flex items-center justify-between px-margin-page max-w-container-max mx-auto h-full">
+<div class="flex items-center gap-8 h-full">
+<h1 class="font-h2-header text-h2-header text-trust-blue dark:text-primary-fixed-dim tracking-tight">寰宇绿通工作台</h1>
+<nav class="hidden md:flex items-end h-full gap-6">
+<a class="text-text-muted dark:text-on-surface-variant hover:text-text-main pb-4 hover:text-primary transition-colors duration-200 cursor-pointer active:opacity-80" href="#">待申领</a>
+<a class="text-text-muted dark:text-on-surface-variant hover:text-text-main pb-4 hover:text-primary transition-colors duration-200 cursor-pointer active:opacity-80" href="#">工作台</a>
+<a class="text-trust-blue dark:text-primary-fixed font-semibold border-b-2 border-trust-blue pb-4 hover:text-primary transition-colors duration-200 cursor-pointer active:opacity-80" href="#">客户档案</a>
+<a class="text-text-muted dark:text-on-surface-variant hover:text-text-main pb-4 hover:text-primary transition-colors duration-200 cursor-pointer active:opacity-80" href="#">知识库</a>
+<a class="text-text-muted dark:text-on-surface-variant hover:text-text-main pb-4 hover:text-primary transition-colors duration-200 cursor-pointer active:opacity-80" href="#">数据看板</a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<button class="text-text-muted hover:text-primary transition-colors">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 0;">notifications</span>
+</button>
+<button class="text-text-muted hover:text-primary transition-colors">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 0;">settings</span>
+</button>
+<img alt="Specialist Profile" class="w-8 h-8 rounded-full border border-border-subtle" data-alt="A professional headshot of a medical service specialist in a modern corporate setting. The lighting is bright and even, highlighting a calm and authoritative demeanor. The background is slightly blurred, showing a modern office with blue and white tones, reflecting the Universal Medical Green-Channel Workbench aesthetic." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAMQldkNyrAElWF21cIoVbX_qjzBdnZbImkHVQ-20ZLoPYIeg-TpLQlJdCxptR6ZdmmaVsUStuaT73VE6wGibPStXJvagoK3rm43P_TXQxowTtQRxrjrr3llmy9IYTTE_SeZ5hDIKcvI9jkhNk12DT-HtjR4jGYI1BermoWv1h3mhF084jQyEWV2ijIhNFzYkkllBt0i61tg56Nmm8EhdPkr6pF0i7BlPEvnh_IIME9x-0GBWXF_gYLyLzMo-lOqAh9JN9TRFrtkFs"/>
+</div>
+</div>
+</header>
+<div class="flex pt-16 h-screen w-full max-w-container-max mx-auto">
+<!-- Main Canvas (Full width for detail view) -->
+<main class="flex-1 overflow-y-auto p-margin-page bg-surface-bg flex gap-gutter">
+<!-- Left Column: 360 Profile (Fluid) -->
+<div class="flex-1 flex flex-col gap-gutter">
+<!-- Basic Info Card -->
+<section class="bg-surface rounded-xl border border-border-subtle p-card-padding shadow-sm">
+<div class="flex items-start justify-between mb-4">
+<div class="flex items-center gap-4">
+<div class="w-16 h-16 rounded-full bg-primary-fixed flex items-center justify-center text-on-primary-fixed font-h1-display text-h1-display">
+                                张
+                            </div>
+<div>
+<h2 class="font-h1-display text-h1-display text-text-main flex items-center gap-2">
+                                    张建国 <span class="material-symbols-outlined text-trust-blue text-lg" style="font-variation-settings: 'FILL' 1;">verified</span>
+</h2>
+<p class="font-body-md text-body-md text-text-muted mt-1">ID: UID-88923-441 | 男 | 62岁</p>
+</div>
+</div>
+<span class="bg-action-green/10 text-action-green font-label-caps text-label-caps px-3 py-1 rounded-full border border-action-green/20">VIP 客户</span>
+</div>
+<div class="grid grid-cols-2 gap-4 mt-6">
+<div>
+<span class="font-label-caps text-label-caps text-text-muted block mb-1">当前主保单</span>
+<span class="font-mono-data text-mono-data text-text-main bg-surface-container px-2 py-1 rounded">HL-2023-9982A</span>
+</div>
+<div>
+<span class="font-label-caps text-label-caps text-text-muted block mb-1">绿通权益剩余</span>
+<span class="font-body-md text-body-md text-text-main font-semibold">2 次 (门诊/住院)</span>
+</div>
+<div>
+<span class="font-label-caps text-label-caps text-text-muted block mb-1">联系电话</span>
+<span class="font-mono-data text-mono-data text-text-main">138-****-5567</span>
+</div>
+<div>
+<span class="font-label-caps text-label-caps text-text-muted block mb-1">居住地</span>
+<span class="font-body-md text-body-md text-text-main">北京市 朝阳区</span>
+</div>
+</div>
+</section>
+<!-- AI Insights Panel -->
+<section class="bg-surface rounded-xl border border-border-subtle p-card-padding shadow-sm relative overflow-hidden">
+<div class="absolute top-0 left-0 w-1 h-full bg-ai-purple"></div>
+<div class="flex items-center gap-2 mb-4">
+<span class="material-symbols-outlined text-ai-purple ai-pulse" style="font-variation-settings: 'FILL' 1;">auto_awesome</span>
+<h3 class="font-h3-title text-h3-title text-text-main">AI 沟通偏好与画像</h3>
+</div>
+<div class="bg-secondary-fixed/30 rounded-lg p-4 border border-secondary-fixed-dim">
+<ul class="space-y-3">
+<li class="flex items-start gap-2">
+<span class="material-symbols-outlined text-ai-purple text-sm mt-0.5">check_circle</span>
+<span class="font-body-sm text-body-sm text-text-main">偏好沟通时段: <strong class="bg-ai-purple/10 text-ai-purple px-1 rounded">下午 14:00 - 16:00</strong> (基于历史3次接通记录)</span>
+</li>
+<li class="flex items-start gap-2">
+<span class="material-symbols-outlined text-ai-purple text-sm mt-0.5">check_circle</span>
+<span class="font-body-sm text-body-sm text-text-main">常去医院: <strong class="bg-ai-purple/10 text-ai-purple px-1 rounded">北京协和医院 (东院)</strong> 心内科</span>
+</li>
+<li class="flex items-start gap-2">
+<span class="material-symbols-outlined text-ai-purple text-sm mt-0.5">check_circle</span>
+<span class="font-body-sm text-body-sm text-text-main">沟通特性: 听力稍弱，建议语速放缓，避免使用复杂医学专业术语。</span>
+</li>
+</ul>
+</div>
+</section>
+</div>
+<!-- Right Column: Timeline & Service Records (Fixed 400px) -->
+<div class="w-[400px] flex flex-col gap-gutter shrink-0">
+<!-- Service Records Summary -->
+<section class="bg-surface rounded-xl border border-border-subtle p-card-padding shadow-sm">
+<h3 class="font-h3-title text-h3-title text-text-main mb-4 flex items-center gap-2">
+<span class="material-symbols-outlined text-trust-blue">medical_services</span> 历史服务记录
+                    </h3>
+<div class="space-y-3">
+<div class="flex justify-between items-center p-3 hover:bg-surface-container rounded-lg transition-colors cursor-pointer border border-transparent hover:border-border-subtle">
+<div>
+<p class="font-body-sm text-body-sm font-semibold text-text-main">门诊绿通预约</p>
+<p class="font-label-caps text-label-caps text-text-muted mt-1">2023-10-15</p>
+</div>
+<span class="bg-surface-variant text-on-surface-variant font-label-caps text-label-caps px-2 py-1 rounded">已完成</span>
+</div>
+<div class="flex justify-between items-center p-3 hover:bg-surface-container rounded-lg transition-colors cursor-pointer border border-transparent hover:border-border-subtle">
+<div>
+<p class="font-body-sm text-body-sm font-semibold text-text-main">专家二次诊疗</p>
+<p class="font-label-caps text-label-caps text-text-muted mt-1">2023-08-22</p>
+</div>
+<span class="bg-surface-variant text-on-surface-variant font-label-caps text-label-caps px-2 py-1 rounded">已完成</span>
+</div>
+<button class="w-full py-2 mt-2 border border-border-subtle rounded-lg text-trust-blue font-body-sm text-body-sm hover:bg-primary-fixed/50 transition-colors">
+                            查看全部记录
+                        </button>
+</div>
+</section>
+<!-- Medical Timeline -->
+<section class="bg-surface rounded-xl border border-border-subtle p-card-padding shadow-sm flex-1 flex flex-col">
+<h3 class="font-h3-title text-h3-title text-text-main mb-4 flex items-center gap-2">
+<span class="material-symbols-outlined text-text-muted">timeline</span> 病情演进时间线
+                    </h3>
+<div class="flex-1 overflow-y-auto relative pl-4 mt-2">
+<!-- Timeline track -->
+<div class="absolute left-6 top-2 bottom-2 w-0.5 bg-border-subtle"></div>
+<!-- Timeline item 1 (Current/Active) -->
+<div class="relative pl-8 pb-6">
+<div class="absolute left-[3px] top-1 w-3 h-3 bg-trust-blue rounded-full ring-4 ring-trust-blue/20 z-10 ai-pulse"></div>
+<p class="font-label-caps text-label-caps text-trust-blue mb-1">今日 09:30 - 当前申请</p>
+<div class="bg-primary-fixed/20 border border-trust-blue/30 rounded-lg p-3">
+<p class="font-body-sm text-body-sm text-text-main font-semibold">突发胸闷，申请急诊绿通</p>
+<p class="font-body-sm text-body-sm text-text-muted mt-1 line-clamp-2">客户来电表示晨起后持续胸闷伴随冷汗，已建议呼叫120并启动紧急就医通道。</p>
+</div>
+</div>
+<!-- Timeline item 2 -->
+<div class="relative pl-8 pb-6">
+<div class="absolute left-[3px] top-1 w-3 h-3 bg-surface border-2 border-border-subtle rounded-full z-10"></div>
+<p class="font-label-caps text-label-caps text-text-muted mb-1">2023-10-15</p>
+<div class="border border-border-subtle rounded-lg p-3 hover:shadow-sm transition-shadow">
+<p class="font-body-sm text-body-sm text-text-main">心内科常规复查</p>
+<p class="font-body-sm text-body-sm text-text-muted mt-1">复查心电图示窦性心动过缓，调整用药剂量。</p>
+</div>
+</div>
+<!-- Timeline item 3 -->
+<div class="relative pl-8 pb-2">
+<div class="absolute left-[3px] top-1 w-3 h-3 bg-surface border-2 border-border-subtle rounded-full z-10"></div>
+<p class="font-label-caps text-label-caps text-text-muted mb-1">2023-01-10</p>
+<div class="border border-border-subtle rounded-lg p-3 hover:shadow-sm transition-shadow">
+<p class="font-body-sm text-body-sm text-text-main">确诊冠心病</p>
+<p class="font-body-sm text-body-sm text-text-muted mt-1">于当地市人民医院首次确诊，建立慢病管理档案。</p>
+</div>
+</div>
+</div>
+</section>
+</div>
+</main>
+</div>
+</body></html>
