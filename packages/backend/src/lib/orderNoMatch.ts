@@ -37,7 +37,7 @@ export function canonicalize(s: string): string {
  *    故 body 收紧为「数字 + OCR 易混字符」(o→0/i→1/s→5/z→2/g→9/l→1/|→1/q→0)，避免把 solution 这类词误当订单号。
  * 后续都靠 canonicalize 归一 + 编辑距离纠回。
  */
-const CANDIDATE_RE = /[#＃][0-9a-z|]{8}(?![0-9a-z|])|(?:c?cod|od|fwyy)[0-9a-z|]{6,24}|(?:so|lt)[0-9oqislzg|]{14,24}/i
+const CANDIDATE_RE = /[#＃][0-9a-z|]{6,9}(?![0-9a-z|])|(?:c?cod|od|fwyy)[0-9a-z|]{6,24}|(?:so|lt)[0-9oqislzg|]{14,24}/i
 
 export type CandidateKind = 'fwyy' | 'cod' | 'ccod' | 'od' | 'so' | 'lt' | 'tail8' | 'unknown'
 
@@ -132,13 +132,27 @@ function nameCandidateFromTitle(title: string | null | undefined): string | null
   return name.length > 0 ? name : null
 }
 
-function tail8OfCandidate(candidate: string): string | null {
+function tailOfCandidate(candidate: string): string | null {
   const compact = candidate.replace(/\s+/g, '')
-  if (!/^[#＃][0-9a-z|]{8}$/i.test(compact)) return null
+  if (!/^[#＃][0-9a-z|]{6,9}$/i.test(compact)) return null
   return canonicalize(compact.slice(1))
 }
 
-function resolveTail8(tail: string, entries: OrderNoEntry[], title?: string | null, maxDist = 2): ResolveResult {
+function maxDistForTail(tail: string, maxDist: number): number {
+  if (tail.length >= 8) return Math.min(maxDist, 2)
+  if (tail.length === 7) return Math.min(maxDist, 1)
+  return 0
+}
+
+function suffixLengthsForTail(tail: string): number[] {
+  if (tail.length === 7) return [7, 8]
+  if (tail.length === 9) return [8, 9]
+  return [tail.length]
+}
+
+function resolveTail(tail: string, entries: OrderNoEntry[], title?: string | null, maxDist = 2): ResolveResult {
+  const effectiveMaxDist = maxDistForTail(tail, maxDist)
+  const suffixLengths = suffixLengthsForTail(tail)
   const nameCandidate = nameCandidateFromTitle(title)
   const tied: { orderId: number; name?: string | null; no: string; dist: number; nameHits: number }[] = []
   let bestDist = Infinity
@@ -147,10 +161,12 @@ function resolveTail8(tail: string, entries: OrderNoEntry[], title?: string | nu
     for (const no of e.nos) {
       if (!no) continue
       const cn = canonicalize(no)
-      if (cn.length < tail.length) continue
-      const orderTail = cn.slice(-tail.length)
-      const dist = levenshtein(tail, orderTail, maxDist)
-      if (dist > maxDist) continue
+      let dist = effectiveMaxDist + 1
+      for (const len of suffixLengths) {
+        if (cn.length < len) continue
+        dist = Math.min(dist, levenshtein(tail, cn.slice(-len), effectiveMaxDist))
+      }
+      if (dist > effectiveMaxDist) continue
       if (!tied.some((t) => t.orderId === e.orderId)) {
         tied.push({ orderId: e.orderId, name: e.name, no, dist, nameHits: nameHitCount(nameCandidate, e.name) })
       } else {
@@ -197,8 +213,8 @@ export function resolveOrder(
   maxDist = 2,
   title?: string | null
 ): ResolveResult {
-  const tail8 = tail8OfCandidate(candidate)
-  if (tail8) return resolveTail8(tail8, entries, title, maxDist)
+  const tail = tailOfCandidate(candidate)
+  if (tail) return resolveTail(tail, entries, title, maxDist)
 
   const c = canonicalize(candidate)
   let bestDist = Infinity
