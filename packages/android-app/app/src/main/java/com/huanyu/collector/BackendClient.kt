@@ -87,14 +87,17 @@ class BackendClient(
         )
     }
 
-    fun registerRecording(call: SyncedCall, recording: LocalRecording): String {
+    fun registerRecording(call: SyncedCall, recording: LocalRecording): RecordingRegistration {
         val ossKey = "android-recordings/${recording.safeName}"
         val body = JSONObject()
             .put("callId", call.id)
             .put("ossKey", ossKey)
             .put("durationSec", call.durationSec)
         val data = postJson("/api/v1/recordings", body).getJSONObject("data")
-        return data.getString("uploadUrl")
+        return RecordingRegistration(
+            uploadUrl = if (data.isNull("uploadUrl")) null else data.getString("uploadUrl"),
+            alreadyUploaded = data.optBoolean("alreadyUploaded", false)
+        )
     }
 
     fun uploadFile(uploadUrl: String, file: File) {
@@ -141,4 +144,9 @@ data class CallPhoneMatch(
     val matched: Boolean,
     val orderId: Int? = null,
     val sourceOrderNo: String = ""
+)
+
+data class RecordingRegistration(
+    val uploadUrl: String?,
+    val alreadyUploaded: Boolean
 )

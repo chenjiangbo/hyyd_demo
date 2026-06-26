@@ -231,17 +231,25 @@ function uploadArchive() {
     // 替换为正斜杠路径上传
     const remoteArchivePath = `${targetDir}/${archiveName}`;
     
-    sftp.fastPut(archivePath, remoteArchivePath, {}, (putErr) => {
-      if (putErr) {
-        console.error('❌ [SFTP] 上传文件失败:', putErr.message);
-        cleanupAndExit(1);
-        return;
-      }
+    const read = fs.createReadStream(archivePath, { highWaterMark: 256 * 1024 });
+    const write = sftp.createWriteStream(remoteArchivePath, { highWaterMark: 256 * 1024 });
+    let done = false;
+    const fail = (uploadErr) => {
+      if (done) return;
+      done = true;
+      console.error('❌ [SFTP] 上传文件失败:', uploadErr.message);
+      cleanupAndExit(1);
+    };
+    read.on('error', fail);
+    write.on('error', fail);
+    write.on('close', () => {
+      if (done) return;
+      done = true;
       console.log('✅ [SFTP] 源码压缩包上传完成！');
-      
       // 3.3 远程解压缩并删除临时压缩包
       extractRemoteArchive();
     });
+    read.pipe(write);
   });
 }
 

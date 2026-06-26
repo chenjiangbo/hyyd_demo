@@ -1593,6 +1593,16 @@ export function registerApiRoutes(
         return reply.status(404).send({ error: '通话记录不存在' })
       }
 
+      if (call.recordingOssKey) {
+        return reply.send({
+          data: {
+            call,
+            uploadUrl: null,
+            alreadyUploaded: true
+          }
+        })
+      }
+
       // 更新通话记录，绑定录音 OssKey，时长等
       const updatedCall = await prisma.call.update({
         where: { id: callId },
@@ -1617,7 +1627,8 @@ export function registerApiRoutes(
       return reply.send({
         data: {
           call: updatedCall,
-          uploadUrl // 客户端通过 PUT 请求此 URL 上传文件，完全不需要后端中转大流量
+          uploadUrl, // 客户端通过 PUT 请求此 URL 上传文件，完全不需要后端中转大流量
+          alreadyUploaded: false
         }
       })
     } catch (err: any) {
