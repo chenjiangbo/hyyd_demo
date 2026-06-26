@@ -1594,11 +1594,38 @@ export function registerApiRoutes(
       }
 
       if (call.recordingOssKey) {
+        let objectExists = false
+        try {
+          await minioClient.statObject(env.minioBucketRecordings, call.recordingOssKey)
+          objectExists = true
+        } catch {
+          objectExists = false
+        }
+        if (objectExists) {
+          return reply.send({
+            data: {
+              call,
+              uploadUrl: null,
+              alreadyUploaded: true
+            }
+          })
+        }
+
+        const uploadUrl = await minioPublicClient.presignedPutObject(
+          env.minioBucketRecordings,
+          call.recordingOssKey,
+          5 * 60
+        )
+        await prisma.call.update({
+          where: { id: callId },
+          data: { durationSec, asrStatus: 'pending' }
+        })
+        void scheduleTranscription(call.id)
         return reply.send({
           data: {
             call,
-            uploadUrl: null,
-            alreadyUploaded: true
+            uploadUrl,
+            alreadyUploaded: false
           }
         })
       }
