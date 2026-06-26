@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Application Detail Page - Multi-Order Execution</title>
+<!-- Material Symbols Outlined -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Google Fonts -->
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&amp;family=JetBrains+Mono:wght@500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Tailwind Config -->
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                            "secondary-fixed": "#dee1ff",
+                            "on-tertiary-container": "#e3cfff",
+                            "tertiary-fixed": "#ecdcff",
+                            "on-secondary-container": "#fffbff",
+                            "border-subtle": "#E8E8E8",
+                            "surface-tint": "#0353da",
+                            "wechat-green": "#07C160",
+                            "on-surface-variant": "#434654",
+                            "background": "#f7f9fc",
+                            "secondary-fixed-dim": "#b9c3ff",
+                            "secondary": "#214ae2",
+                            "surface": "#f7f9fc",
+                            "status-urgent": "#FAAD14",
+                            "status-error": "#FF4D4F",
+                            "on-primary-fixed-variant": "#003ea8",
+                            "surface-bright": "#f7f9fc",
+                            "on-primary": "#ffffff",
+                            "tertiary-fixed-dim": "#d5baff",
+                            "surface-container-low": "#f2f4f7",
+                            "surface-container-lowest": "#ffffff",
+                            "on-secondary-fixed": "#001257",
+                            "primary-fixed": "#dbe1ff",
+                            "on-primary-container": "#cbd6ff",
+                            "status-success": "#52C41A",
+                            "tertiary-container": "#7633d5",
+                            "on-tertiary-fixed-variant": "#5e08bd",
+                            "table-header-bg": "#FAFAFA",
+                            "on-secondary": "#ffffff",
+                            "primary": "#003da6",
+                            "on-primary-fixed": "#00174b",
+                            "on-error": "#ffffff",
+                            "surface-dim": "#d8dadd",
+                            "on-background": "#191c1e",
+                            "error-container": "#ffdad6",
+                            "inverse-surface": "#2d3133",
+                            "inverse-primary": "#b4c5ff",
+                            "surface-variant": "#e0e3e6",
+                            "surface-container": "#eceef1",
+                            "inverse-on-surface": "#eff1f4",
+                            "corp-wechat-blue": "#2B83D2",
+                            "surface-container-highest": "#e0e3e6",
+                            "primary-fixed-dim": "#b4c5ff",
+                            "surface-container-high": "#e6e8eb",
+                            "secondary-container": "#4365fb",
+                            "status-info": "#1890FF",
+                            "outline": "#737686",
+                            "primary-container": "#0052d9",
+                            "on-surface": "#191c1e",
+                            "outline-variant": "#c3c6d7",
+                            "on-secondary-fixed-variant": "#0033c2",
+                            "on-tertiary": "#ffffff",
+                            "tertiary": "#5d05bc",
+                            "on-tertiary-fixed": "#270057",
+                            "error": "#ba1a1a",
+                            "on-error-container": "#93000a"
+                    },
+                    "borderRadius": {
+                            "DEFAULT": "0.125rem",
+                            "lg": "0.25rem",
+                            "xl": "0.5rem",
+                            "full": "0.75rem"
+                    },
+                    "spacing": {
+                            "gutter": "16px",
+                            "list-item-height": "48px",
+                            "container-margin": "24px",
+                            "card-gap": "12px",
+                            "compact-padding": "8px"
+                    },
+                    "fontFamily": {
+                            "headline-md": ["Inter", "sans-serif"],
+                            "headline-lg": ["Inter", "sans-serif"],
+                            "body-sm": ["Inter", "sans-serif"],
+                            "data-mono": ["JetBrains Mono", "monospace"],
+                            "label-bold": ["Inter", "sans-serif"],
+                            "status-badge": ["Inter", "sans-serif"],
+                            "body-md": ["Inter", "sans-serif"]
+                    },
+                    "fontSize": {
+                            "headline-md": ["16px", { "lineHeight": "24px", "fontWeight": "600" }],
+                            "headline-lg": ["20px", { "lineHeight": "28px", "fontWeight": "600" }],
+                            "body-sm": ["12px", { "lineHeight": "18px", "fontWeight": "400" }],
+                            "data-mono": ["13px", { "lineHeight": "16px", "letterSpacing": "-0.02em", "fontWeight": "500" }],
+                            "label-bold": ["12px", { "lineHeight": "16px", "fontWeight": "700" }],
+                            "status-badge": ["11px", { "lineHeight": "12px", "fontWeight": "700" }],
+                            "body-md": ["14px", { "lineHeight": "22px", "fontWeight": "400" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        /* Custom Scrollbar for inner panes */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--tw-colors-outline-variant);
+            border-radius: var(--tw-border-radius-full);
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--tw-colors-outline);
+        }
+        
+        .chat-bubble-me {
+            position: relative;
+        }
+        .chat-bubble-me::after {
+            content: '';
+            position: absolute;
+            top: 10px;
+            right: -6px;
+            border-top: 6px solid transparent;
+            border-bottom: 6px solid transparent;
+            border-left: 6px solid var(--tw-colors-primary);
+        }
+        
+        .chat-bubble-them {
+            position: relative;
+        }
+        .chat-bubble-them::after {
+            content: '';
+            position: absolute;
+            top: 10px;
+            left: -6px;
+            border-top: 6px solid transparent;
+            border-bottom: 6px solid transparent;
+            border-right: 6px solid var(--tw-colors-surface-container-high);
+        }
+    </style>
+</head>
+<body class="bg-background text-on-surface font-body-md min-h-screen overflow-hidden flex flex-col antialiased">
+<!-- TopNavBar (Shared Component) -->
+<header class="bg-surface-container-lowest dark:bg-surface-container-low h-16 border-b border-border-subtle flex items-center px-container-margin shrink-0 transition-all duration-200 ease-in-out gap-8 fixed top-0 left-0 right-0 z-50">
+<div class="flex items-center gap-3 shrink-0">
+<div class="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-on-primary">
+<span class="material-symbols-outlined text-[20px]" data-weight="fill">medical_services</span>
+</div>
+<h1 class="text-headline-md font-headline-md text-primary dark:text-primary-fixed">智能寰宇</h1>
+</div>
+<nav class="flex h-full items-center gap-2 shrink-0">
+<a class="h-full flex items-center px-3 text-on-surface-variant hover:text-primary transition-colors border-b-2 border-transparent hover:border-primary-fixed" href="#">
+<span class="font-headline-md text-headline-md font-label-bold text-label-bold">数据看板</span>
+</a>
+<a class="h-full flex items-center px-3 text-on-surface-variant hover:text-primary transition-colors border-b-2 border-transparent hover:border-primary-fixed" href="#">
+<span class="font-headline-md text-headline-md font-label-bold text-label-bold">申领台</span>
+</a>
+<a class="h-full flex items-center px-3 text-primary font-bold border-b-2 border-primary transition-colors" href="#">
+<span class="font-headline-md text-headline-md font-label-bold text-label-bold">工作台</span>
+</a>
+<a class="h-full flex items-center px-3 text-on-surface-variant hover:text-primary transition-colors border-b-2 border-transparent hover:border-primary-fixed" href="#">
+<span class="font-headline-md text-headline-md font-label-bold text-label-bold">知识库</span>
+</a>
+<a class="h-full flex items-center px-3 text-on-surface-variant hover:text-primary transition-colors border-b-2 border-transparent hover:border-primary-fixed" href="#">
+<span class="font-headline-md text-headline-md font-label-bold text-label-bold">档案库</span>
+</a>
+</nav>
+<div class="flex-1 max-w-2xl ml-auto">
+<div class="relative flex items-center w-full">
+<span class="material-symbols-outlined absolute left-3 text-on-surface-variant">search</span>
+<input class="w-full pl-10 pr-4 py-2 bg-surface-container-low border-transparent rounded-lg text-body-md font-body-md focus:border-primary focus:ring-1 focus:ring-primary focus:bg-surface-container-lowest transition-colors" placeholder="搜索申领号、患者姓名、电话..." type="text"/>
+<button class="absolute right-3 text-primary font-label-bold text-label-bold hover:bg-primary-fixed/30 px-2 py-1 rounded">高级</button>
+</div>
+</div>
+<div class="flex items-center gap-2 ml-4 shrink-0">
+<button class="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container dark:hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<button class="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container dark:hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined">help</span>
+</button>
+<button class="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container dark:hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined">settings</span>
+</button>
+<img class="w-8 h-8 rounded-full object-cover ml-2 border border-border-subtle cursor-pointer hover:ring-2 hover:ring-primary-fixed transition-all" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAe7bDtUlAtFmViemXvPl6OBigDA5vCeFPSlQ5nMvtmzoKewff0j96bxJms2y_9U4SRk3b_fpBxK64JgUTh7PuCKK_o-h9fv4tsnNrsiRFpCfhsLen_j2e_Af4YN8_DLAeWoX65RYT9wzPnlo7B6yBx7-r_T7oR4npdmNvC5w7uSN2JrS2r0S1Y6J7MEPdLgDXng4ZErefTKagL3NRo0uKDvU2Sl6yR2caRe2FV4_uLLj6yI_c0k7wq14i6x13DejEbsgyY4J5H8lm2"/>
+</div>
+</header>
+<!-- SideNavBar (Shared Component) -->
+<!-- Main Content Area -->
+<main class="mt-16 flex-1 flex flex-col h-[calc(100vh-64px)] bg-surface">
+<!-- Page Header -->
+<div class="h-[72px] bg-surface-container-lowest border-b border-border-subtle flex items-center justify-between px-container-margin shrink-0">
+<div class="flex items-center gap-4">
+<!-- Breadcrumbs -->
+<div class="flex items-center text-[13px] text-outline-variant font-medium"><a class="hover:text-primary transition-colors" href="#">工作台</a>
+<span class="material-symbols-outlined text-sm mx-1">chevron_right</span>
+<span class="text-on-surface">申请号: OD-20231024-8891</span></div>
+<div class="h-6 w-px bg-border-subtle"></div>
+<!-- Customer Profile Snippet -->
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-full bg-surface-container-highest flex items-center justify-center text-on-surface font-headline-md">
+                        张
+                    </div>
+<div class="flex flex-col">
+<div class="flex items-center gap-2">
+<h1 class="font-headline-md text-headline-md text-on-surface">张伟 (Zhang Wei)</h1>
+<span class="px-1.5 py-0.5 bg-surface-container-high text-on-surface-variant rounded-sm font-status-badge text-status-badge border border-border-subtle">VIP</span>
+<span class="px-1.5 py-0.5 bg-error-container text-on-error-container rounded-sm font-status-badge text-status-badge border border-error-container">Urgent Care</span>
+</div>
+<div class="flex items-center gap-2 text-outline font-body-sm mt-0.5">
+<span class="flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">local_hospital</span> Peking Union Medical</span>
+<span>•</span>
+<span class="font-data-mono text-[11px]">ID: P-99281-X</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Order Count Badge -->
+<div class="flex items-center gap-2 bg-surface-container px-3 py-1.5 rounded-DEFAULT border border-border-subtle">
+<span class="material-symbols-outlined text-primary text-sm" style="font-variation-settings: 'FILL' 1;">inventory_2</span>
+<span class="font-label-bold text-label-bold text-on-surface">7 个订单 (Orders)</span>
+</div>
+</div>
+<!-- Split View Content -->
+<div class="flex-1 flex overflow-hidden">
+<!-- LEFT PANE: Communication Hub (60%) -->
+<div class="w-[60%] flex flex-col border-r border-border-subtle bg-surface-container-lowest">
+<!-- Comm Hub Tabs -->
+<div class="flex items-center border-b border-border-subtle px-4 shrink-0 bg-table-header-bg">
+<button class="px-4 py-3 border-b-2 border-primary text-primary font-label-bold text-label-bold flex items-center gap-2">
+<span class="material-symbols-outlined text-[18px]" style="font-variation-settings: 'FILL' 0;">forum</span>
+                        Enterprise WeChat
+                    </button>
+<button class="px-4 py-3 border-b-2 border-transparent text-on-surface-variant hover:text-on-surface hover:bg-surface-container-lowest font-label-bold text-label-bold flex items-center gap-2 transition-colors">
+<span class="material-symbols-outlined text-[18px]" style="font-variation-settings: 'FILL' 0;">chat_bubble</span>
+                        WeChat
+                    </button>
+<button class="px-4 py-3 border-b-2 border-transparent text-on-surface-variant hover:text-on-surface hover:bg-surface-container-lowest font-label-bold text-label-bold flex items-center gap-2 transition-colors">
+<span class="material-symbols-outlined text-[18px]" style="font-variation-settings: 'FILL' 0;">call</span>
+                        Call Logs
+                    </button>
+</div>
+<!-- Chat Canvas -->
+<div class="flex-1 overflow-y-auto p-compact-padding flex flex-col gap-4 bg-surface-bright">
+<!-- Date Separator -->
+<div class="flex justify-center my-2">
+<span class="px-2 py-1 bg-surface-container-high rounded-DEFAULT font-status-badge text-[10px] text-outline">Today, 09:42 AM</span>
+</div>
+<!-- Them Bubble -->
+<div class="flex items-start gap-2 max-w-[85%]">
+<div class="w-8 h-8 rounded-full bg-surface-container-highest shrink-0 flex items-center justify-center text-xs font-bold text-on-surface-variant">张</div>
+<div class="flex flex-col gap-1">
+<span class="text-[11px] text-outline ml-1">Zhang Wei - Patient</span>
+<div class="bg-surface-container-high text-on-surface p-3 rounded-lg rounded-tl-sm chat-bubble-them text-[13px] leading-relaxed border border-border-subtle shadow-sm">
+                                医生您好，我已经到了医院一楼大厅。请问去哪里拿我的检查报告？
+                            </div>
+</div>
+</div>
+<!-- System Message -->
+<div class="flex justify-center my-2">
+<span class="px-3 py-1 bg-surface-container-low rounded-full font-body-sm text-[11px] text-outline border border-border-subtle flex items-center gap-1">
+<span class="material-symbols-outlined text-[12px]">info</span>
+                            Automated Reply Sent
+                        </span>
+</div>
+<!-- Me Bubble -->
+<div class="flex items-start gap-2 max-w-[85%] self-end flex-row-reverse">
+<div class="w-8 h-8 rounded-full bg-primary-container shrink-0 flex items-center justify-center text-xs font-bold text-on-primary">Me</div>
+<div class="flex flex-col gap-1 items-end">
+<span class="text-[11px] text-outline mr-1">Dr. Sarah Chen</span>
+<div class="bg-primary text-on-primary p-3 rounded-lg rounded-tr-sm chat-bubble-me text-[13px] leading-relaxed shadow-sm">
+                                您好张先生，请前往3楼影像科自助打印机提取。您的取件码是: <span class="font-data-mono bg-on-primary-fixed-variant px-1 rounded-sm">77291</span>。拿到后请直接来5楼502室找我。
+                            </div>
+</div>
+</div>
+<!-- Them Bubble (Image) -->
+<div class="flex items-start gap-2 max-w-[85%] mt-2">
+<div class="w-8 h-8 rounded-full bg-surface-container-highest shrink-0 flex items-center justify-center text-xs font-bold text-on-surface-variant">张</div>
+<div class="flex flex-col gap-1">
+<div class="bg-surface-container-high p-2 rounded-lg rounded-tl-sm chat-bubble-them border border-border-subtle shadow-sm">
+<img alt="Lab Report Image" class="w-48 h-auto rounded-DEFAULT border border-border-subtle" data-alt="A clear, sharply focused photograph of a printed medical lab report held in a patient's hand. High contrast black text on white paper. Clinical environment background, slightly blurred." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDA4-zuuUK1XrY3UosnvW6_rlEdPJb6S496MTdAZ699wXqU1uh828NyDzO205-gxEYBsr2ufpzwZADjGn_tWMkzsBY9lr-sfMHqxDxtiu4XGM1kplH5_DRoZ6ovOT64jDZFRjK7skoMbeAIgISpD0LUUM_shuKlGg5MWQaFsQsIyoxyzWMi7fUvkiZzazrZGDa5Y49MzEs_hiZ-rx3530s6tYgfba_NkV6Dix593izMZjZ2PoLAY2rXLElWl1-3ltq1BufHdjdoslId"/>
+<div class="text-[13px] text-on-surface mt-2">拿到了，是这份对吧？</div>
+</div>
+</div>
+</div>
+</div>
+<!-- AI Summary Panel (Bottom Fixed) -->
+<div class="shrink-0 bg-surface-container-lowest border-t border-border-subtle p-4 shadow-[0_-4px_12px_rgba(0,0,0,0.03)] relative">
+<!-- Decorative subtle AI glow top border -->
+<div class="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-tertiary to-transparent opacity-30"></div>
+<div class="flex items-center justify-between mb-3">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-tertiary-container text-[18px]" style="font-variation-settings: 'FILL' 1;">auto_awesome</span>
+<span class="font-label-bold text-label-bold text-on-surface">AI Communication Summary</span>
+</div>
+<button class="text-primary hover:text-primary-container text-[11px] font-label-bold flex items-center gap-1 transition-colors">
+<span class="material-symbols-outlined text-[14px]">refresh</span> Re-analyze
+                        </button>
+</div>
+<div class="grid grid-cols-3 gap-4">
+<div class="bg-surface p-3 rounded-DEFAULT border border-border-subtle">
+<div class="text-[10px] font-label-bold text-outline uppercase tracking-wider mb-1">Intent</div>
+<div class="text-[13px] text-on-surface font-medium">Report Retrieval &amp; Consultation</div>
+</div>
+<div class="bg-surface p-3 rounded-DEFAULT border border-border-subtle">
+<div class="text-[10px] font-label-bold text-outline uppercase tracking-wider mb-1">Extracted Data</div>
+<div class="flex flex-wrap gap-1 mt-1">
+<span class="bg-surface-container-high border border-border-subtle px-1.5 py-0.5 rounded-sm text-[11px] font-data-mono flex items-center gap-1">Location: F3 Imaging <span class="material-symbols-outlined text-[12px] text-outline cursor-pointer hover:text-primary">content_copy</span></span>
+</div>
+</div>
+<div class="bg-error-container/30 p-3 rounded-DEFAULT border border-error-container/50">
+<div class="text-[10px] font-label-bold text-status-error uppercase tracking-wider mb-1 flex items-center gap-1"><span class="material-symbols-outlined text-[12px]">warning</span> Risks / Notes</div>
+<div class="text-[12px] text-on-surface leading-tight mt-1">Patient mobility noted as slow in previous logs; allocate extra 10 mins before appt.</div>
+</div>
+</div>
+<!-- Chat Input area skeleton -->
+<div class="mt-4 flex gap-2">
+<div class="flex-1 bg-surface-container border border-border-subtle rounded-DEFAULT flex items-center px-3 py-1.5">
+<span class="material-symbols-outlined text-outline mr-2 text-[18px]">add_circle</span>
+<input class="bg-transparent border-none focus:ring-0 text-[13px] w-full p-0 text-on-surface placeholder:text-outline-variant" placeholder="Type message to patient..." type="text"/>
+</div>
+<button class="bg-primary text-on-primary px-4 rounded-DEFAULT font-label-bold text-[13px] hover:bg-primary-container transition-colors flex items-center justify-center">
+                            Send
+                         </button>
+</div>
+</div>
+</div>
+<!-- RIGHT PANE: Order Execution Panel (40%) -->
+<div class="w-[40%] flex flex-col bg-surface-container-lowest">
+<!-- Order Switcher Header -->
+<div class="p-4 border-b border-border-subtle bg-table-header-bg shrink-0">
+<div class="flex items-center justify-between mb-2">
+<span class="font-label-bold text-[11px] text-outline uppercase tracking-wider">Active Execution Context</span>
+<div class="flex items-center gap-1 bg-surface-container-highest px-1.5 py-0.5 rounded-sm border border-border-subtle">
+<span class="text-[10px] font-medium text-on-surface-variant">1 of 7</span>
+<span class="material-symbols-outlined text-[12px] text-outline hover:text-on-surface cursor-pointer">arrow_drop_down</span>
+</div>
+</div>
+<!-- Current Active Order Card -->
+<div class="bg-surface-container-lowest border-l-2 border-primary border-y border-r border-y-border-subtle border-r-border-subtle p-3 rounded-r-DEFAULT shadow-sm relative overflow-hidden group">
+<!-- Service Tag -->
+<div class="flex justify-between items-start mb-1.5">
+<div class="flex items-center gap-2">
+<span class="bg-[#E6F7FF] text-[#0050B3] border border-[#91D5FF] px-1.5 py-0.5 text-[10px] font-status-badge rounded-sm">Specialist Consult</span>
+<span class="flex items-center text-status-success text-[11px] font-medium gap-0.5">
+<span class="material-symbols-outlined text-[12px]" style="font-variation-settings: 'FILL' 1;">check_circle</span> In Progress
+                                </span>
+</div>
+<button class="text-outline hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity">
+<span class="material-symbols-outlined text-[16px]">open_in_new</span>
+</button>
+</div>
+<!-- Primary ID -->
+<div class="flex items-center gap-2 mb-2">
+<span class="font-data-mono text-[16px] font-bold text-on-surface tracking-tight">COD-8829-991A</span>
+<button class="w-6 h-6 rounded-DEFAULT border border-border-subtle flex items-center justify-center text-outline hover:text-primary hover:border-primary transition-colors hover:bg-surface-container-low" title="Copy ID">
+<span class="material-symbols-outlined text-[14px]">content_copy</span>
+</button>
+</div>
+<!-- Brief details -->
+<div class="text-[12px] text-on-surface-variant leading-tight line-clamp-1">
+                            Neurology Dept • Dr. S. Chen • Room 502
+                        </div>
+</div>
+</div>
+<!-- Execution Tabs -->
+<div class="flex items-center border-b border-border-subtle shrink-0">
+<button class="flex-1 py-2.5 border-b-2 border-primary text-primary font-label-bold text-[12px] bg-surface-container-lowest">Detail &amp; Entry</button>
+<button class="flex-1 py-2.5 border-b-2 border-transparent text-on-surface-variant hover:text-on-surface font-label-bold text-[12px] bg-table-header-bg hover:bg-surface-container-lowest transition-colors">Lifecycle</button>
+<button class="flex-1 py-2.5 border-b-2 border-transparent text-on-surface-variant hover:text-on-surface font-label-bold text-[12px] bg-table-header-bg hover:bg-surface-container-lowest transition-colors">AI Tasks</button>
+</div>
+<!-- Execution Canvas (Form & Details) -->
+<div class="flex-1 overflow-y-auto p-4 bg-surface-bright flex flex-col gap-6">
+<!-- Section: Patient & Order Demographics -->
+<section>
+<h3 class="font-label-bold text-[11px] text-outline uppercase tracking-wider mb-3 border-b border-border-subtle pb-1">Core Identity</h3>
+<div class="grid grid-cols-2 gap-x-4 gap-y-3">
+<div class="flex flex-col">
+<span class="text-[10px] text-outline mb-0.5">Patient Name</span>
+<span class="font-medium text-[13px] text-on-surface">张伟 (Zhang Wei)</span>
+</div>
+<div class="flex flex-col">
+<span class="text-[10px] text-outline mb-0.5">Date of Birth / Age</span>
+<span class="font-medium text-[13px] text-on-surface font-data-mono">1978-05-12 (45)</span>
+</div>
+<div class="flex flex-col">
+<span class="text-[10px] text-outline mb-0.5">Insurance Provider</span>
+<span class="font-medium text-[13px] text-on-surface">Ping An Health - Premium</span>
+</div>
+<div class="flex flex-col">
+<span class="text-[10px] text-outline mb-0.5">Authorization Code</span>
+<div class="flex items-center gap-1 group">
+<span class="font-medium text-[13px] text-on-surface font-data-mono">AUTH-992-XX1</span>
+<span class="material-symbols-outlined text-[12px] text-outline opacity-0 group-hover:opacity-100 cursor-pointer hover:text-primary transition-all">content_copy</span>
+</div>
+</div>
+</div>
+</section>
+<!-- Section: Structured Data Entry -->
+<section>
+<h3 class="font-label-bold text-[11px] text-outline uppercase tracking-wider mb-3 border-b border-border-subtle pb-1 flex justify-between items-end">
+                            Execution Notes
+                            <span class="text-[9px] text-primary normal-case font-normal flex items-center gap-0.5 cursor-pointer hover:underline"><span class="material-symbols-outlined text-[10px]">auto_fix_high</span> Auto-fill from Comm Hub</span>
+</h3>
+<div class="flex flex-col gap-3">
+<div class="flex flex-col gap-1">
+<label class="text-[11px] font-medium text-on-surface-variant">Consultation Type</label>
+<select class="w-full bg-surface-container-lowest border border-border-subtle rounded-DEFAULT text-[13px] py-1.5 px-2 focus:ring-1 focus:ring-primary focus:border-primary outline-none">
+<option>Initial Evaluation</option>
+<option selected="">Follow-up / Report Review</option>
+<option>Pre-op Clearance</option>
+</select>
+</div>
+<div class="flex flex-col gap-1">
+<label class="text-[11px] font-medium text-on-surface-variant">Clinical Findings / Operator Notes</label>
+<textarea class="w-full bg-surface-container-lowest border border-border-subtle rounded-DEFAULT text-[13px] p-2 focus:ring-1 focus:ring-primary focus:border-primary outline-none resize-none placeholder:text-outline-variant" placeholder="Enter findings or extract from chat..." rows="3"></textarea>
+</div>
+<!-- Photo Attachment UI -->
+<div class="flex flex-col gap-1">
+<label class="text-[11px] font-medium text-on-surface-variant flex justify-between">
+                                    Attachments
+                                    <span class="text-outline">1 file</span>
+</label>
+<div class="border border-dashed border-outline-variant rounded-DEFAULT p-2 flex gap-2 overflow-x-auto bg-surface-container-lowest">
+<!-- Thumbnail -->
+<div class="w-16 h-16 rounded-sm bg-surface-container border border-border-subtle relative group overflow-hidden shrink-0">
+<img alt="Report Thumbnail" class="w-full h-full object-cover" data-alt="A macro shot of a medical lab report document, focusing on numerical values and a barcode. Soft, diffused lighting. Clinical." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCsSzya0BHQz_Ad5KQ67IvHS-mdnIumugDzbVaTGSSniCQEMOEOeDvgjutUtp4cc0LT-MiYlqZlmtS0jgJXyBj_k4t6pXR02mtf1bEelNjwpnLIqJ2Sv1FBeLmk7ios4CZWsa7kstr8lzd5qG-I4IuBtibtWXFG9i6YCrT_GhfZgIP5XiOr1chJ8ILtO1H0pdzHNyzLN1of6sVvFplRqmjbC0Ui7f2KVMEsmEKLs7j80dVZh-8Trk5N8OFV7cX4CoItHePi1kZMsXeG"/>
+<div class="absolute inset-0 bg-on-surface/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer">
+<span class="material-symbols-outlined text-on-primary text-[18px]">zoom_in</span>
+</div>
+</div>
+<!-- Add new -->
+<button class="w-16 h-16 rounded-sm bg-surface hover:bg-surface-container border border-dashed border-outline-variant flex flex-col items-center justify-center text-outline-variant hover:text-primary transition-colors shrink-0">
+<span class="material-symbols-outlined text-[20px]">add_photo_alternate</span>
+<span class="text-[9px] mt-1 font-medium">Add</span>
+</button>
+</div>
+</div>
+</div>
+</section>
+</div>
+<!-- Action Footer -->
+<div class="p-4 border-t border-border-subtle bg-surface-container-lowest flex justify-end gap-3 shrink-0 shadow-[0_-4px_12px_rgba(0,0,0,0.02)]">
+<button class="px-4 py-2 bg-surface-container hover:bg-surface-container-high border border-border-subtle text-on-surface font-label-bold text-[13px] rounded-DEFAULT transition-colors">
+                        Hold Order
+                    </button>
+<button class="px-4 py-2 bg-primary hover:bg-primary-container text-on-primary font-label-bold text-[13px] rounded-DEFAULT shadow-sm flex items-center gap-2 transition-colors">
+<span class="material-symbols-outlined text-[16px]">check_circle</span>
+                        Complete &amp; Next
+                    </button>
+</div>
+</div>
+</div>
+</main>
+</body></html>

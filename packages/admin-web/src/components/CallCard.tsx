@@ -34,8 +34,10 @@ export function CallCard({
   }
 
   const highlight = c.asrStatus !== 'done' && c.asrStatus !== 'no_recording'
-  // 未关联订单的通话：左侧红色竖条 + 浅红底，一眼能挑出来
-  const unlinked = showOrder && !c.order
+  const applicationOrders = c.applicationOrders ?? []
+  const linkedByApplication = applicationOrders.length > 0 || !!c.applicationNo
+  // 未关联订单/申请号的通话：左侧红色竖条 + 浅红底，一眼能挑出来
+  const unlinked = showOrder && !c.order && !linkedByApplication
 
   return (
     <div
@@ -53,19 +55,40 @@ export function CallCard({
         {showEmployee && c.employee && (
           <span className="text-xs text-fg-subtle">· {c.employee.name}</span>
         )}
-        {showOrder &&
-          (c.order ? (
-            <Link
-              to={`/orders/${c.order.id}`}
-              className="text-xs text-accent-strong hover:underline"
-            >
-              · {c.order.customerName}（{c.order.sourceOrderNo}）
-            </Link>
-          ) : (
-            <span className="text-xs rounded px-1.5 py-0.5 bg-danger/15 text-danger font-medium">
-              未关联订单
+        {showOrder && c.order && (
+          <Link
+            to={`/orders/${c.order.id}`}
+            className="text-xs text-accent-strong hover:underline"
+          >
+            · {c.order.customerName}（{c.order.sourceOrderNo}）
+          </Link>
+        )}
+        {showOrder && !c.order && applicationOrders.length > 0 && (
+          <>
+            <span className="text-xs rounded px-1.5 py-0.5 bg-accent-soft text-accent-strong font-medium">
+              关联 {applicationOrders.length} 单
             </span>
-          ))}
+            {applicationOrders.map((order) => (
+              <Link
+                key={order.id}
+                to={`/orders/${order.id}`}
+                className="text-xs text-accent-strong hover:underline"
+              >
+                · {order.customerName}（{order.sourceOrderNo}）
+              </Link>
+            ))}
+          </>
+        )}
+        {showOrder && !c.order && applicationOrders.length === 0 && c.applicationNo && (
+          <span className="text-xs rounded px-1.5 py-0.5 bg-accent-soft text-accent-strong font-medium">
+            已关联申请号 {c.applicationNo}
+          </span>
+        )}
+        {showOrder && !c.order && !linkedByApplication && (
+          <span className="text-xs rounded px-1.5 py-0.5 bg-danger/15 text-danger font-medium">
+            未关联订单
+          </span>
+        )}
       </div>
 
       {/* 转写预览 */}

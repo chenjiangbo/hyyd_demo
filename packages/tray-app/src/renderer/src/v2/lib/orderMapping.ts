@@ -15,11 +15,19 @@ export interface LaneDef {
 }
 
 export const LANES: LaneDef[] = [
-  { key: 'todo', label: '待处理', dotClass: 'bg-outline' },
-  { key: 'doing', label: '进行中', dotClass: 'bg-primary' },
+  { key: 'todo', label: '待处理', dotClass: 'bg-status-urgent' },
+  { key: 'doing', label: '进行中', dotClass: 'bg-status-info' },
   { key: 'await_backfill', label: '待确认回填', ai: true },
-  { key: 'done', label: '待结束', dotClass: 'bg-action-green' }
+  { key: 'done', label: '待结束', dotClass: 'bg-status-success' }
 ]
+
+/** 泳道左色条（卡片 border-l 颜色），与泳道点同语义 */
+export const LANE_ACCENT: Record<LaneKey, string> = {
+  todo: 'border-l-status-urgent',
+  doing: 'border-l-status-info',
+  await_backfill: 'border-l-ai-purple',
+  done: 'border-l-status-success'
+}
 
 /** 把订单原始状态映射到泳道 */
 export function laneOf(o: Order): LaneKey {

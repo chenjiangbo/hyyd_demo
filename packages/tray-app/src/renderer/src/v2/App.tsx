@@ -29,6 +29,8 @@ export default function App(): React.JSX.Element {
   const [nav, setNav] = useState<NavKey>('workbench')
   const [openOrder, setOpenOrder] = useState<Order | null>(null)
   const [openApplication, setOpenApplication] = useState<ApplicationGroup | null>(null)
+  // 顶部导航全局搜索（驱动工作台过滤）
+  const [search, setSearch] = useState('')
 
   // 登录态用小窗，登录后放大到工作台尺寸
   useEffect(() => {
@@ -61,13 +63,15 @@ export default function App(): React.JSX.Element {
         active={nav}
         onNavigate={setNav}
         session={session}
+        search={search}
+        onSearch={setSearch}
         onLogout={() => {
           clearSession()
           setSession(null)
         }}
       >
         <div className={nav === 'workbench' ? 'flex-1 min-h-0 flex flex-col' : 'hidden'}>
-          <WorkbenchKanban employeeCode={session.employeeCode} onOpenApplication={setOpenApplication} />
+          <WorkbenchKanban employeeCode={session.employeeCode} query={search} onOpenApplication={setOpenApplication} />
         </div>
         {nav === 'claim' && <ClaimPage />}
         {nav === 'customers' && <CustomersPage onOpenOrder={setOpenOrder} />}

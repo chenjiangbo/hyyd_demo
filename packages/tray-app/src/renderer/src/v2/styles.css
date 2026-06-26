@@ -8,10 +8,10 @@
 ───────────────────────────────────────────────────────────── */
 
 @theme {
-  /* 品牌主色 */
+  /* 品牌主色（Clinical Precision 医疗蓝） */
   --color-trust-blue: #0d5cc8;
-  --color-primary: #00459d;
-  --color-primary-container: #0d5cc8;
+  --color-primary: #003da6;
+  --color-primary-container: #0052d9;
   --color-primary-fixed: #d9e2ff;
   --color-primary-fixed-dim: #afc6ff;
   --color-on-primary-fixed: #001a43;
@@ -31,11 +31,17 @@
   --color-alert-orange: #f59e0b;
   --color-error: #ba1a1a;
 
+  /* 泳道/状态语义色（对齐原型 Clinical Precision） */
+  --color-status-urgent: #faad14;
+  --color-status-info: #1890ff;
+  --color-status-success: #52c41a;
+
   /* 表面 / 文字 / 描边 */
   --color-surface: #ffffff;
   --color-surface-bg: #f6f8fb;
   --color-surface-container-low: #f1f5f9;
   --color-surface-container: #e8edf5;
+  --color-surface-container-high: #e6e8eb;
   --color-surface-variant: #dbe3ee;
   --color-on-surface: #191b22;
   --color-text-main: #1e293b;
@@ -46,6 +52,15 @@
 
   /* 字体 */
   --font-mono: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+  /* 数据/编号等宽别名（兼容代码里 font-mono-data / font-data-mono 两种写法） */
+  --font-mono-data: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+  --font-data-mono: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+
+  /* 间距（对齐原型 spacing scale：compact-padding/card-gap/gutter/container-margin） */
+  --spacing-compact-padding: 8px;
+  --spacing-card-gap: 12px;
+  --spacing-gutter: 16px;
+  --spacing-container-margin: 24px;
 
   /* 字号阶梯（紧凑、高信息密度） */
   --text-h1-display: 24px;
@@ -74,6 +89,12 @@
   --text-label-caps--line-height: 16px;
   --text-label-caps--font-weight: 700;
   --text-label-caps--letter-spacing: 0.05em;
+
+  /* 数据/编号等宽字号（对齐原型 data-mono：13px / 500 / 紧字距） */
+  --text-data-mono: 13px;
+  --text-data-mono--line-height: 16px;
+  --text-data-mono--font-weight: 500;
+  --text-data-mono--letter-spacing: -0.02em;
 }
 
 /* ─── 深色主题 ─────────────────────────────────────────────

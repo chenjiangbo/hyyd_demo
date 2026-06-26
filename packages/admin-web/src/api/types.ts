@@ -241,12 +241,14 @@ export interface CallItem {
   callStatus: string
   durationSec: number
   startedAt: string
+  applicationNo: string | null
   asrStatus: AsrStatus
   asrText: string | null
   asrTextPreview: string | null
   asrTextTruncated: boolean
   hasRecording: boolean
   order?: OrderRef | null
+  applicationOrders?: OrderRef[]
   employee?: EmployeeRef
 }
 

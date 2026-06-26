@@ -794,22 +794,55 @@ export function registerAdminRoutes(
 
         const hasMore = rows.length > PAGE_SIZE
         const page = rows.slice(0, PAGE_SIZE)
+        const applicationNos = Array.from(
+          new Set(page.map((c) => c.applicationNo).filter((x): x is string => !!x))
+        )
+        const applicationOrders = applicationNos.length
+          ? await prisma.order.findMany({
+              where: {
+                assignedEmployeeId: id,
+                OR: applicationNos.map((applicationNo) => ({
+                  rawJson: { path: ['crmApplyNo'], equals: applicationNo }
+                }))
+              },
+              select: { id: true, sourceOrderNo: true, customerName: true, status: true, rawJson: true },
+              orderBy: { updatedAt: 'desc' }
+            })
+          : []
+        const ordersByApplicationNo = new Map<string, typeof applicationOrders>()
+        for (const order of applicationOrders) {
+          const applicationNo = (order.rawJson as any)?.crmApplyNo
+          if (!applicationNo) continue
+          const arr = ordersByApplicationNo.get(applicationNo) ?? []
+          arr.push(order)
+          ordersByApplicationNo.set(applicationNo, arr)
+        }
         const items = page.map((c) => {
           const asrText = c.asrText ?? null
+          const relatedOrders = c.applicationNo
+            ? (ordersByApplicationNo.get(c.applicationNo) ?? []).map((o) => ({
+                id: o.id,
+                sourceOrderNo: o.sourceOrderNo,
+                customerName: o.customerName,
+                status: o.status
+              }))
+            : []
           return {
-          id: c.id,
-          phone: c.phone,
-          contactName: c.contactName,
-          direction: c.direction,
-          callStatus: c.callStatus,
-          durationSec: c.durationSec,
-          startedAt: c.startedAt.toISOString(),
-          asrStatus: c.asrStatus,
-          asrText,
-          asrTextPreview: asrText ? asrText.slice(0, 300) : null,
-          asrTextTruncated: !!asrText && asrText.length > 300,
-          hasRecording: !!c.recordingOssKey,
-          order: c.order
+            id: c.id,
+            phone: c.phone,
+            contactName: c.contactName,
+            direction: c.direction,
+            callStatus: c.callStatus,
+            durationSec: c.durationSec,
+            startedAt: c.startedAt.toISOString(),
+            applicationNo: c.applicationNo,
+            asrStatus: c.asrStatus,
+            asrText,
+            asrTextPreview: asrText ? asrText.slice(0, 300) : null,
+            asrTextTruncated: !!asrText && asrText.length > 300,
+            hasRecording: !!c.recordingOssKey,
+            order: c.order,
+            applicationOrders: relatedOrders
           }
         })
         const last = page[page.length - 1]
@@ -1104,14 +1137,14 @@ export function registerAdminRoutes(
         const cursor = decodeCursor(q?.cursor)
         const employeeId = q?.employeeId ? parseInt(q.employeeId, 10) : null
         const asrStatus = typeof q?.asrStatus === 'string' && q.asrStatus ? q.asrStatus : null
-        // linked: 'true' 只看已关联订单 / 'false' 只看未关联（孤儿通话）
+        // linked: 'true' 只看已关联订单/申请号；'false' 只看完全未关联（孤儿通话）
         const linked = q?.linked === 'true' ? true : q?.linked === 'false' ? false : null
 
         const filters: any[] = [keysetWhere('startedAt', cursor)]
         if (Number.isFinite(employeeId)) filters.push({ employeeId })
         if (asrStatus) filters.push({ asrStatus })
-        if (linked === true) filters.push({ orderId: { not: null } })
-        if (linked === false) filters.push({ orderId: null })
+        if (linked === true) filters.push({ OR: [{ orderId: { not: null } }, { applicationNo: { not: null } }] })
+        if (linked === false) filters.push({ orderId: null, applicationNo: null })
 
         const rows = await prisma.call.findMany({
           where: { AND: filters },
@@ -1125,23 +1158,55 @@ export function registerAdminRoutes(
 
         const hasMore = rows.length > PAGE_SIZE
         const page = rows.slice(0, PAGE_SIZE)
+        const applicationNos = Array.from(
+          new Set(page.map((c) => c.applicationNo).filter((x): x is string => !!x))
+        )
+        const applicationOrders = applicationNos.length
+          ? await prisma.order.findMany({
+              where: {
+                OR: applicationNos.map((applicationNo) => ({
+                  rawJson: { path: ['crmApplyNo'], equals: applicationNo }
+                }))
+              },
+              select: { id: true, sourceOrderNo: true, customerName: true, status: true, rawJson: true },
+              orderBy: { updatedAt: 'desc' }
+            })
+          : []
+        const ordersByApplicationNo = new Map<string, typeof applicationOrders>()
+        for (const order of applicationOrders) {
+          const applicationNo = (order.rawJson as any)?.crmApplyNo
+          if (!applicationNo) continue
+          const arr = ordersByApplicationNo.get(applicationNo) ?? []
+          arr.push(order)
+          ordersByApplicationNo.set(applicationNo, arr)
+        }
         const items = page.map((c) => {
           const asrText = c.asrText ?? null
+          const relatedOrders = c.applicationNo
+            ? (ordersByApplicationNo.get(c.applicationNo) ?? []).map((o) => ({
+                id: o.id,
+                sourceOrderNo: o.sourceOrderNo,
+                customerName: o.customerName,
+                status: o.status
+              }))
+            : []
           return {
-          id: c.id,
-          phone: c.phone,
-          contactName: c.contactName,
-          direction: c.direction,
-          callStatus: c.callStatus,
-          durationSec: c.durationSec,
-          startedAt: c.startedAt.toISOString(),
-          asrStatus: c.asrStatus,
-          asrText,
-          asrTextPreview: asrText ? asrText.slice(0, 300) : null,
-          asrTextTruncated: !!asrText && asrText.length > 300,
-          hasRecording: !!c.recordingOssKey,
-          order: c.order,
-          employee: c.employee
+            id: c.id,
+            phone: c.phone,
+            contactName: c.contactName,
+            direction: c.direction,
+            callStatus: c.callStatus,
+            durationSec: c.durationSec,
+            startedAt: c.startedAt.toISOString(),
+            applicationNo: c.applicationNo,
+            asrStatus: c.asrStatus,
+            asrText,
+            asrTextPreview: asrText ? asrText.slice(0, 300) : null,
+            asrTextTruncated: !!asrText && asrText.length > 300,
+            hasRecording: !!c.recordingOssKey,
+            order: c.order,
+            applicationOrders: relatedOrders,
+            employee: c.employee
           }
         })
         const last = page[page.length - 1]

@@ -12,12 +12,13 @@ import type { Session } from '../api'
 
 export type NavKey = 'claim' | 'workbench' | 'customers' | 'knowledge' | 'dashboard' | 'debug' | 'settings'
 
+// 顺序与命名对齐原型（数据看板 / 申领台 / 工作台 / 知识库 / 档案库）
 const NAV: { key: NavKey; label: string }[] = [
-  { key: 'claim', label: '待申领' },
-  { key: 'workbench', label: '工作台' },
-  { key: 'customers', label: '客户档案' },
-  { key: 'knowledge', label: '知识库' },
   { key: 'dashboard', label: '数据看板' },
+  { key: 'claim', label: '申领台' },
+  { key: 'workbench', label: '工作台' },
+  { key: 'knowledge', label: '知识库' },
+  { key: 'customers', label: '档案库' },
   // 【临时】sidecar 采集调试，验证完成后连同页面一起删除
   { key: 'debug', label: '🔧 采集调试' }
 ]
@@ -31,57 +32,81 @@ export default function AppShell({
   onNavigate,
   session,
   onLogout,
+  search,
+  onSearch,
   children
 }: {
   active: NavKey
   onNavigate: (k: NavKey) => void
   session: Session
   onLogout: () => void
+  search: string
+  onSearch: (v: string) => void
   children: ReactNode
 }): React.JSX.Element {
   return (
     <div className="h-full flex flex-col bg-surface-bg text-text-main overflow-hidden">
-      {/* 顶部导航 */}
-      <header className="h-16 shrink-0 bg-white border-b border-border-subtle shadow-sm flex justify-between items-center px-6 z-50">
-        <div className="flex items-center gap-8 h-full">
-          <div className="flex items-center gap-2 text-primary font-bold">
-            <span className="material-symbols-outlined filled text-2xl">health_and_safety</span>
-            <span className="text-h2-header">智能寰宇</span>
+      {/* 顶部导航（对齐原型） */}
+      <header className="h-16 shrink-0 bg-white border-b border-border-subtle flex items-center px-6 gap-8 z-50">
+        {/* 品牌 */}
+        <div className="flex items-center gap-3 shrink-0">
+          <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-white">
+            <span className="material-symbols-outlined filled text-[20px]">medical_services</span>
           </div>
-          <nav className="hidden md:flex gap-6 items-center h-full">
-            {NAV.map((n) => {
-              const on = n.key === active
-              return (
-                <button
-                  key={n.key}
-                  onClick={() => onNavigate(n.key)}
-                  className={
-                    'h-full flex items-center text-body-lg border-b-2 transition-colors ' +
-                    (on
-                      ? 'text-primary font-semibold border-primary'
-                      : 'text-text-muted border-transparent hover:text-primary')
-                  }
-                >
-                  {n.label}
-                </button>
-              )
-            })}
-          </nav>
+          <h1 className="text-h3-title text-primary font-semibold">智能寰宇</h1>
         </div>
 
-        <div className="flex items-center gap-0.5">
+        {/* 一级导航 */}
+        <nav className="hidden md:flex h-full items-center gap-1 shrink-0">
+          {NAV.map((n) => {
+            const on = n.key === active
+            return (
+              <button
+                key={n.key}
+                onClick={() => onNavigate(n.key)}
+                className={
+                  'h-full flex items-center px-3 text-body-md font-semibold border-b-2 transition-colors ' +
+                  (on
+                    ? 'text-primary border-primary'
+                    : 'text-text-muted border-transparent hover:text-primary hover:border-primary-fixed')
+                }
+              >
+                {n.label}
+              </button>
+            )
+          })}
+        </nav>
+
+        {/* 全局搜索 */}
+        <div className="flex-1 max-w-2xl ml-auto">
+          <div className="relative flex items-center w-full">
+            <span className="material-symbols-outlined absolute left-3 text-outline text-[20px]">search</span>
+            <input
+              value={search}
+              onChange={(e) => onSearch(e.target.value)}
+              placeholder="搜索申领号、患者姓名、电话…"
+              className="w-full pl-10 pr-16 py-2 bg-surface-container-low border border-transparent rounded-lg text-body-md focus:outline-none focus:bg-white focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
+            />
+            <button className="absolute right-3 text-primary text-[12px] leading-4 font-bold hover:bg-primary-fixed/30 px-2 py-1 rounded transition-colors">
+              高级
+            </button>
+          </div>
+        </div>
+
+        {/* 右侧操作 */}
+        <div className="flex items-center gap-1 shrink-0">
           <ThemeToggle />
           <NotificationBell />
           <IconBtn icon="help" title="帮助" />
           <button
             onClick={() => onNavigate('settings')}
             className={
-              'p-1.5 hover:bg-surface-container-low rounded-full transition-colors ' +
-              (active === 'settings' ? 'text-primary bg-surface-container-low' : 'text-text-muted')
+              'w-9 h-9 rounded-full flex items-center justify-center hover:bg-surface-container-low transition-colors ' +
+              (active === 'settings' ? 'text-primary bg-surface-container-low' : 'text-on-surface-variant')
             }
             title="设置"
           >
-            <span className="material-symbols-outlined" style={{ fontSize: '19px' }}>settings</span>
+            <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>settings</span>
           </button>
           <UserMenu session={session} onLogout={onLogout} />
         </div>
@@ -196,10 +221,10 @@ function NotificationBell(): React.JSX.Element {
           setOpen(next)
           if (next) load()
         }}
-        className="relative p-1.5 text-text-muted hover:bg-surface-container-low rounded-full transition-colors"
+        className="relative w-9 h-9 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low transition-colors"
         title="通知"
       >
-        <span className="material-symbols-outlined" style={{ fontSize: '19px' }}>notifications</span>
+        <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>notifications</span>
         {count > 0 && (
           <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-red-500 text-white text-[10px] leading-4 text-center font-semibold">
             {count > 99 ? '99+' : count}
@@ -291,8 +316,11 @@ function NotificationBell(): React.JSX.Element {
 
 function IconBtn({ icon, title }: { icon: string; title: string }): React.JSX.Element {
   return (
-    <button className="p-1.5 text-text-muted hover:bg-surface-container-low rounded-full transition-colors" title={title}>
-      <span className="material-symbols-outlined" style={{ fontSize: '19px' }}>{icon}</span>
+    <button
+      className="w-9 h-9 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low transition-colors"
+      title={title}
+    >
+      <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>{icon}</span>
     </button>
   )
 }
@@ -302,10 +330,10 @@ function ThemeToggle(): React.JSX.Element {
   return (
     <button
       onClick={(e) => setTheme(toggleTheme(e))}
-      className="p-1.5 text-text-muted hover:bg-surface-container-low rounded-full transition-colors"
+      className="w-9 h-9 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low transition-colors"
       title={theme === 'dark' ? '切换到浅色' : '切换到深色'}
     >
-      <span className="material-symbols-outlined" style={{ fontSize: '19px' }}>
+      <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>
         {theme === 'dark' ? 'light_mode' : 'dark_mode'}
       </span>
     </button>

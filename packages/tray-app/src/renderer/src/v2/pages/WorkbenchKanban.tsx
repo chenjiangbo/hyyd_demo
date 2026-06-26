@@ -2,16 +2,25 @@ import { useEffect, useMemo, useState } from 'react'
 import { fetchOrders, type Order } from '../api'
 import {
   LANES,
+  LANE_ACCENT,
   laneOf,
   bizType,
   bizChipClass,
-  bizPalette,
   sourceLabel,
   sourceStyle,
   relativeTime,
   monthDay,
   type LaneKey
 } from '../lib/orderMapping'
+
+/** 性别图标：泰康 sex 1=男 2=女（兼容 男/女、M/F），取不到返回 null */
+function genderOf(order: Order): 'male' | 'female' | null {
+  const raw = (order.rawJson ?? {}) as Record<string, unknown>
+  const s = String(raw.sex ?? '').trim().toUpperCase()
+  if (s === '1' || s === '男' || s === 'M') return 'male'
+  if (s === '2' || s === '女' || s === 'F') return 'female'
+  return null
+}
 
 type View = 'board' | 'list'
 export type ApplicationGroup = {
@@ -176,15 +185,16 @@ function dedupeServices(orders: Order[]): Array<{ label: string; count: number; 
 
 export default function WorkbenchKanban({
   employeeCode,
+  query,
   onOpenApplication
 }: {
   employeeCode: string
+  query: string
   onOpenApplication: (group: ApplicationGroup) => void
 }): React.JSX.Element {
   const [orders, setOrders] = useState<Order[]>(() => getCachedOrders(employeeCode) ?? [])
   const [loading, setLoading] = useState(getCachedOrders(employeeCode) === null)
   const [error, setError] = useState<string | null>(null)
-  const [query, setQuery] = useState('')
   const [view, setView] = useState<View>('board')
   const [typeFilter, setTypeFilter] = useState<string>('all')
 
@@ -242,45 +252,32 @@ export default function WorkbenchKanban({
   const boardGroups = useMemo(() => groupOrdersByApplication(boardOrders), [boardOrders])
   const filteredGroups = useMemo(() => groupOrdersByApplication(filtered), [filtered])
 
+  // 类型筛选只平铺前 4 个，其余收进「更多」；当前选中的若在溢出里，提到可见区，保证激活态可见
+  const { visibleTypes, overflowTypes } = useMemo(() => {
+    const VISIBLE = 4
+    let visible = typeTags.slice(0, VISIBLE)
+    let overflow = typeTags.slice(VISIBLE)
+    if (typeFilter !== 'all') {
+      const i = overflow.findIndex((t) => t.label === typeFilter)
+      if (i >= 0) {
+        const sel = overflow[i]
+        overflow = [visible[visible.length - 1], ...overflow.slice(0, i), ...overflow.slice(i + 1)]
+        visible = [...visible.slice(0, VISIBLE - 1), sel]
+      }
+    }
+    return { visibleTypes: visible, overflowTypes: overflow }
+  }, [typeTags, typeFilter])
+
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* 工具条：搜索 + 视图切换 + 类型标签筛选 + 新建 */}
-      <div className="shrink-0 bg-white border-b border-border-subtle px-6 py-3 flex items-start justify-between gap-4">
-        <div className="flex gap-3 items-center flex-wrap flex-1 min-w-0">
-          {/* 搜索框（收窄，给类型标签让出空间） */}
-          <div className="relative w-56 shrink-0">
-            <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-outline text-[20px]">
-              search
-            </span>
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="搜索客户 / 医院 / 单号…"
-              className="w-full pl-10 pr-3 py-2 bg-surface-bg border border-border-subtle rounded-lg text-body-md focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all"
-            />
-          </div>
-          {/* 视图切换：看板 / 列表 */}
-          <div className="flex items-center bg-surface-bg border border-border-subtle rounded-lg p-0.5 shrink-0">
-            {(['board', 'list'] as View[]).map((v) => (
-              <button
-                key={v}
-                onClick={() => setView(v)}
-                className={
-                  'flex items-center gap-1 px-3 py-1.5 rounded-md text-body-sm transition-colors ' +
-                  (view === v ? 'bg-white text-primary shadow-sm font-medium' : 'text-text-muted hover:text-text-main')
-                }
-              >
-                <span className="material-symbols-outlined text-[18px]">
-                  {v === 'board' ? 'view_kanban' : 'view_list'}
-                </span>
-                {v === 'board' ? '看板' : '列表'}
-              </button>
-            ))}
-          </div>
-          {/* 订单类型标签筛选（动态、可换行） */}
-          <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+      {/* 工具条（对齐原型）：标题左 · 右侧 类型筛选(+更多) + 视图切换 + 新建 */}
+      <div className="shrink-0 bg-white border-b border-border-subtle px-6 py-4 flex items-center justify-between gap-4">
+        <h2 className="text-h2-header text-text-main shrink-0">工作台</h2>
+        <div className="flex items-center gap-4 min-w-0">
+          {/* 类型筛选：全部 + 前 4 个类型 + 更多 */}
+          <div className="flex items-center gap-2 min-w-0">
             <TypeTag label="全部" count={orders.length} on={typeFilter === 'all'} onClick={() => setTypeFilter('all')} />
-            {typeTags.map((t) => (
+            {visibleTypes.map((t) => (
               <TypeTag
                 key={t.label}
                 label={t.label}
@@ -289,12 +286,31 @@ export default function WorkbenchKanban({
                 onClick={() => setTypeFilter(t.label)}
               />
             ))}
+            {overflowTypes.length > 0 && (
+              <MoreFilters items={overflowTypes} active={typeFilter} onPick={setTypeFilter} />
+            )}
+          </div>
+          {/* 视图切换：列表 / 看板 */}
+          <div className="flex bg-surface-container-low rounded-lg p-1 shrink-0">
+            {(['list', 'board'] as View[]).map((v) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                className={
+                  'flex items-center gap-2 px-4 py-1.5 rounded text-body-md transition-colors ' +
+                  (view === v
+                    ? 'bg-white shadow-sm text-primary font-medium'
+                    : 'text-on-surface-variant hover:bg-surface-container')
+                }
+              >
+                <span className="material-symbols-outlined text-[18px]">
+                  {v === 'board' ? 'view_kanban' : 'list'}
+                </span>
+                {v === 'board' ? '看板' : '列表'}
+              </button>
+            ))}
           </div>
         </div>
-        <button className="shrink-0 bg-primary text-white px-4 py-2 rounded-lg text-body-md font-medium hover:opacity-90 transition-opacity flex items-center gap-1.5">
-          <span className="material-symbols-outlined filled text-[18px]">add</span>
-          新建工单
-        </button>
       </div>
 
       {loading ? (
@@ -332,15 +348,75 @@ function TypeTag({
     <button
       onClick={onClick}
       className={
-        'px-2.5 py-1 rounded-full text-body-sm transition-colors flex items-center gap-1 shrink-0 ' +
+        'px-3 py-1.5 rounded-lg text-body-sm transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap border ' +
         (on
-          ? 'bg-primary text-white'
-          : 'bg-surface-bg border border-border-subtle text-text-muted hover:text-text-main')
+          ? 'bg-primary text-white border-primary'
+          : 'bg-white border-border-subtle text-on-surface-variant hover:bg-surface-container-low')
       }
     >
       {label}
-      <span className={'text-label-caps ' + (on ? 'opacity-80' : 'text-text-muted/60')}>{count}</span>
+      <span
+        className={
+          'px-1.5 rounded text-[11px] leading-5 ' + (on ? 'bg-white/20 text-white' : 'bg-surface-variant text-on-surface')
+        }
+      >
+        {count}
+      </span>
     </button>
+  )
+}
+
+// 「更多」筛选下拉：收纳前 4 个之外的订单类型
+function MoreFilters({
+  items,
+  active,
+  onPick
+}: {
+  items: { label: string; count: number }[]
+  active: string
+  onPick: (label: string) => void
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const activeInHere = items.some((t) => t.label === active)
+  return (
+    <div className="relative shrink-0">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className={
+          'px-3 py-1.5 rounded-lg text-body-sm transition-colors flex items-center gap-1 border ' +
+          (activeInHere
+            ? 'bg-primary text-white border-primary'
+            : 'bg-white border-border-subtle text-on-surface-variant hover:bg-surface-container-low')
+        }
+      >
+        <span className="material-symbols-outlined text-[16px]">filter_list</span>
+        更多
+        <span className="material-symbols-outlined text-[16px]">{open ? 'arrow_drop_up' : 'arrow_drop_down'}</span>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full mt-1 z-50 bg-white border border-border-subtle rounded-lg shadow-lg py-1 min-w-40 max-h-72 overflow-auto">
+            {items.map((t) => (
+              <button
+                key={t.label}
+                onClick={() => {
+                  onPick(t.label)
+                  setOpen(false)
+                }}
+                className={
+                  'w-full text-left px-3 py-1.5 text-body-sm flex items-center justify-between gap-3 hover:bg-surface-container-low ' +
+                  (t.label === active ? 'text-primary font-medium' : 'text-text-main')
+                }
+              >
+                <span className="truncate">{t.label}</span>
+                <span className="text-[11px] text-text-muted bg-surface-variant px-1.5 rounded">{t.count}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
   )
 }
 
@@ -353,49 +429,47 @@ function BoardView({ groups, onOpen }: { groups: ApplicationGroup[]; onOpen: (gr
   }, [groups])
 
   return (
-    <div className="flex-1 min-h-0 overflow-hidden p-6">
-      <div className="flex gap-4 items-stretch h-full w-full">
-        {LANES.map((lane) => {
-          const items = grouped[lane.key]
-          const isAi = lane.key === 'await_backfill'
-          return (
-            <div
-              key={lane.key}
-              className={
-                'flex-1 min-w-0 flex flex-col gap-3 h-full min-h-0 ' +
-                (isAi ? 'bg-secondary-fixed/30 rounded-xl p-2 border border-secondary-fixed-dim' : '') +
-                (lane.key === 'done' ? ' opacity-70 hover:opacity-100 transition-opacity' : '')
-              }
-            >
-              <div className="flex items-center justify-between px-2 shrink-0">
-                <h3 className="text-h3-title flex items-center gap-2 text-text-main">
-                  {isAi ? (
-                    <span className="material-symbols-outlined filled text-ai-purple text-[18px]">smart_toy</span>
-                  ) : (
-                    <span className={'w-2 h-2 rounded-full ' + lane.dotClass} />
-                  )}
-                  {lane.label}
-                </h3>
-                <span className="text-body-sm text-text-muted bg-surface-variant px-2 py-0.5 rounded-full">
-                  共 {items.length} 条（近一周）
-                </span>
-              </div>
-
-              <div className="flex flex-col gap-3 overflow-y-auto pr-1 min-h-0">
-                {items.length === 0 ? (
-                  <div className="text-body-sm text-text-muted/70 px-2 py-6 text-center">
-                    {isAi ? 'AI 提取完成的订单会出现在这里' : '暂无'}
-                  </div>
+    <div className="flex-1 min-h-0 overflow-x-auto p-6 bg-surface-bg flex gap-4">
+      {LANES.map((lane) => {
+        const items = grouped[lane.key]
+        const isAi = lane.key === 'await_backfill'
+        return (
+          <div
+            key={lane.key}
+            className={
+              'w-[320px] shrink-0 flex flex-col h-full min-h-0 bg-surface-container-low rounded-xl border border-border-subtle ' +
+              (lane.key === 'done' ? 'opacity-80 hover:opacity-100 transition-opacity' : '')
+            }
+          >
+            <div className="p-3 border-b border-border-subtle flex justify-between items-center shrink-0 rounded-t-xl">
+              <h3 className="text-h3-title flex items-center gap-2 text-text-main">
+                {isAi ? (
+                  <span className="material-symbols-outlined filled text-ai-purple text-[18px]">smart_toy</span>
                 ) : (
-                  items.map((group) => (
-                    <ApplicationCard key={group.key} group={group} lane={lane.key} onOpen={onOpen} />
-                  ))
+                  <span className={'w-2 h-2 rounded-full ' + lane.dotClass} />
                 )}
-              </div>
+                {lane.label}
+              </h3>
+              <span className="text-body-sm text-text-muted bg-surface-variant px-2 py-0.5 rounded">{items.length}</span>
             </div>
-          )
-        })}
-      </div>
+
+            <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-3 min-h-0">
+              {items.length === 0 ? (
+                <div className="flex-1 flex flex-col items-center justify-center text-text-muted/50 py-8">
+                  <span className="material-symbols-outlined text-[48px] mb-2">
+                    {isAi ? 'smart_toy' : 'inventory_2'}
+                  </span>
+                  <p className="text-body-sm">{isAi ? 'AI 提取完成的订单会出现在这里' : '暂无'}</p>
+                </div>
+              ) : (
+                items.map((group) => (
+                  <ApplicationCard key={group.key} group={group} lane={lane.key} onOpen={onOpen} />
+                ))
+              )}
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -462,14 +536,13 @@ function ApplicationCopyButtons({
     <div className={'inline-flex items-center gap-1 min-w-0 ' + (className || '')}>
       <button
         type="button"
-        title={`复制申领号 ${applicationNo}`}
+        title={`点击复制完整申领号 ${applicationNo}`}
         onClick={(e) => {
           e.stopPropagation()
           copy(applicationNo)
         }}
-        className="inline-flex items-center gap-1 min-w-0 hover:text-trust-blue transition-colors"
+        className="inline-flex items-center min-w-0 hover:text-primary transition-colors"
       >
-        <span className="material-symbols-outlined shrink-0" style={{ fontSize: '13px' }}>confirmation_number</span>
         <span className="truncate font-mono-data">{applicationNo}</span>
       </button>
       {tail && (
@@ -501,77 +574,97 @@ function ApplicationCard({
   onOpen: (group: ApplicationGroup) => void
 }): React.JSX.Element {
   const primary = group.primary
-  const isAi = lane === 'await_backfill'
-  const palette = bizPalette(primary)
   const services = dedupeServices(group.orders)
   const visibleServices = services.slice(0, 4)
   const hiddenCount = Math.max(0, services.length - visibleServices.length)
   const totalMaterials = group.orders.reduce((sum, order) => sum + (order.materialCount || 0), 0)
+  const gender = genderOf(primary)
+  const origin = sourceStyle(primary)
 
   return (
     <div
       onClick={() => onOpen(group)}
       className={
-        'shrink-0 bg-white border border-border-subtle border-l-4 rounded-lg px-3 py-2.5 flex flex-col gap-2 shadow-sm cursor-pointer transition-all relative overflow-hidden ' +
-        (isAi
-          ? 'border-l-ai-purple hover:shadow-[0_4px_12px_rgba(139,92,246,0.15)]'
-          : palette.accent + ' hover:shadow-[0_4px_12px_rgba(0,0,0,0.08)]')
+        'bg-white border border-border-subtle border-l-2 rounded-lg p-compact-padding flex flex-col shadow-sm cursor-pointer hover:border-outline-variant transition-colors group ' +
+        LANE_ACCENT[lane]
       }
     >
-      <div className="flex justify-between items-start gap-2 relative z-10">
+      {/* 申领号 + 来源 */}
+      <div className="flex justify-between items-start gap-2 mb-2">
+        <ApplicationCopyButtons applicationNo={group.applicationNo} className="text-data-mono font-data-mono text-on-surface-variant min-w-0" />
+        <span className={'shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium ' + origin.bg + ' ' + origin.text}>
+          {origin.label}
+        </span>
+      </div>
+
+      {/* 客户名 + 多订单标识 + 服务类型 */}
+      <div className="flex items-center justify-between gap-2 mb-1">
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className="text-body-md font-semibold truncate text-text-main">{group.customerName}</span>
+          <h4 className="text-h3-title text-text-main truncate">{group.customerName}</h4>
           {group.orders.length > 1 && (
-            <span className="shrink-0 text-label-caps px-1.5 py-0.5 rounded bg-alert-orange/10 text-alert-orange">
+            <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-alert-orange/10 text-alert-orange font-medium">
               {group.orders.length} 个订单
             </span>
           )}
         </div>
-        <span className={'shrink-0 text-[10px] font-medium flex items-center gap-0.5 ' + sourceStyle(primary).text}>
-          <span className="material-symbols-outlined" style={{ fontSize: '12px' }}>verified</span>
-          {sourceStyle(primary).label}
-        </span>
       </div>
 
-      <ApplicationCopyButtons applicationNo={group.applicationNo} className="text-[11px] text-text-muted max-w-full" />
-
-      {primary.hospital && (
-        <div className="text-body-sm text-text-muted truncate">
-          {primary.hospital}
-          {primary.dept ? ` · ${primary.dept}` : ''}
-        </div>
-      )}
-
-      <div className="flex flex-wrap gap-1">
+      <div className="flex flex-wrap gap-1 mb-2">
         {visibleServices.map((service) => (
           <span
             key={service.label}
-            className={'inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ' + bizChipClass(service.order)}
+            className={'inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium ' + bizChipClass(service.order)}
           >
             {service.label}
             {service.count > 1 ? ` x${service.count}` : ''}
           </span>
         ))}
         {hiddenCount > 0 && (
-          <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] text-text-muted bg-surface-bg">
+          <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] text-text-muted bg-surface-container-low">
             +{hiddenCount}
           </span>
         )}
       </div>
 
-      <div className="flex items-center justify-between gap-2 text-[11px] text-text-muted/80">
-        <Copyable value={primary.customerPhone || ''} className="min-w-0">
-          <span className="material-symbols-outlined shrink-0" style={{ fontSize: '14px' }}>call</span>
-          <span className="truncate font-mono-data">{primary.customerPhone || '—'}</span>
-        </Copyable>
-        <div className="shrink-0 flex items-center gap-1.5">
+      {/* 医院 · 科室 */}
+      {primary.hospital && (
+        <p className="text-body-sm text-on-surface-variant flex items-center gap-1 mb-0.5 min-w-0">
+          <span className="material-symbols-outlined shrink-0 text-[14px]">local_hospital</span>
+          <span className="truncate">
+            {primary.hospital}
+            {primary.dept ? ` · ${primary.dept}` : ''}
+          </span>
+        </p>
+      )}
+
+      {/* 手机号（可复制） */}
+      <Copyable value={primary.customerPhone || ''} className="text-body-sm text-on-surface-variant min-w-0">
+        <span className="material-symbols-outlined shrink-0 text-[14px]">phone_iphone</span>
+        <span className="truncate font-mono-data">{primary.customerPhone || '—'}</span>
+      </Copyable>
+
+      {/* 底部：日期 + 素材数 + 性别 */}
+      <div className="border-t border-border-subtle pt-2 mt-2 flex justify-between items-center text-[10px] text-outline">
+        <span>{monthDay(group.updatedAt)}</span>
+        <div className="flex items-center gap-2">
           {totalMaterials > 0 && (
-            <span className="inline-flex items-center gap-0.5">
-              <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>attach_file</span>
+            <span className="text-body-sm text-on-surface-variant flex items-center gap-0.5">
+              <span className="material-symbols-outlined text-[12px]">attach_file</span>
               {totalMaterials}
             </span>
           )}
-          <span className="px-1.5 py-0.5 rounded bg-surface-bg text-text-muted">{monthDay(group.updatedAt)}</span>
+          {gender && (
+            <span
+              className={
+                'w-4 h-4 rounded-full flex items-center justify-center border ' +
+                (gender === 'male'
+                  ? 'bg-blue-100 text-blue-600 border-blue-200'
+                  : 'bg-pink-100 text-pink-600 border-pink-200')
+              }
+            >
+              <span className="material-symbols-outlined text-[12px]">{gender}</span>
+            </span>
+          )}
         </div>
       </div>
     </div>
