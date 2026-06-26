@@ -1722,10 +1722,17 @@ export function registerApiRoutes(
       }
 
       const applicationNo = applicationNosForConversationMatch(order.rawJson)[0] ?? null
+      const applicationOrderIds = applicationNo
+        ? (await prisma.order.findMany({
+            where: { rawJson: { path: ['crmApplyNo'], equals: applicationNo } },
+            select: { id: true }
+          })).map((o) => o.id)
+        : [orderId]
+      if (!applicationOrderIds.includes(orderId)) applicationOrderIds.push(orderId)
       const sharedCaptureWhere = applicationNo
         ? {
             OR: [
-              { orderId },
+              { orderId: { in: applicationOrderIds } },
               { applicationNo }
             ]
           }

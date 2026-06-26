@@ -197,7 +197,7 @@ function ApplicationCapturePanel({
     () => sortMessages(messages.filter((message) => message.channel === active)).slice(-120),
     [active, messages]
   )
-  const channelCalls = useMemo(() => sortCalls(calls).slice(-80), [calls])
+  const channelCalls = useMemo(() => sortCalls(calls), [calls])
   const backgroundClass = active === 'wxwork' ? 'bg-[#edf3ff]' : 'bg-[#ededed]'
 
   return (
