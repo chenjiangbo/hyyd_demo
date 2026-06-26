@@ -25,12 +25,12 @@ function loadEnv() {
 }
 
 const env = loadEnv();
-const host = env.WIN_VM_HOST;
-const port = parseInt(env.WIN_VM_PORT || '22', 10);
-const username = env.WIN_VM_USERNAME;
-const password = env.WIN_VM_PASSWORD;
+const host = process.env.WIN_VM_HOST || env.WIN_VM_HOST;
+const port = parseInt(process.env.WIN_VM_PORT || env.WIN_VM_PORT || '22', 10);
+const username = process.env.WIN_VM_USERNAME || env.WIN_VM_USERNAME;
+const password = process.env.WIN_VM_PASSWORD || env.WIN_VM_PASSWORD;
 // 统一将反斜杠转换为正斜杠，避开 Windows cmd/ssh 双重转义地狱
-const targetDir = env.WIN_VM_TARGET_DIR.replace(/\\/g, '/');
+const targetDir = (process.env.WIN_VM_TARGET_DIR || env.WIN_VM_TARGET_DIR).replace(/\\/g, '/');
 
 // 注入用户环境变量路径和 Electron 极速淘宝镜像，保障 Windows 端 Node 环境和大文件下载 100% 顺畅
 const vlmInjection = [

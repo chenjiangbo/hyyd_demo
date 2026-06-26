@@ -545,7 +545,7 @@ export class CaptureSidecarClient {
         this.addLog('insert', `去重·已存在 ${message.channel} "${convName}"`)
       } else {
         this.status.capturedFrameCount += 1
-        this.addLog('insert', `新帧 ${message.channel} "${convName}" → ${result.newMessages.length} 条新消息 订单候选=${result.orderNo ?? '无'}`)
+        this.addLog('insert', `新帧 ${message.channel} "${convName}" → ${result.newMessages.length} 条新消息 申请号候选=${result.orderNo ?? '无'}`)
       }
       this.status.lastTextPreview = message.ocr.text.replace(/\s+/g, ' ').slice(0, 120)
 
@@ -588,15 +588,20 @@ export class CaptureSidecarClient {
         body: JSON.stringify(body)
       })
       const json = (await res.json().catch(() => null)) as {
-        data?: { orderId?: number | null; created?: number; merged?: number }
+        data?: { orderId?: number | null; applicationNo?: string | null; created?: number; merged?: number }
         error?: string
       } | null
       const conv = conversationName.replace(/\s+/g, ' ').slice(0, 20)
       if (res.ok && json?.data) {
         const d = json.data
+        const linked = d.applicationNo
+          ? `关联申请号 ${d.applicationNo}`
+          : d.orderId
+            ? `已关联内部订单ID ${d.orderId}`
+            : '未关联'
         this.addLog(
           'upload',
-          `✓ 整帧 "${conv}" 新${d.created ?? 0}/合并${d.merged ?? 0} 候选=${frame.orderNo ?? '无'} → ${d.orderId ? `订单${d.orderId}` : '未关联'}`
+          `✓ 整帧 "${conv}" 新增消息 ${d.created ?? 0} 条，已存在消息 ${d.merged ?? 0} 条；识别候选=${frame.orderNo ?? '无'} → ${linked}`
         )
       } else {
         const errMsg = `✗ 整帧 "${conv}" → HTTP ${res.status}: ${(json?.error ?? res.statusText).slice(0, 120)}`

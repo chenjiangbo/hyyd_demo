@@ -255,7 +255,8 @@ function NotificationBell(): React.JSX.Element {
                                     {o.customerName || '未命名'} · <span className="font-mono-data">{o.sourceOrderNo}</span>
                                   </div>
                                   <div className="text-[11px] text-text-muted truncate">
-                                    {o.applyNo ? `申请号 ${o.applyNo} · ` : ''}
+                                    {o.applicationNo ? `申请号 ${o.applicationNo} · ` : ''}
+                                    {o.ccodApplyNo ? `CCOD ${o.ccodApplyNo} · ` : ''}
                                     {o.status || '无状态'}
                                   </div>
                                 </div>

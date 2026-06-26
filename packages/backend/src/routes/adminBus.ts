@@ -8,7 +8,7 @@
 
 export type AdminEvent =
   | { type: 'material_created'; payload: { employeeId: number; orderId: number; materialType: string } }
-  | { type: 'call_created'; payload: { employeeId: number; orderId: number | null } }
+  | { type: 'call_created'; payload: { employeeId: number; orderId: number | null; applicationNo?: string | null } }
   | { type: 'connected' }
   | { type: 'pong' }
 

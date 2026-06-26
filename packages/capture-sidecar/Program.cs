@@ -223,7 +223,7 @@ internal static class Program
         await done.Task;
         Console.Error.WriteLine(
             $"本次统计：保留 {collector.KeptCount} 张 | 去重跳过 {collector.SkippedCount} 张 | 非客户会话过滤 {collector.FilteredCount} 张。" +
-            $"（去重跳过的从未写盘；过滤的先写盘后删除）截图目录：%LOCALAPPDATA%\\HyydCaptureSidecar\\frames\\<日期>\\");
+            $"（去重跳过的从未写盘；HYYD_SAVE_DEBUG 未开启时 OCR 后删除临时截图）截图目录：%LOCALAPPDATA%\\HyydCaptureSidecar\\frames\\<日期>\\");
         collector.Stop();
         Console.Error.WriteLine("已停止采集。");
     }

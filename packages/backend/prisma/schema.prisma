@@ -60,6 +60,19 @@ model Order {
   @@map("orders")
 }
 
+model ApplicationBrief {
+  id                  Int      @id @default(autoincrement())
+  applicationNo       String   @unique @map("application_no")
+  briefJson           Json?    @map("brief_json")
+  briefUpdatedAt      DateTime? @map("brief_updated_at")
+  briefLastMsgId      Int?     @map("brief_last_msg_id")
+  briefLastCallId     Int?     @map("brief_last_call_id")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  @@map("application_briefs")
+}
+
 // 订单状态变更历史：每当 orderState 变化（含首次出现）记一条，
 // 用于追溯订单在个人池里的状态流转。
 model OrderStatusHistory {
@@ -125,6 +138,7 @@ model Message {
   id               Int      @id @default(autoincrement())
   orderId          Int?     @map("order_id")
   order            Order?   @relation(fields: [orderId], references: [id])
+  applicationNo    String?  @map("application_no")
   channel          String   // 'wechat' | 'wxwork'
   conversationName String   @map("conversation_name")
   senderName       String?  @map("sender_name")
@@ -146,6 +160,7 @@ model Message {
   lastSeenAt  DateTime? @map("last_seen_at") // 最近截到
 
   @@index([orderId, sortTime])
+  @@index([employeeId, applicationNo, sortTime])
   @@map("messages")
 }
 
@@ -181,6 +196,7 @@ model Call {
   id              Int      @id @default(autoincrement())
   orderId         Int?     @map("order_id")
   order           Order?   @relation(fields: [orderId], references: [id])
+  applicationNo   String?  @map("application_no")
   employeeId      Int      @map("employee_id")
   employee        Employee @relation(fields: [employeeId], references: [id])
   phone           String
@@ -197,6 +213,7 @@ model Call {
   asrResultJson   Json?    @map("asr_result_json")
   asrFinishedAt   DateTime? @map("asr_finished_at")
 
+  @@index([employeeId, applicationNo, startedAt])
   @@map("calls")
 }
 

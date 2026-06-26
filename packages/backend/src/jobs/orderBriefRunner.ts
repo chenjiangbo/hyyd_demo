@@ -2,7 +2,7 @@
  * 订单滚动简报的 DB 读写编排：取订单累积消息/通话(增量水位之后) → 调 orderBriefService →
  * 写回 Order.aiBriefJson + 水位。被"手动刷新接口"和"自动扫描器"共用。
  */
-import type { PrismaClient } from '@prisma/client'
+import { Prisma, type PrismaClient } from '@prisma/client'
 import type * as Minio from 'minio'
 import { spawn } from 'child_process'
 import {
@@ -81,6 +81,15 @@ export interface RefreshResult {
   model?: string
 }
 
+type ApplicationOrderContext = {
+  customer_name: string | null
+  hospital: string | null
+  dept: string | null
+  doctor: string | null
+  status: string | null
+  raw_json: unknown
+}
+
 function emptyBrief(): OrderBrief {
   return {
     summary: null,
@@ -91,6 +100,10 @@ function emptyBrief(): OrderBrief {
     risks: [],
     keyInfo: {}
   }
+}
+
+function jsonInput(value: unknown): Prisma.InputJsonValue | typeof Prisma.JsonNull {
+  return value == null ? Prisma.JsonNull : value as Prisma.InputJsonValue
 }
 
 /**
@@ -216,6 +229,126 @@ export async function refreshOrderBrief(
       briefLastMsgId: maxMsgId,
       briefLastCallId: maxCallId,
       briefLastMaterialId: maxMaterialId
+    }
+  })
+
+  return { brief: res, skipped: false, model: res.model }
+}
+
+export async function refreshApplicationBrief(
+  prisma: PrismaClient,
+  applicationNo: string,
+  opts: { force?: boolean } = {}
+): Promise<RefreshResult> {
+  const appNo = applicationNo.trim()
+  if (!appNo) throw new Error('applicationNo 不能为空')
+
+  const existing = await prisma.applicationBrief.findUnique({ where: { applicationNo: appNo } })
+  const lastMsgId = existing?.briefLastMsgId ?? 0
+  const lastCallId = existing?.briefLastCallId ?? 0
+
+  const [msgs, calls, orders] = await Promise.all([
+    prisma.message.findMany({
+      where: { applicationNo: appNo },
+      orderBy: { id: 'asc' }
+    }),
+    prisma.call.findMany({
+      where: { applicationNo: appNo },
+      orderBy: { id: 'asc' }
+    }),
+    prisma.$queryRaw<ApplicationOrderContext[]>`
+      SELECT customer_name, hospital, dept, doctor, status, raw_json
+      FROM orders
+      WHERE raw_json->>'crmApplyNo' = ${appNo}
+      ORDER BY id ASC
+    `
+  ])
+
+  const maxMsgId = msgs.length > 0 ? msgs[msgs.length - 1].id : lastMsgId
+  const maxCallId = calls.length > 0 ? calls[calls.length - 1].id : lastCallId
+  const hasNewContent =
+    msgs.some((m) => m.id > lastMsgId && (m.contentText ?? '').trim().length > 0) ||
+    calls.some((c) => c.id > lastCallId && ((c.asrText ?? '').trim().length > 0 || (c.durationSec ?? 0) > 0))
+
+  const prevBrief = (existing?.briefJson as OrderBrief | null) ?? null
+  if (!hasNewContent && !opts.force) {
+    if (maxMsgId > lastMsgId || maxCallId > lastCallId) {
+      await prisma.applicationBrief.upsert({
+        where: { applicationNo: appNo },
+        create: {
+          applicationNo: appNo,
+          briefJson: jsonInput(prevBrief),
+          briefLastMsgId: maxMsgId,
+          briefLastCallId: maxCallId
+        },
+        update: {
+          briefLastMsgId: maxMsgId,
+          briefLastCallId: maxCallId
+        }
+      })
+    }
+    return { brief: prevBrief, skipped: true, reason: 'no_new_content' }
+  }
+
+  const first = orders[0]
+  const serviceLabels = Array.from(new Set(orders.map((o) => {
+    const raw = (o.raw_json ?? {}) as Record<string, unknown>
+    return String(raw.serviceType ?? raw.itemName ?? '').trim()
+  }).filter(Boolean)))
+  const hospitals = Array.from(new Set(orders.map((o) => o.hospital).filter((x): x is string => !!x)))
+  const depts = Array.from(new Set(orders.map((o) => o.dept).filter((x): x is string => !!x)))
+
+  const ctx: BriefContext = {
+    customerName: first?.customer_name ?? null,
+    serviceType: serviceLabels.join('、') || null,
+    itemName: orders.length > 1 ? `${orders.length} 个订单` : null,
+    hospital: hospitals.join('、') || first?.hospital || null,
+    dept: depts.join('、') || first?.dept || null,
+    doctor: first?.doctor ?? null,
+    status: first?.status ?? null
+  }
+
+  const briefMsgs: BriefMessageInput[] = msgs.map((m) => ({
+    channel: m.channel,
+    senderName: m.senderName,
+    contentText: m.contentText,
+    capturedAt: m.capturedAt
+  }))
+  const briefCalls: BriefCallInput[] = calls.map((c) => ({
+    direction: c.direction,
+    callStatus: c.callStatus,
+    durationSec: c.durationSec,
+    asrText: c.asrText,
+    startedAt: c.startedAt
+  }))
+
+  const res = await buildOrderBrief(ctx, null, briefMsgs, briefCalls, [])
+  const stored = {
+    summary: res.summary,
+    stage: res.stage,
+    stageEvidence: res.stageEvidence,
+    hasOpenIssue: res.hasOpenIssue,
+    nextActions: res.nextActions,
+    risks: res.risks,
+    keyInfo: res.keyInfo,
+    model: res.model,
+    updatedFrom: { lastMessageId: maxMsgId, lastCallId: maxCallId }
+  }
+
+  await prisma.applicationBrief.upsert({
+    where: { applicationNo: appNo },
+    create: {
+      applicationNo: appNo,
+      briefJson: jsonInput(stored),
+      briefUpdatedAt: new Date(),
+      briefLastMsgId: maxMsgId,
+      briefLastCallId: maxCallId
+    },
+    update: {
+      briefJson: jsonInput(stored),
+      briefUpdatedAt: new Date(),
+      briefLastMsgId: maxMsgId,
+      briefLastCallId: maxCallId
     }
   })
 

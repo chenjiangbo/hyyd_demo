@@ -794,7 +794,9 @@ export function registerAdminRoutes(
 
         const hasMore = rows.length > PAGE_SIZE
         const page = rows.slice(0, PAGE_SIZE)
-        const items = page.map((c) => ({
+        const items = page.map((c) => {
+          const asrText = c.asrText ?? null
+          return {
           id: c.id,
           phone: c.phone,
           contactName: c.contactName,
@@ -803,10 +805,13 @@ export function registerAdminRoutes(
           durationSec: c.durationSec,
           startedAt: c.startedAt.toISOString(),
           asrStatus: c.asrStatus,
-          asrTextPreview: c.asrText ? c.asrText.slice(0, 300) : null,
+          asrText,
+          asrTextPreview: asrText ? asrText.slice(0, 300) : null,
+          asrTextTruncated: !!asrText && asrText.length > 300,
           hasRecording: !!c.recordingOssKey,
           order: c.order
-        }))
+          }
+        })
         const last = page[page.length - 1]
         return reply.send({
           data: { items, nextCursor: hasMore && last ? encodeCursor(last.startedAt, last.id) : null }
@@ -1120,7 +1125,9 @@ export function registerAdminRoutes(
 
         const hasMore = rows.length > PAGE_SIZE
         const page = rows.slice(0, PAGE_SIZE)
-        const items = page.map((c) => ({
+        const items = page.map((c) => {
+          const asrText = c.asrText ?? null
+          return {
           id: c.id,
           phone: c.phone,
           contactName: c.contactName,
@@ -1129,11 +1136,14 @@ export function registerAdminRoutes(
           durationSec: c.durationSec,
           startedAt: c.startedAt.toISOString(),
           asrStatus: c.asrStatus,
-          asrTextPreview: c.asrText ? c.asrText.slice(0, 300) : null,
+          asrText,
+          asrTextPreview: asrText ? asrText.slice(0, 300) : null,
+          asrTextTruncated: !!asrText && asrText.length > 300,
           hasRecording: !!c.recordingOssKey,
           order: c.order,
           employee: c.employee
-        }))
+          }
+        })
         const last = page[page.length - 1]
         return reply.send({
           data: { items, nextCursor: hasMore && last ? encodeCursor(last.startedAt, last.id) : null }

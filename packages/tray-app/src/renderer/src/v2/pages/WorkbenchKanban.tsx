@@ -14,6 +14,14 @@ import {
 } from '../lib/orderMapping'
 
 type View = 'board' | 'list'
+export type ApplicationGroup = {
+  key: string
+  applicationNo: string | null
+  customerName: string
+  orders: Order[]
+  primary: Order
+  updatedAt: string
+}
 
 const REFRESH_INTERVAL_MS = 30_000
 const BOARD_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
@@ -103,6 +111,7 @@ function orderNoCandidates(o: Order): string[] {
   const raw = (o.rawJson ?? {}) as Record<string, unknown>
   const values = [
     o.sourceOrderNo,
+    raw.crmApplyNo,
     raw.applyNo,
     raw.subOrderNo,
     raw.orderId
@@ -110,17 +119,67 @@ function orderNoCandidates(o: Order): string[] {
   return [...new Set(values.map((v) => v.trim()))]
 }
 
-function orderTail8(no: string): string | null {
+function applicationNoOf(order: Order): string | null {
+  const raw = (order.rawJson ?? {}) as Record<string, unknown>
+  return typeof raw.crmApplyNo === 'string' && raw.crmApplyNo.trim() ? raw.crmApplyNo.trim() : null
+}
+
+function tail8(no: string | null): string | null {
+  if (!no) return null
   const compact = no.replace(/\s+/g, '')
   return compact.length >= 8 ? compact.slice(-8) : null
 }
 
+function groupOrdersByApplication(orders: Order[]): ApplicationGroup[] {
+  const map = new Map<string, Order[]>()
+  for (const order of orders) {
+    const applicationNo = applicationNoOf(order)
+    const key = applicationNo ?? `order:${order.id}`
+    const arr = map.get(key) ?? []
+    arr.push(order)
+    map.set(key, arr)
+  }
+  return [...map.entries()]
+    .map(([key, list]) => {
+      const sorted = [...list].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+      const primary = sorted[0]
+      return {
+        key,
+        applicationNo: applicationNoOf(primary),
+        customerName: primary.customerName,
+        orders: sorted,
+        primary,
+        updatedAt: primary.updatedAt
+      }
+    })
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+}
+
+function groupLaneOf(group: ApplicationGroup): LaneKey {
+  const priority: LaneKey[] = ['await_backfill', 'doing', 'todo', 'done']
+  for (const lane of priority) {
+    if (group.orders.some((order) => laneOf(order) === lane)) return lane
+  }
+  return laneOf(group.primary)
+}
+
+function dedupeServices(orders: Order[]): Array<{ label: string; count: number; order: Order }> {
+  const map = new Map<string, { label: string; count: number; order: Order }>()
+  for (const order of orders) {
+    const label = bizType(order)
+    const existing = map.get(label)
+    if (existing) existing.count += 1
+    else map.set(label, { label, count: 1, order })
+  }
+  return [...map.values()]
+}
+
 export default function WorkbenchKanban({
   employeeCode,
-  onOpenOrder
+  onOpenApplication
 }: {
   employeeCode: string
-  onOpenOrder: (o: Order) => void
+  onOpenApplication: (group: ApplicationGroup) => void
 }): React.JSX.Element {
   const [orders, setOrders] = useState<Order[]>(() => getCachedOrders(employeeCode) ?? [])
   const [loading, setLoading] = useState(getCachedOrders(employeeCode) === null)
@@ -180,6 +239,8 @@ export default function WorkbenchKanban({
   }, [orders, query, typeFilter])
 
   const boardOrders = useMemo(() => filtered.filter(isBoardVisibleOrder), [filtered])
+  const boardGroups = useMemo(() => groupOrdersByApplication(boardOrders), [boardOrders])
+  const filteredGroups = useMemo(() => groupOrdersByApplication(filtered), [filtered])
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -247,9 +308,9 @@ export default function WorkbenchKanban({
           {error}
         </div>
       ) : view === 'board' ? (
-        <BoardView orders={boardOrders} onOpen={onOpenOrder} />
+        <BoardView groups={boardGroups} onOpen={onOpenApplication} />
       ) : (
-        <ListView orders={filtered} onOpen={onOpenOrder} />
+        <ListView groups={filteredGroups} onOpen={onOpenApplication} />
       )}
     </div>
   )
@@ -284,12 +345,12 @@ function TypeTag({
 }
 
 // ─── 看板视图 ──────────────────────────────────────────
-function BoardView({ orders, onOpen }: { orders: Order[]; onOpen: (o: Order) => void }): React.JSX.Element {
+function BoardView({ groups, onOpen }: { groups: ApplicationGroup[]; onOpen: (group: ApplicationGroup) => void }): React.JSX.Element {
   const grouped = useMemo(() => {
-    const g: Record<LaneKey, Order[]> = { todo: [], doing: [], await_backfill: [], done: [] }
-    for (const o of orders) g[laneOf(o)].push(o)
+    const g: Record<LaneKey, ApplicationGroup[]> = { todo: [], doing: [], await_backfill: [], done: [] }
+    for (const group of groups) g[groupLaneOf(group)].push(group)
     return g
-  }, [orders])
+  }, [groups])
 
   return (
     <div className="flex-1 min-h-0 overflow-hidden p-6">
@@ -326,7 +387,9 @@ function BoardView({ orders, onOpen }: { orders: Order[]; onOpen: (o: Order) => 
                     {isAi ? 'AI 提取完成的订单会出现在这里' : '暂无'}
                   </div>
                 ) : (
-                  items.map((o) => <OrderCard key={o.id} order={o} lane={lane.key} onOpen={onOpen} />)
+                  items.map((group) => (
+                    <ApplicationCard key={group.key} group={group} lane={lane.key} onOpen={onOpen} />
+                  ))
                 )}
               </div>
             </div>
@@ -375,60 +438,52 @@ function Copyable({
   )
 }
 
-function OrderNoCopyButtons({
-  order,
+function ApplicationCopyButtons({
+  applicationNo,
   className
 }: {
-  order: Order
+  applicationNo: string | null
   className?: string
 }): React.JSX.Element {
   const [copied, setCopied] = useState<string | null>(null)
-  const primary = order.sourceOrderNo
-  const tail = orderTail8(primary)
-  const tailValue = tail ? `#${tail}` : null
+  const tail = tail8(applicationNo)
 
   const copy = (value: string): void => {
-    if (!value) return
     void navigator.clipboard?.writeText(value)
     setCopied(value)
     setTimeout(() => setCopied(null), 1200)
+  }
+
+  if (!applicationNo) {
+    return <span className={'text-text-muted ' + (className || '')}>无申请号</span>
   }
 
   return (
     <div className={'inline-flex items-center gap-1 min-w-0 ' + (className || '')}>
       <button
         type="button"
-        title={`复制完整订单号 ${primary}`}
+        title={`复制申领号 ${applicationNo}`}
         onClick={(e) => {
           e.stopPropagation()
-          copy(primary)
+          copy(applicationNo)
         }}
-        className="group inline-flex items-center gap-1 min-w-0 hover:text-trust-blue transition-colors"
+        className="inline-flex items-center gap-1 min-w-0 hover:text-trust-blue transition-colors"
       >
-        <span className="material-symbols-outlined shrink-0" style={{ fontSize: '13px' }}>tag</span>
-        <span className="truncate font-mono-data">{primary}</span>
-        <span
-          className={
-            'material-symbols-outlined shrink-0 transition-opacity ' +
-            (copied === primary ? 'opacity-100 text-action-green' : 'opacity-0 group-hover:opacity-60')
-          }
-          style={{ fontSize: '13px' }}
-        >
-          {copied === primary ? 'check' : 'content_copy'}
-        </span>
+        <span className="material-symbols-outlined shrink-0" style={{ fontSize: '13px' }}>confirmation_number</span>
+        <span className="truncate font-mono-data">{applicationNo}</span>
       </button>
-      {tailValue && (
+      {tail && (
         <button
           type="button"
-          title={`复制备注尾号 ${tailValue}`}
+          title={`复制申领号尾 8 位 ${tail}`}
           onClick={(e) => {
             e.stopPropagation()
-            copy(tailValue)
+            copy(tail)
           }}
           className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded hover:bg-surface-container-low text-text-muted hover:text-trust-blue transition-colors"
         >
-          <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>
-            {copied === tailValue ? 'check' : 'tag'}
+          <span className={'material-symbols-outlined ' + (copied === tail ? 'text-action-green' : '')} style={{ fontSize: '14px' }}>
+            {copied === tail ? 'check' : 'content_copy'}
           </span>
         </button>
       )}
@@ -436,64 +491,26 @@ function OrderNoCopyButtons({
   )
 }
 
-function OrderCard({
-  order: o,
+function ApplicationCard({
+  group,
   lane,
   onOpen
 }: {
-  order: Order
+  group: ApplicationGroup
   lane: LaneKey
-  onOpen: (o: Order) => void
+  onOpen: (group: ApplicationGroup) => void
 }): React.JSX.Element {
+  const primary = group.primary
   const isAi = lane === 'await_backfill'
-  const isDone = lane === 'done'
-  const palette = bizPalette(o)
+  const palette = bizPalette(primary)
+  const services = dedupeServices(group.orders)
+  const visibleServices = services.slice(0, 4)
+  const hiddenCount = Math.max(0, services.length - visibleServices.length)
+  const totalMaterials = group.orders.reduce((sum, order) => sum + (order.materialCount || 0), 0)
 
-  // 待结束卡片：弱化、信息聚焦在「回填/观察」状态，不再显示来源/更新时间/素材
-  if (isDone) {
-    const backfilled = o.status.includes('回填') || o.status.includes('归档')
-    return (
-      <div
-        onClick={() => onOpen(o)}
-        className="shrink-0 bg-surface-bg border border-border-subtle border-l-4 border-l-action-green rounded-lg px-3 py-2 flex flex-col gap-1 cursor-pointer hover:bg-white transition-colors"
-      >
-        <div className="flex justify-between items-center gap-2">
-          <div className="flex items-center gap-1.5 min-w-0">
-            <span className="text-body-md font-medium text-text-muted truncate">{o.customerName}</span>
-            <span className="shrink-0 text-label-caps px-1.5 py-0.5 rounded bg-surface-container text-text-muted">
-              {bizType(o)}
-            </span>
-          </div>
-          <span className="material-symbols-outlined filled text-action-green shrink-0" style={{ fontSize: '16px' }}>check_circle</span>
-        </div>
-        {o.hospital && (
-          <div className="text-body-sm text-text-muted/80 truncate">
-            {o.hospital}
-            {o.dept ? ` · ${o.dept}` : ''}
-          </div>
-        )}
-        <div className="flex items-center gap-2 text-[12px] text-text-muted/80">
-          <span>更新于 {monthDay(o.updatedAt)}</span>
-          <span
-            className={
-              'inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded ' +
-              (backfilled ? 'text-action-green bg-action-green/10' : 'text-alert-orange bg-alert-orange/10')
-            }
-          >
-            <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>
-              {backfilled ? 'task_alt' : 'pending'}
-            </span>
-            {backfilled ? '已回填' : '待回填'}
-          </span>
-        </div>
-      </div>
-    )
-  }
-
-  const hexColor = palette.accent.match(/#[0-9a-f]{6}/i)?.[0]
   return (
     <div
-      onClick={() => onOpen(o)}
+      onClick={() => onOpen(group)}
       className={
         'shrink-0 bg-white border border-border-subtle border-l-4 rounded-lg px-3 py-2.5 flex flex-col gap-2 shadow-sm cursor-pointer transition-all relative overflow-hidden ' +
         (isAi
@@ -501,65 +518,61 @@ function OrderCard({
           : palette.accent + ' hover:shadow-[0_4px_12px_rgba(0,0,0,0.08)]')
       }
     >
-      {isAi && (
-        <div className="absolute top-0 right-0 w-14 h-14 bg-gradient-to-bl from-ai-purple/10 to-transparent rounded-bl-full pointer-events-none" />
-      )}
-
-      {/* 行1：客户名 + 业务 chip | 右上角来源 */}
       <div className="flex justify-between items-start gap-2 relative z-10">
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className="text-body-md font-semibold truncate text-text-main">{o.customerName}</span>
-          <span className={'shrink-0 text-label-caps px-1.5 py-0.5 rounded ' + bizChipClass(o)}>{bizType(o)}</span>
+          <span className="text-body-md font-semibold truncate text-text-main">{group.customerName}</span>
+          {group.orders.length > 1 && (
+            <span className="shrink-0 text-label-caps px-1.5 py-0.5 rounded bg-alert-orange/10 text-alert-orange">
+              {group.orders.length} 个订单
+            </span>
+          )}
         </div>
-        <span className={'shrink-0 text-[10px] font-medium flex items-center gap-0.5 ' + sourceStyle(o).text}>
-          <span className="material-symbols-outlined" style={{ fontSize: '12px' }}>
-            verified
-          </span>
-          {sourceStyle(o).label}
+        <span className={'shrink-0 text-[10px] font-medium flex items-center gap-0.5 ' + sourceStyle(primary).text}>
+          <span className="material-symbols-outlined" style={{ fontSize: '12px' }}>verified</span>
+          {sourceStyle(primary).label}
         </span>
       </div>
 
-      {/* 医院·科室（整行） */}
-      {o.hospital && (
-        <div className="flex items-center gap-1 min-w-0 relative z-10 text-body-sm text-text-muted">
-          <span className="material-symbols-outlined shrink-0" style={{ color: hexColor, fontSize: '14px' }}>
-            local_hospital
-          </span>
-          <span className="truncate">
-            {o.hospital}
-            {o.dept ? ` · ${o.dept}` : ''}
-          </span>
+      <ApplicationCopyButtons applicationNo={group.applicationNo} className="text-[11px] text-text-muted max-w-full" />
+
+      {primary.hospital && (
+        <div className="text-body-sm text-text-muted truncate">
+          {primary.hospital}
+          {primary.dept ? ` · ${primary.dept}` : ''}
         </div>
       )}
 
-      {/* 手机号（左，可复制） · 素材数（右） */}
-      <div className="flex items-center justify-between gap-2 relative z-10 text-body-sm text-text-muted">
-        <Copyable value={o.customerPhone || ''} className="min-w-0">
-          <span className="material-symbols-outlined shrink-0" style={{ fontSize: '14px' }}>call</span>
-          <span className="truncate font-mono-data">{o.customerPhone || '—'}</span>
-        </Copyable>
-        {o.materialCount > 0 && (
-          <span className="shrink-0 flex items-center gap-0.5 text-text-muted">
-            <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>attach_file</span>
-            {o.materialCount}
+      <div className="flex flex-wrap gap-1">
+        {visibleServices.map((service) => (
+          <span
+            key={service.label}
+            className={'inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ' + bizChipClass(service.order)}
+          >
+            {service.label}
+            {service.count > 1 ? ` x${service.count}` : ''}
+          </span>
+        ))}
+        {hiddenCount > 0 && (
+          <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] text-text-muted bg-surface-bg">
+            +{hiddenCount}
           </span>
         )}
       </div>
 
-      {/* AI 核对入口（仅待确认回填） */}
-      {isAi && (
-        <button className="self-start text-[12px] text-trust-blue hover:underline font-medium flex items-center gap-0.5 relative z-10">
-          <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>fact_check</span>
-          查看并核对
-        </button>
-      )}
-
-      {/* 订单号（左，可复制） · 日期（恒定右下角） */}
-      <div className="flex items-center justify-between gap-2 min-w-0 relative z-10 text-[11px] text-text-muted/80">
-        <OrderNoCopyButtons order={o} className="min-w-0" />
-        <span className="shrink-0 px-1.5 py-0.5 rounded bg-surface-bg text-text-muted">
-          {monthDay(o.updatedAt)}
-        </span>
+      <div className="flex items-center justify-between gap-2 text-[11px] text-text-muted/80">
+        <Copyable value={primary.customerPhone || ''} className="min-w-0">
+          <span className="material-symbols-outlined shrink-0" style={{ fontSize: '14px' }}>call</span>
+          <span className="truncate font-mono-data">{primary.customerPhone || '—'}</span>
+        </Copyable>
+        <div className="shrink-0 flex items-center gap-1.5">
+          {totalMaterials > 0 && (
+            <span className="inline-flex items-center gap-0.5">
+              <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>attach_file</span>
+              {totalMaterials}
+            </span>
+          )}
+          <span className="px-1.5 py-0.5 rounded bg-surface-bg text-text-muted">{monthDay(group.updatedAt)}</span>
+        </div>
       </div>
     </div>
   )
@@ -568,34 +581,36 @@ function OrderCard({
 // ─── 列表视图（密集、可排序、可按泳道筛选）──────────────
 type SortKey = 'customerName' | 'hospital' | 'status' | 'updatedAt'
 
-function ListView({ orders, onOpen }: { orders: Order[]; onOpen: (o: Order) => void }): React.JSX.Element {
+function ListView({ groups, onOpen }: { groups: ApplicationGroup[]; onOpen: (group: ApplicationGroup) => void }): React.JSX.Element {
   const [laneFilter, setLaneFilter] = useState<LaneKey | 'all'>('all')
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'updatedAt', dir: 'desc' })
 
   // 各泳道计数（用于筛选条徽标）
   const laneCounts = useMemo(() => {
     const c: Record<LaneKey, number> = { todo: 0, doing: 0, await_backfill: 0, done: 0 }
-    for (const o of orders) c[laneOf(o)]++
+    for (const group of groups) c[groupLaneOf(group)]++
     return c
-  }, [orders])
+  }, [groups])
 
   const rows = useMemo(() => {
-    let r = laneFilter === 'all' ? orders : orders.filter((o) => laneOf(o) === laneFilter)
+    let r = laneFilter === 'all' ? groups : groups.filter((group) => groupLaneOf(group) === laneFilter)
     const dir = sort.dir === 'asc' ? 1 : -1
     r = [...r].sort((a, b) => {
-      const va = (a[sort.key] ?? '') as string
-      const vb = (b[sort.key] ?? '') as string
+      const av = sort.key === 'updatedAt' ? a.updatedAt : (a.primary[sort.key] ?? '')
+      const bv = sort.key === 'updatedAt' ? b.updatedAt : (b.primary[sort.key] ?? '')
+      const va = String(av)
+      const vb = String(bv)
       return va < vb ? -dir : va > vb ? dir : 0
     })
     return r
-  }, [orders, laneFilter, sort])
+  }, [groups, laneFilter, sort])
 
   function toggleSort(key: SortKey): void {
     setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }))
   }
 
   const FILTERS: { key: LaneKey | 'all'; label: string; count: number }[] = [
-    { key: 'all', label: '全部', count: orders.length },
+    { key: 'all', label: '全部', count: groups.length },
     ...LANES.map((l) => ({ key: l.key, label: l.label, count: laneCounts[l.key] }))
   ]
 
@@ -627,7 +642,7 @@ function ListView({ orders, onOpen }: { orders: Order[]; onOpen: (o: Order) => v
           <thead className="sticky top-0 bg-surface-bg z-10">
             <tr className="text-left text-text-muted border-b border-border-subtle">
               <SortHead label="客户" k="customerName" sort={sort} onSort={toggleSort} />
-              <th className="py-2 px-3 font-medium">订单号</th>
+              <th className="py-2 px-3 font-medium">申领号</th>
               <th className="py-2 px-3 font-medium">手机号</th>
               <th className="py-2 px-3 font-medium">业务类型</th>
               <th className="py-2 px-3 font-medium">来源</th>
@@ -645,19 +660,33 @@ function ListView({ orders, onOpen }: { orders: Order[]; onOpen: (o: Order) => v
                 </td>
               </tr>
             ) : (
-              rows.map((o) => (
+              rows.map((group) => {
+                const o = group.primary
+                const services = dedupeServices(group.orders)
+                return (
                 <tr
-                  key={o.id}
-                  onClick={() => onOpen(o)}
+                  key={group.key}
+                  onClick={() => onOpen(group)}
                   className="border-b border-border-subtle hover:bg-white cursor-pointer transition-colors"
                 >
                   <td className="py-2 px-3 font-medium text-text-main whitespace-nowrap">{o.customerName}</td>
                   <td className="py-2 px-3 text-text-muted max-w-[220px]">
-                    <OrderNoCopyButtons order={o} className="max-w-full" />
+                    <ApplicationCopyButtons applicationNo={group.applicationNo} className="max-w-full" />
                   </td>
                   <td className="py-2 px-3 text-text-muted font-mono-data whitespace-nowrap">{o.customerPhone || '—'}</td>
                   <td className="py-2 px-3">
-                    <span className={'text-label-caps px-2 py-0.5 rounded ' + bizChipClass(o)}>{bizType(o)}</span>
+                    <div className="flex flex-wrap gap-1 min-w-[160px]">
+                      {services.slice(0, 4).map((service) => (
+                        <span key={service.label} className={'text-label-caps px-2 py-0.5 rounded ' + bizChipClass(service.order)}>
+                          {service.label}{service.count > 1 ? ` x${service.count}` : ''}
+                        </span>
+                      ))}
+                      {services.length > 4 && (
+                        <span className="text-label-caps px-2 py-0.5 rounded bg-surface-bg text-text-muted">
+                          +{services.length - 4}
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="py-2 px-3 text-text-muted whitespace-nowrap">{sourceLabel(o)}</td>
                   <td className="py-2 px-3 text-text-muted max-w-[260px] truncate">
@@ -671,7 +700,8 @@ function ListView({ orders, onOpen }: { orders: Order[]; onOpen: (o: Order) => v
                   </td>
                   <td className="py-2 px-3 text-text-muted whitespace-nowrap">{relativeTime(o.updatedAt)}</td>
                 </tr>
-              ))
+                )
+              })
             )}
           </tbody>
         </table>

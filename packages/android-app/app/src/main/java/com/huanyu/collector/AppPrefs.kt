@@ -84,6 +84,22 @@ class AppPrefs(context: Context) {
         get() = prefs.getInt("last_recording_miss_count", 0)
         set(value) = prefs.edit().putInt("last_recording_miss_count", value).apply()
 
+    var lastRecordingRawFileCount: Int
+        get() = prefs.getInt("last_recording_raw_file_count", 0)
+        set(value) = prefs.edit().putInt("last_recording_raw_file_count", value).apply()
+
+    var lastRecordingTotalFileCount: Int
+        get() = prefs.getInt("last_recording_total_file_count", 0)
+        set(value) = prefs.edit().putInt("last_recording_total_file_count", value).apply()
+
+    var lastRecordingScanSummary: String
+        get() = prefs.getString("last_recording_scan_summary", "").orEmpty()
+        set(value) = prefs.edit().putString("last_recording_scan_summary", value.take(3000)).apply()
+
+    var lastRecordingUnparsedSamples: String
+        get() = prefs.getString("last_recording_unparsed_samples", "").orEmpty()
+        set(value) = prefs.edit().putString("last_recording_unparsed_samples", value.take(600)).apply()
+
     var lastSyncedCallText: String
         get() = prefs.getString("last_synced_call_text", "无").orEmpty()
         set(value) = prefs.edit().putString("last_synced_call_text", value.take(300)).apply()

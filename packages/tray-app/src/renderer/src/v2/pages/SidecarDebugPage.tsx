@@ -238,8 +238,9 @@ function parseSessions(logs: DiagEntry[], frames: DbgFrame[]): CaptureSession[] 
       }
 
       // ⑦ Kept frame
-      // Format: 保留关键帧 [reason] kind 标题="T" 订单号=X diff=Y 触发=Z → path
-      m = msg.match(/^保留关键帧 \[([^\]]*)\] (\S+) 标题="(.*?)" 订单号=(\S+) diff=([0-9.]+) 触发=(\S+) → (.+)/)
+      // Format: 保留关键帧 [reason] kind 标题="T" 申请号候选=X diff=Y 触发=Z → path
+      // 兼容旧日志里的“订单号=”
+      m = msg.match(/^保留关键帧 \[([^\]]*)\] (\S+) 标题="(.*?)" (?:申请号候选|订单号)=(\S+) diff=([0-9.]+) 触发=(\S+) → (.+)/)
       if (m && cur) {
         cur.result = 'kept'
         cur.keepReason = m[1]
@@ -253,8 +254,8 @@ function parseSessions(logs: DiagEntry[], frames: DbgFrame[]): CaptureSession[] 
         continue
       }
     } else if (tag === 'insert' && cur) {
-      // Format: 新帧 channel "title" → N 条新消息 订单候选=X
-      const m = msg.match(/新帧 .+ → (\d+) 条新消息 订单候选=(\S+)/)
+      // Format: 新帧 channel "title" → N 条新消息 申请号候选=X
+      const m = msg.match(/新帧 .+ → (\d+) 条新消息 (?:申请号候选|订单候选)=(\S+)/)
       if (m) {
         cur.insertDuplicate = false
         cur.newMessageCount = parseInt(m[1])
@@ -392,6 +393,7 @@ export default function SidecarDebugPage(): React.JSX.Element {
   const [auto, setAuto] = useState(true)
   const [loadedAt, setLoadedAt] = useState('')
   const [activeTab, setActiveTab] = useState<PageTab>('pipeline')
+  const [autoDebugRequested, setAutoDebugRequested] = useState(false)
 
   const sessions = useMemo(() => parseSessions(logs, frames), [logs, frames])
   const selected = useMemo(
@@ -420,6 +422,13 @@ export default function SidecarDebugPage(): React.JSX.Element {
     const t = setInterval(() => void refresh(), 2000)
     return () => clearInterval(t)
   }, [auto, api, refresh])
+  useEffect(() => {
+    if (!api || autoDebugRequested || status?.saveDebug !== false) return
+    setAutoDebugRequested(true)
+    void api.setCaptureSaveDebug(true).then(() => {
+      setTimeout(() => void refresh(), 1500)
+    })
+  }, [api, autoDebugRequested, refresh, status?.saveDebug])
 
   if (!api) {
     return (
@@ -455,6 +464,11 @@ export default function SidecarDebugPage(): React.JSX.Element {
           await refresh()
         }}
       />
+      {status?.saveDebug === false && (
+        <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-2 text-body-sm text-amber-800">
+          采集调试页需要保存截图才能查看 OCR 原图；正在自动开启“保存调试”。开启前产生的截图已经被 sidecar 删除，无法补回。
+        </div>
+      )}
       {activeTab === 'pipeline' ? (
         <div className="flex-1 min-h-0 flex">
           <SessionList
@@ -758,7 +772,7 @@ function SessionDetail({
             {s.dedupDiff != null && (
               <>
                 {' '}diff=<b className="text-text-main">{s.dedupDiff.toFixed(4)}</b>
-                <span className="ml-1 text-text-muted">（阈值约 0.02，低于此值=画面几乎没变）</span>
+                <span className="ml-1 text-text-muted">（低于当前 sidecar 阈值=画面几乎没变）</span>
               </>
             )}
           </p>
@@ -789,7 +803,7 @@ function SessionDetail({
             />
           ) : shotPath ? (
             <div className="rounded border border-border-subtle bg-surface-container-low px-3 py-2 text-body-sm text-text-muted">
-              截图文件读取失败（文件可能已被删除）
+              截图文件读取失败（通常是当时“保存调试”为关，OCR 后临时截图已删除；请等待开启后重新采一帧）
             </div>
           ) : null}
         </Step>
@@ -845,14 +859,14 @@ function SessionDetail({
               </p>
               {s.result === 'filtered' ? (
                 <p className="text-body-sm text-red-600">
-                  ✗ 非客户会话 — 标题未含"就医服务群"，也未匹配 COD/fwyy 订单号；不入库、不上报（截图保留供调试）
+                  ✗ 非客户会话 — 标题未含"就医服务群"，也未匹配申请号候选（OD/fwyy/#尾号）；不入库、不上报（截图保留供调试）
                 </p>
               ) : (
                 <div className="flex items-center gap-2 flex-wrap text-body-sm">
                   <span className="text-green-600">✓ 客户会话</span>
                   {s.convKind && (
                     <span className="text-label-caps px-1.5 py-0.5 rounded bg-surface-container-low text-text-muted">
-                      {s.convKind === 'group' ? '群聊（标题含就医服务群）' : '单聊（标题含订单号）'}
+                      {s.convKind === 'group' ? '群聊（标题含就医服务群）' : '单聊（标题含申请号候选）'}
                     </span>
                   )}
                   {s.orderNo && (
@@ -883,10 +897,10 @@ function SessionDetail({
               <p>新帧 → <b>{s.newMessageCount ?? 0}</b> 条新消息</p>
               {s.insertOrderNo ? (
                 <p className="text-text-muted">
-                  订单候选 <span className="text-primary font-medium">{s.insertOrderNo}</span>
+                  申请号候选 <span className="text-primary font-medium">{s.insertOrderNo}</span>
                 </p>
               ) : (
-                <p className="text-text-muted">未识别到订单号</p>
+                <p className="text-text-muted">未识别到申请号候选</p>
               )}
             </div>
           )}
@@ -1212,7 +1226,7 @@ function OcrView({
               <span>聊天区 <b className="text-text-main">[{frame.chatX0 ?? '?'},{frame.chatX1 ?? '?'})</b></span>
               <span>标题 <b className="text-text-main">{frame.title || '—'}</b></span>
               <span>判定 <b className="text-text-main">
-                {frame.filtered ? '非客户' : frame.conversationKind === 'group' ? '群聊·就医服务群' : frame.conversationKind === 'single' ? '单聊·订单号' : '—'}
+                {frame.filtered ? '非客户' : frame.conversationKind === 'group' ? '群聊·就医服务群' : frame.conversationKind === 'single' ? '单聊·申请号候选' : '—'}
               </b></span>
               <span>词块 <b className="text-text-main">{blocks.length}</b></span>
               {frame.droppedBlockCount != null && <span>丢弃 <b className="text-text-main">{frame.droppedBlockCount}</b></span>}
@@ -1447,7 +1461,7 @@ function OcrView({
                 </>
               ) : !shotLoading ? (
                 <div className="h-32 flex items-center justify-center text-body-sm text-text-muted">
-                  截图不可用（已被过滤删除或路径无效）
+                  截图不可用（通常是当时“保存调试”为关，OCR 后临时截图已删除；请等待开启后重新采一帧）
                 </div>
               ) : null}
             </div>

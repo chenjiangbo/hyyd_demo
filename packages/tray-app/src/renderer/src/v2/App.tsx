@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import LoginPage from './pages/LoginPage'
 import WorkbenchKanban from './pages/WorkbenchKanban'
+import ApplicationDetailPage from './pages/ApplicationDetailPage'
 import OrderDetailPage from './pages/OrderDetailPage'
 import SidecarDebugPage from './pages/SidecarDebugPage'
 import SettingsPage from './pages/SettingsPage'
@@ -17,6 +18,7 @@ import {
   type Order,
   type Session
 } from './api'
+import type { ApplicationGroup } from './pages/WorkbenchKanban'
 
 /**
  * v2 应用根。顶部为自绘标题栏（无 Windows 原生边框），下方是页面内容。
@@ -26,6 +28,7 @@ export default function App(): React.JSX.Element {
   const [session, setSession] = useState<Session | null>(getSession())
   const [nav, setNav] = useState<NavKey>('workbench')
   const [openOrder, setOpenOrder] = useState<Order | null>(null)
+  const [openApplication, setOpenApplication] = useState<ApplicationGroup | null>(null)
 
   // 登录态用小窗，登录后放大到工作台尺寸
   useEffect(() => {
@@ -50,6 +53,8 @@ export default function App(): React.JSX.Element {
   } else if (openOrder) {
     // 详情是聚焦视图，覆盖 AppShell
     content = <OrderDetailPage order={openOrder} onBack={() => setOpenOrder(null)} />
+  } else if (openApplication) {
+    content = <ApplicationDetailPage group={openApplication} onBack={() => setOpenApplication(null)} />
   } else {
     content = (
       <AppShell
@@ -62,7 +67,7 @@ export default function App(): React.JSX.Element {
         }}
       >
         <div className={nav === 'workbench' ? 'flex-1 min-h-0 flex flex-col' : 'hidden'}>
-          <WorkbenchKanban employeeCode={session.employeeCode} onOpenOrder={setOpenOrder} />
+          <WorkbenchKanban employeeCode={session.employeeCode} onOpenApplication={setOpenApplication} />
         </div>
         {nav === 'claim' && <ClaimPage />}
         {nav === 'customers' && <CustomersPage onOpenOrder={setOpenOrder} />}

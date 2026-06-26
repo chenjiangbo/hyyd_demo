@@ -120,6 +120,7 @@ export interface OrderDetailResponse {
 
 export interface OrderCall {
   id: number
+  applicationNo?: string | null
   phone: string
   contactName: string | null
   direction: 'in' | 'out' | string
@@ -135,6 +136,7 @@ export interface OrderCall {
 // 订单关联的采集消息（后端已跨帧去重、按 sortTime 排好）。日期字段是 ISO 字符串。
 export interface OrderMessage {
   id: number
+  applicationNo?: string | null
   channel: 'wechat' | 'wxwork' | string
   conversationName: string
   senderType: 'self' | 'other' | 'system' | string
@@ -256,6 +258,14 @@ export function refreshOrderBrief(orderId: number): Promise<OrderBrief> {
   return authedSend<OrderBrief>(`/api/v1/orders/${orderId}/brief/refresh`, 'POST', {})
 }
 
+export function fetchApplicationBrief(applicationNo: string): Promise<{ brief: OrderBrief | null; updatedAt: string | null }> {
+  return authedGet<{ brief: OrderBrief | null; updatedAt: string | null }>(`/api/v1/applications/${encodeURIComponent(applicationNo)}/brief`)
+}
+
+export function refreshApplicationBrief(applicationNo: string): Promise<OrderBrief> {
+  return authedSend<OrderBrief>(`/api/v1/applications/${encodeURIComponent(applicationNo)}/brief/refresh`, 'POST', {})
+}
+
 // ─── 通话录音：转写 + 播放 ───────────────────────────────
 export interface CallTranscript {
   id: number
@@ -355,7 +365,8 @@ export interface UnmatchedOrderRef {
     sourceOrderNo: string
     customerName: string
     status: string
-    applyNo?: string | null
+    applicationNo?: string | null
+    ccodApplyNo?: string | null
   }>
   createdAt: string
   updatedAt: string

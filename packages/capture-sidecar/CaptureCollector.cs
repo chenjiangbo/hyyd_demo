@@ -96,17 +96,15 @@ internal sealed class CaptureCollector : IDisposable
             .Split(new[] { ',', '，' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
-    // 订单号两条业务线：
-    //  - 医学陪诊：高客 fwyy+数字；普客 COD/CCOD/OD + 16 位 hex。body 容忍 OCR 误读（hex 位认成字母）。
-    //  - 重疾绿通/其他绿通：SO / LT + 14~24 位长数字（如 SO2021…、LT2020…）。SO/LT 是常见英文字母组合，
-    //    故 body 收紧为「数字 + OCR 易混字符(o i s z g l | q)」，避免把 solution 这类词误当订单号。
-    // 另支持短备注：客户名/客户名家属 + #订单尾号6-9位（企微备注 20 字限制）。
-    // IgnoreCase 容忍大小写；抽到含噪候选即可，后端再做归一 + 精确/待确认匹配。
+    // 申请号候选：
+    //  - 泰康界面"申请号"字段：OD...；高客：fwyy...
+    //  - 短备注：客户名/客户名家属 + #申请号尾号6-9位（企微备注 20 字限制）。
+    // IgnoreCase 容忍大小写；抽到含噪候选即可，后端只在 rawJson.crmApplyNo 里做归一 + 精确/待确认匹配。
     private static readonly System.Text.RegularExpressions.Regex OrderNoRegex = new(
-        @"[#＃][0-9a-z|]{6,9}(?![0-9a-z|])|fwyy[0-9a-z|]{6,24}|(?:CCOD|COD|OD)[0-9a-z|]{12,18}|(?:SO|LT)[0-9oqislzg|]{14,24}",
+        @"[#＃][0-9a-z|]{6,9}(?![0-9a-z|])|fwyy[0-9a-z|]{6,24}|OD[0-9a-z|]{6,24}",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
 
-    // OCR 仍可能把订单号和"就医服务群"拆散或插空白；匹配前先去掉所有空白
+    // OCR 仍可能把申请号和"就医服务群"拆散或插空白；匹配前先去掉所有空白
     private static readonly System.Text.RegularExpressions.Regex WhitespaceRegex = new(
         @"\s+",
         System.Text.RegularExpressions.RegexOptions.Compiled);
@@ -114,14 +112,14 @@ internal sealed class CaptureCollector : IDisposable
     internal readonly record struct ConversationClass(bool IsCustomer, string? Kind, string? OrderNo);
 
     /// <summary>
-    /// 判断是否"与客户的会话"，并尽量抽订单号——**只看聊天区标题行**（不再用全图 OCR，避免左侧联系人列表污染）。
+    /// 判断是否"与客户的会话"，并尽量抽申请号候选——**只看聊天区标题行**（不再用全图 OCR，避免左侧联系人列表污染）。
     /// 群聊：标题含"就医服务群"关键词。
-    /// 单聊：标题含订单号（fwyy 或 COD/CCOD/OD）或短备注 #订单尾号6-9位。
+    /// 单聊：标题含申请号候选（fwyy 或 OD）或短备注 #申请号尾号6-9位。
     /// 命中其一 → 客户会话。标题为空（OCR 没读到/分区失败）→ 非客户。
     /// </summary>
     internal static ConversationClass ClassifyTitle(string? title)
     {
-        // 去掉所有空白后再匹配（OCR 会在字符间塞空格，否则订单号/关键词会被截断）
+        // 去掉所有空白后再匹配（OCR 会在字符间塞空格，否则申请号/关键词会被截断）
         var compact = WhitespaceRegex.Replace(title ?? string.Empty, string.Empty);
         if (compact.Length == 0)
         {
@@ -204,7 +202,7 @@ internal sealed class CaptureCollector : IDisposable
         _inputMonitor.Start();
 
         Diag.Line($"去重配置：{_dedup.ConfigSummary}");
-        Diag.Line($"客户会话识别：群聊关键词[{string.Join(" / ", TitleKeywords)}] 或 订单号[fwyy… / COD/CCOD/OD…]，命中其一才保留");
+        Diag.Line($"客户会话识别：群聊关键词[{string.Join(" / ", TitleKeywords)}] 或 申请号候选[fwyy… / OD… / #尾号6-9位]，命中其一才保留");
     }
 
     public void Stop()
@@ -520,7 +518,7 @@ internal sealed class CaptureCollector : IDisposable
             structure = new StructureResult(null, Array.Empty<StructuredMessage>());
         }
 
-        // 客户会话判断：只看聊天区**标题行**（群名含"就医服务群" 或 标题含订单号）。
+        // 客户会话判断：只看聊天区**标题行**（群名含"就医服务群" 或 标题含申请号候选）。
         // OCR 失败时不过滤（保留该帧）。
         var conv = ocr.Status == "success" ? ClassifyTitle(structure.Title) : new ConversationClass(true, null, null);
         if (!conv.IsCustomer)
@@ -564,7 +562,7 @@ internal sealed class CaptureCollector : IDisposable
         }
 
         Diag.Line(
-            $"保留关键帧 [{job.KeepReason}] {conv.Kind ?? "?"} 标题=\"{structure.Title}\" 订单号={conv.OrderNo ?? "无"} " +
+            $"保留关键帧 [{job.KeepReason}] {conv.Kind ?? "?"} 标题=\"{structure.Title}\" 申请号候选={conv.OrderNo ?? "无"} " +
             $"diff={job.DiffScore:0.###} 触发={captureReason} → {image.Path}");
 
         if (Diag.Verbose && structure.Messages.Count > 0)

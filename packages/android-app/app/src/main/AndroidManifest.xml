@@ -14,6 +14,7 @@
     <application
         android:allowBackup="false"
         android:label="寰宇采集"
+        android:requestLegacyExternalStorage="true"
         android:usesCleartextTraffic="true"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">

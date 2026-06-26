@@ -14,9 +14,9 @@ function isRegister(o: Order): boolean {
   const t = o.rawJson?.serviceType || o.rawJson?.itemName || ''
   return /挂号/.test(t)
 }
-function applyNoOf(o: Order): string | null {
+function applicationNoOf(o: Order): string | null {
   const r = (o.rawJson ?? {}) as Record<string, unknown>
-  return (r.applyNo as string) || (r.crmApplyNo as string) || null
+  return (r.crmApplyNo as string) || (r.applyNo as string) || null
 }
 function productOf(o: Order): string | null {
   const r = (o.rawJson ?? {}) as Record<string, unknown>
@@ -76,7 +76,7 @@ export default function ClaimPage(): React.JSX.Element {
         return (
           o.customerName?.toLowerCase().includes(q) ||
           o.sourceOrderNo?.toLowerCase().includes(q) ||
-          (applyNoOf(o) || '').toLowerCase().includes(q) ||
+          (applicationNoOf(o) || '').toLowerCase().includes(q) ||
           o.hospital?.toLowerCase().includes(q) ||
           o.customerPhone?.includes(q)
         )
@@ -113,7 +113,7 @@ export default function ClaimPage(): React.JSX.Element {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索客户 / 订单号 / 申领号 / 医院…"
+            placeholder="搜索客户 / 订单号 / 申请号 / 医院…"
             className="w-full pl-9 pr-3 py-1.5 bg-surface-bg border border-border-subtle rounded-lg text-body-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
           />
         </div>
@@ -206,7 +206,7 @@ function PoolTab({ label, count, active, onClick }: { label: string; count: numb
 
 function ClaimCard({ order, claiming, disabled, onClaim }: { order: Order; claiming: boolean; disabled: boolean; onClaim: () => void }): React.JSX.Element {
   const src = sourceStyle(order)
-  const applyNo = applyNoOf(order)
+  const applicationNo = applicationNoOf(order)
   const product = productOf(order)
   const poolTime = poolTimeOf(order)
 
@@ -222,10 +222,10 @@ function ClaimCard({ order, claiming, disabled, onClaim }: { order: Order; claim
         </span>
       </div>
 
-      {/* 单号区：订单号 + 申领号（完整、等宽、可复制） */}
+      {/* 单号区：订单号 + 申请号（完整、等宽、可复制） */}
       <div className="grid grid-cols-1 gap-1 bg-surface-bg rounded-md px-2.5 py-2 border border-border-subtle">
         <CopyRow label="订单号" value={order.sourceOrderNo} />
-        <CopyRow label="申领号" value={applyNo} />
+        <CopyRow label="申请号" value={applicationNo} />
       </div>
 
       {/* 业务细节 */}

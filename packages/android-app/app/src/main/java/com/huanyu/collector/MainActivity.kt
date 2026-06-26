@@ -227,7 +227,9 @@ class MainActivity : Activity() {
             "通话扫描" to "${prefs.lastCallScanCount}",
             "通话上传" to "${prefs.lastCallUploadCount}",
             "待上传通话" to "${prefs.pendingCallCount()}",
-            "录音扫描" to "${prefs.lastRecordingScanCount}",
+            "录音总音频" to "${prefs.lastRecordingTotalFileCount}",
+            "游标后音频" to "${prefs.lastRecordingRawFileCount}",
+            "可解析录音" to "${prefs.lastRecordingScanCount}",
             "录音上传" to "${prefs.lastRecordingUploadCount}",
             "录音未匹配" to "${prefs.lastRecordingMissCount}",
             "最近通话" to prefs.lastSyncedCallText,
@@ -254,6 +256,23 @@ class MainActivity : Activity() {
     }
 
     private fun renderRecordings(prefs: AppPrefs) {
+        content.addView(sectionTitle("扫描诊断"))
+        content.addView(kvSection(listOf(
+            "总音频文件" to "${prefs.lastRecordingTotalFileCount}",
+            "游标后音频" to "${prefs.lastRecordingRawFileCount}",
+            "可解析录音" to "${prefs.lastRecordingScanCount}",
+            "未匹配录音" to "${prefs.lastRecordingMissCount}",
+            "最近上传" to prefs.lastUploadedRecordingText
+        )))
+        val summary = prefs.lastRecordingScanSummary
+        if (summary.isNotBlank()) {
+            content.addView(listItem("扫描目录", summary, "每轮采集会更新这里"))
+        }
+        val unparsed = prefs.lastRecordingUnparsedSamples
+        if (unparsed.isNotBlank()) {
+            content.addView(listItem("文件名未识别手机号", unparsed, "这些音频暂时不会上传"))
+        }
+
         content.addView(sectionTitle("最近录音文件"))
         val arr = prefs.recentRecordings()
         if (arr.length() == 0) {
@@ -318,7 +337,12 @@ class MainActivity : Activity() {
             "全部文件访问" to yesNo(Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager())
         )))
         content.addView(button("申请基础权限") { requestRuntimePermissions() })
-        content.addView(button("打开全部文件访问权限") { openAllFilesAccessSettings() })
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            content.addView(button("打开全部文件访问权限") { openAllFilesAccessSettings() })
+        } else {
+            content.addView(button("打开应用权限设置") { openAppDetailsSettings() })
+            content.addView(emptyText("Android 10 不支持全部文件访问入口；请通过申请基础权限或应用权限设置允许存储/文件和媒体权限。"))
+        }
         content.addView(button("通知设置") { openNotificationSettings() })
         content.addView(button("申请忽略电池优化") { requestIgnoreBatteryOptimizations() })
         content.addView(button("应用详情 / 后台运行") { openAppDetailsSettings() })
@@ -382,8 +406,21 @@ class MainActivity : Activity() {
     private fun openAllFilesAccessSettings() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
         val uri = Uri.parse("package:$packageName")
-        val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, uri)
-        startActivity(intent)
+        val appIntent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, uri)
+        try {
+            startActivity(appIntent)
+            return
+        } catch (_: ActivityNotFoundException) {
+        } catch (_: SecurityException) {
+        }
+
+        try {
+            startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+            Toast.makeText(this, "请在列表中找到寰宇采集，并允许管理所有文件", Toast.LENGTH_LONG).show()
+        } catch (_: ActivityNotFoundException) {
+            openAppDetailsSettings()
+            Toast.makeText(this, "请在权限里手动打开文件/音频访问", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun openNotificationSettings() {

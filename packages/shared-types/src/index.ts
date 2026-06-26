@@ -37,6 +37,7 @@ export interface Order {
 export interface Message {
   id: number
   orderId: number | null
+  applicationNo: string | null
   channel: MessageChannel
   conversationName: string
   senderName: string | null
@@ -49,6 +50,7 @@ export interface Message {
 export interface Call {
   id: number
   orderId: number | null
+  applicationNo: string | null
   employeeId: number
   phone: string
   contactName: string | null

@@ -38,7 +38,7 @@ internal sealed class FrameDeduplicator
     public FrameDeduplicator()
     {
         // 阈值全部可通过环境变量覆盖；默认偏保守（宁可多保留）。
-        _diffThreshold = ReadDouble("HYYD_CAPTURE_DIFF_THRESHOLD", 0.005);
+        _diffThreshold = ReadDouble("HYYD_CAPTURE_DIFF_THRESHOLD", 0.002);
         _perPixelThreshold = (int)ReadDouble("HYYD_CAPTURE_PIXEL_THRESHOLD", 24);
         _heartbeat = TimeSpan.FromSeconds(ReadDouble("HYYD_CAPTURE_HEARTBEAT_SECONDS", 300));
         ThumbnailWidth = Math.Max(64, (int)ReadDouble("HYYD_CAPTURE_THUMBNAIL_WIDTH", 320));

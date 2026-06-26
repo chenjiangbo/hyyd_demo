@@ -1050,8 +1050,8 @@ function buildDetailGroups(
       title: '基础信息',
       rows: [
         field('泰康订单号', pick(rec, raw, ['subOrderNo', 'orderId'], order.sourceOrderNo), ['subOrderNo', 'orderId'], true),
-        field('申请号', pick(rec, raw, ['applyNo']), ['applyNo'], true),
-        field('CRM 申请号', pick(rec, raw, ['crmApplyNo']), ['crmApplyNo'], true),
+        field('申请号', pick(rec, raw, ['crmApplyNo']), ['crmApplyNo'], true),
+        field('CCOD 号', pick(rec, raw, ['applyNo']), ['applyNo'], true),
         field('就诊人', pick(rec, raw, ['patientName'], order.customerName), ['patientName']),
         field('性别', pick(rec, raw, ['sex']), ['sex']),
         field('生日', pick(rec, raw, ['birthday']), ['birthday']),

@@ -92,8 +92,13 @@ class CollectorRunner(context: Context) {
             }
         }
 
-        val recordings = RecordingScanner().scanSince(prefs.recordingScanFloorTs)
+        val recordingScan = RecordingScanner().scanSince(prefs.recordingScanFloorTs)
+        val recordings = recordingScan.recordings
         prefs.lastRecordingScanCount = recordings.size
+        prefs.lastRecordingTotalFileCount = recordingScan.totalAudioCount
+        prefs.lastRecordingRawFileCount = recordingScan.rawAudioCount
+        prefs.lastRecordingScanSummary = recordingScan.summary
+        prefs.lastRecordingUnparsedSamples = recordingScan.unparsedSamples
         prefs.lastRecordingUploadCount = 0
         prefs.lastRecordingMissCount = 0
         for (recording in recordings) {

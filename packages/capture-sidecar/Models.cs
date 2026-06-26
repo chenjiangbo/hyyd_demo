@@ -35,7 +35,7 @@ internal sealed record FramePayload(
     OcrPayload Ocr,
     string KeepReason,
     double DiffScore,
-    // 客户会话识别结果：会话类型（group/single）与从标题抽到的订单号（高客 fwyy… / 普客 COD/CCOD/OD…），抽不到为 null。
+    // 客户会话识别结果：会话类型（group/single）与从标题抽到的申请号候选（fwyy… / OD… / #尾号），抽不到为 null。
     string? ConversationKind,
     string? OrderNo,
     // 结构化消息：sidecar 分区+拼行+判说话人后的成品（后端不再二次结构化）。

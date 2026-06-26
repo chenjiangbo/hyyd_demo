@@ -242,7 +242,9 @@ export interface CallItem {
   durationSec: number
   startedAt: string
   asrStatus: AsrStatus
+  asrText: string | null
   asrTextPreview: string | null
+  asrTextTruncated: boolean
   hasRecording: boolean
   order?: OrderRef | null
   employee?: EmployeeRef

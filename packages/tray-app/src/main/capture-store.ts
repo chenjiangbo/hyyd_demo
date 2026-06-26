@@ -13,7 +13,7 @@ export interface InsertFrameResult {
   messageBlockId: number | null
   /** 会话标题（窗口标题）—— 上报后端做按客户名兜底匹配用 */
   conversationName: string | null
-  /** 本帧 OCR 抽到的订单号候选（可能含 OCR 误差）—— 后端做"归一+编辑距离"模糊匹配 */
+  /** 本帧 OCR 抽到的申请号候选（可能含 OCR 误差）—— 后端只在 crmApplyNo 里做"归一+编辑距离"模糊匹配 */
   orderNo: string | null
   /** 本帧"首次出现"的消息块（已去重，不含重复刷到的旧消息）—— 仅这些需要上报后端 */
   newMessages: NewMessageBlock[]

@@ -18,6 +18,7 @@ export function CallCard({
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [loadingAudio, setLoadingAudio] = useState(false)
   const [audioErr, setAudioErr] = useState<string | null>(null)
+  const [expandedTranscript, setExpandedTranscript] = useState(false)
 
   const loadAudio = async (): Promise<void> => {
     setLoadingAudio(true)
@@ -69,9 +70,20 @@ export function CallCard({
 
       {/* 转写预览 */}
       {c.asrTextPreview && (
-        <p className="mt-1.5 text-sm text-fg-muted whitespace-pre-wrap break-words">
-          {c.asrTextPreview}
-        </p>
+        <div className="mt-1.5">
+          <p className="text-sm text-fg-muted whitespace-pre-wrap break-words">
+            {expandedTranscript && c.asrText ? c.asrText : c.asrTextPreview}
+          </p>
+          {c.asrTextTruncated && (
+            <button
+              type="button"
+              onClick={() => setExpandedTranscript((v) => !v)}
+              className="mt-1 text-xs text-accent-strong hover:underline"
+            >
+              {expandedTranscript ? '收起' : '更多'}
+            </button>
+          )}
+        </div>
       )}
 
       {/* 录音播放 */}
