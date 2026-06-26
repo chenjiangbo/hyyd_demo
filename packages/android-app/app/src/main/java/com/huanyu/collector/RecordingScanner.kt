@@ -34,27 +34,27 @@ class RecordingScanner {
         val extensions = setOf("m4a", "mp3", "aac", "wav", "amr")
         val summaries = mutableListOf<String>()
         val samples = mutableListOf<String>()
-        var rawAudioCount = 0
-        var totalAudioCount = 0
+        val totalAudioKeys = linkedSetOf<String>()
+        val recentAudioFiles = linkedMapOf<String, File>()
 
-        val recordings = dirs
+        dirs
             .filter { it.exists() && it.isDirectory }
-            .flatMap { dir ->
+            .forEach { dir ->
                 try {
                     val allFiles = dir.walkTopDown()
                         .filter { it.isFile }
                         .toList()
                     val allAudioFiles = allFiles.filter { it.extension.lowercase(Locale.ROOT) in extensions }
-                    val recentAudioFiles = allAudioFiles.filter { it.lastModified() >= sinceMillis }
-                    totalAudioCount += allAudioFiles.size
-                    rawAudioCount += recentAudioFiles.size
-                    summaries.add(directorySummary(dir, allAudioFiles, recentAudioFiles, sinceMillis))
-                    recentAudioFiles
+                    val dirRecentAudioFiles = allAudioFiles.filter { it.lastModified() >= sinceMillis }
+                    allAudioFiles.forEach { totalAudioKeys.add(fileIdentity(it)) }
+                    dirRecentAudioFiles.forEach { recentAudioFiles.putIfAbsent(fileIdentity(it), it) }
+                    summaries.add(directorySummary(dir, allAudioFiles, dirRecentAudioFiles, sinceMillis))
                 } catch (e: Exception) {
                     summaries.add("${dir.absolutePath}: 读取失败 ${e.javaClass.simpleName}: ${e.message.orEmpty()}")
-                    emptyList()
                 }
             }
+
+        val recordings = recentAudioFiles.values
             .mapNotNull { file ->
                 parseRecording(file) ?: run {
                     if (samples.size < 5) samples.add(file.name)
@@ -68,8 +68,8 @@ class RecordingScanner {
         missing.forEach { summaries.add("${it.absolutePath}: 不存在") }
         return RecordingScanResult(
             recordings = recordings,
-            totalAudioCount = totalAudioCount,
-            rawAudioCount = rawAudioCount,
+            totalAudioCount = totalAudioKeys.size,
+            rawAudioCount = recentAudioFiles.size,
             parsedCount = recordings.size,
             summary = summaries.take(12).joinToString("\n"),
             unparsedSamples = samples.joinToString("\n")
@@ -107,6 +107,10 @@ class RecordingScanner {
 
     private fun sanitizeFileName(input: String): String {
         return input.replace(Regex("""[^A-Za-z0-9._-]"""), "_")
+    }
+
+    private fun fileIdentity(file: File): String {
+        return "${file.name}:${file.length()}:${file.lastModified()}"
     }
 }
 
