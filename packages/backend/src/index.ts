@@ -282,17 +282,24 @@ async function start() {
             } else if (message.type === 'SYNC_FINGERPRINTS') {
               // 插件把本地全量指纹推来对账：补齐后端缺失的 detailFingerprint，
               // 使换机/清缓存的新插件能从后端拿到完整基线、避免重抓。
+              // 只有已成功入库详情的订单才允许补指纹；否则会形成"有指纹、没详情"，
+              // 后续插件拿到基线后会误以为详情已抓过，导致手机号/详情长期缺失。
               const fps = (message.payload || {}) as Record<string, unknown>
               const entries = Object.entries(fps).filter(([, v]) => typeof v === 'string')
               let n = 0
               for (const [sourceOrderNo, fp] of entries) {
                 const r = await prisma.order.updateMany({
-                  where: { source: 'taikang', sourceOrderNo, assignedEmployeeId: employeeId },
+                  where: {
+                    source: 'taikang',
+                    sourceOrderNo,
+                    assignedEmployeeId: employeeId,
+                    detailFetchedAt: { not: null }
+                  },
                   data: { detailFingerprint: fp as string }
                 })
                 n += r.count
               }
-              server.log.info(`指纹基线对账：更新 ${n}/${entries.length} 条 (员工 ${employee.name})`)
+              server.log.info(`指纹基线对账：更新 ${n}/${entries.length} 条，跳过无详情 ${entries.length - n} 条 (员工 ${employee.name})`)
             } else if (message.type === 'GET_FINGERPRINTS') {
               // 插件启动时请求"已采订单的状态指纹基线"，用于跨刷新/换机的增量，
               // 避免本地无缓存时全量重抓泰康。只回该员工名下、已抓过详情的订单。
@@ -300,7 +307,8 @@ async function start() {
                 where: {
                   source: 'taikang',
                   assignedEmployeeId: employeeId,
-                  detailFingerprint: { not: null }
+                  detailFingerprint: { not: null },
+                  detailFetchedAt: { not: null }
                 },
                 select: { sourceOrderNo: true, detailFingerprint: true }
               })

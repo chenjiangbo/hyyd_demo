@@ -567,16 +567,24 @@ function startPolling() {
 // 已采订单的状态指纹，只对新增/状态变化的订单访问泰康。
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === 'FINGERPRINT_BASELINE' && msg.payload && typeof msg.payload === 'object') {
-    let added = 0;
-    for (const [k, v] of Object.entries(msg.payload)) {
-      // 本地已有的指纹更"新"，不被后端覆盖
-      if (typeof v === 'string' && !lastFingerprint.has(k)) {
-        lastFingerprint.set(k, v);
-        added++;
+    const backendEntries = Object.entries(msg.payload).filter(([, v]) => typeof v === 'string');
+    const backendKeys = new Set(backendEntries.map(([k]) => k));
+
+    let removed = 0;
+    for (const k of [...lastFingerprint.keys()]) {
+      if (!backendKeys.has(k)) {
+        lastFingerprint.delete(k);
+        removed++;
       }
     }
+    let upserted = 0;
+    for (const [k, v] of backendEntries) {
+      lastFingerprint.set(k, v as string);
+      upserted++;
+    }
+
     console.log(
-      `[寰宇探针][后端] 载入指纹基线 ${Object.keys(msg.payload).length} 条（合并新增 ${added}）`
+      `[寰宇探针][后端] 载入指纹基线 ${backendEntries.length} 条（写入 ${upserted}，清理本地多余 ${removed}）`
     );
     void saveFingerprints();
     // 反向对账：把本地有、后端可能缺的指纹补推给后端
