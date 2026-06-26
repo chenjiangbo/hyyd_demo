@@ -25,6 +25,7 @@ const OBJECT_READY_TIMEOUT_MS = 60_000
 const OBJECT_READY_INTERVAL_MS = 2_000
 const POLL_INTERVAL_MS = 30_000
 const POLL_TIMEOUT_MS = 30 * 60_000
+const RECOVERY_INTERVAL_MS = 5 * 60_000
 
 export interface SchedulerDeps {
   prisma: PrismaClient
@@ -36,11 +37,18 @@ export interface SchedulerDeps {
 }
 
 let deps: SchedulerDeps | null = null
+let recoveryTimer: NodeJS.Timeout | null = null
 
 export function initScheduler(d: SchedulerDeps): void {
   deps = d
-  // 启动恢复：扫一遍 processing 状态、有 task_id 的 call，继续轮询
+  // 启动恢复：继续轮询处理中任务，并补偿已上传但尚未可靠触发 ASR 的录音。
   void resumePendingTasks()
+  void recoverReadyRecordings()
+  if (!recoveryTimer) {
+    recoveryTimer = setInterval(() => {
+      void recoverReadyRecordings()
+    }, RECOVERY_INTERVAL_MS)
+  }
 }
 
 function log(level: 'info' | 'warn' | 'error', msg: string): void {
@@ -249,6 +257,42 @@ async function resumePendingTasks(): Promise<void> {
   for (const c of calls) {
     void pollTask(c.id, c.dashscopeTaskId!)
   }
+}
+
+/** 启动时恢复已登记/已上传，但 ASR 未可靠启动的录音 */
+async function recoverReadyRecordings(): Promise<void> {
+  if (!deps) return
+  const recordingsBucket = getEnv().minioBucketRecordings
+  const calls = await deps.prisma.call.findMany({
+    where: {
+      recordingOssKey: { not: null },
+      OR: [
+        { asrStatus: 'uploading' },
+        { asrStatus: 'pending', dashscopeTaskId: null },
+        { asrStatus: 'failed', asrText: { contains: 'MinIO 对象' } }
+      ]
+    },
+    take: 200,
+    orderBy: { startedAt: 'desc' }
+  })
+  if (calls.length === 0) return
+
+  let recovered = 0
+  for (const call of calls) {
+    if (!call.recordingOssKey) continue
+    try {
+      await deps.minioClient.statObject(recordingsBucket, call.recordingOssKey)
+    } catch {
+      continue
+    }
+    await deps.prisma.call.update({
+      where: { id: call.id },
+      data: { asrStatus: 'pending', asrText: null, dashscopeTaskId: null, asrFinishedAt: null }
+    })
+    recovered += 1
+    void scheduleTranscription(call.id)
+  }
+  if (recovered > 0) log('info', `恢复 ${recovered} 个已上传但未转写的录音`)
 }
 
 function sleep(ms: number): Promise<void> {

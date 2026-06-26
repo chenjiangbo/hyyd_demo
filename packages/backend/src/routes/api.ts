@@ -1640,7 +1640,8 @@ export function registerApiRoutes(
   })
 
   // 10. 上传录音与 STS 签名 POST /api/v1/recordings
-  // 本接口不仅接收录音关联信息，还负责为客户端直传 MinIO 提供 STS / Presigned URL 直传凭证
+  // 本接口接收录音关联信息，并为客户端直传 MinIO 提供 Presigned URL。
+  // ASR 必须等客户端确认 PUT 完成后再触发，避免 MinIO 对象未就绪导致误失败。
   fastify.post<{ Body: CreateRecordingPayload }>('/api/v1/recordings', async (request, reply) => {
     const { callId, ossKey, durationSec } = request.body
 
@@ -1662,6 +1663,17 @@ export function registerApiRoutes(
           objectExists = false
         }
         if (objectExists) {
+          if (
+            call.asrStatus === 'uploading' ||
+            call.asrStatus === 'pending' ||
+            (call.asrStatus === 'failed' && call.asrText?.includes('MinIO 对象'))
+          ) {
+            await prisma.call.update({
+              where: { id: callId },
+              data: { asrStatus: 'pending', asrText: null, dashscopeTaskId: null, asrFinishedAt: null }
+            })
+            void scheduleTranscription(call.id)
+          }
           return reply.send({
             data: {
               call,
@@ -1678,9 +1690,8 @@ export function registerApiRoutes(
         )
         await prisma.call.update({
           where: { id: callId },
-          data: { durationSec, asrStatus: 'pending' }
+          data: { durationSec, asrStatus: 'uploading', asrText: null, dashscopeTaskId: null, asrFinishedAt: null }
         })
-        void scheduleTranscription(call.id)
         return reply.send({
           data: {
             call,
@@ -1696,7 +1707,10 @@ export function registerApiRoutes(
         data: {
           recordingOssKey: ossKey,
           durationSec,
-          asrStatus: 'pending' // 标记待 ASR 转写
+          asrStatus: 'uploading', // 等待客户端 PUT MinIO 完成后确认
+          asrText: null,
+          dashscopeTaskId: null,
+          asrFinishedAt: null
         }
       })
 
@@ -1706,10 +1720,6 @@ export function registerApiRoutes(
         ossKey,
         5 * 60
       )
-
-      // 异步触发 Fun-ASR 转写（不阻塞响应）。客户端 PUT 完成需要时间，
-      // scheduler 内部会等 MinIO 对象就绪后再提交任务。
-      void scheduleTranscription(call.id)
 
       return reply.send({
         data: {
@@ -1724,7 +1734,40 @@ export function registerApiRoutes(
     }
   })
 
-  // 10.1 查询通话转写 GET /api/v1/calls/:id/transcript
+  // 10.1 确认录音已直传完成 POST /api/v1/recordings/:callId/complete
+  // 客户端 PUT MinIO 成功后调用；后端确认对象存在后再触发 ASR。
+  fastify.post<{ Params: { callId: string } }>('/api/v1/recordings/:callId/complete', async (request, reply) => {
+    const callId = parseInt(request.params.callId, 10)
+    try {
+      const call = await prisma.call.findUnique({ where: { id: callId } })
+      if (!call) return reply.status(404).send({ error: '通话记录不存在' })
+      if (!call.recordingOssKey) return reply.status(400).send({ error: '该通话尚未登记录音' })
+
+      try {
+        await minioClient.statObject(env.minioBucketRecordings, call.recordingOssKey)
+      } catch {
+        return reply.status(409).send({ error: '录音对象尚未在 MinIO 就绪，请稍后重试' })
+      }
+
+      const updatedCall = await prisma.call.update({
+        where: { id: callId },
+        data: {
+          asrStatus: call.asrStatus === 'done' ? 'done' : 'pending',
+          asrText: call.asrStatus === 'done' ? call.asrText : null,
+          dashscopeTaskId: call.asrStatus === 'done' ? call.dashscopeTaskId : null,
+          asrFinishedAt: call.asrStatus === 'done' ? call.asrFinishedAt : null
+        }
+      })
+
+      if (updatedCall.asrStatus !== 'done') void scheduleTranscription(callId)
+      return reply.send({ data: { callId, confirmed: true, asrStatus: updatedCall.asrStatus } })
+    } catch (err: any) {
+      fastify.log.error('确认录音上传完成失败:', err)
+      return reply.status(500).send({ error: '确认录音上传完成失败: ' + err.message })
+    }
+  })
+
+  // 10.2 查询通话转写 GET /api/v1/calls/:id/transcript
   fastify.get<{ Params: { id: string } }>('/api/v1/calls/:id/transcript', async (request, reply) => {
     const callId = parseInt(request.params.id, 10)
     try {
@@ -1746,7 +1789,7 @@ export function registerApiRoutes(
     }
   })
 
-  // 10.2 手动重新转写 POST /api/v1/calls/:id/retranscribe
+  // 10.3 手动重新转写 POST /api/v1/calls/:id/retranscribe
   fastify.post<{ Params: { id: string } }>('/api/v1/calls/:id/retranscribe', async (request, reply) => {
     const callId = parseInt(request.params.id, 10)
     try {

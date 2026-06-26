@@ -52,6 +52,8 @@
 
   /* 字体 */
   --font-mono: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+  /* 顶部导航专用：思源黑体（Noto Sans SC），未就位时回退系统中文黑体 */
+  --font-nav: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', '微软雅黑', sans-serif;
   /* 数据/编号等宽别名（兼容代码里 font-mono-data / font-data-mono 两种写法） */
   --font-mono-data: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
   --font-data-mono: 'JetBrains Mono', 'SF Mono', Menlo, monospace;

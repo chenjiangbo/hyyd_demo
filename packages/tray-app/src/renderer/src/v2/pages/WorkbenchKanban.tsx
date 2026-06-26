@@ -429,7 +429,7 @@ function BoardView({ groups, onOpen }: { groups: ApplicationGroup[]; onOpen: (gr
   }, [groups])
 
   return (
-    <div className="flex-1 min-h-0 overflow-x-auto p-6 bg-surface-bg flex gap-4">
+    <div className="flex-1 min-h-0 overflow-hidden p-6 bg-surface-bg flex gap-4">
       {LANES.map((lane) => {
         const items = grouped[lane.key]
         const isAi = lane.key === 'await_backfill'
@@ -437,7 +437,7 @@ function BoardView({ groups, onOpen }: { groups: ApplicationGroup[]; onOpen: (gr
           <div
             key={lane.key}
             className={
-              'w-[320px] shrink-0 flex flex-col h-full min-h-0 bg-surface-container-low rounded-xl border border-border-subtle ' +
+              'flex-1 min-w-0 flex flex-col h-full min-h-0 bg-surface-container-low rounded-xl border border-border-subtle ' +
               (lane.key === 'done' ? 'opacity-80 hover:opacity-100 transition-opacity' : '')
             }
           >

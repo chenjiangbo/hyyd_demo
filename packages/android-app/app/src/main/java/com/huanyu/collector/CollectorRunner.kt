@@ -131,6 +131,7 @@ class CollectorRunner(context: Context) {
                 val uploadUrl = registration.uploadUrl
                     ?: throw IllegalStateException("后端未返回录音上传地址")
                 backend.uploadFile(uploadUrl, recording.file)
+                backend.confirmRecordingUploaded(call.id)
                 prefs.markRecordingUploaded(path)
                 prefs.rememberRecordingListItem(recording, "已上传", call.id)
                 prefs.lastRecordingUploadCount += 1

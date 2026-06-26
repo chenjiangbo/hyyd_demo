@@ -117,6 +117,10 @@ class BackendClient(
         }
     }
 
+    fun confirmRecordingUploaded(callId: Int): String {
+        return postJson("/api/v1/recordings/$callId/complete", JSONObject()).toString()
+    }
+
     private fun postJson(path: String, body: JSONObject): JSONObject {
         if (backendUrl.isBlank()) throw IllegalStateException("后端地址为空")
         if (employeeCode.isBlank()) throw IllegalStateException("员工 ID 为空")
