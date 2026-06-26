@@ -58,6 +58,68 @@ export interface PresenceInfo {
   tokenLastCheckAt?: number | null
 }
 export const presenceMap = new Map<number, PresenceInfo>()
+export const extPresenceMap = new Map<number, Map<string, PresenceInfo>>()
+export const EXT_HEARTBEAT_TIMEOUT_MS = 30_000
+
+function latestPresence(infos: PresenceInfo[]): PresenceInfo | null {
+  if (infos.length === 0) return null
+  return infos.reduce((best, cur) => cur.lastSeenAt > best.lastSeenAt ? cur : best)
+}
+
+export function aggregateExtPresence(employeeId: number, now = Date.now()): PresenceInfo | null {
+  const instances = [...(extPresenceMap.get(employeeId)?.values() ?? [])]
+  if (instances.length === 0) return presenceMap.get(employeeId) ?? null
+
+  const fresh = instances.filter((info) => now - info.lastSeenAt <= EXT_HEARTBEAT_TIMEOUT_MS)
+  const scope = fresh.length > 0 ? fresh : instances
+  const latest = latestPresence(scope)
+  if (!latest) return null
+
+  const tokenOkInstance = fresh.find((info) => info.tokenOk === true)
+  const tokenFailInstances = fresh.filter((info) => info.tokenOk === false)
+  const latestTokenFail = latestPresence(tokenFailInstances)
+  const latestTokenInfo = latestPresence(fresh.filter((info) => info.tokenOk !== undefined && info.tokenOk !== null))
+
+  return {
+    taikangTabOpen: scope.some((info) => info.taikangTabOpen),
+    trackingPoolPageActive: scope.some((info) => info.trackingPoolPageActive),
+    lastSeenAt: latest.lastSeenAt,
+    tokenOk: tokenOkInstance ? true : tokenFailInstances.length > 0 ? false : null,
+    tokenReason: tokenOkInstance ? null : latestTokenFail?.tokenReason ?? null,
+    tokenLastCheckAt: tokenOkInstance?.tokenLastCheckAt ?? latestTokenInfo?.tokenLastCheckAt ?? null
+  }
+}
+
+export function setExtPresenceInstance(employeeId: number, instanceId: string, patch: Partial<PresenceInfo>): PresenceInfo {
+  const byInstance = extPresenceMap.get(employeeId) ?? new Map<string, PresenceInfo>()
+  const prev = byInstance.get(instanceId)
+  const next: PresenceInfo = {
+    taikangTabOpen: patch.taikangTabOpen ?? prev?.taikangTabOpen ?? false,
+    trackingPoolPageActive: patch.trackingPoolPageActive ?? prev?.trackingPoolPageActive ?? false,
+    lastSeenAt: patch.lastSeenAt ?? prev?.lastSeenAt ?? Date.now(),
+    tokenOk: patch.tokenOk !== undefined ? patch.tokenOk : prev?.tokenOk ?? null,
+    tokenReason: patch.tokenReason !== undefined ? patch.tokenReason : prev?.tokenReason ?? null,
+    tokenLastCheckAt: patch.tokenLastCheckAt !== undefined ? patch.tokenLastCheckAt : prev?.tokenLastCheckAt ?? null
+  }
+  byInstance.set(instanceId, next)
+  extPresenceMap.set(employeeId, byInstance)
+  const aggregate = aggregateExtPresence(employeeId)
+  if (aggregate) presenceMap.set(employeeId, aggregate)
+  return next
+}
+
+export function deleteExtPresenceInstance(employeeId: number, instanceId: string): void {
+  const byInstance = extPresenceMap.get(employeeId)
+  if (!byInstance) return
+  byInstance.delete(instanceId)
+  if (byInstance.size === 0) {
+    extPresenceMap.delete(employeeId)
+    presenceMap.delete(employeeId)
+    return
+  }
+  const aggregate = aggregateExtPresence(employeeId)
+  if (aggregate) presenceMap.set(employeeId, aggregate)
+}
 
 // Tray 桌面端没有 WebSocket（纯 REST），靠它每 5s 轮询 /api/v1/me/presence 当心跳。
 // 这里记录每个员工最近一次该轮询的时间戳，给管理后台判断"Tray 是否在线"。
@@ -349,9 +411,7 @@ export function registerApiRoutes(
     // Tray 桌面端心跳：记录本次轮询时间，供管理后台判断 tray 在线
     trayRestSeenMap.set(request.employee.id, Date.now())
 
-    const info = presenceMap.get(request.employee.id)
-    const conn = activeConnections.get(request.employee.id)
-    const HEARTBEAT_TIMEOUT_MS = 30_000
+    const info = aggregateExtPresence(request.employee.id)
 
     // 移动端状态：前台联系 2 分钟内为活跃；WorkManager/其他心跳 20 分钟内为后台正常。
     const mobileSeen = mobileSeenMap.get(request.employee.id)
@@ -383,7 +443,7 @@ export function registerApiRoutes(
       // 插件从未上报过 presence
       return reply.send({
         data: {
-          extConnected: !!conn?.ext,
+          extConnected: false,
           taikangTabOpen: false,
           trackingPoolPageActive: false,
           mobileOnline,
@@ -397,10 +457,10 @@ export function registerApiRoutes(
       })
     }
 
-    const stale = Date.now() - info.lastSeenAt > HEARTBEAT_TIMEOUT_MS
+    const stale = Date.now() - info.lastSeenAt > EXT_HEARTBEAT_TIMEOUT_MS
     return reply.send({
       data: {
-        extConnected: !!conn?.ext,
+        extConnected: !stale,
         taikangTabOpen: info.taikangTabOpen,
         trackingPoolPageActive: info.trackingPoolPageActive,
         mobileOnline,

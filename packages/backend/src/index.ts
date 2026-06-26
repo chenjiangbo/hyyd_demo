@@ -5,7 +5,15 @@ import websocket from '@fastify/websocket'
 import { PrismaClient } from '@prisma/client'
 import * as Minio from 'minio'
 import * as dotenv from 'dotenv'
-import { registerApiRoutes, activeConnections, presenceMap, ensureEmployeeByCode, normalizeEmployeeCode } from './routes/api.js'
+import {
+  registerApiRoutes,
+  activeConnections,
+  presenceMap,
+  ensureEmployeeByCode,
+  normalizeEmployeeCode,
+  setExtPresenceInstance,
+  deleteExtPresenceInstance
+} from './routes/api.js'
 import { startOrderBriefScheduler } from './jobs/orderBriefScheduler.js'
 import { registerAdminRoutes, ADMIN_COOKIE, verifyAdminToken } from './routes/admin.js'
 import { addAdminSocket, removeAdminSocket } from './routes/adminBus.js'
@@ -105,6 +113,9 @@ async function start() {
         const employee = await ensureEmployeeByCode(prisma, employeeCode)
 
         const employeeId = employee.id
+        const extInstanceId = client === 'ext'
+          ? `${Date.now()}-${Math.random().toString(36).slice(2)}`
+          : null
         server.log.info(`员工 ${employee.name} (${client}) 建立了 WebSocket 连接`)
 
         // 缓存连接
@@ -132,16 +143,15 @@ async function start() {
           server.log.info(`员工 ${employee.name} (${client}) 断开了 WebSocket 连接`)
           const conn = activeConnections.get(employeeId)
           if (conn) {
-            if (client === 'ext') delete conn.ext
-            if (client === 'tray') delete conn.tray
+            if (client === 'ext' && conn.ext === socket) delete conn.ext
+            if (client === 'tray' && conn.tray === socket) delete conn.tray
             if (!conn.ext && !conn.tray) {
               activeConnections.delete(employeeId)
-              // 完全离线，清理 presence
-              presenceMap.delete(employeeId)
             } else {
               activeConnections.set(employeeId, conn)
             }
           }
+          if (client === 'ext' && extInstanceId) deleteExtPresenceInstance(employeeId, extInstanceId)
         })
 
         // 监听消息（例如心跳包、同步订单）
@@ -154,11 +164,19 @@ async function start() {
               socket.send(JSON.stringify({ type: 'pong' }))
             } else if (message.type === 'PRESENCE') {
               // 插件上报的"在线/泰康标签"状态心跳
-              presenceMap.set(employeeId, {
+              if (client === 'ext' && extInstanceId) {
+                setExtPresenceInstance(employeeId, extInstanceId, {
+                  taikangTabOpen: !!message.taikangTabOpen,
+                  trackingPoolPageActive: !!message.trackingPoolPageActive,
+                  lastSeenAt: Date.now()
+                })
+              } else {
+                presenceMap.set(employeeId, {
                 taikangTabOpen: !!message.taikangTabOpen,
                 trackingPoolPageActive: !!message.trackingPoolPageActive,
                 lastSeenAt: Date.now()
-              })
+                })
+              }
             } else if (message.type === 'ORDERS_SYNCED') {
               server.log.info(`收到员工 ${employee.name} 同步的订单数据: ${message.payload.length} 条`)
               const orders = message.payload
@@ -236,12 +254,21 @@ async function start() {
               }
             } else if (message.type === 'TAIKANG_TOKEN_STATUS') {
               // 插件保活探测结果：更新 presenceMap 给托盘读
-              const cur = presenceMap.get(employeeId)
-              if (cur) {
-                cur.tokenOk = !!message.ok
-                cur.tokenReason = message.reason ?? null
-                cur.tokenLastCheckAt = message.at || Date.now()
-                presenceMap.set(employeeId, cur)
+              if (client === 'ext' && extInstanceId) {
+                setExtPresenceInstance(employeeId, extInstanceId, {
+                  lastSeenAt: Date.now(),
+                  tokenOk: !!message.ok,
+                  tokenReason: message.reason ?? null,
+                  tokenLastCheckAt: message.at || Date.now()
+                })
+              } else {
+                const cur = presenceMap.get(employeeId)
+                if (cur) {
+                  cur.tokenOk = !!message.ok
+                  cur.tokenReason = message.reason ?? null
+                  cur.tokenLastCheckAt = message.at || Date.now()
+                  presenceMap.set(employeeId, cur)
+                }
               }
               server.log.info(
                 `泰康 token 保活: ${message.ok ? 'OK' : 'FAIL: ' + (message.reason ?? '?')}  员工=${employee.name}`
