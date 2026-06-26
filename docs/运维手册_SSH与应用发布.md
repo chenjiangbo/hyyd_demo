@@ -2,7 +2,9 @@
 
 > **写作时间：2026-06-12**　面向：维护本项目的人 / AI。
 > 配套：[`AI交接_当前状态_v2新UI与管理后台.md`](AI交接_当前状态_v2新UI与管理后台.md)（整体状态）、`TRAYAPP_AI_交接文档.md`（业务背景）。
-> 一句话：tray-app 跑在一台 **Windows 机器**上，后端跑在 **Mac** 上；改完 tray 代码用 **`pnpm deploy:win`** 推过去，再在那台机器上跑起来验证。
+> 一句话：tray-app 跑在一台 **Windows 机器**上，后端跑在 **阿里云 ECS（`47.95.14.233:9093`）** 上；改完 tray 代码用 **`pnpm deploy:win`** 推过去，再在那台机器上跑起来验证。
+>
+> ⚠️ **2026-06-26 更正**：后端早期跑在 Mac（`192.168.99.165:13000`），现已迁到阿里云 ECS `47.95.14.233:9093`（WS/HTTP/插件更新同口）、MinIO 同在该 ECS。下文若有「后端在 Mac」字样按此理解；本地开发仍可跑 13000。`deploy:win` 推送 tray 到 Windows 机器的流程不受影响。
 
 ---
 
@@ -11,8 +13,8 @@
 | | 当前值 | 说明 |
 |---|---|---|
 | Windows 机器 | **192.168.99.110 : 22**，用户 `chenj` | 荣耀笔记本，公司内网。凭证在**根 `.env` 的 `WIN_VM_*`**（不写进本文档） |
-| 后端 | Mac，**192.168.99.165 : 13000** | 笔记本走内网访问。Mac 是 DHCP，IP 变了要改写死地址（见 §6） |
-| MinIO | Mac，19000 | 附件/录音/图片 presigned URL |
+| 后端 | 阿里云 ECS，**47.95.14.233 : 9093** | 固定公网 IP（WS `/ws`、HTTP、插件自动更新同口）。早期曾在 Mac `192.168.99.165:13000`，已迁走 |
+| MinIO | 阿里云 ECS，19000 | 附件/录音/图片 presigned URL |
 
 > Windows 完整身份是 `zhijian\chenj`，但 **SSH 用户名只用 `chenj`**。
 > 历史：之前目标是「Mac 上的 Windows VM」(`192.168.202.131`, ARM64)，现已迁到这台 x64 笔记本。`.env` 里的键名仍叫 `WIN_VM_*`（沿用，懒得改名）。
@@ -66,7 +68,7 @@ cp tmp-ssh.cjs ./x.cjs && node ./x.cjs ; rm -f ./x.cjs   # 必须在仓库根跑
 
 ### 3.1 什么时候发
 改了 **`packages/tray-app` / `packages/extension` / `shared-types` / `capture-sidecar`** 后。
-**后端（`packages/backend`）改动不用发**——后端在 Mac 跑，笔记本走网络访问。
+**后端（`packages/backend`）改动不用走 `deploy:win`**——后端在阿里云 ECS 跑，员工机走网络访问；改后端在 ECS 上重启后端进程即可。
 
 ### 3.2 发之前先改版本号
 每次把代码更新到 Windows 机器前，必须先递增相关版本号，避免现场机器看不出更新、Chrome 插件不触发自动更新。
