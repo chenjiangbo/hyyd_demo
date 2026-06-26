@@ -202,7 +202,10 @@ async function start() {
                       status: taikangStatus,
                       orderState: newState,
                       rawJson,
-                      assignedEmployeeId: pool === 'personal' ? employeeId : null
+                      // 个人池：归属到当前员工。公共池：传 undefined = Prisma 不更新此字段，
+                      // 【不动】已有归属（避免泰康待申领池数据延迟把已申领的单抢回 null，
+                      // 否则工作台订单数会忽多忽少）。create 时公共池才设 null。
+                      assignedEmployeeId: pool === 'personal' ? employeeId : undefined
                     },
                     create: {
                       source: 'taikang',
