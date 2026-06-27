@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { CallItem } from '../api/types'
 import { adminApi } from '../api/client'
@@ -17,16 +17,40 @@ export function CallCard({
 }): React.JSX.Element {
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [loadingAudio, setLoadingAudio] = useState(false)
+  const [transcoding, setTranscoding] = useState(false)
+  const [transcodeMessage, setTranscodeMessage] = useState<string | null>(null)
   const [audioErr, setAudioErr] = useState<string | null>(null)
   const [expandedTranscript, setExpandedTranscript] = useState(false)
+  const timerRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current)
+    }
+  }, [])
 
   const loadAudio = async (): Promise<void> => {
     setLoadingAudio(true)
     setAudioErr(null)
     try {
-      const { url } = await adminApi.callRecordingUrl(c.id)
-      setAudioUrl(url)
+      const resp = await adminApi.callRecordingUrl(c.id)
+      if (resp.status === 'transcoding') {
+        setAudioUrl(null)
+        setTranscoding(true)
+        setTranscodeMessage(resp.message || '录音正在转码，完成后会自动显示播放器')
+        timerRef.current = window.setTimeout(() => void loadAudio(), 3000)
+        return
+      }
+      if (resp.status === 'failed') {
+        setAudioUrl(null)
+        setTranscoding(false)
+        setAudioErr(resp.message || '录音转码失败')
+        return
+      }
+      setTranscoding(false)
+      setAudioUrl(resp.url)
     } catch (e) {
+      setTranscoding(false)
       setAudioErr(e instanceof Error ? e.message : '加载失败')
     } finally {
       setLoadingAudio(false)
@@ -114,6 +138,11 @@ export function CallCard({
         <div className="mt-2">
           {audioUrl ? (
             <audio controls src={audioUrl} className="h-8 w-full max-w-md" />
+          ) : transcoding ? (
+            <div className="inline-flex items-center gap-2 rounded-md border border-accent/20 bg-accent-soft px-2.5 py-1 text-xs text-accent-strong">
+              <span className="material-symbols-outlined animate-spin text-[14px]">progress_activity</span>
+              <span>{transcodeMessage || '录音正在转码'}</span>
+            </div>
           ) : (
             <button
               onClick={() => void loadAudio()}

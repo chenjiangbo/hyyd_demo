@@ -12,7 +12,10 @@ export function getTheme(): Theme {
 }
 
 export function applyTheme(t: Theme): void {
-  document.documentElement.setAttribute('data-theme', t)
+  const root = document.documentElement
+  root.setAttribute('data-theme', t)
+  root.classList.toggle('dark', t === 'dark')
+  root.style.colorScheme = t
   localStorage.setItem(KEY, t)
 }
 

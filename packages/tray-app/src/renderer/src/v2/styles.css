@@ -18,6 +18,10 @@
 
   /* AI 专用紫（仅 AI 提取 / 自动建议相关元素使用） */
   --color-ai-purple: #8b5cf6;
+  --color-ai-accent: #07c160;
+  --color-ai-accent-strong: #087a3b;
+  --color-ai-accent-muted: #10a957;
+  --color-ai-surface: #effdf5;
   --color-secondary: #6b38d4;
   --color-secondary-container: #8455ef;
 
@@ -44,6 +48,7 @@
   --color-surface-container-high: #e6e8eb;
   --color-surface-variant: #dbe3ee;
   --color-on-surface: #191b22;
+  --color-on-surface-variant: #475569;
   --color-text-main: #1e293b;
   --color-text-muted: #64748b;
   --color-outline: #737785;
@@ -100,36 +105,203 @@
 }
 
 /* ─── 深色主题 ─────────────────────────────────────────────
-   覆盖语义 token；UI 绝大多数用语义类(bg-surface*/text-text-*/border-border-subtle)，
+   覆盖语义 token；UI 绝大多数用 bg-surface、text-text、border-border-subtle 等语义类，
    会自动跟随。少数硬编码 bg-white 用下面一条规则翻成深色表面；text-white(在彩色按钮上)保持白。 */
 :root[data-theme='dark'] {
-  --color-primary: #6ea8ff;
-  --color-primary-container: #1d4ed8;
-  --color-primary-fixed: #1f3b63;
-  --color-primary-fixed-dim: #24476f;
-  --color-on-primary-fixed: #d8e8ff;
+  color-scheme: dark;
+  --color-trust-blue: #7db7ff;
+  --color-primary: #74a9ff;
+  --color-primary-container: #2b6fe8;
+  --color-primary-fixed: #17345c;
+  --color-primary-fixed-dim: #275184;
+  --color-on-primary-fixed: #dceaff;
+  --color-ai-purple: #b99cff;
+  --color-ai-accent: #5ee69a;
+  --color-ai-accent-strong: #d8ffe8;
+  --color-ai-accent-muted: #8af0b2;
+  --color-ai-surface: #10261b;
+  --color-secondary: #b59cff;
+  --color-secondary-container: #7357c6;
   --color-secondary-fixed: #35264f;
   --color-secondary-fixed-dim: #4a3570;
-  --color-on-secondary-fixed-variant: #e3d4ff;
-  --color-surface: #141922;
-  --color-surface-bg: #0b0f16;
-  --color-surface-container-low: #1b2230;
-  --color-surface-container: #252e3d;
+  --color-on-secondary-fixed-variant: #eadcff;
+  --color-action-green: #36d399;
+  --color-alert-orange: #fbbf24;
+  --color-error: #ff8a8a;
+  --color-status-urgent: #fbbf24;
+  --color-status-info: #58a6ff;
+  --color-status-success: #62d26f;
+  --color-surface: #141a24;
+  --color-surface-bg: #0a0f17;
+  --color-surface-container-low: #1a2230;
+  --color-surface-container: #222c3a;
+  --color-surface-container-high: #2b3647;
   --color-surface-variant: #334155;
-  --color-on-surface: #e5eaf2;
-  --color-text-main: #eef3f8;
-  --color-text-muted: #9aa8ba;
-  --color-outline: #718096;
-  --color-outline-variant: #3a4657;
-  --color-border-subtle: #2a3443;
+  --color-on-surface: #edf3fb;
+  --color-on-surface-variant: #bac6d6;
+  --color-text-main: #eef4fb;
+  --color-text-muted: #a6b4c7;
+  --color-outline: #8492a6;
+  --color-outline-variant: #435166;
+  --color-border-subtle: #2c3849;
 }
+
 :root[data-theme='dark'] .bg-white {
   background-color: var(--color-surface) !important;
 }
+
+:root[data-theme='dark'] .bg-white\/70 {
+  background-color: color-mix(in srgb, var(--color-surface) 72%, transparent) !important;
+}
+
+:root[data-theme='dark'] .hover\:bg-white:hover,
+:root[data-theme='dark'] .focus\:bg-white:focus,
+:root[data-theme='dark'] .focus\:bg-white:focus-visible {
+  background-color: var(--color-surface-container) !important;
+}
+
+:root[data-theme='dark'] input,
+:root[data-theme='dark'] select,
+:root[data-theme='dark'] textarea {
+  color: var(--color-text-main);
+  caret-color: var(--color-primary);
+}
+
+:root[data-theme='dark'] input::placeholder,
+:root[data-theme='dark'] textarea::placeholder {
+  color: var(--color-outline);
+}
+
+:root[data-theme='dark'] option {
+  background-color: var(--color-surface);
+  color: var(--color-text-main);
+}
+
+/* v2 页面仍有少量原型阶段硬编码颜色。暗色主题下统一映射到语义色，避免只换背景。 */
+:root[data-theme='dark'] .bg-\[\#fafafa\],
+:root[data-theme='dark'] .bg-\[\#f3f3f3\],
+:root[data-theme='dark'] .bg-\[\#ededed\] {
+  background-color: var(--color-surface-container-low) !important;
+}
+
+:root[data-theme='dark'] .bg-\[\#edf3ff\],
+:root[data-theme='dark'] .bg-\[\#d8e7ff\] {
+  background-color: #13243a !important;
+}
+
+:root[data-theme='dark'] .bg-\[\#95ec69\] {
+  background-color: #164a2d !important;
+}
+
+:root[data-theme='dark'] .bg-\[\#c6ccdd\] {
+  background-color: #405069 !important;
+}
+
+:root[data-theme='dark'] .text-\[\#111\],
+:root[data-theme='dark'] .text-\[\#161a22\],
+:root[data-theme='dark'] .text-\[\#454a5a\] {
+  color: var(--color-text-main) !important;
+}
+
+:root[data-theme='dark'] .text-\[\#536174\],
+:root[data-theme='dark'] .text-\[\#6d7c91\],
+:root[data-theme='dark'] .text-\[\#6f7f95\],
+:root[data-theme='dark'] .text-\[\#7b8aa0\] {
+  color: var(--color-text-muted) !important;
+}
+
+:root[data-theme='dark'] .text-\[\#6b8fc7\],
+:root[data-theme='dark'] .text-\[\#0b4fb3\],
+:root[data-theme='dark'] .text-\[\#0b4fb3\]\/30,
+:root[data-theme='dark'] .text-\[\#0b4fb3\]\/40 {
+  color: var(--color-primary) !important;
+}
+
+:root[data-theme='dark'] .border-\[\#b9d4ff\] {
+  border-color: #2f5f9e !important;
+}
+
+:root[data-theme='dark'] .border-\[\#0b4fb3\],
+:root[data-theme='dark'] .border-\[\#083f91\],
+:root[data-theme='dark'] .hover\:border-\[\#083f91\]:hover {
+  border-color: var(--color-primary) !important;
+}
+
+:root[data-theme='dark'] .border-\[\#0b4fb3\]\/20,
+:root[data-theme='dark'] .border-\[\#0b4fb3\]\/30 {
+  border-color: color-mix(in srgb, var(--color-primary) 36%, transparent) !important;
+}
+
+:root[data-theme='dark'] .bg-\[\#0b4fb3\],
+:root[data-theme='dark'] .bg-\[\#083f91\],
+:root[data-theme='dark'] .hover\:bg-\[\#083f91\]:hover {
+  background-color: var(--color-primary-container) !important;
+}
+
+/* 常用浅色状态底在暗色下保留色相但降低亮度。 */
+:root[data-theme='dark'] .bg-blue-50,
+:root[data-theme='dark'] .bg-blue-100 {
+  background-color: rgba(37, 99, 235, 0.18) !important;
+}
+:root[data-theme='dark'] .border-blue-100 {
+  border-color: rgba(96, 165, 250, 0.35) !important;
+}
+:root[data-theme='dark'] .text-blue-600,
+:root[data-theme='dark'] .text-blue-700 {
+  color: #93c5fd !important;
+}
+:root[data-theme='dark'] .bg-pink-50 {
+  background-color: rgba(219, 39, 119, 0.18) !important;
+}
+:root[data-theme='dark'] .border-pink-100 {
+  border-color: rgba(244, 114, 182, 0.35) !important;
+}
+:root[data-theme='dark'] .text-pink-600 {
+  color: #f9a8d4 !important;
+}
+:root[data-theme='dark'] .bg-red-50,
+:root[data-theme='dark'] .bg-red-100 {
+  background-color: rgba(220, 38, 38, 0.18) !important;
+}
+:root[data-theme='dark'] .text-red-600,
+:root[data-theme='dark'] .text-red-700 {
+  color: #fca5a5 !important;
+}
+:root[data-theme='dark'] .bg-green-50,
+:root[data-theme='dark'] .bg-green-100 {
+  background-color: rgba(16, 185, 129, 0.16) !important;
+}
+:root[data-theme='dark'] .text-green-700 {
+  color: #86efac !important;
+}
+:root[data-theme='dark'] .bg-amber-50,
+:root[data-theme='dark'] .bg-amber-100 {
+  background-color: rgba(245, 158, 11, 0.18) !important;
+}
+:root[data-theme='dark'] .text-amber-600,
+:root[data-theme='dark'] .text-amber-700,
+:root[data-theme='dark'] .text-amber-800 {
+  color: #fcd34d !important;
+}
+
 /* 浅色描边阴影在深色下太突兀，柔化 */
 :root[data-theme='dark'] .shadow-sm,
 :root[data-theme='dark'] .shadow-lg {
-  --tw-shadow-color: rgba(0, 0, 0, 0.5);
+  --tw-shadow-color: rgba(0, 0, 0, 0.65);
+}
+
+:root[data-theme='dark'] .shadow-\[0_-4px_12px_rgba\(0\,0\,0\,0\.02\)\],
+:root[data-theme='dark'] .shadow-\[0_-4px_12px_rgba\(0\,0\,0\,0\.03\)\] {
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.35) !important;
+}
+
+:root[data-theme='dark'] ::selection {
+  background: rgba(116, 169, 255, 0.35);
+  color: var(--color-text-main);
+}
+
+:root[data-theme='dark'] * {
+  scrollbar-color: #3f4f66 var(--color-surface-bg);
 }
 
 /* ─── 主题切换：圆形扩散动画（View Transitions API）─────────

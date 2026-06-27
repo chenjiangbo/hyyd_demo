@@ -10,6 +10,7 @@ import { parseChatTime } from '../lib/chatTimeParser.js'
 import { extractKeyInfo, type KeyInfoMessage, type KeyInfoContext } from '../llm/keyInfoService.js'
 import { structureMessages, type StructInput } from '../lib/messageStructure.js'
 import { refreshApplicationBrief, refreshOrderBrief } from '../jobs/orderBriefRunner.js'
+import { getRecordingPlaybackInfo } from '../audioTranscode.js'
 import { createHash } from 'node:crypto'
 import {
   CreateOrderPayload,
@@ -586,9 +587,8 @@ export function registerApiRoutes(
           // chrome 插件抓的详情扁平挂在 detailJson.recommendations 下
           const rec = ((o.detailJson as any)?.recommendations ?? {}) as Record<string, unknown>
           const claimedAt =
-            (raw.mmgrApplyDate as string | undefined) ??
-            (raw.applicationDate as string | undefined) ??
             (raw.applyDate as string | undefined) ??
+            (raw.applicationDate as string | undefined) ??
             (raw.applyTime as string | undefined) ??
             o.createdAt.toISOString()
 
@@ -596,6 +596,13 @@ export function registerApiRoutes(
           // 真正的医院 / 科室 / 医生 / 手机号 / 就诊日期 都在 recommendations 里。
           // 这里统一按"列表 rawJson 优先 → 详情 recommendations 兜底"派生，
           // 让工作台一列一个字段读就行，不用再翻嵌套对象。
+          const customerNameRow =
+            (raw.patientName as string | undefined) ??
+            (raw.paName as string | undefined) ??
+            (raw.customerName as string | undefined) ??
+            (raw.name as string | undefined) ??
+            (rec.patientName as string | undefined) ??
+            o.customerName
           const customerPhoneRow =
             (raw.paMobile as string | undefined) ??
             (rec.paMobile as string | undefined) ??
@@ -655,6 +662,7 @@ export function registerApiRoutes(
             taikangServState,
             workbenchLane,
             serviceStage,
+            customerName: customerNameRow,
             customerPhone: customerPhoneRow,
             hospital: hospitalRow,
             dept: deptRow,
@@ -1452,12 +1460,14 @@ export function registerApiRoutes(
       if (!call.recordingOssKey) {
         return reply.status(404).send({ error: '该通话尚未上传录音' })
       }
-      const url = await minioPublicClient.presignedGetObject(
+      const playback = await getRecordingPlaybackInfo(
+        minioClient,
+        minioPublicClient,
         env.minioBucketRecordings,
-        call.recordingOssKey,
-        60 * 60
+        call.id,
+        call.recordingOssKey
       )
-      return reply.send({ data: { url, expiresIn: 3600 } })
+      return reply.send({ data: playback })
     } catch (err: any) {
       fastify.log.error('获取录音 URL 失败:', err)
       return reply.status(500).send({ error: '获取录音 URL 失败: ' + err.message })

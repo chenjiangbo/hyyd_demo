@@ -17,6 +17,7 @@ import * as Minio from 'minio'
 import jwt from 'jsonwebtoken'
 import { activeConnections, presenceMap, trayRestSeenMap } from './api.js'
 import { getEnv } from '../env.js'
+import { getRecordingPlaybackInfo } from '../audioTranscode.js'
 
 export const ADMIN_COOKIE = 'hyyd_admin'
 const JWT_EXPIRES_IN = '12h'
@@ -134,6 +135,7 @@ function keysetWhere(timeField: 'createdAt' | 'startedAt', cursor: { ms: number;
 export function registerAdminRoutes(
   rootFastify: FastifyInstance,
   prisma: PrismaClient,
+  minioClient: Minio.Client,
   minioPublicClient: Minio.Client
 ): void {
   // 用一个封装插件作用域，保证这里加的 preHandler 只作用于 admin 路由。
@@ -1231,8 +1233,15 @@ export function registerAdminRoutes(
         if (!call) return reply.status(404).send({ error: '通话记录不存在' })
         if (!call.recordingOssKey) return reply.status(404).send({ error: '该通话无录音' })
         // 录音 bucket 与员工端一致
-        const url = await presign(getEnv().minioBucketRecordings, call.recordingOssKey)
-        return reply.send({ data: { url, expiresIn: 3600 } })
+        const bucket = getEnv().minioBucketRecordings
+        const playback = await getRecordingPlaybackInfo(
+          minioClient,
+          minioPublicClient,
+          bucket,
+          id,
+          call.recordingOssKey
+        )
+        return reply.send({ data: playback })
       } catch (err: any) {
         rootFastify.log.error('admin recording-url 失败:', err)
         return reply.status(500).send({ error: '获取录音 URL 失败: ' + err.message })

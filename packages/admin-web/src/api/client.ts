@@ -160,7 +160,15 @@ export const adminApi = {
     return request<CursorPage<CallItem>>(`/api/v1/admin/calls${qs(params)}`)
   },
   callRecordingUrl(id: number) {
-    return request<{ url: string; expiresIn: number }>(`/api/v1/admin/calls/${id}/recording-url`)
+    return request<{
+      status?: 'ready' | 'transcoding' | 'failed'
+      url: string | null
+      expiresIn: number
+      mimeType?: string
+      format?: string
+      browserPlayable?: boolean
+      message?: string
+    }>(`/api/v1/admin/calls/${id}/recording-url`)
   },
 
   // ───── 系统健康 ─────

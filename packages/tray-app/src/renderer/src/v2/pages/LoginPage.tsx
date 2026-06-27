@@ -8,7 +8,7 @@ export default function LoginPage({
   onLoggedIn: (s: Session) => void
 }): React.JSX.Element {
   const [account, setAccount] = useState('')
-  const [backendUrl, setBackendUrlInput] = useState(getBackendUrl())
+  const [backendUrl, setBackendUrlInput] = useState(getBackendUrl() ?? '')
   const [password, setPassword] = useState('')
   const [showPwd, setShowPwd] = useState(false)
   const [remember, setRemember] = useState(true)

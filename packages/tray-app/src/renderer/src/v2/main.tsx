@@ -1,3 +1,5 @@
+import '@fontsource/noto-sans-sc/400.css'
+import '@fontsource/noto-sans-sc/900.css'
 import './styles.css'
 
 import { StrictMode } from 'react'

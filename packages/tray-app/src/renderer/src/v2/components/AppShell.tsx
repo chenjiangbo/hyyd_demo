@@ -53,7 +53,7 @@ export default function AppShell({
           <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-white">
             <span className="material-symbols-outlined filled text-[20px]">medical_services</span>
           </div>
-          <h1 className="text-h3-title text-primary font-nav font-bold">智能寰宇</h1>
+          <h1 className="text-h3-title text-primary font-nav font-black">智能寰宇</h1>
         </div>
 
         {/* 一级导航 */}
@@ -65,10 +65,10 @@ export default function AppShell({
                 key={n.key}
                 onClick={() => onNavigate(n.key)}
                 className={
-                  'h-full flex items-center px-3 text-body-md font-nav font-bold border-b-2 transition-colors ' +
+                  'h-full flex items-center px-3 text-body-md font-nav font-black border-b-2 transition-colors ' +
                   (on
                     ? 'text-primary border-primary'
-                    : 'text-text-muted border-transparent hover:text-primary hover:border-primary-fixed')
+                    : 'text-text-main border-transparent hover:text-primary hover:border-primary-fixed')
                 }
               >
                 {n.label}

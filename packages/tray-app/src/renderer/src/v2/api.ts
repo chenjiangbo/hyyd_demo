@@ -10,10 +10,15 @@ const LS_DISPLAYNAME = 'hyyd.v2.displayName'
 const LS_BACKEND_URL = 'huanyu.backendUrl'
 
 export const BACKEND_CONFIG_CHANGED = 'hyyd:v2-backend-config-changed'
-export const DEFAULT_BACKEND_URL = 'http://127.0.0.1:13000'
 
-export function getBackendUrl(): string {
-  return localStorage.getItem(LS_BACKEND_URL) || DEFAULT_BACKEND_URL
+export function getBackendUrl(): string | null {
+  return localStorage.getItem(LS_BACKEND_URL)
+}
+
+export function requireBackendUrl(): string {
+  const backendUrl = getBackendUrl()
+  if (!backendUrl) throw new Error('请先设置后端地址')
+  return backendUrl
 }
 
 export function normalizeBackendUrl(value: string): string {
@@ -158,7 +163,7 @@ export interface OrderAggregateResponse {
 async function authedGet<T>(path: string): Promise<T> {
   const code = getSession()?.employeeCode
   if (!code) throw new Error('未登录')
-  const res = await fetch(`${getBackendUrl()}${path}`, {
+  const res = await fetch(`${requireBackendUrl()}${path}`, {
     headers: { 'X-Employee-Code': code }
   })
   if (!res.ok) throw new Error(`请求失败（${res.status}）`)
@@ -277,8 +282,18 @@ export interface CallTranscript {
 }
 
 /** 录音 presigned GET URL（给 <audio> 直拉播放） */
-export function fetchCallRecordingUrl(callId: number): Promise<{ url: string; expiresIn: number }> {
-  return authedGet<{ url: string; expiresIn: number }>(`/api/v1/calls/${callId}/recording-url`)
+export interface CallRecordingUrl {
+  status?: 'ready' | 'transcoding' | 'failed'
+  url: string | null
+  expiresIn: number
+  mimeType?: string
+  format?: string
+  browserPlayable?: boolean
+  message?: string
+}
+
+export function fetchCallRecordingUrl(callId: number): Promise<CallRecordingUrl> {
+  return authedGet<CallRecordingUrl>(`/api/v1/calls/${callId}/recording-url`)
 }
 
 /** 通话转写文本及状态（轮询用） */
@@ -310,7 +325,7 @@ export function fetchMaterials(orderId: number): Promise<Material[]> {
 async function authedSend<T>(path: string, method: string, body?: unknown): Promise<T> {
   const code = getSession()?.employeeCode
   if (!code) throw new Error('未登录')
-  const res = await fetch(`${getBackendUrl()}${path}`, {
+  const res = await fetch(`${requireBackendUrl()}${path}`, {
     method,
     headers: { 'X-Employee-Code': code, 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined
@@ -399,7 +414,7 @@ export function confirmUnmatchedOrderRef(
 export async function login(employeeCode: string): Promise<MeResponse> {
   const code = employeeCode.trim()
   if (!code) throw new Error('请输入工号')
-  const res = await fetch(`${getBackendUrl()}/api/v1/me`, {
+  const res = await fetch(`${requireBackendUrl()}/api/v1/me`, {
     headers: { 'X-Employee-Code': code }
   })
   if (res.status === 401 || res.status === 403 || res.status === 404) {

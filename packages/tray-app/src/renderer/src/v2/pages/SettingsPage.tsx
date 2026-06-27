@@ -40,7 +40,7 @@ function getWindowApi(): WindowApi | null {
 
 export default function SettingsPage(): React.JSX.Element {
   const api = getWindowApi()
-  const [backendUrl, setBackendUrlInput] = useState(getBackendUrl())
+  const [backendUrl, setBackendUrlInput] = useState(getBackendUrl() ?? '')
   const [backendSaved, setBackendSaved] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<'ok' | 'fail' | null>(null)

@@ -39,6 +39,21 @@ interface LifecycleEvent {
 }
 
 const STAGE_KEYS: LifecycleStageKey[] = ['claimed', 'communication', 'delivery', 'settlement', 'ending']
+const SOCIAL_SECURITY_KEYS = [
+  'socSecNo',
+  'socialSecurityNo',
+  'socialSecurityCardNo',
+  'socialSecurityCard',
+  'socialCardNo',
+  'socialCard',
+  'medicalInsuranceNo',
+  'medicalInsuranceCardNo',
+  'medicalCardNo',
+  'medicareCardNo',
+  'medCardNo',
+  'siCardNo',
+  'cardNo'
+]
 
 /**
  * 订单详情（聚焦全屏视图）：顶部返回+面包屑+信息chip+状态；
@@ -712,6 +727,7 @@ function CallTimelineItem({ event }: { event: LifecycleEvent }): React.JSX.Eleme
   const [asrStatus, setAsrStatus] = useState<string>(call?.asrStatus ?? 'no_recording')
   const [asrText, setAsrText] = useState<string | null>(call?.asrText ?? null)
   const [recordingUrl, setRecordingUrl] = useState<string | null>(null)
+  const [recordingInfo, setRecordingInfo] = useState<Awaited<ReturnType<typeof fetchCallRecordingUrl>> | null>(null)
   const [retrying, setRetrying] = useState(false)
   const callId = call?.id ?? 0
   const hasRecording = !!call?.recordingOssKey
@@ -720,11 +736,25 @@ function CallTimelineItem({ event }: { event: LifecycleEvent }): React.JSX.Eleme
   useEffect(() => {
     if (!hasRecording || callId <= 0) return
     let alive = true
-    fetchCallRecordingUrl(callId)
-      .then((r) => alive && setRecordingUrl(r.url))
-      .catch(() => {/* 拉不到 URL 不打扰 */})
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const load = (): void => {
+      fetchCallRecordingUrl(callId)
+        .then((r) => {
+          if (!alive) return
+          setRecordingInfo(r)
+          if (r.status === 'transcoding') {
+            setRecordingUrl(null)
+            timer = setTimeout(load, 3000)
+            return
+          }
+          setRecordingUrl(r.url)
+        })
+        .catch(() => {/* 拉不到 URL 不打扰 */})
+    }
+    load()
     return () => {
       alive = false
+      if (timer) clearTimeout(timer)
     }
   }, [callId, hasRecording])
 
@@ -789,6 +819,12 @@ function CallTimelineItem({ event }: { event: LifecycleEvent }): React.JSX.Eleme
         </div>
 
         {/* 录音播放器：controlsList 禁下载，避免误下客户隐私 */}
+        {hasRecording && recordingInfo?.status === 'transcoding' && (
+          <div className="mt-2 flex h-9 items-center gap-2 rounded-md bg-surface-container-low px-3 text-[11px] text-text-muted">
+            <span className="material-symbols-outlined animate-spin text-primary" style={{ fontSize: '15px' }}>progress_activity</span>
+            <span>{recordingInfo.message || '录音正在转码，完成后会自动显示播放器'}</span>
+          </div>
+        )}
         {hasRecording && recordingUrl && (
           <audio controls preload="metadata" controlsList="nodownload" className="mt-2 w-full h-9">
             <source src={recordingUrl} />
@@ -1045,6 +1081,9 @@ function buildDetailGroups(
   raw: Record<string, unknown>,
   rec: Record<string, unknown>
 ): DetailGroupData[] {
+  const cardId = pickPreferUnmasked(rec, raw, ['cardId'])
+  const socSecNo = pickPreferUnmasked(rec, raw, SOCIAL_SECURITY_KEYS)
+
   return [
     {
       title: '基础信息',
@@ -1056,13 +1095,13 @@ function buildDetailGroups(
         field('性别', pick(rec, raw, ['sex']), ['sex']),
         field('生日', pick(rec, raw, ['birthday']), ['birthday']),
         field('证件类型', pick(rec, raw, ['cardType']), ['cardType']),
-        field('证件号码', pick(rec, raw, ['cardId']), ['cardId'], true),
+        field('证件号码', cardId, ['cardId'], true),
         field('联系电话', pick(rec, raw, ['paMobile', 'patientMobile', 'patientPhone'], order.customerPhone), ['paMobile', 'patientMobile', 'patientPhone']),
         field('客户等级', pick(rec, raw, ['cusLevel']), ['cusLevel']),
         field('客户关系', pick(rec, raw, ['relationship']), ['relationship']),
         field('是否医保', formatYesNo(pick(rec, raw, ['isSocSec'])), ['isSocSec']),
         field('医保城市', pick(rec, raw, ['medLoc']), ['medLoc']),
-        field('社保卡号', pick(rec, raw, ['socSecNo']), ['socSecNo'], true)
+        field('社保卡号', socSecNo, SOCIAL_SECURITY_KEYS, true)
       ]
     },
     {
@@ -1377,6 +1416,21 @@ function pick(
     if (rawValue) return rawValue
   }
   return fallback ?? ''
+}
+
+function pickPreferUnmasked(
+  rec: Record<string, unknown>,
+  raw: Record<string, unknown>,
+  keys: string[],
+  fallback?: React.ReactNode
+): string {
+  const candidates: string[] = []
+  for (const key of keys) {
+    candidates.push(normalizeDetailValue(rec[key]), normalizeDetailValue(raw[key]))
+  }
+  const unmasked = candidates.find((value) => value && !value.includes('*'))
+  if (unmasked) return unmasked
+  return candidates.find(Boolean) || normalizeDetailValue(fallback)
 }
 
 function normalizeDetailValue(value: unknown): string {

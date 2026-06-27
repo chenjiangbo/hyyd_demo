@@ -25,7 +25,13 @@ import type { ApplicationGroup } from './pages/WorkbenchKanban'
  * 登录后进入带顶部导航的 AppShell；打开订单时切到聚焦式详情页（无顶部导航）。
  */
 export default function App(): React.JSX.Element {
-  const [session, setSession] = useState<Session | null>(getSession())
+  const [session, setSession] = useState<Session | null>(() => {
+    if (!getBackendUrl()) {
+      clearSession()
+      return null
+    }
+    return getSession()
+  })
   const [nav, setNav] = useState<NavKey>('workbench')
   const [openOrder, setOpenOrder] = useState<Order | null>(null)
   const [openApplication, setOpenApplication] = useState<ApplicationGroup | null>(null)
@@ -40,7 +46,13 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     if (!session) return
     const pushConfig = (): void => {
-      const cfg = { backendUrl: getBackendUrl(), employeeCode: session.employeeCode }
+      const backendUrl = getBackendUrl()
+      if (!backendUrl) {
+        clearSession()
+        setSession(null)
+        return
+      }
+      const cfg = { backendUrl, employeeCode: session.employeeCode }
       void window.api?.materialsSetConfig?.(cfg)
       void window.api?.captureSetConfig?.(cfg)
     }

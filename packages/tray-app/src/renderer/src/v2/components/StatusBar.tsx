@@ -74,12 +74,13 @@ export default function StatusBar({ session }: { session: Session }): React.JSX.
         : { dot: 'idle', text: '移动端长时间未联系', title: mobileTitle }
 
   // 后端 host:port（去掉协议）
-  const backendHost = getBackendUrl().replace(/^https?:\/\//, '')
+  const backendUrl = getBackendUrl()
+  const backendHost = backendUrl ? backendUrl.replace(/^https?:\/\//, '') : '未设置'
 
   return (
     <footer className="shrink-0 h-7 bg-white border-t border-border-subtle px-4 flex items-center justify-between text-text-muted select-none" style={{ fontSize: '12px' }}>
       <div className="flex items-center gap-4">
-        <StatusItem dot={backend.dot} text={`${backend.text} · ${backendHost}`} title={getBackendUrl()} />
+        <StatusItem dot={backend.dot} text={`${backend.text} · ${backendHost}`} title={backendUrl ?? undefined} />
         <StatusItem dot={ext.dot} text={ext.text} title={ext.title} />
         <StatusItem dot={mobile.dot} text={mobile.text} title={mobile.title} />
       </div>

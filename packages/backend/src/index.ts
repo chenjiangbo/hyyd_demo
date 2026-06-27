@@ -398,7 +398,7 @@ async function start() {
     registerApiRoutes(server, prisma, minioClient, minioPublicClient)
 
     // 4.1 注册管理后台 admin 路由（独立 JWT cookie 鉴权，挂 /api/v1/admin/*）
-    registerAdminRoutes(server, prisma, minioPublicClient)
+    registerAdminRoutes(server, prisma, minioClient, minioPublicClient)
 
     // 4.2 生产环境：用 @fastify/static 托管 admin-web 构建产物到 /admin/*。
     // dist 不存在（如纯后端开发）就跳过，不影响启动。

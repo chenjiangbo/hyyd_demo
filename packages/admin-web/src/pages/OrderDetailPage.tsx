@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { adminApi } from '../api/client'
@@ -407,22 +407,62 @@ function ChatTimeline({
 function OrderCallAudio({ callId }: { callId: number }): React.JSX.Element {
   const [url, setUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [transcoding, setTranscoding] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const timerRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current)
+    }
+  }, [])
+
+  const load = async (): Promise<void> => {
+    setLoading(true)
+    setError(null)
+    try {
+      const r = await adminApi.callRecordingUrl(callId)
+      if (r.status === 'transcoding') {
+        setUrl(null)
+        setTranscoding(true)
+        timerRef.current = window.setTimeout(() => void load(), 3000)
+        return
+      }
+      if (r.status === 'failed') {
+        setUrl(null)
+        setTranscoding(false)
+        setError(r.message || '转码失败')
+        return
+      }
+      setTranscoding(false)
+      setUrl(r.url)
+    } catch (e) {
+      setTranscoding(false)
+      setError(e instanceof Error ? e.message : '加载失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   if (url) return <audio controls src={url} className="h-7" />
+  if (transcoding) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-accent-strong">
+        <span className="material-symbols-outlined animate-spin text-[13px]">progress_activity</span>
+        转码中…
+      </span>
+    )
+  }
   return (
-    <button
-      onClick={async () => {
-        setLoading(true)
-        try {
-          const r = await adminApi.callRecordingUrl(callId)
-          setUrl(r.url)
-        } finally {
-          setLoading(false)
-        }
-      }}
-      disabled={loading}
-      className="text-xs px-2 py-0.5 rounded border border-line text-fg-muted hover:bg-surface-2"
-    >
-      {loading ? '…' : '▶ 录音'}
-    </button>
+    <span className="inline-flex items-center gap-1.5">
+      <button
+        onClick={() => void load()}
+        disabled={loading}
+        className="text-xs px-2 py-0.5 rounded border border-line text-fg-muted hover:bg-surface-2"
+      >
+        {loading ? '…' : '▶ 录音'}
+      </button>
+      {error && <span className="text-xs text-danger">{error}</span>}
+    </span>
   )
 }

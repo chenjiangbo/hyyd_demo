@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { fetchOrders, type Order } from '../api'
+import { fetchOrderDetail, fetchOrders, type Order } from '../api'
 import {
   LANES,
   LANE_ACCENT,
   laneOf,
+  stageIndexOf,
   bizType,
   bizChipClass,
   sourceLabel,
@@ -30,6 +31,7 @@ export type ApplicationGroup = {
   orders: Order[]
   primary: Order
   updatedAt: string
+  poolEnteredAt: string
 }
 
 const REFRESH_INTERVAL_MS = 30_000
@@ -139,6 +141,46 @@ function tail8(no: string | null): string | null {
   return compact.length >= 8 ? compact.slice(-8) : null
 }
 
+function stringField(raw: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = raw[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return null
+}
+
+function patientRegionFromRecords(...records: Array<Record<string, unknown> | null | undefined>): string | null {
+  for (const raw of records) {
+    if (!raw) continue
+    const province = stringField(raw, ['intendProvince', 'patientProvince', 'paProvince', 'province'])
+    const city = stringField(raw, ['intendCity', 'patientCity', 'paCity', 'city'])
+    const district = stringField(raw, ['intendDistrict', 'patientDistrict', 'paDistrict', 'district', 'area'])
+    const region = [province, city, district].filter(Boolean).join('')
+    if (region) return region
+  }
+  return null
+}
+
+function patientRegionOf(order: Order): string | null {
+  return patientRegionFromRecords((order.rawJson ?? {}) as Record<string, unknown>)
+}
+
+function displayCustomerNameOf(order: Order): string {
+  const raw = (order.rawJson ?? {}) as Record<string, unknown>
+  return stringField(raw, ['patientName', 'paName', 'customerName', 'name', 'patName']) ?? order.customerName
+}
+
+function poolEnteredAtOf(order: Order): string {
+  const raw = (order.rawJson ?? {}) as Record<string, unknown>
+  return stringField(raw, ['applyDate']) ?? order.claimedAt ?? order.createdAt ?? order.updatedAt
+}
+
+function timeValue(value: string | null | undefined): number {
+  if (!value) return 0
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
 function groupOrdersByApplication(orders: Order[]): ApplicationGroup[] {
   const map = new Map<string, Order[]>()
   for (const order of orders) {
@@ -150,18 +192,19 @@ function groupOrdersByApplication(orders: Order[]): ApplicationGroup[] {
   }
   return [...map.entries()]
     .map(([key, list]) => {
-      const sorted = [...list].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+      const sorted = [...list].sort((a, b) => timeValue(poolEnteredAtOf(b)) - timeValue(poolEnteredAtOf(a)))
       const primary = sorted[0]
       return {
         key,
         applicationNo: applicationNoOf(primary),
-        customerName: primary.customerName,
+        customerName: displayCustomerNameOf(primary),
         orders: sorted,
         primary,
-        updatedAt: primary.updatedAt
+        updatedAt: primary.updatedAt,
+        poolEnteredAt: poolEnteredAtOf(primary)
       }
     })
-    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+    .sort((a, b) => timeValue(b.poolEnteredAt) - timeValue(a.poolEnteredAt))
 }
 
 function groupLaneOf(group: ApplicationGroup): LaneKey {
@@ -183,6 +226,22 @@ function dedupeServices(orders: Order[]): Array<{ label: string; count: number; 
   return [...map.values()]
 }
 
+function groupProgress(group: ApplicationGroup): number {
+  const maxStage = Math.max(...group.orders.map(stageIndexOf))
+  return Math.min(100, Math.max(20, ((maxStage + 1) / 5) * 100))
+}
+
+function groupStage(group: ApplicationGroup): number {
+  return Math.max(...group.orders.map(stageIndexOf))
+}
+
+function progressColorClass(stage: number): string {
+  if (stage <= 1) return 'bg-status-urgent'
+  if (stage === 2) return 'bg-status-info'
+  if (stage === 3) return 'bg-ai-purple'
+  return 'bg-status-success'
+}
+
 export default function WorkbenchKanban({
   employeeCode,
   query,
@@ -197,6 +256,7 @@ export default function WorkbenchKanban({
   const [error, setError] = useState<string | null>(null)
   const [view, setView] = useState<View>('board')
   const [typeFilter, setTypeFilter] = useState<string>('all')
+  const [detailRegions, setDetailRegions] = useState<Record<string, string | null>>({})
 
   useEffect(() => {
     let alive = true
@@ -251,6 +311,42 @@ export default function WorkbenchKanban({
   const boardOrders = useMemo(() => filtered.filter(isBoardVisibleOrder), [filtered])
   const boardGroups = useMemo(() => groupOrdersByApplication(boardOrders), [boardOrders])
   const filteredGroups = useMemo(() => groupOrdersByApplication(filtered), [filtered])
+  const boardGroupKeys = useMemo(() => boardGroups.map((group) => group.key).join('|'), [boardGroups])
+
+  useEffect(() => {
+    const missing = boardGroups.filter((group) => {
+      if (group.orders.some((order) => patientRegionOf(order))) return false
+      return detailRegions[group.key] === undefined
+    })
+    if (missing.length === 0) return
+
+    let alive = true
+    void Promise.all(
+      missing.slice(0, 20).map(async (group) => {
+        try {
+          const detail = await fetchOrderDetail(group.primary.id)
+          const region = patientRegionFromRecords(
+            (detail.order.rawJson ?? {}) as Record<string, unknown>,
+            detail.detail?.recommendations as Record<string, unknown> | null | undefined
+          )
+          return [group.key, region] as const
+        } catch {
+          return [group.key, null] as const
+        }
+      })
+    ).then((items) => {
+      if (!alive) return
+      setDetailRegions((prev) => {
+        const next = { ...prev }
+        for (const [key, region] of items) next[key] = region
+        return next
+      })
+    })
+
+    return () => {
+      alive = false
+    }
+  }, [boardGroupKeys, boardGroups, detailRegions])
 
   // 类型筛选只平铺前 4 个，其余收进「更多」；当前选中的若在溢出里，提到可见区，保证激活态可见
   const { visibleTypes, overflowTypes } = useMemo(() => {
@@ -324,7 +420,7 @@ export default function WorkbenchKanban({
           {error}
         </div>
       ) : view === 'board' ? (
-        <BoardView groups={boardGroups} onOpen={onOpenApplication} />
+        <BoardView groups={boardGroups} detailRegions={detailRegions} onOpen={onOpenApplication} />
       ) : (
         <ListView groups={filteredGroups} onOpen={onOpenApplication} />
       )}
@@ -421,10 +517,21 @@ function MoreFilters({
 }
 
 // ─── 看板视图 ──────────────────────────────────────────
-function BoardView({ groups, onOpen }: { groups: ApplicationGroup[]; onOpen: (group: ApplicationGroup) => void }): React.JSX.Element {
+function BoardView({
+  groups,
+  detailRegions,
+  onOpen
+}: {
+  groups: ApplicationGroup[]
+  detailRegions: Record<string, string | null>
+  onOpen: (group: ApplicationGroup) => void
+}): React.JSX.Element {
   const grouped = useMemo(() => {
     const g: Record<LaneKey, ApplicationGroup[]> = { todo: [], doing: [], await_backfill: [], done: [] }
     for (const group of groups) g[groupLaneOf(group)].push(group)
+    for (const key of Object.keys(g) as LaneKey[]) {
+      g[key].sort((a, b) => timeValue(b.poolEnteredAt) - timeValue(a.poolEnteredAt))
+    }
     return g
   }, [groups])
 
@@ -463,7 +570,13 @@ function BoardView({ groups, onOpen }: { groups: ApplicationGroup[]; onOpen: (gr
                 </div>
               ) : (
                 items.map((group) => (
-                  <ApplicationCard key={group.key} group={group} lane={lane.key} onOpen={onOpen} />
+                  <ApplicationCard
+                    key={group.key}
+                    group={group}
+                    lane={lane.key}
+                    detailRegion={detailRegions[group.key] ?? null}
+                    onOpen={onOpen}
+                  />
                 ))
               )}
             </div>
@@ -501,10 +614,10 @@ function Copyable({
       {children}
       <span
         className={
-          'material-symbols-outlined shrink-0 transition-opacity ' +
-          (copied ? 'opacity-100 text-action-green' : 'opacity-0 group-hover:opacity-60')
+          'material-symbols-outlined shrink-0 transition-colors ' +
+          (copied ? 'text-action-green' : 'text-[#7b8aa0] group-hover:text-trust-blue')
         }
-        style={{ fontSize: '13px' }}
+        style={{ fontSize: '12px' }}
       >
         {copied ? 'check' : 'content_copy'}
       </span>
@@ -514,9 +627,11 @@ function Copyable({
 
 function ApplicationCopyButtons({
   applicationNo,
+  customerName,
   className
 }: {
   applicationNo: string | null
+  customerName: string
   className?: string
 }): React.JSX.Element {
   const [copied, setCopied] = useState<string | null>(null)
@@ -534,31 +649,116 @@ function ApplicationCopyButtons({
 
   return (
     <div className={'inline-flex items-center gap-1 min-w-0 ' + (className || '')}>
-      <button
-        type="button"
-        title={`点击复制完整申领号 ${applicationNo}`}
+      <span className="truncate font-mono-data">{applicationNo}</span>
+      <IconCopyButton
+        icon="content_copy"
+        title={`复制完整申领号 ${applicationNo}`}
+        copied={copied === applicationNo}
         onClick={(e) => {
           e.stopPropagation()
           copy(applicationNo)
         }}
-        className="inline-flex items-center min-w-0 hover:text-primary transition-colors"
-      >
-        <span className="truncate font-mono-data">{applicationNo}</span>
-      </button>
+      />
       {tail && (
-        <button
-          type="button"
-          title={`复制申领号尾 8 位 ${tail}`}
+        <IconCopyButton
+          icon="tag"
+          title={`复制 ${customerName}#${tail}`}
+          copied={copied === `${customerName}#${tail}`}
           onClick={(e) => {
             e.stopPropagation()
-            copy(tail)
+            copy(`${customerName}#${tail}`)
           }}
-          className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded hover:bg-surface-container-low text-text-muted hover:text-trust-blue transition-colors"
-        >
-          <span className={'material-symbols-outlined ' + (copied === tail ? 'text-action-green' : '')} style={{ fontSize: '14px' }}>
-            {copied === tail ? 'check' : 'content_copy'}
-          </span>
-        </button>
+        />
+      )}
+    </div>
+  )
+}
+
+function IconCopyButton({
+  icon,
+  title,
+  copied,
+  onClick
+}: {
+  icon: 'content_copy' | 'tag'
+  title: string
+  copied: boolean
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void
+}): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-white/70 border border-border-subtle text-[#6f7f95] hover:bg-primary-fixed hover:text-primary hover:border-primary-fixed-dim transition-colors"
+    >
+      {copied ? (
+        <span className="material-symbols-outlined text-action-green" style={{ fontSize: '12px' }}>check</span>
+      ) : icon === 'tag' ? (
+        <span className="text-[11px] leading-none font-black">#</span>
+      ) : (
+        <span className="material-symbols-outlined" style={{ fontSize: '12px' }}>content_copy</span>
+      )}
+    </button>
+  )
+}
+
+function GenderIcon({ gender }: { gender: 'male' | 'female' }): React.JSX.Element {
+  return (
+    <span
+      className={
+        'shrink-0 w-4 h-4 rounded-full inline-flex items-center justify-center border ' +
+        (gender === 'male'
+          ? 'bg-blue-50 text-blue-600 border-blue-100'
+          : 'bg-pink-50 text-pink-600 border-pink-100')
+      }
+      title={gender === 'male' ? '男' : '女'}
+    >
+      <span className="material-symbols-outlined" style={{ fontSize: '12px' }}>{gender}</span>
+    </span>
+  )
+}
+
+function MoreServices({
+  items
+}: {
+  items: Array<{ label: string; count: number; order: Order }>
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        title="查看更多服务类型"
+        onClick={(e) => {
+          e.stopPropagation()
+          setOpen((v) => !v)
+        }}
+        className="inline-flex items-center justify-center w-6 h-5 rounded text-text-muted bg-surface-container-low hover:bg-surface-container hover:text-primary"
+      >
+        <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>more_horiz</span>
+      </button>
+      {open && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={(e) => {
+              e.stopPropagation()
+              setOpen(false)
+            }}
+          />
+          <div
+            className="absolute left-0 bottom-full mb-1 z-50 min-w-36 max-w-56 rounded-lg border border-border-subtle bg-white shadow-lg py-1"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {items.map((service) => (
+              <div key={service.label} className="px-2.5 py-1.5 text-body-sm text-text-main flex items-center justify-between gap-3">
+                <span className="truncate">{service.label}</span>
+                {service.count > 1 && <span className="text-[11px] text-text-muted">x{service.count}</span>}
+              </div>
+            ))}
+          </div>
+        </>
       )}
     </div>
   )
@@ -567,49 +767,96 @@ function ApplicationCopyButtons({
 function ApplicationCard({
   group,
   lane,
+  detailRegion,
   onOpen
 }: {
   group: ApplicationGroup
   lane: LaneKey
+  detailRegion: string | null
   onOpen: (group: ApplicationGroup) => void
 }): React.JSX.Element {
   const primary = group.primary
+  const displayName = group.customerName
   const services = dedupeServices(group.orders)
   const visibleServices = services.slice(0, 4)
   const hiddenCount = Math.max(0, services.length - visibleServices.length)
-  const totalMaterials = group.orders.reduce((sum, order) => sum + (order.materialCount || 0), 0)
+  const hiddenServices = services.slice(4)
   const gender = genderOf(primary)
   const origin = sourceStyle(primary)
+  const region = group.orders.map(patientRegionOf).find(Boolean) ?? detailRegion
+  const isDoing = lane === 'doing'
+  const stage = groupStage(group)
+  const progress = groupProgress(group)
 
   return (
     <div
       onClick={() => onOpen(group)}
       className={
-        'bg-white border border-border-subtle border-l-2 rounded-lg p-compact-padding flex flex-col shadow-sm cursor-pointer hover:border-outline-variant transition-colors group ' +
-        LANE_ACCENT[lane]
+        'bg-white rounded-lg px-3 py-2.5 flex flex-col shadow-sm cursor-pointer hover:shadow-md transition-all group ' +
+        (isDoing ? 'border-2 border-primary' : 'border border-border-subtle border-l-2 hover:border-outline-variant ' + LANE_ACCENT[lane])
       }
     >
       {/* 申领号 + 来源 */}
-      <div className="flex justify-between items-start gap-2 mb-2">
-        <ApplicationCopyButtons applicationNo={group.applicationNo} className="text-data-mono font-data-mono text-on-surface-variant min-w-0" />
+      <div className="flex items-center gap-2 mb-2 rounded-md bg-surface-bg border border-border-subtle px-2 py-1">
+        <ApplicationCopyButtons
+          applicationNo={group.applicationNo}
+          customerName={displayName}
+          className="text-data-mono font-data-mono text-[#536174] min-w-0 flex-1"
+        />
         <span className={'shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium ' + origin.bg + ' ' + origin.text}>
           {origin.label}
         </span>
       </div>
 
-      {/* 客户名 + 多订单标识 + 服务类型 */}
-      <div className="flex items-center justify-between gap-2 mb-1">
-        <div className="flex items-center gap-1.5 min-w-0">
-          <h4 className="text-h3-title text-text-main truncate">{group.customerName}</h4>
+      {/* 客户名 + 性别 + 多订单标识 */}
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+          <h4 className="text-h3-title text-text-main truncate">{displayName}</h4>
+          {gender && <GenderIcon gender={gender} />}
           {group.orders.length > 1 && (
             <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-alert-orange/10 text-alert-orange font-medium">
               {group.orders.length} 个订单
             </span>
           )}
         </div>
+        {region && (
+          <span className="inline-flex items-center justify-end gap-0.5 min-w-0 max-w-[104px] text-[11px] text-[#6d7c91] text-right">
+            <span className="material-symbols-outlined shrink-0 text-[#6b8fc7]" style={{ fontSize: '11px' }}>location_on</span>
+            <span className="truncate">{region}</span>
+          </span>
+        )}
       </div>
 
-      <div className="flex flex-wrap gap-1 mb-2">
+      <div className="space-y-1">
+        {/* 医院 · 科室 */}
+        {primary.hospital && (
+          <p className="text-body-sm text-[#536174] flex items-center gap-1.5 min-w-0">
+            <span className="material-symbols-outlined shrink-0 text-[#6b8fc7]" style={{ fontSize: '12px' }}>domain</span>
+            <span className="truncate">
+              {primary.hospital}
+              {primary.dept ? ` · ${primary.dept}` : ''}
+            </span>
+          </p>
+        )}
+
+        {/* 手机号 + 日期 */}
+        <div className="flex items-center justify-between gap-2">
+          <Copyable value={primary.customerPhone || ''} className="text-body-sm text-[#536174] min-w-0">
+            <span className="material-symbols-outlined shrink-0 text-[#6b8fc7]" style={{ fontSize: '12px' }}>call</span>
+            <span className="truncate font-mono-data">{primary.customerPhone || '—'}</span>
+          </Copyable>
+          <span className="shrink-0 text-[11px] text-[#7b8aa0] text-right" title={group.poolEnteredAt}>{monthDay(group.poolEnteredAt)}</span>
+        </div>
+      </div>
+
+      {isDoing && (
+        <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-surface-variant">
+          <div className={'h-full rounded-full ' + progressColorClass(stage)} style={{ width: `${progress}%` }} />
+        </div>
+      )}
+
+      {/* 底部：服务类型 */}
+      <div className="border-t border-border-subtle pt-1.5 mt-1.5 flex flex-wrap gap-1">
         {visibleServices.map((service) => (
           <span
             key={service.label}
@@ -619,64 +866,18 @@ function ApplicationCard({
             {service.count > 1 ? ` x${service.count}` : ''}
           </span>
         ))}
-        {hiddenCount > 0 && (
-          <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] text-text-muted bg-surface-container-low">
-            +{hiddenCount}
-          </span>
-        )}
-      </div>
-
-      {/* 医院 · 科室 */}
-      {primary.hospital && (
-        <p className="text-body-sm text-on-surface-variant flex items-center gap-1 mb-0.5 min-w-0">
-          <span className="material-symbols-outlined shrink-0 text-[14px]">local_hospital</span>
-          <span className="truncate">
-            {primary.hospital}
-            {primary.dept ? ` · ${primary.dept}` : ''}
-          </span>
-        </p>
-      )}
-
-      {/* 手机号（可复制） */}
-      <Copyable value={primary.customerPhone || ''} className="text-body-sm text-on-surface-variant min-w-0">
-        <span className="material-symbols-outlined shrink-0 text-[14px]">phone_iphone</span>
-        <span className="truncate font-mono-data">{primary.customerPhone || '—'}</span>
-      </Copyable>
-
-      {/* 底部：日期 + 素材数 + 性别 */}
-      <div className="border-t border-border-subtle pt-2 mt-2 flex justify-between items-center text-[10px] text-outline">
-        <span>{monthDay(group.updatedAt)}</span>
-        <div className="flex items-center gap-2">
-          {totalMaterials > 0 && (
-            <span className="text-body-sm text-on-surface-variant flex items-center gap-0.5">
-              <span className="material-symbols-outlined text-[12px]">attach_file</span>
-              {totalMaterials}
-            </span>
-          )}
-          {gender && (
-            <span
-              className={
-                'w-4 h-4 rounded-full flex items-center justify-center border ' +
-                (gender === 'male'
-                  ? 'bg-blue-100 text-blue-600 border-blue-200'
-                  : 'bg-pink-100 text-pink-600 border-pink-200')
-              }
-            >
-              <span className="material-symbols-outlined text-[12px]">{gender}</span>
-            </span>
-          )}
-        </div>
+        {hiddenCount > 0 && <MoreServices items={hiddenServices} />}
       </div>
     </div>
   )
 }
 
 // ─── 列表视图（密集、可排序、可按泳道筛选）──────────────
-type SortKey = 'customerName' | 'hospital' | 'status' | 'updatedAt'
+type SortKey = 'customerName' | 'hospital' | 'status' | 'poolEnteredAt'
 
 function ListView({ groups, onOpen }: { groups: ApplicationGroup[]; onOpen: (group: ApplicationGroup) => void }): React.JSX.Element {
   const [laneFilter, setLaneFilter] = useState<LaneKey | 'all'>('all')
-  const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'updatedAt', dir: 'desc' })
+  const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'poolEnteredAt', dir: 'desc' })
 
   // 各泳道计数（用于筛选条徽标）
   const laneCounts = useMemo(() => {
@@ -689,8 +890,11 @@ function ListView({ groups, onOpen }: { groups: ApplicationGroup[]; onOpen: (gro
     let r = laneFilter === 'all' ? groups : groups.filter((group) => groupLaneOf(group) === laneFilter)
     const dir = sort.dir === 'asc' ? 1 : -1
     r = [...r].sort((a, b) => {
-      const av = sort.key === 'updatedAt' ? a.updatedAt : (a.primary[sort.key] ?? '')
-      const bv = sort.key === 'updatedAt' ? b.updatedAt : (b.primary[sort.key] ?? '')
+      if (sort.key === 'poolEnteredAt') {
+        return (timeValue(a.poolEnteredAt) - timeValue(b.poolEnteredAt)) * dir
+      }
+      const av = a.primary[sort.key] ?? ''
+      const bv = b.primary[sort.key] ?? ''
       const va = String(av)
       const vb = String(bv)
       return va < vb ? -dir : va > vb ? dir : 0
@@ -706,98 +910,157 @@ function ListView({ groups, onOpen }: { groups: ApplicationGroup[]; onOpen: (gro
     { key: 'all', label: '全部', count: groups.length },
     ...LANES.map((l) => ({ key: l.key, label: l.label, count: laneCounts[l.key] }))
   ]
+  const activeFilter = FILTERS.find((f) => f.key === laneFilter) ?? FILTERS[0]
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col">
-      {/* 泳道筛选条 */}
-      <div className="shrink-0 px-6 py-2.5 flex items-center gap-2 border-b border-border-subtle bg-surface-bg">
-        {FILTERS.map((f) => {
-          const on = laneFilter === f.key
-          return (
-            <button
-              key={f.key}
-              onClick={() => setLaneFilter(f.key)}
-              className={
-                'px-3 py-1 rounded-full text-body-sm transition-colors flex items-center gap-1.5 ' +
-                (on ? 'bg-primary text-white' : 'bg-white border border-border-subtle text-text-muted hover:text-text-main')
-              }
-            >
-              {f.label}
-              <span className={'text-label-caps ' + (on ? 'opacity-80' : 'text-text-muted/70')}>{f.count}</span>
-            </button>
-          )
-        })}
+    <div className="flex-1 min-h-0 flex flex-col bg-surface-bg">
+      <div className="shrink-0 px-6 py-4 flex items-center justify-between gap-4">
+        <div>
+          <h3 className="text-h3-title text-text-main">申请列表</h3>
+          <p className="mt-0.5 text-body-sm text-text-muted">按申请号查看全部工作台记录</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <select
+            value={laneFilter}
+            onChange={(e) => setLaneFilter(e.target.value as LaneKey | 'all')}
+            className="h-10 rounded-md border border-border-subtle bg-white px-3 text-body-md text-text-main shadow-sm focus:outline-none focus:border-primary"
+            title="阶段筛选"
+          >
+            {FILTERS.map((f) => (
+              <option key={f.key} value={f.key}>{f.label}（{f.count}）</option>
+            ))}
+          </select>
+          <select
+            value={`${sort.key}:${sort.dir}`}
+            onChange={(e) => {
+              const [key, dir] = e.target.value.split(':') as [SortKey, 'asc' | 'desc']
+              setSort({ key, dir })
+            }}
+            className="h-10 rounded-md border border-border-subtle bg-white px-3 text-body-md text-text-main shadow-sm focus:outline-none focus:border-primary"
+            title="排序"
+          >
+            <option value="poolEnteredAt:desc">入池时间 新到旧</option>
+            <option value="poolEnteredAt:asc">入池时间 旧到新</option>
+            <option value="customerName:asc">客户 A-Z</option>
+            <option value="hospital:asc">医院 A-Z</option>
+          </select>
+        </div>
       </div>
 
-      {/* 表格 */}
-      <div className="flex-1 min-h-0 overflow-auto px-6 py-4">
-        <table className="w-full border-collapse text-body-sm">
-          <thead className="sticky top-0 bg-surface-bg z-10">
-            <tr className="text-left text-text-muted border-b border-border-subtle">
-              <SortHead label="客户" k="customerName" sort={sort} onSort={toggleSort} />
-              <th className="py-2 px-3 font-medium">申领号</th>
-              <th className="py-2 px-3 font-medium">手机号</th>
-              <th className="py-2 px-3 font-medium">业务类型</th>
-              <th className="py-2 px-3 font-medium">来源</th>
-              <SortHead label="医院 · 科室" k="hospital" sort={sort} onSort={toggleSort} />
-              <SortHead label="状态" k="status" sort={sort} onSort={toggleSort} />
-              <th className="py-2 px-3 font-medium text-center">素材</th>
-              <SortHead label="更新时间" k="updatedAt" sort={sort} onSort={toggleSort} />
+      <div className="flex-1 min-h-0 overflow-auto px-6 pb-5">
+        <div className="overflow-hidden rounded-lg border border-border-subtle bg-white shadow-sm">
+          <table className="w-full table-fixed border-collapse text-body-sm">
+            <colgroup>
+              <col className="w-[250px]" />
+              <col className="w-[245px]" />
+              <col className="w-[230px]" />
+              <col className="w-[180px]" />
+              <col className="w-[130px]" />
+              <col className="w-[120px]" />
+              <col className="w-[80px]" />
+              <col className="w-[120px]" />
+            </colgroup>
+            <thead className="sticky top-0 bg-white z-10">
+              <tr className="text-left text-[#454a5a] border-b border-border-subtle">
+                <th className="py-3.5 px-5 font-bold">申领号</th>
+                <SortHead label="客户" k="customerName" sort={sort} onSort={toggleSort} />
+                <SortHead label="医院 / 科室" k="hospital" sort={sort} onSort={toggleSort} />
+                <th className="py-3.5 px-4 font-bold">业务类型</th>
+                <SortHead label="状态 / 阶段" k="status" sort={sort} onSort={toggleSort} />
+                <th className="py-3.5 px-4 font-bold">数据量</th>
+                <th className="py-3.5 px-3 font-bold">来源</th>
+                <SortHead label="入池" k="poolEnteredAt" sort={sort} onSort={toggleSort} />
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={9} className="py-12 text-center text-text-muted">
-                  暂无订单
+                <td colSpan={8} className="py-12 text-center text-text-muted">
+                  暂无{activeFilter.label}申请
                 </td>
               </tr>
             ) : (
               rows.map((group) => {
                 const o = group.primary
+                const displayName = group.customerName
                 const services = dedupeServices(group.orders)
+                const lane = groupLaneOf(group)
+                const rowAccent =
+                  lane === 'todo' ? 'border-l-status-urgent' :
+                    lane === 'doing' ? 'border-l-status-info' :
+                      lane === 'await_backfill' ? 'border-l-ai-purple' : 'border-l-status-success'
                 return (
                 <tr
                   key={group.key}
                   onClick={() => onOpen(group)}
-                  className="border-b border-border-subtle hover:bg-white cursor-pointer transition-colors"
+                  className={'border-b border-border-subtle border-l-2 hover:bg-surface-bg cursor-pointer transition-colors ' + rowAccent}
                 >
-                  <td className="py-2 px-3 font-medium text-text-main whitespace-nowrap">{o.customerName}</td>
-                  <td className="py-2 px-3 text-text-muted max-w-[220px]">
-                    <ApplicationCopyButtons applicationNo={group.applicationNo} className="max-w-full" />
+                  <td className="py-3 px-5 text-[#161a22] font-mono-data font-semibold">
+                    <ApplicationCopyButtons applicationNo={group.applicationNo} customerName={displayName} className="max-w-full" />
                   </td>
-                  <td className="py-2 px-3 text-text-muted font-mono-data whitespace-nowrap">{o.customerPhone || '—'}</td>
-                  <td className="py-2 px-3">
-                    <div className="flex flex-wrap gap-1 min-w-[160px]">
-                      {services.slice(0, 4).map((service) => (
-                        <span key={service.label} className={'text-label-caps px-2 py-0.5 rounded ' + bizChipClass(service.order)}>
+                  <td className="py-3 px-4">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="shrink-0 font-semibold text-text-main">{displayName}</span>
+                      {o.customerPhone ? (
+                        <Copyable value={o.customerPhone} className="min-w-0 text-[12px] text-[#6f7f95] font-mono-data">
+                          <span className="truncate">{o.customerPhone}</span>
+                        </Copyable>
+                      ) : (
+                        <span className="min-w-0 truncate text-[12px] text-text-muted">手机号待补</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="py-3 px-4 text-[#454a5a]">
+                    <div className="font-semibold truncate">
+                      {o.hospital || '医院待定'}
+                      <span className="mx-1 text-text-muted font-normal">/</span>
+                      <span className="font-normal text-text-muted">{o.dept || '科室待定'}</span>
+                    </div>
+                  </td>
+                  <td className="py-3 px-4">
+                    <div className="flex flex-wrap gap-1 max-w-[160px]">
+                      {services.slice(0, 3).map((service) => (
+                        <span key={service.label} className={'text-[12px] leading-5 px-2 rounded font-semibold border border-current/20 ' + bizChipClass(service.order)}>
                           {service.label}{service.count > 1 ? ` x${service.count}` : ''}
                         </span>
                       ))}
-                      {services.length > 4 && (
-                        <span className="text-label-caps px-2 py-0.5 rounded bg-surface-bg text-text-muted">
-                          +{services.length - 4}
+                      {services.length > 3 && (
+                        <span className="text-[12px] leading-5 px-2 rounded bg-surface-bg text-text-muted">
+                          +{services.length - 3}
                         </span>
                       )}
                     </div>
                   </td>
-                  <td className="py-2 px-3 text-text-muted whitespace-nowrap">{sourceLabel(o)}</td>
-                  <td className="py-2 px-3 text-text-muted max-w-[260px] truncate">
-                    {o.hospital ? o.hospital + (o.dept ? ` - ${o.dept}` : '') : '—'}
-                  </td>
-                  <td className="py-2 px-3 whitespace-nowrap">
+                  <td className="py-3 px-4 whitespace-nowrap">
                     <LaneBadge order={o} />
                   </td>
-                  <td className="py-2 px-3 text-center text-text-muted font-mono-data">
-                    {o.materialCount > 0 ? o.materialCount : '—'}
+                  <td className="py-3 px-4 text-[#454a5a] font-mono-data">
+                    <div className="flex items-center gap-2.5">
+                      <span className="inline-flex items-center gap-1" title="文本与图片数量">
+                        <span className="material-symbols-outlined filled text-[#6d5dfc]" style={{ fontSize: '15px' }}>article</span>
+                        {o.textCount + o.imageCount}
+                      </span>
+                      <span className="inline-flex items-center gap-1" title="录音数量">
+                        <span className="material-symbols-outlined filled text-[#0b8fd9]" style={{ fontSize: '15px' }}>mic</span>
+                        {o.audioCount}
+                      </span>
+                    </div>
                   </td>
-                  <td className="py-2 px-3 text-text-muted whitespace-nowrap">{relativeTime(o.updatedAt)}</td>
+                  <td className="py-3 px-3">
+                    <span className={'inline-flex items-center rounded px-2 py-0.5 text-[11px] font-medium ' + sourceStyle(o).bg + ' ' + sourceStyle(o).text}>
+                      {sourceLabel(o)}
+                    </span>
+                  </td>
+                  <td className="py-3 px-4 text-[#454a5a] whitespace-nowrap" title={group.poolEnteredAt}>
+                    {relativeTime(group.poolEnteredAt)}
+                  </td>
                 </tr>
                 )
               })
             )}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   )
@@ -816,7 +1079,7 @@ function SortHead({
 }): React.JSX.Element {
   const active = sort.key === k
   return (
-    <th className="py-2 px-3 font-medium">
+    <th className="py-3.5 px-4 font-bold">
       <button onClick={() => onSort(k)} className="flex items-center gap-1 hover:text-text-main transition-colors">
         {label}
         <span className={'material-symbols-outlined text-[16px] ' + (active ? 'text-primary' : 'text-text-muted/40')}>
