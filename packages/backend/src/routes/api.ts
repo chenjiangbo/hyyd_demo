@@ -202,6 +202,21 @@ export function normalizeEmployeeCode(value: unknown): string {
   return value.trim()
 }
 
+function normalizeConversationNameForDedupe(value: string): string {
+  return value.normalize('NFKC').replace(/\s+/g, ' ').trim()
+}
+
+function normalizeMessageContentForDedupe(value: string): string {
+  return value
+    .normalize('NFKC')
+    .replace(/\s+/g, '')
+    .replace(/[，。！？；：、,.!?;:"'“”‘’（）()【】[\]《》<>…~·]/g, '')
+}
+
+function hashDedupePart(value: string): string {
+  return createHash('sha256').update(value).digest('hex')
+}
+
 export async function ensureEmployeeByCode(prisma: PrismaClient, employeeCode: string) {
   const code = normalizeEmployeeCode(employeeCode)
   if (!code) throw new Error('员工 ID 为空')
@@ -265,16 +280,29 @@ export function registerApiRoutes(
   ): Promise<ApplicationMatch | null> {
     const confirmedRef = await prisma.unmatchedOrderRef.findUnique({
       where: { employee_candidate: { employeeId, candidate } },
-      select: { status: true, resolvedOrderId: true }
+      select: { status: true, resolvedOrderId: true, resolvedApplicationNo: true }
     })
-    if (confirmedRef?.status !== 'confirmed' || !confirmedRef.resolvedOrderId) return null
+    if (confirmedRef?.status !== 'confirmed') return null
+    const applicationNo = confirmedRef.resolvedApplicationNo
+    if (applicationNo) {
+      const appOrders = await prisma.order.findMany({
+        where: { rawJson: { path: ['crmApplyNo'], equals: applicationNo } },
+        select: { id: true }
+      })
+      return { applicationNo, orderId: appOrders.length === 1 ? appOrders[0].id : null }
+    }
+    if (!confirmedRef.resolvedOrderId) return null
     const order = await prisma.order.findFirst({
       where: { id: confirmedRef.resolvedOrderId },
       select: { id: true, rawJson: true }
     })
     if (!order) return null
-    const applicationNo = applicationNosForConversationMatch(order.rawJson)[0] ?? null
-    return { applicationNo, orderId: order.id }
+    const legacyApplicationNo = applicationNosForConversationMatch(order.rawJson)[0] ?? null
+    if (!legacyApplicationNo) return { applicationNo: null, orderId: order.id }
+    const appOrderCount = await prisma.order.count({
+      where: { rawJson: { path: ['crmApplyNo'], equals: legacyApplicationNo } }
+    })
+    return { applicationNo: legacyApplicationNo, orderId: appOrderCount === 1 ? order.id : null }
   }
 
   async function resolveApplicationForCandidate(
@@ -1031,19 +1059,60 @@ export function registerApiRoutes(
         _debug.matchedApplicationNo = finalApplicationNo
       }
 
-      const message = await prisma.message.create({
-        data: {
-          orderId: finalOrderId,
-          applicationNo: finalApplicationNo,
-          channel,
-          conversationName,
-          senderName: senderName ?? null,
-          contentText,
-          screenshotOssKey: screenshotOssKey ?? null,
-          capturedAt: new Date(capturedAt),
-          employeeId
-        }
+      const content = contentText.trim()
+      if (!content) return reply.status(400).send({ error: 'contentText 不能为空' })
+      const capAt = new Date(capturedAt)
+      const senderType = 'other'
+      const normalized = normalizeMessageContentForDedupe(content)
+      const contentHash = hashDedupePart(normalized)
+      const dedupeScope = finalApplicationNo
+        ? `application:${finalApplicationNo}`
+        : `conversation:${normalizeConversationNameForDedupe(conversationName)}`
+      const dedupeKey = hashDedupePart(`${employeeId}|${channel}|${dedupeScope}|${senderType}|${contentHash}`)
+      const legacyNormalized = content.replace(/\s+/g, '')
+      const legacyContentHash = hashDedupePart(legacyNormalized)
+      const legacyDedupeKey = hashDedupePart(`${employeeId}|${conversationName}|${senderType}|${legacyContentHash}`)
+
+      const existing = await prisma.message.findUnique({
+        where: { dedupeKey },
+        select: { id: true, orderId: true, applicationNo: true }
+      }) ?? await prisma.message.findUnique({
+        where: { dedupeKey: legacyDedupeKey },
+        select: { id: true, orderId: true, applicationNo: true }
       })
+
+      const message = existing
+        ? await prisma.message.update({
+            where: { id: existing.id },
+            data: {
+              seenCount: { increment: 1 },
+              lastSeenAt: capAt,
+              orderId: existing.orderId ?? finalOrderId,
+              applicationNo: existing.applicationNo ?? finalApplicationNo,
+              contentHash,
+              dedupeKey
+            }
+          })
+        : await prisma.message.create({
+            data: {
+              orderId: finalOrderId,
+              applicationNo: finalApplicationNo,
+              channel,
+              conversationName,
+              senderName: senderName ?? null,
+              senderType,
+              contentText: content,
+              screenshotOssKey: screenshotOssKey ?? null,
+              capturedAt: capAt,
+              employeeId,
+              sortTime: capAt,
+              contentHash,
+              dedupeKey,
+              seenCount: 1,
+              firstSeenAt: capAt,
+              lastSeenAt: capAt
+            }
+          })
 
       return reply.send({ data: message, _debug })
     } catch (err: any) {
@@ -1111,17 +1180,21 @@ export function registerApiRoutes(
         return reply.status(403).send({ error: '不能确认到其他员工的订单' })
       }
 
+      const applicationNo = applicationNosForConversationMatch(order.rawJson)[0] ?? null
+      const applicationOrderCount = applicationNo
+        ? await prisma.order.count({ where: { rawJson: { path: ['crmApplyNo'], equals: applicationNo } } })
+        : 0
+      const compatibleOrderId = !applicationNo || applicationOrderCount === 1 ? orderId : null
       await prisma.unmatchedOrderRef.update({
         where: { id },
-        data: { status: 'confirmed', resolvedOrderId: orderId }
+        data: { status: 'confirmed', resolvedOrderId: orderId, resolvedApplicationNo: applicationNo }
       })
-      const applicationNo = applicationNosForConversationMatch(order.rawJson)[0] ?? null
       // 回填：该员工、该会话名下、还没关联申请号/订单的消息，挂到确认的申请号/订单上
       const backfilled = await prisma.message.updateMany({
-        where: { employeeId: ref.employeeId, conversationName: ref.conversationName, orderId: null },
-        data: { orderId, applicationNo }
+        where: { employeeId: ref.employeeId, conversationName: ref.conversationName, applicationNo: null, orderId: null },
+        data: { orderId: compatibleOrderId, applicationNo }
       })
-      return reply.send({ data: { ok: true, backfilledMessages: backfilled.count } })
+      return reply.send({ data: { ok: true, applicationNo, orderId: compatibleOrderId, backfilledMessages: backfilled.count } })
     }
   )
 
@@ -1207,25 +1280,37 @@ export function registerApiRoutes(
           chatTime = parsed
         }
       }
-      const normalized = content.replace(/\s+/g, '')
-      const contentHash = createHash('sha256').update(normalized).digest('hex')
-      const dedupeKey = createHash('sha256')
-        .update(`${employeeId}|${conversationName}|${senderType}|${contentHash}`)
-        .digest('hex')
+      const normalized = normalizeMessageContentForDedupe(content)
+      const contentHash = hashDedupePart(normalized)
+      const dedupeScope = applicationNo
+        ? `application:${applicationNo}`
+        : `conversation:${normalizeConversationNameForDedupe(conversationName)}`
+      const dedupeKey = hashDedupePart(`${employeeId}|${channel}|${dedupeScope}|${senderType}|${contentHash}`)
+
+      // 兼容旧 key：老数据按 employee+conversationName+senderType+去空白内容 去重，且没有 channel/applicationNo。
+      // 命中旧记录时把它迁到新 key，避免部署后同一条旧消息被重新插入一次。
+      const legacyNormalized = content.replace(/\s+/g, '')
+      const legacyContentHash = hashDedupePart(legacyNormalized)
+      const legacyDedupeKey = hashDedupePart(`${employeeId}|${conversationName}|${senderType}|${legacyContentHash}`)
 
       const existing = await prisma.message.findUnique({
         where: { dedupeKey },
+        select: { id: true, orderId: true, applicationNo: true, chatTime: true }
+      }) ?? await prisma.message.findUnique({
+        where: { dedupeKey: legacyDedupeKey },
         select: { id: true, orderId: true, applicationNo: true, chatTime: true }
       })
       if (existing) {
         // 跨帧重复：累加次数 + 刷新最近时刻；订单/时间后补（之前没算出来、这次算出来了就补上）
         await prisma.message.update({
-          where: { dedupeKey },
+          where: { id: existing.id },
           data: {
             seenCount: { increment: 1 },
             lastSeenAt: capAt,
             orderId: existing.orderId ?? orderId,
             applicationNo: existing.applicationNo ?? applicationNo,
+            contentHash,
+            dedupeKey,
             chatTime: existing.chatTime ?? chatTime,
             // 之前没算出真实时间、这次算出来了 → 把排序键从 capturedAt 升级成真实 chatTime
             ...(existing.chatTime == null && chatTime != null ? { sortTime: chatTime } : {})
@@ -1608,17 +1693,20 @@ export function registerApiRoutes(
         }
       })
       if (existingCall) {
-        const idempotentCall =
-          existingCall.orderId == null
-            ? await prisma.call.update({
-                where: { id: existingCall.id },
-                data: {
-                  orderId: finalOrderId,
-                  applicationNo: existingCall.applicationNo ?? finalApplicationNo,
-                  contactName: existingCall.contactName ?? contactName ?? null
-                }
-              })
-            : existingCall
+        const needsUpdate =
+          (existingCall.orderId == null && finalOrderId != null) ||
+          (existingCall.applicationNo == null && finalApplicationNo != null) ||
+          (existingCall.contactName == null && contactName != null)
+        const idempotentCall = needsUpdate
+          ? await prisma.call.update({
+              where: { id: existingCall.id },
+              data: {
+                orderId: existingCall.orderId ?? finalOrderId,
+                applicationNo: existingCall.applicationNo ?? finalApplicationNo,
+                contactName: existingCall.contactName ?? contactName ?? null
+              }
+            })
+          : existingCall
         return reply.send({ data: idempotentCall })
       }
 

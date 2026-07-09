@@ -183,7 +183,8 @@ model UnmatchedOrderRef {
   capturedAt       DateTime  @map("captured_at")
   seenCount        Int       @default(1) @map("seen_count") // 同一候选重复出现次数
   status           String    @default("pending") // 'pending' | 'confirmed' | 'rejected'
-  resolvedOrderId  Int?      @map("resolved_order_id") // 确认后绑定的订单
+  resolvedOrderId       Int?    @map("resolved_order_id") // 确认时选择的订单（兼容/审计）
+  resolvedApplicationNo String? @map("resolved_application_no") // 确认后绑定的申领号
   note             String?
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
