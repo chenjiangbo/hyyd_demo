@@ -101,6 +101,8 @@ class CollectorRunner(context: Context) {
         prefs.lastRecordingUnparsedSamples = recordingScan.unparsedSamples
         prefs.lastRecordingUploadCount = 0
         prefs.lastRecordingMissCount = 0
+        var recordingFailureCount = 0
+        var lastRecordingFailure = ""
         for (recording in recordings) {
             val path = recording.file.absolutePath
             if (prefs.isRecordingUploaded(path)) continue
@@ -137,9 +139,16 @@ class CollectorRunner(context: Context) {
                 prefs.lastRecordingUploadCount += 1
                 prefs.lastUploadedRecordingText = "callId=${call.id} ${recording.file.name}"
             } catch (e: Exception) {
-                prefs.rememberRecordingListItem(recording, "上传失败", call.id)
-                throw e
+                val message = e.message ?: e.javaClass.simpleName
+                recordingFailureCount += 1
+                lastRecordingFailure = "callId=${call.id} ${recording.file.name}: $message"
+                prefs.rememberRecordingListItem(recording, "上传失败: $message", call.id)
+                Log.e(TAG, "录音上传失败，跳过该文件并继续处理后续录音: $path", e)
+                continue
             }
+        }
+        if (recordingFailureCount > 0) {
+            prefs.lastSyncError = "录音上传失败 $recordingFailureCount 条，已继续处理后续录音；最后失败: $lastRecordingFailure"
         }
     }
 
