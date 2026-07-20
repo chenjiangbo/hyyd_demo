@@ -1,3 +1,5 @@
+export {};
+
 console.log('[寰宇探针] Content Script 已注入');
 
 // ════════════════════════════════════════════════════════════
@@ -28,6 +30,34 @@ const POLL_FIRST_DELAY_MS = 3000;
 const DETAIL_THROTTLE_MS = 3000; // 相邻订单详情抓取间隔，放慢到接近人工浏览，降低风控风险
 const PAGE_SIZE = 20;
 const MAX_PAGES = 50;
+
+const TRACKING_ANALYSIS_STORAGE_KEY = 'trackingPoolAnalysis';
+const EDIT_PAGE_ANALYSIS_STORAGE_KEY = 'editPageAnalysis';
+const TRACKING_ANALYSIS_SAMPLE_LIMIT = 5;
+const TRACKING_ANALYSIS_PAGE_SIZE = 10;
+const TRACKING_ANALYSIS_MAX_FALLBACK_PAGES = 4;
+const TRACKING_ANALYSIS_MISSING_MAX_PAGES = 30;
+const TRACKING_ANALYSIS_THROTTLE_MS = 4500;
+const TRACKING_ANALYSIS_MISSING_SERVICE_TYPES = [
+  { serviceType: '2000708', serviceName: '靶向药基因检测', poolKind: 'green' as const },
+  { serviceType: '2000711', serviceName: '就医咨询', poolKind: 'green' as const },
+  { serviceType: '2000712', serviceName: '区域门诊绿通', poolKind: 'green' as const },
+  { serviceType: '2000713', serviceName: '区域住院绿通', poolKind: 'green' as const },
+  { serviceType: '2000716', serviceName: '垫付服务', poolKind: 'green' as const },
+  { serviceType: '2000717', serviceName: '海外二诊', poolKind: 'green' as const },
+  { serviceType: '2000719', serviceName: '海外就医', poolKind: 'green' as const },
+];
+const TRACKING_ANALYSIS_PREFERRED_STATES = [
+  '2007', // 已完成
+  '10', // 待就诊
+  '11', // 就诊中
+  '13', // 已入院
+  '12', // 待入院
+  '9', // 待二次推送
+  '7', // 待客户确认方案
+  '5', // 待一次推送
+  '2002', // 待处理
+];
 
 // ─── token 读取 ──────────────────────────────────────────────
 // 泰康用 header `access_token` 认证，值存在 cookie `Admin-Token` 里。
@@ -118,6 +148,634 @@ async function safe<T>(p: Promise<T>): Promise<T | null> {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+type AnalysisEndpointResult = {
+  path: string;
+  ok: boolean;
+  request: Record<string, unknown>;
+  fields?: string[];
+  fieldCount?: number;
+  error?: string;
+};
+
+type AnalysisSample = {
+  serviceType: string;
+  serviceName: string;
+  poolKind: 'register' | 'green';
+  orderState: string | null;
+  orderStateName: string | null;
+  sourceOrderNoTail: string | null;
+  endpoints: AnalysisEndpointResult[];
+};
+
+type TrackingAnalysisState = {
+  status: 'idle' | 'running' | 'done' | 'error';
+  mode?: 'all' | 'missing';
+  startedAt?: string;
+  finishedAt?: string;
+  updatedAt: string;
+  progress: {
+    currentService?: string;
+    serviceIndex: number;
+    serviceTotal: number;
+    sampleCount: number;
+  };
+  error?: string;
+  result?: {
+    mode?: 'all' | 'missing';
+    generatedAt: string;
+    sampleLimitPerService: number;
+    serviceTypes: Array<{ serviceType: string; serviceName: string; poolKind: 'register' | 'green' }>;
+    samples: AnalysisSample[];
+  };
+};
+
+type EditPageNetworkEvent = {
+  at: string;
+  href: string;
+  kind: string;
+  method?: string;
+  path?: string;
+  requestFields?: string[];
+  responseFields?: string[];
+};
+
+type EditPageField = {
+  label: string | null;
+  tag: string;
+  type: string | null;
+  role: string | null;
+  placeholder: string | null;
+  required: boolean;
+  disabled: boolean;
+  readonly: boolean;
+  visible: boolean;
+  section: string | null;
+  stage: string | null;
+  name: string | null;
+  id: string | null;
+  optionCount?: number;
+};
+
+type EditPageSnapshot = {
+  at: string;
+  href: string;
+  title: string;
+  routeText: string[];
+  headings: string[];
+  activeTexts: string[];
+  fields: EditPageField[];
+};
+
+type EditPageAnalysisState = {
+  startedAt?: string;
+  updatedAt: string;
+  snapshots: EditPageSnapshot[];
+  networkEvents: EditPageNetworkEvent[];
+};
+
+const FIELD_ALLOW_VALUELESS_TYPES = new Set(['string', 'number', 'boolean', 'null', 'array', 'object']);
+
+function valueKind(v: unknown): string {
+  if (v == null) return 'null';
+  if (Array.isArray(v)) return 'array';
+  return typeof v;
+}
+
+function schemaFields(value: unknown, prefix = '', out = new Set<string>()): string[] {
+  const kind = valueKind(value);
+  if (!FIELD_ALLOW_VALUELESS_TYPES.has(kind)) return [...out].sort();
+  if (Array.isArray(value)) {
+    out.add(`${prefix || '$'}[]`);
+    const first = value.find((item) => item != null);
+    if (first != null) schemaFields(first, `${prefix || '$'}[]`, out);
+    return [...out].sort();
+  }
+  if (value && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const path = prefix ? `${prefix}.${k}` : k;
+      const childKind = valueKind(v);
+      if (childKind === 'object') {
+        out.add(`${path}{}`);
+        schemaFields(v, path, out);
+      } else if (childKind === 'array') {
+        out.add(`${path}[]`);
+        const first = (v as unknown[]).find((item) => item != null);
+        if (first != null) schemaFields(first, `${path}[]`, out);
+      } else {
+        out.add(path);
+      }
+    }
+  }
+  return [...out].sort();
+}
+
+function tailOrderNo(subOrderNo: unknown): string | null {
+  if (typeof subOrderNo !== 'string' || !subOrderNo) return null;
+  return `...${subOrderNo.slice(-6)}`;
+}
+
+function textOf(el: Element | null): string {
+  return (el?.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
+function visible(el: HTMLElement): boolean {
+  const style = window.getComputedStyle(el);
+  const rect = el.getBoundingClientRect();
+  return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+}
+
+function nearestSection(el: Element): string | null {
+  let cur: Element | null = el;
+  for (let depth = 0; cur && depth < 8; depth++, cur = cur.parentElement) {
+    const heading = cur.querySelector?.(
+      '.el-card__header,.el-collapse-item__header,.el-form-item__label,h1,h2,h3,h4,.title,.header'
+    );
+    const text = textOf(heading);
+    if (text && text.length <= 80) return text;
+  }
+  return null;
+}
+
+function pageHeadings(): string[] {
+  return [...document.querySelectorAll('h1,h2,h3,h4,.el-card__header,.el-collapse-item__header')]
+    .map(textOf)
+    .filter((text, idx, arr) => text && text.length <= 80 && arr.indexOf(text) === idx)
+    .slice(0, 80);
+}
+
+function activeTexts(): string[] {
+  return [
+    ...document.querySelectorAll(
+      '.is-active,.active,.el-tabs__item.is-active,.el-step__head.is-process,.el-step__title.is-process'
+    ),
+  ]
+    .map(textOf)
+    .filter((text, idx, arr) => text && text.length <= 60 && arr.indexOf(text) === idx)
+    .slice(0, 40);
+}
+
+function routeTexts(): string[] {
+  return [...document.querySelectorAll('.el-breadcrumb__item,a,span')]
+    .map(textOf)
+    .filter((text) => ['挂号协助', '绿通服务', '医学陪诊', '个案服务待办', '个人池'].includes(text))
+    .slice(0, 20);
+}
+
+function labelFor(el: HTMLElement): string | null {
+  const id = el.getAttribute('id');
+  if (id) {
+    const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+    const labelText = textOf(label);
+    if (labelText) return labelText;
+  }
+  const wrappingLabel = el.closest('label');
+  const wrappingText = textOf(wrappingLabel);
+  if (wrappingText) return wrappingText;
+  const formItem = el.closest('.el-form-item,.ant-form-item,.form-item');
+  const formLabel = textOf(formItem?.querySelector?.('.el-form-item__label,.ant-form-item-label,label') || null);
+  if (formLabel) return formLabel.replace(/[：:]\s*$/, '');
+  const aria = el.getAttribute('aria-label');
+  if (aria) return aria;
+  const placeholder = el.getAttribute('placeholder');
+  if (placeholder) return placeholder;
+  return null;
+}
+
+function controlType(el: HTMLElement): string | null {
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'input') return (el as HTMLInputElement).type || 'text';
+  if (tag === 'textarea') return 'textarea';
+  if (tag === 'select') return 'select';
+  return el.getAttribute('role') || tag;
+}
+
+function scanCurrentEditPage(): EditPageSnapshot {
+  const controls = [
+    ...document.querySelectorAll<HTMLElement>(
+      'input,textarea,select,[contenteditable="true"],[role="combobox"],[role="radio"],[role="checkbox"],[role="switch"]'
+    ),
+  ];
+  const fields: EditPageField[] = controls.map((el) => {
+    const tag = el.tagName.toLowerCase();
+    return {
+      label: labelFor(el),
+      tag,
+      type: controlType(el),
+      role: el.getAttribute('role'),
+      placeholder: el.getAttribute('placeholder'),
+      required: el.hasAttribute('required') || el.getAttribute('aria-required') === 'true',
+      disabled: (el as HTMLInputElement).disabled || el.getAttribute('aria-disabled') === 'true',
+      readonly: (el as HTMLInputElement).readOnly || el.getAttribute('readonly') === 'true',
+      visible: visible(el),
+      section: nearestSection(el),
+      stage: activeTexts().find((text) => /申领|确认|方案|服务|录入|就诊|陪诊|完成/.test(text)) || null,
+      name: el.getAttribute('name'),
+      id: el.getAttribute('id'),
+      optionCount: tag === 'select' ? (el as HTMLSelectElement).options.length : undefined,
+    };
+  });
+  return {
+    at: new Date().toISOString(),
+    href: location.href,
+    title: document.title,
+    routeText: routeTexts(),
+    headings: pageHeadings(),
+    activeTexts: activeTexts(),
+    fields,
+  };
+}
+
+async function getEditAnalysisState(): Promise<EditPageAnalysisState> {
+  const r = await chrome.storage.local.get(EDIT_PAGE_ANALYSIS_STORAGE_KEY);
+  const state = r[EDIT_PAGE_ANALYSIS_STORAGE_KEY];
+  if (state && typeof state === 'object') {
+    return {
+      startedAt: state.startedAt,
+      updatedAt: state.updatedAt || new Date().toISOString(),
+      snapshots: Array.isArray(state.snapshots) ? state.snapshots : [],
+      networkEvents: Array.isArray(state.networkEvents) ? state.networkEvents : [],
+    };
+  }
+  return { updatedAt: new Date().toISOString(), snapshots: [], networkEvents: [] };
+}
+
+async function saveEditAnalysisState(state: EditPageAnalysisState): Promise<void> {
+  await chrome.storage.local.set({ [EDIT_PAGE_ANALYSIS_STORAGE_KEY]: state });
+}
+
+async function appendEditSnapshot(): Promise<EditPageSnapshot> {
+  const state = await getEditAnalysisState();
+  const snapshot = scanCurrentEditPage();
+  state.snapshots.push(snapshot);
+  state.updatedAt = snapshot.at;
+  await saveEditAnalysisState(state);
+  return snapshot;
+}
+
+async function appendEditNetworkEvent(event: EditPageNetworkEvent): Promise<void> {
+  const state = await getEditAnalysisState();
+  state.networkEvents.push(event);
+  if (state.networkEvents.length > 500) {
+    state.networkEvents = state.networkEvents.slice(-500);
+  }
+  state.updatedAt = event.at;
+  await saveEditAnalysisState(state);
+}
+
+function installEditPageProbe(): void {
+  if (document.getElementById('hyyd-edit-page-probe-script')) return;
+  const script = document.createElement('script');
+  script.id = 'hyyd-edit-page-probe-script';
+  script.src = chrome.runtime.getURL('pageProbe.global.js');
+  script.onload = () => script.remove();
+  (document.head || document.documentElement).appendChild(script);
+}
+
+function trackingPoolBaseBody(userId: number, serviceType: string, serviceName: string) {
+  return {
+    crmApplyNo: '',
+    subOrderNo: '',
+    applyStartTime: '',
+    applyEndTime: '',
+    startTime: '',
+    endTime: '',
+    startDate: '',
+    endDate: '',
+    patientName: '',
+    serviceType,
+    serviceName,
+    planName: '',
+    planAlias: '',
+    packetName: '',
+    productName: '',
+    itemName: '',
+    labelName: '',
+    orderState: '',
+    provider: 3,
+    userId,
+  };
+}
+
+async function saveTrackingAnalysisState(state: TrackingAnalysisState): Promise<void> {
+  await chrome.storage.local.set({ [TRACKING_ANALYSIS_STORAGE_KEY]: state });
+}
+
+async function getServiceTypeOptions(): Promise<Array<{ serviceType: string; serviceName: string; poolKind: 'green' }>> {
+  const resp = await apiPost(UNIFY_BASE, 'svcOrdMapping/list', { owner: '20', type: 1 });
+  const list: any[] = Array.isArray(resp?.data) ? resp.data : [];
+  return list
+    .filter((item) => item?.serviceType && item?.serviceTypeName)
+    .map((item) => ({
+      serviceType: String(item.serviceType),
+      serviceName: String(item.serviceTypeName),
+      poolKind: 'green' as const,
+    }));
+}
+
+function uniqueOrders(orders: any[]): any[] {
+  const byNo = new Map<string, any>();
+  for (const order of orders) {
+    if (order?.subOrderNo && !byNo.has(String(order.subOrderNo))) {
+      byNo.set(String(order.subOrderNo), order);
+    }
+  }
+  return [...byNo.values()];
+}
+
+async function fetchTrackingCandidates(
+  serviceType: string,
+  serviceName: string,
+  poolKind: 'register' | 'green',
+  userId: number
+): Promise<any[]> {
+  const path =
+    poolKind === 'register'
+      ? 'medicalmanager/registerTrackingPool'
+      : 'medicalmanager/trackingPool';
+  const baseBody = trackingPoolBaseBody(userId, serviceType, serviceName);
+  const candidates: any[] = [];
+
+  for (const orderState of TRACKING_ANALYSIS_PREFERRED_STATES) {
+    const resp = await apiPost(
+      UNIFY_BASE,
+      path,
+      { ...baseBody, orderState, pageNum: 1, pageSize: TRACKING_ANALYSIS_PAGE_SIZE },
+      12_000
+    );
+    candidates.push(...(resp?.data?.list ?? []));
+    if (uniqueOrders(candidates).length >= TRACKING_ANALYSIS_SAMPLE_LIMIT) break;
+    await sleep(800);
+  }
+
+  for (let pageNum = 1; uniqueOrders(candidates).length < TRACKING_ANALYSIS_SAMPLE_LIMIT && pageNum <= TRACKING_ANALYSIS_MAX_FALLBACK_PAGES; pageNum++) {
+    const resp = await apiPost(
+      UNIFY_BASE,
+      path,
+      { ...baseBody, orderState: '', pageNum, pageSize: TRACKING_ANALYSIS_PAGE_SIZE },
+      12_000
+    );
+    candidates.push(...(resp?.data?.list ?? []));
+    if (!resp?.data?.hasNextPage) break;
+    await sleep(800);
+  }
+
+  return uniqueOrders(candidates).slice(0, TRACKING_ANALYSIS_SAMPLE_LIMIT);
+}
+
+async function fetchTrackingCandidatesDeep(
+  serviceType: string,
+  serviceName: string,
+  poolKind: 'register' | 'green',
+  userId: number
+): Promise<any[]> {
+  const path =
+    poolKind === 'register'
+      ? 'medicalmanager/registerTrackingPool'
+      : 'medicalmanager/trackingPool';
+  const baseBody = trackingPoolBaseBody(userId, serviceType, serviceName);
+  const byNo = new Map<string, any>();
+
+  for (let pageNum = 1; pageNum <= TRACKING_ANALYSIS_MISSING_MAX_PAGES; pageNum++) {
+    const resp = await apiPost(
+      UNIFY_BASE,
+      path,
+      { ...baseBody, orderState: '', pageNum, pageSize: TRACKING_ANALYSIS_PAGE_SIZE },
+      12_000
+    );
+    const list: any[] = resp?.data?.list ?? [];
+    for (const order of list) {
+      if (order?.subOrderNo && !byNo.has(String(order.subOrderNo))) {
+        byNo.set(String(order.subOrderNo), order);
+      }
+    }
+    if (!resp?.data?.hasNextPage) break;
+    await sleep(900);
+  }
+
+  const rank = new Map(TRACKING_ANALYSIS_PREFERRED_STATES.map((state, idx) => [state, idx]));
+  return [...byNo.values()]
+    .sort((a, b) => {
+      const ar = rank.get(a?.orderState == null ? '' : String(a.orderState)) ?? 999;
+      const br = rank.get(b?.orderState == null ? '' : String(b.orderState)) ?? 999;
+      if (ar !== br) return ar - br;
+      const ad = String(a?.applicationDate || a?.applyDate || '');
+      const bd = String(b?.applicationDate || b?.applyDate || '');
+      return bd.localeCompare(ad);
+    })
+    .slice(0, TRACKING_ANALYSIS_SAMPLE_LIMIT);
+}
+
+async function inspectEndpoint(
+  path: string,
+  request: Record<string, unknown>,
+  dataPicker?: (resp: any) => unknown
+): Promise<AnalysisEndpointResult> {
+  try {
+    const resp = await apiPost(UNIFY_BASE, path, request, 15_000);
+    const data = dataPicker ? dataPicker(resp) : resp?.data;
+    const fields = schemaFields(data);
+    return { path, ok: true, request, fields, fieldCount: fields.length };
+  } catch (e) {
+    return {
+      path,
+      ok: false,
+      request,
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
+async function inspectTrackingOrder(
+  userId: number,
+  serviceType: string,
+  serviceName: string,
+  poolKind: 'register' | 'green',
+  order: any
+): Promise<AnalysisSample> {
+  const subOrderNo = String(order.subOrderNo || '');
+  const caseId = order.caseId == null ? null : String(order.caseId);
+  const endpoints: AnalysisEndpointResult[] = [];
+  const addEndpoint = async (
+    path: string,
+    request: Record<string, unknown>,
+    dataPicker?: (resp: any) => unknown
+  ) => {
+    endpoints.push(await inspectEndpoint(path, request, dataPicker));
+    await sleep(700);
+  };
+  const commonRecRequest = {
+    userId,
+    subOrderNo,
+    applyNo: order.applyNo ?? '',
+    orderState: order.orderState == null ? '' : String(order.orderState),
+    caseStatus: order.caseStatus == null ? 'null' : String(order.caseStatus),
+  };
+
+  await addEndpoint('medicalmanager/recommendations', commonRecRequest);
+  await addEndpoint('medicalmanager/caseInfo', { subOrderNo });
+
+  if (poolKind === 'register') {
+    if (caseId) {
+      await addEndpoint('register/getIntendClinicInfo', { caseId });
+    }
+    await addEndpoint('register/getLatestRegisterInfo', { subOrderNo });
+    await addEndpoint('register/ExceInfo', { subOrderNo });
+  } else {
+    await addEndpoint('operator/trackingStages', { subOrderNo, code: '72' });
+    await addEndpoint('casemanager/clinicOrderInfo', {
+      subOrderNo,
+      fileType: '42',
+      pageNum: 1,
+      pageSize: 5,
+    });
+    await addEndpoint('accompanyInfo/getAccompanyInfoList', {
+      subOrderNo,
+      pageNum: 1,
+      pageSize: 5,
+    });
+    await addEndpoint('medicalmanager/selectExcpHandleRecord', {
+      subOrderNo,
+      pageNum: 1,
+      pageSize: 5,
+    });
+    await addEndpoint('medicalmanager/selectChooseCaseManagerInfo', { subOrderNo });
+  }
+
+  return {
+    serviceType,
+    serviceName,
+    poolKind,
+    orderState: order.orderState == null ? null : String(order.orderState),
+    orderStateName: order.orderStateName == null ? null : String(order.orderStateName),
+    sourceOrderNoTail: tailOrderNo(subOrderNo),
+    endpoints,
+  };
+}
+
+let trackingAnalysisRunning = false;
+
+async function runTrackingPoolAnalysis(mode: 'all' | 'missing' = 'all'): Promise<void> {
+  if (trackingAnalysisRunning) return;
+  trackingAnalysisRunning = true;
+  const startedAt = new Date().toISOString();
+  try {
+    const user = await getUser();
+    if (!user) throw new Error('未获取到泰康用户信息');
+    const greenServices = mode === 'all' ? await getServiceTypeOptions() : [];
+    const services =
+      mode === 'missing'
+        ? TRACKING_ANALYSIS_MISSING_SERVICE_TYPES
+        : [
+            ...greenServices,
+            { serviceType: REGISTER_SERVICE_TYPE, serviceName: '挂号协助', poolKind: 'register' as const },
+          ];
+    const samples: AnalysisSample[] = [];
+
+    await saveTrackingAnalysisState({
+      status: 'running',
+      mode,
+      startedAt,
+      updatedAt: new Date().toISOString(),
+      progress: {
+        serviceIndex: 0,
+        serviceTotal: services.length,
+        sampleCount: 0,
+      },
+    });
+
+    for (let idx = 0; idx < services.length; idx++) {
+      const svc = services[idx];
+      await saveTrackingAnalysisState({
+        status: 'running',
+        startedAt,
+        updatedAt: new Date().toISOString(),
+        progress: {
+          currentService: `${svc.serviceName}(${svc.serviceType})`,
+          serviceIndex: idx + 1,
+          serviceTotal: services.length,
+          sampleCount: samples.length,
+        },
+        result: {
+          mode,
+          generatedAt: new Date().toISOString(),
+          sampleLimitPerService: TRACKING_ANALYSIS_SAMPLE_LIMIT,
+          serviceTypes: services,
+          samples,
+        },
+      });
+
+      console.log(`[寰宇探针][追踪池分析] 开始 ${svc.serviceName}(${svc.serviceType})`);
+      const candidates =
+        mode === 'missing'
+          ? await fetchTrackingCandidatesDeep(svc.serviceType, svc.serviceName, svc.poolKind, user.userId)
+          : await fetchTrackingCandidates(svc.serviceType, svc.serviceName, svc.poolKind, user.userId);
+      for (const order of candidates) {
+        samples.push(
+          await inspectTrackingOrder(user.userId, svc.serviceType, svc.serviceName, svc.poolKind, order)
+        );
+        await saveTrackingAnalysisState({
+          status: 'running',
+          startedAt,
+          updatedAt: new Date().toISOString(),
+          progress: {
+            currentService: `${svc.serviceName}(${svc.serviceType})`,
+            serviceIndex: idx + 1,
+            serviceTotal: services.length,
+            sampleCount: samples.length,
+          },
+          result: {
+            mode,
+            generatedAt: new Date().toISOString(),
+            sampleLimitPerService: TRACKING_ANALYSIS_SAMPLE_LIMIT,
+            serviceTypes: services,
+            samples,
+          },
+        });
+        await sleep(TRACKING_ANALYSIS_THROTTLE_MS);
+      }
+    }
+
+    await saveTrackingAnalysisState({
+      status: 'done',
+      mode,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      progress: {
+        serviceIndex: services.length,
+        serviceTotal: services.length,
+        sampleCount: samples.length,
+      },
+      result: {
+        mode,
+        generatedAt: new Date().toISOString(),
+        sampleLimitPerService: TRACKING_ANALYSIS_SAMPLE_LIMIT,
+        serviceTypes: services,
+        samples,
+      },
+    });
+    console.log(`[寰宇探针][追踪池分析] 完成，样本 ${samples.length} 个`);
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    await saveTrackingAnalysisState({
+      status: 'error',
+      mode,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      progress: {
+        serviceIndex: 0,
+        serviceTotal: 0,
+        sampleCount: 0,
+      },
+      error,
+    });
+    console.error('[寰宇探针][追踪池分析] 失败:', error);
+  } finally {
+    trackingAnalysisRunning = false;
+  }
+}
 
 // ─── 用户身份（泰康 userId / userName） ──────────────────────
 let cachedUserId: number | null = null;
@@ -562,10 +1220,23 @@ function startPolling() {
   setInterval(() => void pollOnce(), POLL_INTERVAL_MS);
 }
 
+window.addEventListener('message', (event) => {
+  if (event.source !== window) return;
+  const data = event.data;
+  if (data?.source !== 'HYYD_EDIT_PAGE_PROBE' || !data.payload) return;
+  const payload = data.payload as EditPageNetworkEvent;
+  if (payload.kind === 'installed') {
+    console.log('[寰宇探针][编辑页分析] 页面接口监听已安装');
+    return;
+  }
+  if (!payload.path?.includes('/ccm-unify/')) return;
+  void appendEditNetworkEvent(payload);
+});
+
 // 接收 background 经 WS 取回的后端指纹基线。
 // 这是避免"刷新/换机时全量重抓泰康"的关键：本地无缓存时也能从后端拿到
 // 已采订单的状态指纹，只对新增/状态变化的订单访问泰康。
-chrome.runtime.onMessage.addListener((msg) => {
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'FINGERPRINT_BASELINE' && msg.payload && typeof msg.payload === 'object') {
     const backendEntries = Object.entries(msg.payload).filter(([, v]) => typeof v === 'string');
     const backendKeys = new Set(backendEntries.map(([k]) => k));
@@ -596,6 +1267,49 @@ chrome.runtime.onMessage.addListener((msg) => {
     lastFingerprint.clear();
     void chrome.storage.local.remove(FINGERPRINT_STORAGE_KEY);
     console.log('[寰宇探针][本地缓存] 已清理订单指纹缓存');
+  }
+
+  if (msg?.type === 'START_TRACKING_POOL_ANALYSIS') {
+    if (trackingAnalysisRunning) {
+      sendResponse?.({ ok: true, running: true });
+      return true;
+    }
+    void runTrackingPoolAnalysis('all');
+    sendResponse?.({ ok: true, running: true });
+    return true;
+  }
+
+  if (msg?.type === 'START_MISSING_TRACKING_POOL_ANALYSIS') {
+    if (trackingAnalysisRunning) {
+      sendResponse?.({ ok: true, running: true });
+      return true;
+    }
+    void runTrackingPoolAnalysis('missing');
+    sendResponse?.({ ok: true, running: true });
+    return true;
+  }
+
+  if (msg?.type === 'START_EDIT_PAGE_PROBE') {
+    void (async () => {
+      const now = new Date().toISOString();
+      const prev = await getEditAnalysisState();
+      await saveEditAnalysisState({
+        startedAt: prev.startedAt || now,
+        updatedAt: now,
+        snapshots: prev.snapshots,
+        networkEvents: prev.networkEvents,
+      });
+      installEditPageProbe();
+      sendResponse?.({ ok: true });
+    })();
+    return true;
+  }
+
+  if (msg?.type === 'SCAN_EDIT_PAGE_FORM') {
+    void appendEditSnapshot()
+      .then((snapshot) => sendResponse?.({ ok: true, fieldCount: snapshot.fields.length }))
+      .catch((e) => sendResponse?.({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+    return true;
   }
 });
 

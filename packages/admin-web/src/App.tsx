@@ -9,6 +9,7 @@ import OrdersPage from './pages/OrdersPage'
 import OrderDetailPage from './pages/OrderDetailPage'
 import MaterialsPage from './pages/MaterialsPage'
 import MaterialDetailPage from './pages/MaterialDetailPage'
+import MessagesPage from './pages/MessagesPage'
 import CallsPage from './pages/CallsPage'
 import CaptureHealthPage from './pages/CaptureHealthPage'
 import UnmatchedRefsPage from './pages/UnmatchedRefsPage'
@@ -39,6 +40,7 @@ export default function App(): React.JSX.Element {
         <Route path="orders/:id" element={<OrderDetailPage />} />
         <Route path="materials" element={<MaterialsPage />} />
         <Route path="materials/:id" element={<MaterialDetailPage />} />
+        <Route path="messages" element={<MessagesPage />} />
         <Route path="calls" element={<CallsPage />} />
         <Route path="capture-health" element={<CaptureHealthPage />} />
         <Route path="unmatched-refs" element={<UnmatchedRefsPage />} />

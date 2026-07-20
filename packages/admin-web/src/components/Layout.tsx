@@ -9,6 +9,7 @@ const NAV_ITEMS: Array<{ to: string; label: string; icon: string; end?: boolean 
   { to: '/employees', label: '员工', icon: '☻' },
   { to: '/orders', label: '订单', icon: '▤' },
   { to: '/materials', label: '素材', icon: '✎' },
+  { to: '/messages', label: '消息', icon: '✉' },
   { to: '/calls', label: '通话', icon: '☎' },
   { to: '/capture-health', label: '采集健康', icon: '📡' },
   { to: '/unmatched-refs', label: '待确认订单号', icon: '⚠' },

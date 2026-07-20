@@ -4,13 +4,14 @@ directories:
   buildResources: build
 files:
   - '!**/.vscode/*'
-  - '!src/*'
+  - '!src/**'
+  - '!resources/capture-sidecar/**'
+  - '!node_modules/@fontsource/noto-sans-sc/**'
+  - '!node_modules/.pnpm/@fontsource+noto-sans-sc*/**'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
-asarUnpack:
-  - resources/**
 extraResources:
   - from: resources/capture-sidecar
     to: capture-sidecar

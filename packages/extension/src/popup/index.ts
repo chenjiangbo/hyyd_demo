@@ -1,3 +1,5 @@
+export {};
+
 /**
  * 寰宇探针 Popup
  * 配置后端地址 + 员工 ID，展示连接状态
@@ -5,6 +7,8 @@
 
 const $ = (id: string) => document.getElementById(id)!;
 const FINGERPRINT_STORAGE_KEY = 'orderFingerprints';
+const TRACKING_ANALYSIS_STORAGE_KEY = 'trackingPoolAnalysis';
+const EDIT_PAGE_ANALYSIS_STORAGE_KEY = 'editPageAnalysis';
 
 // 后端 WS 地址有默认；员工 ID 不给默认，必须手工填，
 // 否则数据可能错误归到默认员工名下。
@@ -103,12 +107,152 @@ async function clearLocalCache() {
   alert(`本地缓存已清理。已通知 ${tabIds.length} 个泰康标签页。`);
 }
 
+async function getTaikangTabs(): Promise<chrome.tabs.Tab[]> {
+  return chrome.tabs.query({ url: '*://ccm.taikang.com/*' });
+}
+
+async function startTrackingAnalysis(mode: 'all' | 'missing' = 'all') {
+  const tabs = await getTaikangTabs();
+  const tab = tabs.find((t) => t.active) ?? tabs[0];
+  if (!tab?.id) {
+    alert('没有找到已打开的泰康标签页。请先打开并登录泰康系统。');
+    return;
+  }
+  await chrome.storage.local.set({
+    [TRACKING_ANALYSIS_STORAGE_KEY]: {
+      status: 'running',
+      mode,
+      updatedAt: new Date().toISOString(),
+      progress: { serviceIndex: 0, serviceTotal: 0, sampleCount: 0 },
+    },
+  });
+  await chrome.tabs.sendMessage(tab.id, {
+    type: mode === 'missing' ? 'START_MISSING_TRACKING_POOL_ANALYSIS' : 'START_TRACKING_POOL_ANALYSIS',
+  });
+  await refreshTrackingAnalysisStatus();
+  alert(`${mode === 'missing' ? '缺失类型深挖' : '追踪池分析'}已开始。可以关闭 popup，稍后再打开点“状态”或“下载”。`);
+}
+
+function formatAnalysisStatus(state: any): string {
+  if (!state) return '追踪池分析：暂无结果';
+  const statusMap: Record<string, string> = {
+    idle: '空闲',
+    running: '运行中',
+    done: '已完成',
+    error: '失败',
+  };
+  const progress = state.progress || {};
+  const parts = [
+    `追踪池分析：${statusMap[state.status] || state.status || '未知'}`,
+    `模式：${state.mode === 'missing' ? '缺失类型深挖' : '全量抽样'}`,
+    `服务 ${progress.serviceIndex ?? 0}/${progress.serviceTotal ?? 0}`,
+    `样本 ${progress.sampleCount ?? 0}`,
+  ];
+  if (progress.currentService) parts.push(`当前：${progress.currentService}`);
+  if (state.error) parts.push(`错误：${state.error}`);
+  if (state.updatedAt) parts.push(`更新：${new Date(state.updatedAt).toLocaleString()}`);
+  return parts.join('；');
+}
+
+async function refreshTrackingAnalysisStatus() {
+  const r = await chrome.storage.local.get(TRACKING_ANALYSIS_STORAGE_KEY);
+  $('tracking-analysis-status').textContent = formatAnalysisStatus(r[TRACKING_ANALYSIS_STORAGE_KEY]);
+}
+
+async function downloadTrackingAnalysis() {
+  const r = await chrome.storage.local.get(TRACKING_ANALYSIS_STORAGE_KEY);
+  const state = r[TRACKING_ANALYSIS_STORAGE_KEY];
+  if (!state?.result) {
+    alert('还没有可下载的追踪池分析结果。');
+    return;
+  }
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  a.href = url;
+  a.download = `tracking-pool-analysis-${ts}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function clearTrackingAnalysis() {
+  await chrome.storage.local.remove(TRACKING_ANALYSIS_STORAGE_KEY);
+  await refreshTrackingAnalysisStatus();
+}
+
+async function sendToActiveTaikangTab(message: unknown) {
+  const tabs = await getTaikangTabs();
+  const tab = tabs.find((t) => t.active) ?? tabs[0];
+  if (!tab?.id) {
+    throw new Error('没有找到已打开的泰康标签页');
+  }
+  return chrome.tabs.sendMessage(tab.id, message);
+}
+
+function formatEditAnalysisStatus(state: any): string {
+  if (!state) return '编辑页分析：暂无结果';
+  const snapshots = Array.isArray(state.snapshots) ? state.snapshots.length : 0;
+  const networkEvents = Array.isArray(state.networkEvents) ? state.networkEvents.length : 0;
+  const parts = [`编辑页分析：快照 ${snapshots}`, `接口 ${networkEvents}`];
+  if (state.updatedAt) parts.push(`更新：${new Date(state.updatedAt).toLocaleString()}`);
+  return parts.join('；');
+}
+
+async function refreshEditAnalysisStatus() {
+  const r = await chrome.storage.local.get(EDIT_PAGE_ANALYSIS_STORAGE_KEY);
+  $('edit-analysis-status').textContent = formatEditAnalysisStatus(r[EDIT_PAGE_ANALYSIS_STORAGE_KEY]);
+}
+
+async function startEditProbe() {
+  await sendToActiveTaikangTab({ type: 'START_EDIT_PAGE_PROBE' });
+  await refreshEditAnalysisStatus();
+  alert('编辑页监听已开始。之后切换阶段/打开编辑页时，页面接口字段结构会被记录。');
+}
+
+async function scanEditPage() {
+  const resp: any = await sendToActiveTaikangTab({ type: 'SCAN_EDIT_PAGE_FORM' });
+  await refreshEditAnalysisStatus();
+  if (!resp?.ok) {
+    throw new Error(resp?.error || '扫描失败');
+  }
+  alert(`已扫描当前页，字段控件 ${resp.fieldCount ?? 0} 个。`);
+}
+
+async function downloadEditAnalysis() {
+  const r = await chrome.storage.local.get(EDIT_PAGE_ANALYSIS_STORAGE_KEY);
+  const state = r[EDIT_PAGE_ANALYSIS_STORAGE_KEY];
+  if (!state || (!state.snapshots?.length && !state.networkEvents?.length)) {
+    alert('还没有可下载的编辑页分析结果。');
+    return;
+  }
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  a.href = url;
+  a.download = `edit-page-analysis-${ts}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function clearEditAnalysis() {
+  await chrome.storage.local.remove(EDIT_PAGE_ANALYSIS_STORAGE_KEY);
+  await refreshEditAnalysisStatus();
+}
+
 (async function init() {
   const config = await getConfig();
   ($('backend-ws-url') as HTMLInputElement).value = config.backendWsUrl;
   ($('employee-code') as HTMLInputElement).value = config.employeeCode;
   renderCollectStatus(config.collectPaused);
   await refreshStatus();
+  await refreshTrackingAnalysisStatus();
+  await refreshEditAnalysisStatus();
 
   $('save-config').addEventListener('click', () => {
     setConfig().catch((e) => console.error(e));
@@ -125,6 +269,69 @@ async function clearLocalCache() {
     clearLocalCache().catch((e) => {
       console.error(e);
       alert(`清理本地缓存失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('start-tracking-analysis').addEventListener('click', () => {
+    startTrackingAnalysis('all').catch((e) => {
+      console.error(e);
+      alert(`启动追踪池分析失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('start-missing-tracking-analysis').addEventListener('click', () => {
+    startTrackingAnalysis('missing').catch((e) => {
+      console.error(e);
+      alert(`启动缺失类型深挖失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('refresh-tracking-analysis').addEventListener('click', () => {
+    refreshTrackingAnalysisStatus().catch((e) => {
+      console.error(e);
+      alert(`刷新分析状态失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('download-tracking-analysis').addEventListener('click', () => {
+    downloadTrackingAnalysis().catch((e) => {
+      console.error(e);
+      alert(`下载分析结果失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('clear-tracking-analysis').addEventListener('click', () => {
+    clearTrackingAnalysis().catch((e) => {
+      console.error(e);
+      alert(`清除分析结果失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('start-edit-probe').addEventListener('click', () => {
+    startEditProbe().catch((e) => {
+      console.error(e);
+      alert(`启动编辑页监听失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('scan-edit-page').addEventListener('click', () => {
+    scanEditPage().catch((e) => {
+      console.error(e);
+      alert(`扫描当前编辑页失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('download-edit-analysis').addEventListener('click', () => {
+    downloadEditAnalysis().catch((e) => {
+      console.error(e);
+      alert(`下载编辑页分析失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('clear-edit-analysis').addEventListener('click', () => {
+    clearEditAnalysis().catch((e) => {
+      console.error(e);
+      alert(`清除编辑页分析失败：${e instanceof Error ? e.message : String(e)}`);
     });
   });
 })();

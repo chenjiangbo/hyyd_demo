@@ -6,6 +6,7 @@ export default defineConfig({
   entry: {
     background: 'src/background/index.ts',
     content: 'src/content/index.ts',
+    pageProbe: 'src/content/pageProbe.ts',
     popup: 'src/popup/index.ts'
   },
   format: ['iife'],

@@ -6,7 +6,7 @@
     <style>
       * { box-sizing: border-box; margin: 0; padding: 0; }
       body {
-        width: 320px;
+        width: 340px;
         font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC',
           'Microsoft YaHei', '微软雅黑', sans-serif;
         font-size: 13px;
@@ -35,15 +35,27 @@
       .debug-title { font-size: 12px; font-weight: 600; color: #9a3412; margin-bottom: 8px; }
       .debug-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
       .debug-buttons button { border: 0; border-radius: 4px; padding: 7px 8px; color: #fff; font-size: 12px; cursor: pointer; }
+      .debug-buttons.wide { grid-template-columns: 1fr; margin-top: 8px; }
+      .debug-buttons.three { grid-template-columns: 1fr 1fr 1fr; margin-top: 8px; }
       #toggle-collect { background: #d97706; }
       #clear-cache { background: #dc2626; }
+      #start-tracking-analysis { background: #2563eb; }
+      #start-missing-tracking-analysis { background: #1d4ed8; }
+      #refresh-tracking-analysis { background: #4b5563; }
+      #download-tracking-analysis { background: #059669; }
+      #clear-tracking-analysis { background: #7c2d12; }
+      #start-edit-probe { background: #0f766e; }
+      #scan-edit-page { background: #0369a1; }
+      #download-edit-analysis { background: #059669; }
+      #clear-edit-analysis { background: #7c2d12; }
       .debug-note { margin-top: 8px; color: #9a3412; font-size: 11px; line-height: 1.45; }
+      .analysis-status { margin-top: 8px; color: #374151; font-size: 11px; line-height: 1.45; word-break: break-word; }
     </style>
   </head>
   <body>
     <div class="header">
       <h1>寰宇医道探针</h1>
-      <span class="ver" id="ver">v1.2.1</span>
+      <span class="ver" id="ver">v1.2.4</span>
     </div>
 
     <div class="row">
@@ -76,7 +88,35 @@
         <button id="toggle-collect">暂停采集</button>
         <button id="clear-cache">清理本地缓存</button>
       </div>
+      <div class="debug-buttons wide">
+        <button id="start-tracking-analysis">开始追踪池分析</button>
+      </div>
+      <div class="debug-buttons wide">
+        <button id="start-missing-tracking-analysis">深挖缺失类型</button>
+      </div>
+      <div class="debug-buttons three">
+        <button id="refresh-tracking-analysis">状态</button>
+        <button id="download-tracking-analysis">下载</button>
+        <button id="clear-tracking-analysis">清除</button>
+      </div>
+      <div class="analysis-status" id="tracking-analysis-status">追踪池分析：未检查</div>
       <div class="debug-note">清理会删除本机订单指纹缓存；下次恢复采集会重新按后端基线/泰康状态判断。</div>
+    </div>
+
+    <div class="separator"></div>
+
+    <div class="debug-section">
+      <div class="debug-title">编辑页只读分析</div>
+      <div class="debug-buttons">
+        <button id="start-edit-probe">开始监听</button>
+        <button id="scan-edit-page">扫描当前页</button>
+      </div>
+      <div class="debug-buttons">
+        <button id="download-edit-analysis">下载结果</button>
+        <button id="clear-edit-analysis">清除结果</button>
+      </div>
+      <div class="analysis-status" id="edit-analysis-status">编辑页分析：未检查</div>
+      <div class="debug-note">只记录字段名、控件状态和接口字段结构；不读取输入值，不保存、不提交。</div>
     </div>
 
     <div class="separator"></div>

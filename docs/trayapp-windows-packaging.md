@@ -61,14 +61,35 @@ pnpm exec electron-builder --win --x64
 安装包输出：
 
 ```text
-C:\Users\chenj\hyyd_demo\packages\tray-app\dist\tray-app-1.0.0-setup.exe
+C:\Users\chenj\hyyd_demo\packages\tray-app\dist\tray-app-<version>-setup.exe
 ```
 
 整理到发布目录时重命名为：
 
 ```text
-C:\Users\chenj\hyyd_demo\release-windows\tray-app-1.0.0-setup-win-x64.exe
+C:\Users\chenj\hyyd_demo\release-windows\tray-app-<version>-setup-win-x64.exe
 ```
+
+4. 发布前检查安装包内容和大小。
+
+必须确认：
+
+- `app.asar` 不包含 `resources/capture-sidecar/**`，sidecar 只能通过 `extraResources` 出现在 `resources\capture-sidecar\`。
+- `app.asar` 不包含旧构建产物 `src/renderer/dist/**`。
+- `app.asar` 不包含源码字体目录 `src/renderer/fonts/**`。
+- `app.asar` 不包含 `node_modules/@fontsource/noto-sans-sc/**` 包本体；Vite 会把实际用到的字体切片输出到 `out/renderer/assets`。
+- `win-unpacked\resources\app.asar.unpacked\node_modules\better-sqlite3\build\Release\better_sqlite3.node` 必须存在。
+
+可用检查命令：
+
+```powershell
+cd C:\Users\chenj\hyyd_demo
+
+node_modules\.pnpm\node_modules\.bin\asar.cmd list packages\tray-app\dist\win-unpacked\resources\app.asar |
+  findstr /I /C:"src/renderer/dist" /C:"src/renderer/fonts" /C:"node_modules/@fontsource" /C:"resources/capture-sidecar"
+```
+
+这条命令正常应无输出；如果有输出，说明又有重复或无关资源进入 `app.asar`，不要发布给客户。
 
 ## Chrome 插件
 
@@ -129,8 +150,8 @@ huanyu-collector-android-debug.apk
 每次最终发布至少包含：
 
 ```text
-tray-app-1.0.0-setup-win-x64.exe
-tray-app-1.0.0-setup-win-x64.exe.blockmap
+tray-app-<version>-setup-win-x64.exe
+tray-app-<version>-setup-win-x64.exe.blockmap
 latest.yml
 huanyu-extension.crx
 update.xml
@@ -143,3 +164,4 @@ huanyu-collector-android-debug.apk
 - 普通国内 Windows 笔记本通常使用 x64，不要发布 arm64 安装包。
 - 如果安装后提示 `better_sqlite3.node is not a valid Win32 application`，说明原生依赖架构不匹配，需要重新执行 `pnpm exec electron-builder install-app-deps --arch=x64` 后再打包。
 - 如果快捷方式找不到 `tray-app.exe`，优先确认安装包架构是否为 x64，并确认 NSIS 配置允许选择安装目录。
+- 如果安装包突然接近 400MB，优先检查 `app.asar` 是否重复包含 `resources/capture-sidecar/**`，以及是否误包含旧的 `src/renderer/dist/**` 或字体包本体。

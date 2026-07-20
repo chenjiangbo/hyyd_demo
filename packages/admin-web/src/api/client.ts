@@ -17,6 +17,7 @@ import type {
   MaterialItem,
   MaterialDetail,
   CallItem,
+  AdminMessageItem,
   OrderListItem,
   OrderFull,
   MaterialOrderGroup,
@@ -153,6 +154,19 @@ export const adminApi = {
   },
   materialDetail(id: number) {
     return request<MaterialDetail>(`/api/v1/admin/materials/${id}`)
+  },
+
+  // ───── 微信/企微消息 ─────
+  messages(
+    params: {
+      cursor?: string
+      employeeId?: number
+      channel?: string
+      linked?: string
+      search?: string
+    } = {}
+  ) {
+    return request<CursorPage<AdminMessageItem>>(`/api/v1/admin/messages${qs(params)}`)
   },
 
   // ───── 通话 ─────

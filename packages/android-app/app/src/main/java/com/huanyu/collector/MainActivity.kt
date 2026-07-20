@@ -194,7 +194,8 @@ class MainActivity : Activity() {
         content.addView(sectionTitle("运行状态"))
         content.addView(kvSection(listOf(
             "服务" to serviceText,
-            "同步" to if (isSyncing(prefs)) "正在扫描/上传" else "空闲",
+            "同步" to syncStatusText(prefs),
+            "当前进度" to recordingProgressText(prefs),
             "员工 ID" to prefs.employeeCode.ifBlank { "未配置" },
             "启动时间" to formatTs(prefs.serviceStartedAt),
             "历史补采起点" to formatTs(prefs.recordingScanFloorTs),
@@ -261,6 +262,8 @@ class MainActivity : Activity() {
             "总音频文件" to "${prefs.lastRecordingTotalFileCount}",
             "游标后音频" to "${prefs.lastRecordingRawFileCount}",
             "可解析录音" to "${prefs.lastRecordingScanCount}",
+            "处理进度" to recordingProgressText(prefs),
+            "当前文件" to prefs.lastRecordingProgressCurrent.ifBlank { "无" },
             "未匹配录音" to "${prefs.lastRecordingMissCount}",
             "最近上传" to prefs.lastUploadedRecordingText
         )))
@@ -358,7 +361,7 @@ class MainActivity : Activity() {
             prefs.collectionEnabled -> "后台采集已启用"
             else -> "未启用"
         }
-        val sync = if (isSyncing(prefs)) "同步中" else "空闲"
+        val sync = syncStatusText(prefs)
         val hasError = prefs.lastSyncError.isNotBlank()
         val pending = prefs.pendingCallCount()
         statusIcon.setTextColor(
@@ -708,6 +711,28 @@ class MainActivity : Activity() {
     }
 
     private fun yesNo(value: Boolean): String = if (value) "已允许" else "未允许"
+
+    private fun syncStatusText(prefs: AppPrefs): String {
+        val stage = prefs.lastSyncProgressStage.ifBlank {
+            return if (isSyncing(prefs)) "正在扫描/上传" else "空闲"
+        }
+        if (isSyncing(prefs)) return stage
+        return if (stage == "本轮完成") "空闲" else stage
+    }
+
+    private fun recordingProgressText(prefs: AppPrefs): String {
+        val total = prefs.lastRecordingProgressTotal
+        val processed = prefs.lastRecordingProgressProcessed
+        val uploaded = prefs.lastRecordingProgressUploaded
+        val failed = prefs.lastRecordingProgressFailed
+        val base = if (total > 0) {
+            "$processed/$total，已上传 $uploaded，失败 $failed"
+        } else {
+            "待处理 0，已上传 $uploaded，失败 $failed"
+        }
+        val at = formatTs(prefs.lastSyncProgressAt)
+        return "$base · ${prefs.lastSyncProgressStage} · $at"
+    }
 
     private fun formatTs(value: Long): String {
         if (value <= 0L) return "无"

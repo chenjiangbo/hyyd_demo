@@ -75,6 +75,13 @@ export interface OrderMessage {
   screenshotUrl: string | null
 }
 
+export interface AdminMessageItem extends OrderMessage {
+  applicationNo: string | null
+  order?: OrderRef | null
+  applicationOrders?: OrderRef[]
+  employee?: EmployeeRef
+}
+
 export interface TimeseriesPoint {
   date: string // YYYY-MM-DD
   text: number

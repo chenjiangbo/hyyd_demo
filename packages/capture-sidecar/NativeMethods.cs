@@ -38,12 +38,19 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     internal static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
 
+    [DllImport("user32.dll")]
+    internal static extern IntPtr GetParent(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr WindowFromPoint(WinPoint point);
+
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
     internal static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
 
     // 取窗口的 owner（主窗口无 owner；菜单/浮层/对话框都是被 own 的弹出窗口）
     internal const uint GW_OWNER = 4;
-    // 扩展样式索引 + 工具窗口标志
+    // 样式索引 + 工具窗口标志
+    internal const int GWL_STYLE = -16;
     internal const int GWL_EXSTYLE = -20;
     internal const long WS_EX_TOOLWINDOW = 0x00000080;
 
@@ -157,3 +164,6 @@ internal readonly record struct WinRect(int Left, int Top, int Right, int Bottom
     public int Width => Right - Left;
     public int Height => Bottom - Top;
 }
+
+[StructLayout(LayoutKind.Sequential)]
+internal readonly record struct WinPoint(int X, int Y);

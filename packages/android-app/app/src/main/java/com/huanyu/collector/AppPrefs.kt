@@ -56,6 +56,34 @@ class AppPrefs(context: Context) {
         get() = prefs.getString("last_sync_error", "").orEmpty()
         set(value) = prefs.edit().putString("last_sync_error", value.take(600)).apply()
 
+    var lastSyncProgressAt: Long
+        get() = prefs.getLong("last_sync_progress_at", 0L)
+        set(value) = prefs.edit().putLong("last_sync_progress_at", value).apply()
+
+    var lastSyncProgressStage: String
+        get() = prefs.getString("last_sync_progress_stage", "未开始").orEmpty()
+        set(value) = prefs.edit().putString("last_sync_progress_stage", value.take(120)).apply()
+
+    var lastRecordingProgressTotal: Int
+        get() = prefs.getInt("last_recording_progress_total", 0)
+        set(value) = prefs.edit().putInt("last_recording_progress_total", value).apply()
+
+    var lastRecordingProgressProcessed: Int
+        get() = prefs.getInt("last_recording_progress_processed", 0)
+        set(value) = prefs.edit().putInt("last_recording_progress_processed", value).apply()
+
+    var lastRecordingProgressUploaded: Int
+        get() = prefs.getInt("last_recording_progress_uploaded", 0)
+        set(value) = prefs.edit().putInt("last_recording_progress_uploaded", value).apply()
+
+    var lastRecordingProgressFailed: Int
+        get() = prefs.getInt("last_recording_progress_failed", 0)
+        set(value) = prefs.edit().putInt("last_recording_progress_failed", value).apply()
+
+    var lastRecordingProgressCurrent: String
+        get() = prefs.getString("last_recording_progress_current", "").orEmpty()
+        set(value) = prefs.edit().putString("last_recording_progress_current", value.take(300)).apply()
+
     var lastBackendHealth: String
         get() = prefs.getString("last_backend_health", "未检查").orEmpty()
         set(value) = prefs.edit().putString("last_backend_health", value.take(300)).apply()
@@ -132,6 +160,25 @@ class AppPrefs(context: Context) {
 
     fun markRecordingUploaded(path: String) {
         prefs.edit().putBoolean("uploaded:$path", true).apply()
+    }
+
+    fun updateSyncProgress(
+        stage: String,
+        total: Int = lastRecordingProgressTotal,
+        processed: Int = lastRecordingProgressProcessed,
+        uploaded: Int = lastRecordingProgressUploaded,
+        failed: Int = lastRecordingProgressFailed,
+        current: String = lastRecordingProgressCurrent
+    ) {
+        prefs.edit()
+            .putLong("last_sync_progress_at", System.currentTimeMillis())
+            .putString("last_sync_progress_stage", stage.take(120))
+            .putInt("last_recording_progress_total", total)
+            .putInt("last_recording_progress_processed", processed)
+            .putInt("last_recording_progress_uploaded", uploaded)
+            .putInt("last_recording_progress_failed", failed)
+            .putString("last_recording_progress_current", current.take(300))
+            .apply()
     }
 
     fun rememberCallListItem(call: SyncedCall, uploaded: Boolean) {

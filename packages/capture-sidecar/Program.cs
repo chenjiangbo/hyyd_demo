@@ -24,6 +24,14 @@ internal static class Program
         catch { /* ignore */ }
         NativeMethods.TryEnableDpiAwareness();
 
+        var args = Environment.GetCommandLineArgs();
+        if (args.Any(a => string.Equals(a, "--probe-windows", StringComparison.OrdinalIgnoreCase)))
+        {
+            using var probe = new WindowProbe();
+            await probe.RunAsync();
+            return;
+        }
+
         var writer = new JsonLineWriter(JsonOptions);
         using var collector = new CaptureCollector(writer);
 
@@ -44,7 +52,6 @@ internal static class Program
 
         // 离线测试模式：对一张 PNG 跑 OCR + 消息结构化并打印（不开窗口、可重复，用于调参）。
         //   用法：hyyd-capture-sidecar.exe --test-image <png路径>
-        var args = Environment.GetCommandLineArgs();
         var tiIdx = Array.FindIndex(args, a => string.Equals(a, "--test-image", StringComparison.OrdinalIgnoreCase));
         if (tiIdx >= 0 && tiIdx + 1 < args.Length)
         {

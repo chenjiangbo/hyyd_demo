@@ -123,8 +123,11 @@ function decodeCursor(c: unknown): { ms: number; id: number } | null {
   }
 }
 
-// 生成按 (timeField desc, id desc) 的 keyset where 片段；timeField 取 createdAt 或 startedAt。
-function keysetWhere(timeField: 'createdAt' | 'startedAt', cursor: { ms: number; id: number } | null): any {
+// 生成按 (timeField desc, id desc) 的 keyset where 片段。
+function keysetWhere(
+  timeField: 'createdAt' | 'startedAt' | 'capturedAt',
+  cursor: { ms: number; id: number } | null
+): any {
   if (!cursor) return {}
   const d = new Date(cursor.ms)
   return {
@@ -940,10 +943,7 @@ export function registerAdminRoutes(
             attachments: { orderBy: { createdAt: 'asc' } },
             materials: { orderBy: { createdAt: 'desc' } },
             calls: { orderBy: { startedAt: 'desc' } },
-            statusHistory: { orderBy: { recordedAt: 'asc' } },
-            // 结构化聊天时间线：按排序键(sortTime ?? capturedAt)正序，构成对话气泡流。
-            // 上限 1000 条，足够单笔订单复盘；超量再分页。
-            messages: { orderBy: [{ sortTime: 'asc' }, { id: 'asc' }], take: 1000 }
+            statusHistory: { orderBy: { recordedAt: 'asc' } }
           }
         })
         if (!order) return reply.status(404).send({ error: '订单不存在' })
@@ -961,7 +961,20 @@ export function registerAdminRoutes(
 
         const materials = await Promise.all(order.materials.map((m) => serializeMaterial(m)))
 
-        const calls = order.calls.map((c) => ({
+        const rec = (order.detailJson as any)?.recommendations ?? null
+        const applicationNo = (order.rawJson as any)?.crmApplyNo ?? null
+
+        const orderCalls = await prisma.call.findMany({
+          where: {
+            OR: [
+              { orderId: order.id },
+              ...(applicationNo ? [{ applicationNo }] : [])
+            ]
+          },
+          orderBy: { startedAt: 'desc' }
+        })
+
+        const calls = orderCalls.map((c) => ({
           id: c.id,
           phone: c.phone,
           contactName: c.contactName,
@@ -974,11 +987,21 @@ export function registerAdminRoutes(
           hasRecording: !!c.recordingOssKey
         }))
 
-        const rec = (order.detailJson as any)?.recommendations ?? null
+        // 结构化聊天时间线：同一申请号可能拆成多张订单，消息按申请号共享展示。
+        const orderMessages = await prisma.message.findMany({
+          where: {
+            OR: [
+              { orderId: order.id },
+              ...(applicationNo ? [{ applicationNo }] : [])
+            ]
+          },
+          orderBy: [{ sortTime: 'asc' }, { id: 'asc' }],
+          take: 1000
+        })
 
         // 结构化消息时间线：self/other/system + 真实聊天时间(chatTime，算不出为 null) + 截图 presigned URL。
         const messages = await Promise.all(
-          order.messages.map(async (m) => ({
+          orderMessages.map(async (m) => ({
             id: m.id,
             channel: m.channel,
             conversationName: m.conversationName,
@@ -1413,6 +1436,109 @@ export function registerAdminRoutes(
       } catch (err: any) {
         rootFastify.log.error('admin capture/health 失败:', err)
         return reply.status(500).send({ error: '采集健康查询失败: ' + err.message })
+      }
+    })
+
+    // ───── 7.2 消息浏览（微信/企微，跨员工，游标分页 + 筛选）─────
+    fastify.get('/api/v1/admin/messages', async (request, reply) => {
+      try {
+        const q = request.query as any
+        const cursor = decodeCursor(q?.cursor)
+        const employeeId = q?.employeeId ? parseInt(q.employeeId, 10) : null
+        const channel = typeof q?.channel === 'string' && q.channel ? q.channel : null
+        const linked = q?.linked === 'true' ? true : q?.linked === 'false' ? false : null
+        const search = typeof q?.search === 'string' && q.search.trim() ? q.search.trim() : null
+
+        const filters: any[] = [keysetWhere('capturedAt', cursor)]
+        if (Number.isFinite(employeeId)) filters.push({ employeeId })
+        if (channel === 'wechat' || channel === 'wxwork') filters.push({ channel })
+        if (linked === true) filters.push({ OR: [{ orderId: { not: null } }, { applicationNo: { not: null } }] })
+        if (linked === false) filters.push({ orderId: null, applicationNo: null })
+        if (search) {
+          filters.push({
+            OR: [
+              { conversationName: { contains: search, mode: 'insensitive' } },
+              { senderName: { contains: search, mode: 'insensitive' } },
+              { contentText: { contains: search, mode: 'insensitive' } },
+              { applicationNo: { contains: search, mode: 'insensitive' } }
+            ]
+          })
+        }
+
+        const rows = await prisma.message.findMany({
+          where: { AND: filters },
+          orderBy: [{ capturedAt: 'desc' }, { id: 'desc' }],
+          take: PAGE_SIZE + 1,
+          include: {
+            order: { select: { id: true, sourceOrderNo: true, customerName: true, status: true } },
+            employee: { select: { id: true, name: true } }
+          }
+        })
+
+        const hasMore = rows.length > PAGE_SIZE
+        const page = rows.slice(0, PAGE_SIZE)
+        const applicationNos = Array.from(
+          new Set(page.map((m) => m.applicationNo).filter((x): x is string => !!x))
+        )
+        const applicationOrders = applicationNos.length
+          ? await prisma.order.findMany({
+              where: {
+                OR: applicationNos.map((applicationNo) => ({
+                  rawJson: { path: ['crmApplyNo'], equals: applicationNo }
+                }))
+              },
+              select: { id: true, sourceOrderNo: true, customerName: true, status: true, rawJson: true },
+              orderBy: { updatedAt: 'desc' }
+            })
+          : []
+        const ordersByApplicationNo = new Map<string, typeof applicationOrders>()
+        for (const order of applicationOrders) {
+          const applicationNo = (order.rawJson as any)?.crmApplyNo
+          if (!applicationNo) continue
+          const arr = ordersByApplicationNo.get(applicationNo) ?? []
+          arr.push(order)
+          ordersByApplicationNo.set(applicationNo, arr)
+        }
+
+        const items = await Promise.all(
+          page.map(async (m) => {
+            const relatedOrders = m.applicationNo
+              ? (ordersByApplicationNo.get(m.applicationNo) ?? []).map((o) => ({
+                  id: o.id,
+                  sourceOrderNo: o.sourceOrderNo,
+                  customerName: o.customerName,
+                  status: o.status
+                }))
+              : []
+            return {
+              id: m.id,
+              channel: m.channel,
+              conversationName: m.conversationName,
+              senderName: m.senderName,
+              senderType: m.senderType,
+              kind: m.kind,
+              contentText: m.contentText,
+              applicationNo: m.applicationNo,
+              chatTime: iso(m.chatTime),
+              sortTime: iso(m.sortTime ?? m.capturedAt),
+              capturedAt: m.capturedAt.toISOString(),
+              seenCount: m.seenCount,
+              screenshotUrl: m.screenshotOssKey
+                ? await presign('screenshots', m.screenshotOssKey).catch(() => null)
+                : null,
+              order: m.order,
+              applicationOrders: relatedOrders,
+              employee: m.employee
+            }
+          })
+        )
+        const last = page[page.length - 1]
+        return reply.send({
+          data: { items, nextCursor: hasMore && last ? encodeCursor(last.capturedAt, last.id) : null }
+        })
+      } catch (err: any) {
+        rootFastify.log.error('admin messages 失败:', err)
+        return reply.status(500).send({ error: '消息浏览查询失败: ' + err.message })
       }
     })
 

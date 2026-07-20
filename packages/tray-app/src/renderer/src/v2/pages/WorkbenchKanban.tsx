@@ -37,49 +37,6 @@ export type ApplicationGroup = {
 const REFRESH_INTERVAL_MS = 30_000
 const BOARD_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 
-// 临时模拟：当前真实数据里没有「已完成」订单，造两张用于预览已完成卡片样式。
-// 接入真实完成态数据后删除这段。
-const MOCK_DONE: Order[] = [
-  {
-    id: -1,
-    source: 'taikang',
-    sourceOrderNo: 'MOCK-DONE-1',
-    customerName: '赵敏',
-    customerPhone: '13800001111',
-    hospital: '四川大学华西医院',
-    dept: '骨科',
-    doctor: '',
-    status: '服务完成·已回填',
-    intendDate: null,
-    claimedAt: '2026-06-05 10:00:00',
-    updatedAt: '2026-06-08T09:00:00.000Z',
-    materialCount: 5,
-    audioCount: 1,
-    textCount: 3,
-    imageCount: 1,
-    rawJson: { poolType: 'general', serviceType: '第二诊疗' }
-  },
-  {
-    id: -2,
-    source: 'pingan',
-    sourceOrderNo: 'MOCK-DONE-2',
-    customerName: '孙立',
-    customerPhone: '13900002222',
-    hospital: '上海瑞金医院',
-    dept: '神经外科',
-    doctor: '',
-    status: '服务完成',
-    intendDate: null,
-    claimedAt: '2026-06-06 14:00:00',
-    updatedAt: '2026-06-09T15:00:00.000Z',
-    materialCount: 2,
-    audioCount: 0,
-    textCount: 2,
-    imageCount: 0,
-    rawJson: { poolType: 'general', serviceType: '住院协调' }
-  }
-]
-
 let cachedOrders: Order[] | null = null
 let cachedEmployeeCode: string | null = null
 let inflightOrders: Promise<Order[]> | null = null
@@ -97,7 +54,7 @@ function loadOrders(employeeCode: string, force = false): Promise<Order[]> {
   trackedRequest = fetchOrders()
     .then((list) => {
       cachedEmployeeCode = employeeCode
-      cachedOrders = [...list, ...MOCK_DONE]
+      cachedOrders = list
       return cachedOrders
     })
     .finally(() => {
@@ -952,13 +909,13 @@ function ListView({ groups, onOpen }: { groups: ApplicationGroup[]; onOpen: (gro
           <table className="w-full table-fixed border-collapse text-body-sm">
             <colgroup>
               <col className="w-[250px]" />
-              <col className="w-[245px]" />
+              <col className="w-[215px]" />
               <col className="w-[230px]" />
               <col className="w-[180px]" />
               <col className="w-[130px]" />
               <col className="w-[120px]" />
-              <col className="w-[80px]" />
-              <col className="w-[120px]" />
+              <col className="w-[68px]" />
+              <col className="w-[104px]" />
             </colgroup>
             <thead className="sticky top-0 bg-white z-10">
               <tr className="text-left text-[#454a5a] border-b border-border-subtle">
