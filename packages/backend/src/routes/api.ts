@@ -128,9 +128,10 @@ export function deleteExtPresenceInstance(employeeId: number, instanceId: string
 export const trayRestSeenMap = new Map<number, number>()
 
 // 移动端 App 没有可靠常驻 WS：前台服务高频上报，WorkManager 至少每 15 分钟执行一次。
+// Android/厂商系统可能暂停后台任务，因此这里表达“状态建议”，不把短暂断心跳直接当故障。
 export const mobileSeenMap = new Map<number, { lastSeenAt: number; source: string }>()
 const MOBILE_ACTIVE_WINDOW_MS = 2 * 60_000
-const MOBILE_BACKGROUND_WINDOW_MS = 20 * 60_000
+const MOBILE_BACKGROUND_WINDOW_MS = 30 * 60_000
 
 function markMobileSeen(employeeId: number, source: string) {
   mobileSeenMap.set(employeeId, { lastSeenAt: Date.now(), source })
@@ -442,21 +443,24 @@ export function registerApiRoutes(
 
     const info = aggregateExtPresence(request.employee.id)
 
-    // 移动端状态：前台联系 2 分钟内为活跃；WorkManager/其他心跳 20 分钟内为后台正常。
+    // 移动端状态：
+    // - 2 分钟内前台/前台服务心跳：在线采集中
+    // - 30 分钟内 WorkManager/其他心跳，或 30 分钟内有通话补传：后台等待中
+    // - 超过窗口：需要员工打开 App 触发补传，而不是按“故障离线”处理
     const mobileSeen = mobileSeenMap.get(request.employee.id)
     const mobileAge = mobileSeen ? Date.now() - mobileSeen.lastSeenAt : Number.POSITIVE_INFINITY
     const isWorkerHeartbeat = mobileSeen?.source === 'work_manager'
-    let mobileState: 'active' | 'background' | 'stale' =
+    let mobileState: 'active' | 'background' | 'needs_open' =
       mobileAge <= MOBILE_ACTIVE_WINDOW_MS && !isWorkerHeartbeat
         ? 'active'
         : mobileAge <= MOBILE_BACKGROUND_WINDOW_MS
           ? 'background'
-          : 'stale'
+          : 'needs_open'
     let mobileOnlineReason: 'heartbeat' | 'recent_call' | null =
-      mobileState === 'stale' ? null : 'heartbeat'
-    if (mobileState === 'stale') {
+      mobileState === 'needs_open' ? null : 'heartbeat'
+    if (mobileState === 'needs_open') {
       const recentCall = await prisma.call.findFirst({
-        where: { employeeId: request.employee.id, startedAt: { gte: new Date(Date.now() - 10 * 60_000) } },
+        where: { employeeId: request.employee.id, startedAt: { gte: new Date(Date.now() - MOBILE_BACKGROUND_WINDOW_MS) } },
         select: { id: true }
       })
       if (recentCall) {
@@ -464,7 +468,7 @@ export function registerApiRoutes(
         mobileOnlineReason = 'recent_call'
       }
     }
-    const mobileOnline = mobileState !== 'stale'
+    const mobileOnline = mobileState !== 'needs_open'
     const mobileLastSeenAt = mobileSeen ? new Date(mobileSeen.lastSeenAt).toISOString() : null
     const mobileHeartbeatSource = mobileSeen?.source ?? null
 
@@ -563,16 +567,20 @@ export function registerApiRoutes(
       const { source, status, pool, assignedEmployeeId, assignedEmployeeCode } = request.query
 
       const where: any = {}
+      let captureEmployeeId: number | null = null
       if (source) where.source = source
       if (status) where.status = status
       if (pool) where.rawJson = { path: ['pool'], equals: pool }
       if (assignedEmployeeId) {
-        where.assignedEmployeeId = parseInt(assignedEmployeeId, 10)
+        captureEmployeeId = parseInt(assignedEmployeeId, 10)
+        where.assignedEmployeeId = captureEmployeeId
       } else if (assignedEmployeeCode) {
         const employee = await ensureEmployeeByCode(prisma, assignedEmployeeCode)
+        captureEmployeeId = employee.id
         where.assignedEmployeeId = employee.id
       } else if (pool !== 'public') {
         if (!request.employee) return reply.status(401).send({ error: '未登录' })
+        captureEmployeeId = request.employee.id
         where.assignedEmployeeId = request.employee.id
       }
 
@@ -596,11 +604,54 @@ export function registerApiRoutes(
             }
           }
         })
+        const orderIds = orders.map((o) => o.id)
+        const applicationNos = Array.from(
+          new Set(
+            orders
+              .map((o) => ((o.rawJson ?? {}) as Record<string, unknown>).crmApplyNo)
+              .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+              .map((x) => x.trim())
+          )
+        )
+        const messagesForOrders = (orderIds.length || applicationNos.length)
+          ? await prisma.message.findMany({
+              where: {
+                ...(captureEmployeeId ? { employeeId: captureEmployeeId } : {}),
+                OR: [
+                  ...(orderIds.length ? [{ orderId: { in: orderIds } }] : []),
+                  ...(applicationNos.length ? [{ applicationNo: { in: applicationNos } }] : [])
+                ]
+              },
+              select: { id: true, orderId: true, applicationNo: true }
+            })
+          : []
+        const appToOrderIds = new Map<string, number[]>()
+        for (const o of orders) {
+          const appNo = ((o.rawJson ?? {}) as Record<string, unknown>).crmApplyNo
+          if (typeof appNo !== 'string' || !appNo.trim()) continue
+          const key = appNo.trim()
+          const ids = appToOrderIds.get(key) ?? []
+          ids.push(o.id)
+          appToOrderIds.set(key, ids)
+        }
+        const messageIdsByOrderId = new Map<number, Set<number>>()
+        for (const orderId of orderIds) messageIdsByOrderId.set(orderId, new Set<number>())
+        for (const message of messagesForOrders) {
+          if (message.orderId && messageIdsByOrderId.has(message.orderId)) {
+            messageIdsByOrderId.get(message.orderId)!.add(message.id)
+          }
+          if (message.applicationNo) {
+            for (const orderId of appToOrderIds.get(message.applicationNo) ?? []) {
+              messageIdsByOrderId.get(orderId)?.add(message.id)
+            }
+          }
+        }
         // 给每单补几个 trayapp 工作台要展示的派生字段：
         //   - claimedAt：申领时间。优先用泰康 rawJson 里的几种时间字段，
         //     最后兜底到我们自己的 createdAt。
         //   - audioCount：已采到的录音条数（calls 表实际行数）。
-        //   - textCount / imageCount：粘贴的文字 / 图片素材数（materials 表）
+        //   - textCount：微信/企微 OCR 消息数 + 手工文字素材数。
+        //   - imageCount：粘贴的图片素材数（materials 表）
         //   - materialCount：三类合计
         //   - lastMaterialAt：任何素材的最近一次入库时间（取 max(call, material)）
         const data = orders.map((o: any) => {
@@ -663,7 +714,8 @@ export function registerApiRoutes(
             null
 
           const audioCount = o._count?.calls ?? 0
-          const textCount = (o.materials ?? []).filter((m: any) => m.type === 'text').length
+          const messageCount = messageIdsByOrderId.get(o.id)?.size ?? 0
+          const textCount = messageCount + (o.materials ?? []).filter((m: any) => m.type === 'text').length
           const imageCount = (o.materials ?? []).filter((m: any) => m.type === 'image').length
           const materialCount = audioCount + textCount + imageCount
 

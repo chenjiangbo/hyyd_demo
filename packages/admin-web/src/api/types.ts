@@ -202,6 +202,9 @@ export interface OrderListItem {
   attachmentCount: number
   materialCount: number
   callCount: number
+  wechatMessageCount?: number
+  wxworkMessageCount?: number
+  recordingCount?: number
   createdAt: string
 }
 

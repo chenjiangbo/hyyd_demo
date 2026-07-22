@@ -12,7 +12,7 @@
  * 这里通过本插件作用域内的 preHandler 自行做管理员鉴权。
  */
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { PrismaClient } from '@prisma/client'
+import { Prisma, PrismaClient } from '@prisma/client'
 import * as Minio from 'minio'
 import jwt from 'jsonwebtoken'
 import { activeConnections, presenceMap, trayRestSeenMap } from './api.js'
@@ -40,6 +40,36 @@ export function verifyAdminToken(token: string | undefined): boolean {
 // 把 Date 安全转 ISO；null 透传。
 function iso(d: Date | null | undefined): string | null {
   return d ? d.toISOString() : null
+}
+
+function parseAdminDateParam(value: unknown, label: string): Date | null {
+  if (typeof value !== 'string' || !value.trim()) return null
+  const text = value.trim()
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(text) ? new Date(`${text}T00:00:00.000+08:00`) : new Date(text)
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`${label} 非法`)
+  }
+  return date
+}
+
+function parseAdminEndDateParam(value: unknown, label: string): Date | null {
+  if (typeof value !== 'string' || !value.trim()) return null
+  const text = value.trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const date = new Date(`${text}T00:00:00.000+08:00`)
+    if (Number.isNaN(date.getTime())) throw new Error(`${label} 非法`)
+    date.setDate(date.getDate() + 1)
+    return date
+  }
+  const date = new Date(text)
+  if (Number.isNaN(date.getTime())) throw new Error(`${label} 非法`)
+  return date
+}
+
+function parseBooleanFilter(value: unknown): boolean | null {
+  if (value === 'true') return true
+  if (value === 'false') return false
+  return null
 }
 
 // 从订单的 rawJson / detailJson 里取"受理/申请号"（泰康 applyNo）。
@@ -860,6 +890,94 @@ export function registerAdminRoutes(
       }
     })
 
+    async function orderIdsMatchingCaptureFilters(filters: {
+      hasWechatMessage: boolean | null
+      hasWxworkMessage: boolean | null
+      hasRecording: boolean | null
+    }): Promise<number[] | null> {
+      const conditions: Prisma.Sql[] = []
+      const messageExists = (channel: string) => Prisma.sql`
+        EXISTS (
+          SELECT 1
+            FROM messages m
+           WHERE (m.order_id = o.id OR (
+             o.raw_json->>'crmApplyNo' IS NOT NULL
+             AND m.application_no = o.raw_json->>'crmApplyNo'
+           ))
+             AND m.channel = ${channel}
+        )
+      `
+      const recordingExists = Prisma.sql`
+        EXISTS (
+          SELECT 1
+            FROM calls c
+           WHERE (c.order_id = o.id OR (
+             o.raw_json->>'crmApplyNo' IS NOT NULL
+             AND c.application_no = o.raw_json->>'crmApplyNo'
+           ))
+             AND c.recording_oss_key IS NOT NULL
+        )
+      `
+
+      if (filters.hasWechatMessage !== null) {
+        const exists = messageExists('wechat')
+        conditions.push(filters.hasWechatMessage ? exists : Prisma.sql`NOT ${exists}`)
+      }
+      if (filters.hasWxworkMessage !== null) {
+        const exists = messageExists('wxwork')
+        conditions.push(filters.hasWxworkMessage ? exists : Prisma.sql`NOT ${exists}`)
+      }
+      if (filters.hasRecording !== null) {
+        conditions.push(filters.hasRecording ? recordingExists : Prisma.sql`NOT ${recordingExists}`)
+      }
+      if (conditions.length === 0) return null
+
+      const rows = await prisma.$queryRaw<Array<{ id: number }>>`
+        SELECT o.id
+          FROM orders o
+         WHERE ${Prisma.join(conditions, ' AND ')}
+      `
+      return rows.map((row) => row.id)
+    }
+
+    async function captureCountsForOrders(orderIds: number[]): Promise<Map<number, {
+      wechatMessageCount: number
+      wxworkMessageCount: number
+      recordingCount: number
+    }>> {
+      if (orderIds.length === 0) return new Map()
+      const rows = await prisma.$queryRaw<Array<{
+        id: number
+        wechat_message_count: bigint
+        wxwork_message_count: bigint
+        recording_count: bigint
+      }>>`
+        SELECT
+          o.id,
+          COUNT(DISTINCT m.id) FILTER (WHERE m.channel = 'wechat') AS wechat_message_count,
+          COUNT(DISTINCT m.id) FILTER (WHERE m.channel = 'wxwork') AS wxwork_message_count,
+          COUNT(DISTINCT c.id) FILTER (WHERE c.recording_oss_key IS NOT NULL) AS recording_count
+        FROM orders o
+        LEFT JOIN messages m
+          ON (m.order_id = o.id OR (
+            o.raw_json->>'crmApplyNo' IS NOT NULL
+            AND m.application_no = o.raw_json->>'crmApplyNo'
+          ))
+        LEFT JOIN calls c
+          ON (c.order_id = o.id OR (
+            o.raw_json->>'crmApplyNo' IS NOT NULL
+            AND c.application_no = o.raw_json->>'crmApplyNo'
+          ))
+        WHERE o.id IN (${Prisma.join(orderIds)})
+        GROUP BY o.id
+      `
+      return new Map(rows.map((row) => [row.id, {
+        wechatMessageCount: Number(row.wechat_message_count),
+        wxworkMessageCount: Number(row.wxwork_message_count),
+        recordingCount: Number(row.recording_count)
+      }]))
+    }
+
     // ───── 5. 订单浏览（游标分页 + 搜索 + 按员工筛）─────
     fastify.get('/api/v1/admin/orders', async (request, reply) => {
       try {
@@ -869,10 +987,27 @@ export function registerAdminRoutes(
         const employeeId = q?.employeeId ? parseInt(q.employeeId, 10) : null
         // poolType: 'register'(挂号) | 'general'(绿通)，存在 rawJson 里，用 Postgres JSON 过滤
         const poolType = q?.poolType === 'register' || q?.poolType === 'general' ? q.poolType : null
+        const hasWechatMessage = parseBooleanFilter(q?.hasWechatMessage)
+        const hasWxworkMessage = parseBooleanFilter(q?.hasWxworkMessage)
+        const hasRecording = parseBooleanFilter(q?.hasRecording)
+        const createdFrom = parseAdminDateParam(q?.createdFrom, '申领开始时间')
+        const createdTo = parseAdminEndDateParam(q?.createdTo, '申领结束时间')
 
         const filters: any[] = [keysetWhere('createdAt', cursor)]
         if (Number.isFinite(employeeId)) filters.push({ assignedEmployeeId: employeeId })
         if (poolType) filters.push({ rawJson: { path: ['poolType'], equals: poolType } })
+        if (createdFrom || createdTo) {
+          filters.push({
+            createdAt: {
+              ...(createdFrom ? { gte: createdFrom } : {}),
+              ...(createdTo ? { lt: createdTo } : {})
+            }
+          })
+        }
+        const captureOrderIds = await orderIdsMatchingCaptureFilters({ hasWechatMessage, hasWxworkMessage, hasRecording })
+        if (captureOrderIds) {
+          filters.push(captureOrderIds.length > 0 ? { id: { in: captureOrderIds } } : { id: -1 })
+        }
         if (search) {
           filters.push({
             OR: [
@@ -905,6 +1040,7 @@ export function registerAdminRoutes(
 
         const hasMore = rows.length > PAGE_SIZE
         const page = rows.slice(0, PAGE_SIZE)
+        const captureCounts = await captureCountsForOrders(page.map((o) => o.id))
         const items = page.map((o) => ({
           id: o.id,
           sourceOrderNo: o.sourceOrderNo,
@@ -918,6 +1054,9 @@ export function registerAdminRoutes(
           attachmentCount: o._count.attachments,
           materialCount: o._count.materials,
           callCount: o._count.calls,
+          wechatMessageCount: captureCounts.get(o.id)?.wechatMessageCount ?? 0,
+          wxworkMessageCount: captureCounts.get(o.id)?.wxworkMessageCount ?? 0,
+          recordingCount: captureCounts.get(o.id)?.recordingCount ?? 0,
           createdAt: o.createdAt.toISOString()
         }))
         const last = page[page.length - 1]

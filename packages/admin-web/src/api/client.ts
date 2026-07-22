@@ -139,7 +139,17 @@ export const adminApi = {
   },
 
   // ───── 订单 ─────
-  orders(params: { cursor?: string; search?: string; employeeId?: number; poolType?: string } = {}) {
+  orders(params: {
+    cursor?: string
+    search?: string
+    employeeId?: number
+    poolType?: string
+    hasWechatMessage?: string
+    hasWxworkMessage?: string
+    hasRecording?: string
+    createdFrom?: string
+    createdTo?: string
+  } = {}) {
     return request<CursorPage<OrderListItem>>(`/api/v1/admin/orders${qs(params)}`)
   },
   orderFull(id: number) {

@@ -13,6 +13,10 @@ export function OrderTable({
   rows: Row[]
   showEmployee?: boolean
 }): React.JSX.Element {
+  const showCaptureCounts = rows.some(
+    (o) => 'wechatMessageCount' in o || 'wxworkMessageCount' in o || 'recordingCount' in o
+  )
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
@@ -23,6 +27,7 @@ export function OrderTable({
             {showEmployee && <th className="px-3 py-2.5 font-medium">员工</th>}
             <th className="px-3 py-2.5 font-medium">详情</th>
             <th className="px-3 py-2.5 font-medium text-right">附/素/通</th>
+            {showCaptureCounts && <th className="px-3 py-2.5 font-medium text-right">微/企/录</th>}
             <th className="px-3 py-2.5"></th>
           </tr>
         </thead>
@@ -50,6 +55,12 @@ export function OrderTable({
               <td className="px-3 py-2.5 text-right text-xs tabular-nums text-fg-muted">
                 {o.attachmentCount} / {o.materialCount} / {o.callCount}
               </td>
+              {showCaptureCounts && (
+                <td className="px-3 py-2.5 text-right text-xs tabular-nums text-fg-muted">
+                  {captureCount(o, 'wechatMessageCount')} / {captureCount(o, 'wxworkMessageCount')} /{' '}
+                  {captureCount(o, 'recordingCount')}
+                </td>
+              )}
               <td className="px-3 py-2.5 text-right">
                 <Link to={`/orders/${o.id}`} className="text-xs text-accent-strong hover:underline">
                   详情 →
@@ -61,4 +72,9 @@ export function OrderTable({
       </table>
     </div>
   )
+}
+
+function captureCount(row: Row, key: 'wechatMessageCount' | 'wxworkMessageCount' | 'recordingCount'): number {
+  const captureRow = row as Partial<Record<'wechatMessageCount' | 'wxworkMessageCount' | 'recordingCount', number>>
+  return captureRow[key] ?? 0
 }
