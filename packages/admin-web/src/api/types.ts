@@ -32,6 +32,11 @@ export interface CaptureHealthRow {
   online: boolean
   extOnline: boolean
   trayOnline: boolean
+  trayLastSeenAt: string | null
+  mobileOnline: boolean
+  mobileState: 'active' | 'background' | 'needs_open'
+  mobileLastSeenAt: string | null
+  mobileHeartbeatSource: string | null
   lastSeenAt: string | null
   tokenOk: boolean | null
   lastCaptureAt: string | null

@@ -30,6 +30,32 @@ function Count({ hour, today }: { hour: number; today: number }): React.JSX.Elem
   )
 }
 
+function EndpointStatus({
+  online,
+  label,
+  lastSeenAt
+}: {
+  online: boolean
+  label: string
+  lastSeenAt?: string | null
+}): React.JSX.Element {
+  return (
+    <div className="inline-flex flex-col gap-0.5">
+      <span className="inline-flex items-center gap-1.5">
+        <Dot color={online ? 'green' : 'gray'} />
+        <span className="text-xs text-fg-muted">{label}</span>
+      </span>
+      {lastSeenAt && <span className="text-[11px] text-fg-subtle">{fmtRelative(lastSeenAt)}</span>}
+    </div>
+  )
+}
+
+function mobileLabel(state: 'active' | 'background' | 'needs_open'): string {
+  if (state === 'active') return '在线'
+  if (state === 'background') return '后台'
+  return '需打开'
+}
+
 export default function CaptureHealthPage(): React.JSX.Element {
   const q = useQuery({
     queryKey: ['capture-health'],
@@ -41,7 +67,7 @@ export default function CaptureHealthPage(): React.JSX.Element {
     <div>
       <PageHeader
         title="采集健康"
-        subtitle="每员工现场采集状态 · 计数列为「近 1 小时 / 今日」· 每 15 秒刷新"
+        subtitle="每员工 Chrome 插件、TrayApp、移动端状态 · 计数列为「近 1 小时 / 今日」· 每 15 秒刷新"
       />
 
       {q.isLoading ? (
@@ -56,7 +82,9 @@ export default function CaptureHealthPage(): React.JSX.Element {
             <thead>
               <tr className="text-left text-xs text-fg-muted border-b border-line">
                 <th className="py-2.5 px-4 font-medium">员工</th>
-                <th className="py-2.5 px-3 font-medium">在线</th>
+                <th className="py-2.5 px-3 font-medium">Chrome 插件</th>
+                <th className="py-2.5 px-3 font-medium">TrayApp</th>
+                <th className="py-2.5 px-3 font-medium">移动端</th>
                 <th className="py-2.5 px-3 font-medium">最近采集</th>
                 <th className="py-2.5 px-3 font-medium">消息 1h/今日</th>
                 <th className="py-2.5 px-3 font-medium">素材 1h/今日</th>
@@ -83,15 +111,17 @@ export default function CaptureHealthPage(): React.JSX.Element {
                       </Link>
                     </td>
                     <td className="py-2.5 px-3">
-                      <span className="inline-flex items-center gap-1.5">
-                        <Dot color={r.online ? 'green' : 'gray'} />
-                        <span className="text-xs text-fg-muted">
-                          {r.extOnline ? '插件' : ''}
-                          {r.extOnline && r.trayOnline ? '+' : ''}
-                          {r.trayOnline ? '桌面' : ''}
-                          {!r.online ? '离线' : ''}
-                        </span>
-                      </span>
+                      <EndpointStatus online={r.extOnline} label={r.extOnline ? '在线' : '离线'} lastSeenAt={r.lastSeenAt} />
+                    </td>
+                    <td className="py-2.5 px-3">
+                      <EndpointStatus online={r.trayOnline} label={r.trayOnline ? '在线' : '未启动'} lastSeenAt={r.trayLastSeenAt} />
+                    </td>
+                    <td className="py-2.5 px-3">
+                      <EndpointStatus
+                        online={r.mobileOnline}
+                        label={mobileLabel(r.mobileState)}
+                        lastSeenAt={r.mobileLastSeenAt}
+                      />
                     </td>
                     <td className={`py-2.5 px-3 text-xs ${TONE_CLASS[tone]}`}>
                       {fmtRelative(r.lastCaptureAt)}

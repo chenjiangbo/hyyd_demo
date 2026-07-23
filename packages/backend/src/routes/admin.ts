@@ -15,7 +15,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { Prisma, PrismaClient } from '@prisma/client'
 import * as Minio from 'minio'
 import jwt from 'jsonwebtoken'
-import { activeConnections, presenceMap, trayRestSeenMap } from './api.js'
+import { activeConnections, mobileSeenMap, presenceMap, trayRestSeenMap } from './api.js'
 import { getEnv } from '../env.js'
 import { getRecordingPlaybackInfo } from '../audioTranscode.js'
 
@@ -126,11 +126,36 @@ function trayInfo(employeeId: number): { online: boolean; lastSeenAt: string | n
   }
 }
 
-// 员工综合在线 = Chrome 插件 WS 活跃 或 Tray REST 心跳活跃
+const MOBILE_ACTIVE_WINDOW_MS = 2 * 60_000
+const MOBILE_BACKGROUND_WINDOW_MS = 30 * 60_000
+function mobileInfo(employeeId: number): {
+  online: boolean
+  state: 'active' | 'background' | 'needs_open'
+  lastSeenAt: string | null
+  source: string | null
+} {
+  const seen = mobileSeenMap.get(employeeId)
+  const age = seen ? Date.now() - seen.lastSeenAt : Number.POSITIVE_INFINITY
+  const workerHeartbeat = seen?.source === 'work_manager'
+  const state =
+    age <= MOBILE_ACTIVE_WINDOW_MS && !workerHeartbeat
+      ? 'active'
+      : age <= MOBILE_BACKGROUND_WINDOW_MS
+        ? 'background'
+        : 'needs_open'
+  return {
+    online: state !== 'needs_open',
+    state,
+    lastSeenAt: seen ? new Date(seen.lastSeenAt).toISOString() : null,
+    source: seen?.source ?? null
+  }
+}
+
+// 员工综合在线 = Chrome 插件 WS 活跃 或 Tray REST 心跳活跃 或移动端近期活跃。
 function employeeIsOnline(employeeId: number): boolean {
   const info = presenceMap.get(employeeId)
   const extFresh = info ? presenceIsFresh(info.lastSeenAt) : false
-  return extFresh || trayInfo(employeeId).online
+  return extFresh || trayInfo(employeeId).online || mobileInfo(employeeId).online
 }
 
 // 列表分页统一页大小（≤ 50，符合验收要求）
@@ -1545,6 +1570,7 @@ export function registerAdminRoutes(
           const info = presenceMap.get(e.id)
           const extOnline = info ? presenceIsFresh(info.lastSeenAt) : false
           const tray = trayInfo(e.id)
+          const mobile = mobileInfo(e.id)
           // 最近一次采集 = 消息/素材/通话 最大时间
           let lastCaptureAt: Date | null = null
           for (const d of [lastMsgM.get(e.id), lastMatM.get(e.id), lastCallM.get(e.id)]) {
@@ -1553,9 +1579,14 @@ export function registerAdminRoutes(
           return {
             employeeId: e.id,
             name: e.name,
-            online: extOnline || tray.online,
+            online: extOnline || tray.online || mobile.online,
             extOnline,
             trayOnline: tray.online,
+            trayLastSeenAt: tray.lastSeenAt,
+            mobileOnline: mobile.online,
+            mobileState: mobile.state,
+            mobileLastSeenAt: mobile.lastSeenAt,
+            mobileHeartbeatSource: mobile.source,
             lastSeenAt: info ? new Date(info.lastSeenAt).toISOString() : tray.lastSeenAt,
             tokenOk: info?.tokenOk ?? null,
             lastCaptureAt: iso(lastCaptureAt),
