@@ -223,7 +223,7 @@ export interface Presence {
   extConnected: boolean // Chrome 插件 WebSocket 是否连着
   taikangTabOpen: boolean // 插件是否打开了泰康页
   mobileOnline?: boolean // 移动端 App 是否在线（心跳/近期通话上传）
-  mobileState?: 'active' | 'background' | 'stale'
+  mobileState?: 'active' | 'background' | 'needs_open' | 'stale'
   mobileOnlineReason?: 'heartbeat' | 'recent_call' | null
   mobileLastSeenAt?: string | null
   mobileHeartbeatSource?: string | null

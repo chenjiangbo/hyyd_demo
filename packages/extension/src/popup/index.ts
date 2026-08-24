@@ -17,7 +17,7 @@ async function getConfig(): Promise<{ backendWsUrl: string; employeeCode: string
   return {
     backendWsUrl: (r.backendWsUrl as string) || 'ws://47.95.14.233:9093/ws',
     employeeCode: ((r.employeeCode as string) || '').trim(),
-    collectPaused: !!r.collectPaused,
+    collectPaused: r.collectPaused !== false,
   };
 }
 
@@ -38,7 +38,7 @@ async function setConfig() {
 
 async function refreshStatus() {
   const cfg = await chrome.storage.local.get('collectPaused');
-  renderCollectStatus(!!cfg.collectPaused);
+  renderCollectStatus(cfg.collectPaused !== false);
 
   // 后端连接状态：通过 background 查询
   chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (resp) => {
@@ -88,7 +88,8 @@ function renderCollectStatus(paused: boolean) {
 
 async function toggleCollectPaused() {
   const r = await chrome.storage.local.get('collectPaused');
-  const next = !r.collectPaused;
+  const current = r.collectPaused !== false;
+  const next = !current;
   await chrome.storage.local.set({ collectPaused: next });
   renderCollectStatus(next);
 }
@@ -111,7 +112,9 @@ async function getTaikangTabs(): Promise<chrome.tabs.Tab[]> {
   return chrome.tabs.query({ url: '*://ccm.taikang.com/*' });
 }
 
-async function startTrackingAnalysis(mode: 'all' | 'missing' = 'all') {
+type TrackingPopupMode = 'all' | 'missing' | 'zh-register' | 'zh-green';
+
+async function startTrackingAnalysis(mode: TrackingPopupMode = 'all') {
   const tabs = await getTaikangTabs();
   const tab = tabs.find((t) => t.active) ?? tabs[0];
   if (!tab?.id) {
@@ -126,11 +129,25 @@ async function startTrackingAnalysis(mode: 'all' | 'missing' = 'all') {
       progress: { serviceIndex: 0, serviceTotal: 0, sampleCount: 0 },
     },
   });
-  await chrome.tabs.sendMessage(tab.id, {
-    type: mode === 'missing' ? 'START_MISSING_TRACKING_POOL_ANALYSIS' : 'START_TRACKING_POOL_ANALYSIS',
-  });
+  const messageType =
+    mode === 'missing'
+      ? 'START_MISSING_TRACKING_POOL_ANALYSIS'
+      : mode === 'zh-register'
+        ? 'START_TRACKING_POOL_ZH_REGISTER'
+        : mode === 'zh-green'
+          ? 'START_TRACKING_POOL_ZH_GREEN'
+          : 'START_TRACKING_POOL_ANALYSIS';
+  await chrome.tabs.sendMessage(tab.id, { type: messageType });
   await refreshTrackingAnalysisStatus();
-  alert(`${mode === 'missing' ? '缺失类型深挖' : '追踪池分析'}已开始。可以关闭 popup，稍后再打开点“状态”或“下载”。`);
+  const label =
+    mode === 'missing'
+      ? '缺失类型深挖'
+      : mode === 'zh-register'
+        ? '挂号追踪池中文梳理'
+        : mode === 'zh-green'
+          ? '绿通追踪池中文梳理'
+          : '追踪池分析';
+  alert(`${label}已开始。可以关闭 popup，稍后再打开点“状态”或“下载”。`);
 }
 
 function formatAnalysisStatus(state: any): string {
@@ -144,7 +161,7 @@ function formatAnalysisStatus(state: any): string {
   const progress = state.progress || {};
   const parts = [
     `追踪池分析：${statusMap[state.status] || state.status || '未知'}`,
-    `模式：${state.mode === 'missing' ? '缺失类型深挖' : '全量抽样'}`,
+    `模式：${state.mode === 'missing' ? '缺失类型深挖' : state.mode === 'zh-register' ? '挂号中文梳理' : state.mode === 'zh-green' ? '绿通中文梳理' : '全量抽样'}`,
     `服务 ${progress.serviceIndex ?? 0}/${progress.serviceTotal ?? 0}`,
     `样本 ${progress.sampleCount ?? 0}`,
   ];
@@ -196,7 +213,8 @@ function formatEditAnalysisStatus(state: any): string {
   if (!state) return '编辑页分析：暂无结果';
   const snapshots = Array.isArray(state.snapshots) ? state.snapshots.length : 0;
   const networkEvents = Array.isArray(state.networkEvents) ? state.networkEvents.length : 0;
-  const parts = [`编辑页分析：快照 ${snapshots}`, `接口 ${networkEvents}`];
+  const automationEvents = Array.isArray(state.automationEvents) ? state.automationEvents.length : 0;
+  const parts = [`编辑页分析：快照 ${snapshots}`, `接口 ${networkEvents}`, `自动动作 ${automationEvents}`];
   if (state.updatedAt) parts.push(`更新：${new Date(state.updatedAt).toLocaleString()}`);
   return parts.join('；');
 }
@@ -219,6 +237,60 @@ async function scanEditPage() {
     throw new Error(resp?.error || '扫描失败');
   }
   alert(`已扫描当前页，字段控件 ${resp.fieldCount ?? 0} 个。`);
+}
+
+async function startEditAutoTrial() {
+  const resp: any = await sendToActiveTaikangTab({ type: 'START_EDIT_PAGE_AUTO_TRIAL' });
+  await refreshEditAnalysisStatus();
+  if (!resp?.ok) {
+    throw new Error(resp?.error || '自动试跑失败');
+  }
+  alert(`自动试跑完成。${resp.message || ''} 当前快照 ${resp.snapshots ?? 0} 个。`);
+}
+
+type EditAutoEntryMode = 'register-personal' | 'green-personal' | 'case-service';
+
+async function startEditAutoEntry(mode: EditAutoEntryMode) {
+  const messageType =
+    mode === 'register-personal'
+      ? 'START_EDIT_AUTO_REGISTER_PERSONAL'
+      : mode === 'green-personal'
+        ? 'START_EDIT_AUTO_GREEN_PERSONAL'
+        : 'START_EDIT_AUTO_CASE_SERVICE';
+  const label =
+    mode === 'register-personal'
+      ? '挂号个人池'
+      : mode === 'green-personal'
+        ? '绿通个人池'
+        : '个案服务待办';
+  const resp: any = await sendToActiveTaikangTab({ type: messageType });
+  await refreshEditAnalysisStatus();
+  if (!resp?.ok) {
+    throw new Error(resp?.error || `${label}梳理失败`);
+  }
+  alert(`${label}第一单梳理完成。${resp.message || ''} 当前快照 ${resp.snapshots ?? 0} 个。`);
+}
+
+async function startEditBatchEntry(mode: EditAutoEntryMode) {
+  const messageType =
+    mode === 'register-personal'
+      ? 'START_EDIT_BATCH_REGISTER_PERSONAL'
+      : mode === 'green-personal'
+        ? 'START_EDIT_BATCH_GREEN_PERSONAL'
+        : 'START_EDIT_BATCH_CASE_SERVICE';
+  const label =
+    mode === 'register-personal'
+      ? '挂号个人池'
+      : mode === 'green-personal'
+        ? '绿通个人池'
+        : '个案服务待办';
+  const resp: any = await sendToActiveTaikangTab({ type: messageType });
+  await refreshEditAnalysisStatus();
+  if (!resp?.ok) {
+    throw new Error(resp?.error || `${label}批量梳理失败`);
+  }
+  const serviceCounts = resp.serviceCounts ? JSON.stringify(resp.serviceCounts) : '';
+  alert(`${label}批量梳理完成。${resp.message || ''} 当前快照 ${resp.snapshots ?? 0} 个。${serviceCounts}`);
 }
 
 async function downloadEditAnalysis() {
@@ -286,6 +358,20 @@ async function clearEditAnalysis() {
     });
   });
 
+  $('start-tracking-zh-register').addEventListener('click', () => {
+    startTrackingAnalysis('zh-register').catch((e) => {
+      console.error(e);
+      alert(`启动挂号追踪池中文梳理失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('start-tracking-zh-green').addEventListener('click', () => {
+    startTrackingAnalysis('zh-green').catch((e) => {
+      console.error(e);
+      alert(`启动绿通追踪池中文梳理失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
   $('refresh-tracking-analysis').addEventListener('click', () => {
     refreshTrackingAnalysisStatus().catch((e) => {
       console.error(e);
@@ -318,6 +404,55 @@ async function clearEditAnalysis() {
     scanEditPage().catch((e) => {
       console.error(e);
       alert(`扫描当前编辑页失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('start-edit-auto-trial').addEventListener('click', () => {
+    startEditAutoTrial().catch((e) => {
+      console.error(e);
+      alert(`编辑页自动试跑失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('start-edit-register-personal').addEventListener('click', () => {
+    startEditAutoEntry('register-personal').catch((e) => {
+      console.error(e);
+      alert(`挂号个人池梳理失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('start-edit-green-personal').addEventListener('click', () => {
+    startEditAutoEntry('green-personal').catch((e) => {
+      console.error(e);
+      alert(`绿通个人池梳理失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('start-edit-case-service').addEventListener('click', () => {
+    startEditAutoEntry('case-service').catch((e) => {
+      console.error(e);
+      alert(`个案服务待办梳理失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('start-edit-batch-register-personal').addEventListener('click', () => {
+    startEditBatchEntry('register-personal').catch((e) => {
+      console.error(e);
+      alert(`挂号个人池批量梳理失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('start-edit-batch-green-personal').addEventListener('click', () => {
+    startEditBatchEntry('green-personal').catch((e) => {
+      console.error(e);
+      alert(`绿通个人池批量梳理失败：${e instanceof Error ? e.message : String(e)}`);
+    });
+  });
+
+  $('start-edit-batch-case-service').addEventListener('click', () => {
+    startEditBatchEntry('case-service').catch((e) => {
+      console.error(e);
+      alert(`个案服务待办批量梳理失败：${e instanceof Error ? e.message : String(e)}`);
     });
   });
 

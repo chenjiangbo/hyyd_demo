@@ -38,6 +38,9 @@ const TRACKING_ANALYSIS_PAGE_SIZE = 10;
 const TRACKING_ANALYSIS_MAX_FALLBACK_PAGES = 4;
 const TRACKING_ANALYSIS_MISSING_MAX_PAGES = 30;
 const TRACKING_ANALYSIS_THROTTLE_MS = 4500;
+const TRACKING_ZH_SAMPLE_LIMIT = 12;
+const TRACKING_ZH_MAX_PAGES = 8;
+const TRACKING_ZH_THROTTLE_MS = 5000;
 const TRACKING_ANALYSIS_MISSING_SERVICE_TYPES = [
   { serviceType: '2000708', serviceName: '靶向药基因检测', poolKind: 'green' as const },
   { serviceType: '2000711', serviceName: '就医咨询', poolKind: 'green' as const },
@@ -158,6 +161,17 @@ type AnalysisEndpointResult = {
   error?: string;
 };
 
+type TrackingFieldCatalogItem = {
+  endpoint: string;
+  path: string;
+  label: string;
+  area: string;
+  category: 'basic' | 'taikang_audit' | 'huanyu_fill' | 'attachment' | 'communication' | 'unknown';
+  present: boolean;
+  nonEmpty: boolean;
+  valueKind: string;
+};
+
 type AnalysisSample = {
   serviceType: string;
   serviceName: string;
@@ -166,11 +180,14 @@ type AnalysisSample = {
   orderStateName: string | null;
   sourceOrderNoTail: string | null;
   endpoints: AnalysisEndpointResult[];
+  fieldCatalog?: TrackingFieldCatalogItem[];
 };
+
+type TrackingAnalysisMode = 'all' | 'missing' | 'zh-register' | 'zh-green';
 
 type TrackingAnalysisState = {
   status: 'idle' | 'running' | 'done' | 'error';
-  mode?: 'all' | 'missing';
+  mode?: TrackingAnalysisMode;
   startedAt?: string;
   finishedAt?: string;
   updatedAt: string;
@@ -182,7 +199,7 @@ type TrackingAnalysisState = {
   };
   error?: string;
   result?: {
-    mode?: 'all' | 'missing';
+    mode?: TrackingAnalysisMode;
     generatedAt: string;
     sampleLimitPerService: number;
     serviceTypes: Array<{ serviceType: string; serviceName: string; poolKind: 'register' | 'green' }>;
@@ -219,6 +236,7 @@ type EditPageField = {
 
 type EditPageSnapshot = {
   at: string;
+  trigger?: string;
   href: string;
   title: string;
   routeText: string[];
@@ -232,9 +250,174 @@ type EditPageAnalysisState = {
   updatedAt: string;
   snapshots: EditPageSnapshot[];
   networkEvents: EditPageNetworkEvent[];
+  automationEvents?: Array<{ at: string; type: string; message: string }>;
 };
 
+type EditAutoEntryMode = 'register-personal' | 'green-personal' | 'case-service';
+
 const FIELD_ALLOW_VALUELESS_TYPES = new Set(['string', 'number', 'boolean', 'null', 'array', 'object']);
+
+const TRACKING_FIELD_LABELS: Record<string, string> = {
+  subOrderNo: '订单号',
+  orderId: '订单ID',
+  applyNo: '申请号',
+  crmApplyNo: 'CRM申请号',
+  caseId: '案件ID',
+  applicationDate: '申请时间',
+  applyDate: '申请时间',
+  startDate: '服务开始时间',
+  applyWay: '申请方式',
+  applyWayDesc: '申请方式',
+  serviceType: '服务类型编码',
+  serviceName: '服务类型',
+  serviceItemName: '服务项目',
+  serviceItemNo: '服务项目编码',
+  itemName: '权益名称',
+  itemNo: '权益编码',
+  subPlanName: '子方案名称',
+  planName: '方案名称',
+  planNo: '方案编码',
+  planAlias: '方案别名',
+  packetName: '权益包名称',
+  packetNo: '权益包编码',
+  productName: '产品名称',
+  productNo: '产品编码',
+  labelName: '网络标签',
+  labelCode: '网络标签编码',
+  cusLevel: '客户等级',
+  owner: '归属方',
+  channel: '渠道',
+  patientName: '患者姓名',
+  sex: '性别',
+  birthday: '出生日期',
+  cardType: '证件类型',
+  cardTypeCode: '证件类型编码',
+  cardId: '证件号码',
+  socSecNo: '社保卡号',
+  isSocSec: '是否有社保',
+  paMobile: '患者手机号',
+  relationship: '关系',
+  patEcpRelationship: '紧急联系人关系',
+  ecpName: '联系人姓名',
+  ecpPhone: '联系人电话',
+  secEcpName: '第二联系人姓名',
+  secEcpPhone: '第二联系人电话',
+  patientAddress: '患者地址',
+  workAddr: '工作地址',
+  insurName: '被保险人姓名',
+  insurNo: '保单号',
+  insurBrhName: '承保机构',
+  suspectDisease: '疑似疾病',
+  suspectDiseaseCode: '疑似疾病编码',
+  comments: '病情/备注',
+  comment: '备注',
+  intendProvince: '意向省份',
+  intendCity: '意向城市',
+  intendCountry: '意向区县',
+  intendHos: '意向医院',
+  intendDept: '意向科室',
+  intendDoc: '意向医生',
+  intendDocTitle: '意向医生职称',
+  intendDate: '意向就诊日期',
+  intendDateAmorpm: '意向就诊上下午',
+  intendInhosDate: '意向入院日期',
+  visitingProvince: '就诊省份',
+  visitingCity: '就诊城市',
+  visitingCounty: '就诊区县',
+  visitingHospital: '就诊医院',
+  visitingHospitalDetailAddress: '就诊医院详细地址',
+  departureAddress: '出发地',
+  arriveAddress: '到达地',
+  purposeBackProvince: '返程省份',
+  purposeBackCity: '返程城市',
+  purposeBackCounty: '返程区县',
+  purposeBackDetailAddress: '返程详细地址',
+  medLoc: '医保所在地',
+  orderState: '订单状态',
+  orderStateName: '订单状态名称',
+  caseStatus: '案件状态',
+  caseStatusDesc: '案件状态说明',
+  stageCode: '阶段编码',
+  stageName: '阶段名称',
+  approveDetail: '运营审核结果',
+  approveDiseaseType: '审核疾病类型',
+  approveDiseaseName: '审核疾病名称',
+  approveDiseaseDesc: '审核疾病说明',
+  rejectReason: '拒绝原因',
+  reviewerResult: '审核结果',
+  lastState: '上一状态',
+  lastStateDesc: '上一状态说明',
+  servStateName: '服务状态',
+  serviceCaseMark: '服务案件标记',
+  serviceResidueDays: '服务剩余天数',
+  cancelOrderDate: '取消时间',
+  cancelReason: '取消原因',
+  cancelType: '取消类型',
+  breakAppointDate: '爽约时间',
+  breakAppointReason: '爽约原因',
+  breakAppointRule: '爽约规则',
+  breakAppointType: '爽约类型',
+  breakAppointDiscount: '爽约折扣',
+  socialSecuritySettlement: '社保结算',
+  mmgrApplyDate: '医管家申领时间',
+  mmgrName: '医管家姓名',
+  mmgrMobile: '医管家电话',
+  cmgrName: '案管姓名',
+  cmgrMobile: '案管电话',
+  chooseDate: '方案选择时间',
+  backDate: '反馈时间',
+  bookDate: '预约时间',
+  bookSuccessDate: '预约成功时间',
+  firstClinicDate: '首次就诊时间',
+  transferClinicDate: '转诊时间',
+  needDocuments: '所需材料',
+  suggestion: '建议',
+  waitAddr: '等候地点',
+  appointExpertList: '推荐/点名专家列表',
+  planList: '方案列表',
+  caseManagerInfos: '案管服务信息',
+  clinicList: '就诊记录',
+  commList: '沟通记录',
+  commContent: '沟通内容',
+  commDate: '沟通时间',
+  commResult: '沟通结果',
+  commType: '沟通类型',
+  clinicDate: '就诊日期',
+  clinicHos: '就诊医院',
+  clinicDept: '就诊科室',
+  clinicDoc: '就诊医生',
+  clinicDocTitle: '就诊医生职称',
+  clinicProvince: '就诊省份',
+  clinicCity: '就诊城市',
+  clinicStatus: '就诊状态',
+  clinicStatusDes: '就诊状态说明',
+  clinicComment: '就诊备注',
+  clinicConclusion: '就诊结论',
+  conclusion: '结论',
+  registrationDate: '登记时间',
+  failedDate: '失败时间',
+  failedReason: '失败原因',
+  examItem: '检查项目',
+  isIncludeAccompany: '是否包含陪诊',
+  isMedicalDevice: '是否医疗器械',
+  medicalDeviceName: '医疗器械名称',
+  imgPageInfo: '图片附件',
+  fileList: '附件列表',
+  appImagesBo: '申请附件',
+  fileBoList: '文件列表',
+  hosName: '医院名称',
+  hosDept: '医院科室',
+  docName: '医生姓名',
+  docLevel: '医生级别',
+  docLevelCode: '医生级别编码',
+  appointmentSuccessTime: '预约成功时间',
+  takeNumberDate: '取号时间',
+  payment: '支付金额',
+  free: '费用',
+  isPayRegistrationCost: '是否支付挂号费',
+  accompanyName: '陪诊人姓名',
+  accompanyPhone: '陪诊人电话',
+};
 
 function valueKind(v: unknown): string {
   if (v == null) return 'null';
@@ -270,6 +453,119 @@ function schemaFields(value: unknown, prefix = '', out = new Set<string>()): str
   return [...out].sort();
 }
 
+function leafKey(path: string): string {
+  const clean = path.replace(/\{\}/g, '').replace(/\[\]/g, '');
+  const parts = clean.split('.');
+  return parts[parts.length - 1] || clean;
+}
+
+function fieldLabel(path: string): string {
+  const key = leafKey(path);
+  return TRACKING_FIELD_LABELS[key] || key || path;
+}
+
+function fieldArea(endpoint: string, path: string): string {
+  if (/file|image|img|ecm|attachment|appImagesBo|fileBoList|fileList|imgPageInfo/i.test(path)) {
+    return '附件信息';
+  }
+  if (/commList|commContent|commDate|commResult|commType|communicationsList/i.test(path)) {
+    return '沟通记录';
+  }
+  if (/approve|reviewer|audit|rejectReason|运营审核/.test(path)) {
+    return '运营审核信息';
+  }
+  if (/register\/getLatestRegisterInfo|operator\/trackingStages|casemanager\/clinicOrderInfo|selectChooseCaseManagerInfo/.test(endpoint)) {
+    return '服务信息录入';
+  }
+  if (/planList|appointExpertList|caseManagerInfos|clinicList|suggestion|needDocuments|mmgr|cmgr|chooseDate|backDate|bookDate|firstClinicDate|transferClinicDate|waitAddr/i.test(path)) {
+    return '服务信息录入';
+  }
+  if (/patient|sex|birthday|card|socSec|paMobile|relationship|ecp|insur|workAddr/i.test(path)) {
+    return '客户信息';
+  }
+  if (/intend|visiting|departure|arrive|purposeBack|suspectDisease|comments|medLoc|hospital|dept|doctor/i.test(path)) {
+    return '意向就诊信息';
+  }
+  if (/order|apply|crmApply|caseId|service|item|plan|packet|product|label|cusLevel|channel|owner|stage|state/i.test(path)) {
+    return '申请信息';
+  }
+  return '未分类';
+}
+
+function fieldCategory(area: string): TrackingFieldCatalogItem['category'] {
+  if (area === '附件信息') return 'attachment';
+  if (area === '沟通记录') return 'communication';
+  if (area === '运营审核信息') return 'taikang_audit';
+  if (area === '服务信息录入') return 'huanyu_fill';
+  if (area === '申请信息' || area === '客户信息' || area === '意向就诊信息') return 'basic';
+  return 'unknown';
+}
+
+function hasMeaningfulValue(value: unknown): boolean {
+  if (value == null) return false;
+  if (typeof value === 'string') return value.trim() !== '';
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0;
+  return true;
+}
+
+function collectFieldCatalog(
+  endpoint: string,
+  value: unknown,
+  prefix = '',
+  out: TrackingFieldCatalogItem[] = []
+): TrackingFieldCatalogItem[] {
+  if (Array.isArray(value)) {
+    const path = `${prefix || '$'}[]`;
+    const area = fieldArea(endpoint, path);
+    out.push({
+      endpoint,
+      path,
+      label: fieldLabel(path),
+      area,
+      category: fieldCategory(area),
+      present: true,
+      nonEmpty: value.length > 0,
+      valueKind: 'array',
+    });
+    const first = value.find((item) => item != null);
+    if (first != null) collectFieldCatalog(endpoint, first, path, out);
+    return out;
+  }
+  if (value && typeof value === 'object') {
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (child && typeof child === 'object') {
+        const area = fieldArea(endpoint, path);
+        out.push({
+          endpoint,
+          path: Array.isArray(child) ? `${path}[]` : `${path}{}`,
+          label: fieldLabel(path),
+          area,
+          category: fieldCategory(area),
+          present: true,
+          nonEmpty: hasMeaningfulValue(child),
+          valueKind: valueKind(child),
+        });
+        collectFieldCatalog(endpoint, child, path, out);
+      } else {
+        const area = fieldArea(endpoint, path);
+        out.push({
+          endpoint,
+          path,
+          label: fieldLabel(path),
+          area,
+          category: fieldCategory(area),
+          present: true,
+          nonEmpty: hasMeaningfulValue(child),
+          valueKind: valueKind(child),
+        });
+      }
+    }
+  }
+  return out;
+}
+
 function tailOrderNo(subOrderNo: unknown): string | null {
   if (typeof subOrderNo !== 'string' || !subOrderNo) return null;
   return `...${subOrderNo.slice(-6)}`;
@@ -289,7 +585,7 @@ function nearestSection(el: Element): string | null {
   let cur: Element | null = el;
   for (let depth = 0; cur && depth < 8; depth++, cur = cur.parentElement) {
     const heading = cur.querySelector?.(
-      '.el-card__header,.el-collapse-item__header,.el-form-item__label,h1,h2,h3,h4,.title,.header'
+      '.el-card__header,.el-collapse-item__header,h1,h2,h3,h4,.card-title,.section-title,.title'
     );
     const text = textOf(heading);
     if (text && text.length <= 80) return text;
@@ -350,7 +646,7 @@ function controlType(el: HTMLElement): string | null {
   return el.getAttribute('role') || tag;
 }
 
-function scanCurrentEditPage(): EditPageSnapshot {
+function scanCurrentEditPage(trigger = 'manual'): EditPageSnapshot {
   const controls = [
     ...document.querySelectorAll<HTMLElement>(
       'input,textarea,select,[contenteditable="true"],[role="combobox"],[role="radio"],[role="checkbox"],[role="switch"]'
@@ -377,6 +673,7 @@ function scanCurrentEditPage(): EditPageSnapshot {
   });
   return {
     at: new Date().toISOString(),
+    trigger,
     href: location.href,
     title: document.title,
     routeText: routeTexts(),
@@ -395,22 +692,31 @@ async function getEditAnalysisState(): Promise<EditPageAnalysisState> {
       updatedAt: state.updatedAt || new Date().toISOString(),
       snapshots: Array.isArray(state.snapshots) ? state.snapshots : [],
       networkEvents: Array.isArray(state.networkEvents) ? state.networkEvents : [],
+      automationEvents: Array.isArray(state.automationEvents) ? state.automationEvents : [],
     };
   }
-  return { updatedAt: new Date().toISOString(), snapshots: [], networkEvents: [] };
+  return { updatedAt: new Date().toISOString(), snapshots: [], networkEvents: [], automationEvents: [] };
 }
 
 async function saveEditAnalysisState(state: EditPageAnalysisState): Promise<void> {
   await chrome.storage.local.set({ [EDIT_PAGE_ANALYSIS_STORAGE_KEY]: state });
 }
 
-async function appendEditSnapshot(): Promise<EditPageSnapshot> {
+async function appendEditSnapshot(trigger = 'manual'): Promise<EditPageSnapshot> {
   const state = await getEditAnalysisState();
-  const snapshot = scanCurrentEditPage();
+  const snapshot = scanCurrentEditPage(trigger);
   state.snapshots.push(snapshot);
   state.updatedAt = snapshot.at;
   await saveEditAnalysisState(state);
   return snapshot;
+}
+
+async function appendAutomationEvent(type: string, message: string): Promise<void> {
+  const state = await getEditAnalysisState();
+  const at = new Date().toISOString();
+  state.automationEvents = [...(state.automationEvents || []), { at, type, message }];
+  state.updatedAt = at;
+  await saveEditAnalysisState(state);
 }
 
 async function appendEditNetworkEvent(event: EditPageNetworkEvent): Promise<void> {
@@ -430,6 +736,343 @@ function installEditPageProbe(): void {
   script.src = chrome.runtime.getURL('pageProbe.global.js');
   script.onload = () => script.remove();
   (document.head || document.documentElement).appendChild(script);
+}
+
+const UNSAFE_ACTION_TEXT = /保存|提交|确认|完成|取消|审核|退回|流转|关闭|删除|上传|支付|退款|提交运营审批/;
+const SAFE_ENTRY_TEXT = /^(操作|录入|详情录入|编辑)$/;
+const SAFE_STAGE_TEXT = /申领|确认方案|服务录入|服务信息|就诊|陪诊|方案|入院|出院|完成/;
+const EDIT_BATCH_LIMIT_PER_SERVICE = 3;
+const EDIT_BATCH_MAX_TOTAL = 12;
+const EDIT_BATCH_THROTTLE_MS = 5000;
+const KNOWN_SERVICE_NAMES = [
+  '挂号协助',
+  '全程门诊',
+  '检查加急',
+  '全流程',
+  '住院护工协助',
+  '靶向药基因检测',
+  '单次门诊',
+  '就医咨询',
+  '区域门诊绿通',
+  '区域住院绿通',
+  '就医接送',
+  '共享流程',
+  '垫付服务',
+  '海外二诊',
+  'MDT服务',
+  '海外就医',
+  '电话问诊',
+  '住院',
+];
+const EDIT_AUTO_ENTRY_ROUTES: Record<EditAutoEntryMode, { label: string; hash: string; requirePersonalPool?: boolean }> = {
+  'register-personal': { label: '挂号个人池', hash: '#/register/register', requirePersonalPool: true },
+  'green-personal': { label: '绿通个人池', hash: '#/medicalManager/medicalAgency', requirePersonalPool: true },
+  'case-service': { label: '个案服务待办', hash: '#/caseManager/caseServiceAgency' },
+};
+
+function clickableText(el: Element): string {
+  return textOf(el).replace(/\s+/g, '');
+}
+
+function isClickableVisible(el: Element): el is HTMLElement {
+  return el instanceof HTMLElement && visible(el);
+}
+
+function findSafeEntryButton(): HTMLElement | null {
+  const candidates = [
+    ...document.querySelectorAll<HTMLElement>('button,a,.el-button,[role="button"]'),
+  ].filter(isClickableVisible);
+  return (
+    candidates.find((el) => {
+      const text = clickableText(el);
+      return SAFE_ENTRY_TEXT.test(text) && !UNSAFE_ACTION_TEXT.test(text);
+    }) || null
+  );
+}
+
+function findSafeEntryButtonIn(root: ParentNode): HTMLElement | null {
+  const candidates = [
+    ...root.querySelectorAll<HTMLElement>('button,a,.el-button,[role="button"]'),
+  ].filter(isClickableVisible);
+  return (
+    candidates.find((el) => {
+      const text = clickableText(el);
+      return SAFE_ENTRY_TEXT.test(text) && !UNSAFE_ACTION_TEXT.test(text);
+    }) || null
+  );
+}
+
+function findSafeStageTabs(): HTMLElement[] {
+  const candidates = [
+    ...document.querySelectorAll<HTMLElement>(
+      '.el-tabs__item,.el-step__title,[role="tab"],.stage,.tab,.tabs-item'
+    ),
+  ].filter(isClickableVisible);
+  const seen = new Set<string>();
+  return candidates.filter((el) => {
+    const text = clickableText(el);
+    if (!text || seen.has(text)) return false;
+    seen.add(text);
+    if (UNSAFE_ACTION_TEXT.test(text)) return false;
+    if (el.classList.contains('is-disabled') || el.getAttribute('aria-disabled') === 'true') return false;
+    return SAFE_STAGE_TEXT.test(text);
+  });
+}
+
+function findDynamicNominateControls(): HTMLElement[] {
+  const controls = [
+    ...document.querySelectorAll<HTMLElement>(
+      '.el-checkbox,.el-switch,[role="checkbox"],input[type="checkbox"]'
+    ),
+  ].filter(isClickableVisible);
+  const result: HTMLElement[] = [];
+  for (const el of controls) {
+    const text = clickableText(el.closest('label,.el-checkbox,.el-form-item') || el);
+    if (!/点名专家|点名/.test(text) || UNSAFE_ACTION_TEXT.test(text)) continue;
+    const clickTarget =
+      (el.closest('.el-checkbox,.el-switch,label') as HTMLElement | null) ||
+      el;
+    if (!result.includes(clickTarget)) result.push(clickTarget);
+  }
+  return result.slice(0, 2);
+}
+
+async function waitForUiSettle(): Promise<void> {
+  await sleep(1800);
+}
+
+async function waitForRoute(hash: string): Promise<void> {
+  if (location.hash !== hash) {
+    location.hash = hash;
+  }
+  const started = Date.now();
+  while (Date.now() - started < 10000) {
+    if (location.hash === hash && document.querySelector('.el-table,table,.el-button,button')) {
+      await waitForUiSettle();
+      return;
+    }
+    await sleep(300);
+  }
+  throw new Error(`进入页面超时：${hash}`);
+}
+
+function findPersonalPoolTab(): HTMLElement | null {
+  const candidates = [
+    ...document.querySelectorAll<HTMLElement>(
+      '.el-tabs__item,[role="tab"],button,a,.el-radio-button,.el-radio-button__inner,.el-button'
+    ),
+  ].filter(isClickableVisible);
+  return candidates.find((el) => clickableText(el) === '个人池') || null;
+}
+
+function activePoolTabText(): string | null {
+  const selectors = [
+    '.el-tabs__item.is-active',
+    '.el-tabs__item[aria-selected="true"]',
+    '[role="tab"][aria-selected="true"]',
+    '.el-radio-button.is-active',
+    '.el-radio-button__inner.is-active',
+    '.el-button.is-active',
+  ];
+  for (const selector of selectors) {
+    const active = [...document.querySelectorAll<HTMLElement>(selector)]
+      .filter(isClickableVisible)
+      .map((el) => clickableText(el))
+      .find((text) => text === '个人池' || text === '公共池');
+    if (active) return active;
+  }
+  return null;
+}
+
+async function ensurePersonalPool(targetLabel: string): Promise<void> {
+  const tab = findPersonalPoolTab();
+  if (!tab) {
+    throw new Error(`${targetLabel}没有找到“个人池”标签，已停止，避免在公共池误点`);
+  }
+  if (activePoolTabText() !== '个人池') {
+    await appendAutomationEvent('click-personal-pool', `${targetLabel}切换到个人池`);
+    tab.click();
+    const started = Date.now();
+    while (Date.now() - started < 8000) {
+      await sleep(300);
+      if (activePoolTabText() === '个人池') {
+        await waitForUiSettle();
+        return;
+      }
+    }
+  }
+  const active = activePoolTabText();
+  if (active !== '个人池') {
+    throw new Error(`${targetLabel}未能确认已切换到“个人池”（当前：${active || '未知'}），已停止，避免在公共池误点`);
+  }
+}
+
+async function scanEditStagesAndDynamic(triggerPrefix: string): Promise<void> {
+  const tabs = findSafeStageTabs();
+  for (const tab of tabs) {
+    const tabText = textOf(tab);
+    await appendAutomationEvent('click-stage', `点击阶段: ${tabText}`);
+    tab.click();
+    await waitForUiSettle();
+    await appendEditSnapshot(`${triggerPrefix}-stage:${tabText}`);
+  }
+
+  const dynamicControls = findDynamicNominateControls();
+  for (const control of dynamicControls) {
+    const text = textOf(control);
+    await appendAutomationEvent('click-dynamic', `点击动态字段开关: ${text}`);
+    control.click();
+    await waitForUiSettle();
+    await appendEditSnapshot(`${triggerPrefix}-dynamic:${text}`);
+  }
+}
+
+function detectServiceNameFromText(text: string, mode: EditAutoEntryMode): string {
+  if (mode === 'register-personal') return '挂号协助';
+  const matched = KNOWN_SERVICE_NAMES.find((name) => text.includes(name));
+  return matched || '未知服务类型';
+}
+
+function listRowSignature(row: HTMLElement, index: number): string {
+  return `${index}:${clickableText(row).slice(0, 180)}`;
+}
+
+type EditListEntryCandidate = {
+  row: HTMLElement;
+  button: HTMLElement;
+  serviceName: string;
+  signature: string;
+};
+
+function findEditListEntryCandidates(
+  mode: EditAutoEntryMode,
+  processed: Set<string>,
+  countsByService: Map<string, number>
+): EditListEntryCandidate[] {
+  const rows = [
+    ...document.querySelectorAll<HTMLElement>('.el-table__body-wrapper tbody tr, table tbody tr'),
+  ].filter(isClickableVisible);
+  const candidates: EditListEntryCandidate[] = [];
+  rows.forEach((row, index) => {
+    const button = findSafeEntryButtonIn(row);
+    if (!button) return;
+    const signature = listRowSignature(row, index);
+    if (processed.has(signature)) return;
+    const serviceName = detectServiceNameFromText(textOf(row), mode);
+    if ((countsByService.get(serviceName) || 0) >= EDIT_BATCH_LIMIT_PER_SERVICE) return;
+    candidates.push({ row, button, serviceName, signature });
+  });
+  return candidates;
+}
+
+async function runEditPageAutoTrial(): Promise<{ snapshots: number; message: string }> {
+  installEditPageProbe();
+  await appendAutomationEvent('start', `开始自动试跑: ${location.href}`);
+  await appendEditSnapshot('auto-before-entry');
+
+  const entry = findSafeEntryButton();
+  if (!entry) {
+    throw new Error('当前页面没有找到安全的“操作/录入/编辑”入口按钮');
+  }
+  const entryText = textOf(entry);
+  await appendAutomationEvent('click-entry', `点击入口: ${entryText}`);
+  entry.click();
+  await waitForUiSettle();
+  await appendEditSnapshot('auto-after-entry');
+
+  await scanEditStagesAndDynamic('auto');
+
+  const state = await getEditAnalysisState();
+  await appendAutomationEvent('done', '自动试跑完成');
+  return {
+    snapshots: state.snapshots.length,
+    message: '自动试跑完成',
+  };
+}
+
+async function runEditPageAutoEntry(
+  mode: EditAutoEntryMode
+): Promise<{ snapshots: number; message: string }> {
+  const target = EDIT_AUTO_ENTRY_ROUTES[mode];
+  installEditPageProbe();
+  await appendAutomationEvent('start-entry', `开始${target.label}编辑页梳理`);
+  await waitForRoute(target.hash);
+  if (target.requirePersonalPool) {
+    await ensurePersonalPool(target.label);
+  }
+  await appendEditSnapshot(`entry-list:${mode}`);
+
+  const entry = findSafeEntryButton();
+  if (!entry) {
+    throw new Error(`${target.label}当前页没有找到安全的“操作/录入/编辑”入口按钮`);
+  }
+  const entryText = textOf(entry);
+  await appendAutomationEvent('click-entry', `${target.label}点击入口: ${entryText}`);
+  entry.click();
+  await waitForUiSettle();
+  await appendEditSnapshot(`entry-after-click:${mode}`);
+  await scanEditStagesAndDynamic(`entry:${mode}`);
+
+  const state = await getEditAnalysisState();
+  await appendAutomationEvent('done-entry', `${target.label}编辑页梳理完成：第一单`);
+  return {
+    snapshots: state.snapshots.length,
+    message: `${target.label}第一单梳理完成`,
+  };
+}
+
+async function runEditPageBatchEntry(
+  mode: EditAutoEntryMode
+): Promise<{ snapshots: number; message: string; scanned: number; serviceCounts: Record<string, number> }> {
+  const target = EDIT_AUTO_ENTRY_ROUTES[mode];
+  installEditPageProbe();
+  await appendAutomationEvent('start-entry-batch', `开始${target.label}批量编辑页梳理`);
+  const processed = new Set<string>();
+  const countsByService = new Map<string, number>();
+  let scanned = 0;
+
+  while (scanned < EDIT_BATCH_MAX_TOTAL) {
+    await waitForRoute(target.hash);
+    if (target.requirePersonalPool) {
+      await ensurePersonalPool(target.label);
+    }
+    if (scanned === 0) {
+      await appendEditSnapshot(`batch-list:${mode}`);
+    }
+
+    const candidates = findEditListEntryCandidates(mode, processed, countsByService);
+    const candidate = candidates[0];
+    if (!candidate) break;
+
+    processed.add(candidate.signature);
+    countsByService.set(candidate.serviceName, (countsByService.get(candidate.serviceName) || 0) + 1);
+    const entryText = textOf(candidate.button);
+    await appendAutomationEvent(
+      'click-entry-batch',
+      `${target.label}批量点击入口: ${entryText}，服务类型: ${candidate.serviceName}`
+    );
+    candidate.button.click();
+    await waitForUiSettle();
+    await appendEditSnapshot(`batch-after-click:${mode}:${candidate.serviceName}:${countsByService.get(candidate.serviceName)}`);
+    await scanEditStagesAndDynamic(`batch:${mode}:${candidate.serviceName}:${countsByService.get(candidate.serviceName)}`);
+    scanned++;
+    if (scanned < EDIT_BATCH_MAX_TOTAL) {
+      await sleep(EDIT_BATCH_THROTTLE_MS);
+    }
+  }
+
+  const state = await getEditAnalysisState();
+  const serviceCounts = Object.fromEntries(countsByService.entries());
+  await appendAutomationEvent(
+    'done-entry-batch',
+    `${target.label}批量编辑页梳理完成：${scanned} 单，服务类型 ${Object.keys(serviceCounts).length} 个`
+  );
+  return {
+    snapshots: state.snapshots.length,
+    message: `${target.label}批量梳理完成：${scanned} 单`,
+    scanned,
+    serviceCounts,
+  };
 }
 
 function trackingPoolBaseBody(userId: number, serviceType: string, serviceName: string) {
@@ -487,7 +1130,9 @@ async function fetchTrackingCandidates(
   serviceType: string,
   serviceName: string,
   poolKind: 'register' | 'green',
-  userId: number
+  userId: number,
+  limit = TRACKING_ANALYSIS_SAMPLE_LIMIT,
+  maxFallbackPages = TRACKING_ANALYSIS_MAX_FALLBACK_PAGES
 ): Promise<any[]> {
   const path =
     poolKind === 'register'
@@ -504,11 +1149,11 @@ async function fetchTrackingCandidates(
       12_000
     );
     candidates.push(...(resp?.data?.list ?? []));
-    if (uniqueOrders(candidates).length >= TRACKING_ANALYSIS_SAMPLE_LIMIT) break;
+    if (uniqueOrders(candidates).length >= limit) break;
     await sleep(800);
   }
 
-  for (let pageNum = 1; uniqueOrders(candidates).length < TRACKING_ANALYSIS_SAMPLE_LIMIT && pageNum <= TRACKING_ANALYSIS_MAX_FALLBACK_PAGES; pageNum++) {
+  for (let pageNum = 1; uniqueOrders(candidates).length < limit && pageNum <= maxFallbackPages; pageNum++) {
     const resp = await apiPost(
       UNIFY_BASE,
       path,
@@ -520,7 +1165,7 @@ async function fetchTrackingCandidates(
     await sleep(800);
   }
 
-  return uniqueOrders(candidates).slice(0, TRACKING_ANALYSIS_SAMPLE_LIMIT);
+  return uniqueOrders(candidates).slice(0, limit);
 }
 
 async function fetchTrackingCandidatesDeep(
@@ -582,6 +1227,32 @@ async function inspectEndpoint(
       ok: false,
       request,
       error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
+async function inspectEndpointWithCatalog(
+  path: string,
+  request: Record<string, unknown>,
+  dataPicker?: (resp: any) => unknown
+): Promise<{ endpoint: AnalysisEndpointResult; catalog: TrackingFieldCatalogItem[] }> {
+  try {
+    const resp = await apiPost(UNIFY_BASE, path, request, 15_000);
+    const data = dataPicker ? dataPicker(resp) : resp?.data;
+    const fields = schemaFields(data);
+    return {
+      endpoint: { path, ok: true, request, fields, fieldCount: fields.length },
+      catalog: collectFieldCatalog(path, data),
+    };
+  } catch (e) {
+    return {
+      endpoint: {
+        path,
+        ok: false,
+        request,
+        error: e instanceof Error ? e.message : String(e),
+      },
+      catalog: [],
     };
   }
 }
@@ -653,20 +1324,93 @@ async function inspectTrackingOrder(
   };
 }
 
+async function inspectTrackingOrderWithCatalog(
+  userId: number,
+  serviceType: string,
+  serviceName: string,
+  poolKind: 'register' | 'green',
+  order: any
+): Promise<AnalysisSample> {
+  const subOrderNo = String(order.subOrderNo || '');
+  const caseId = order.caseId == null ? null : String(order.caseId);
+  const endpoints: AnalysisEndpointResult[] = [];
+  const fieldCatalog: TrackingFieldCatalogItem[] = [];
+  const addEndpoint = async (
+    path: string,
+    request: Record<string, unknown>,
+    dataPicker?: (resp: any) => unknown
+  ) => {
+    const result = await inspectEndpointWithCatalog(path, request, dataPicker);
+    endpoints.push(result.endpoint);
+    fieldCatalog.push(...result.catalog);
+    await sleep(850);
+  };
+  const commonRecRequest = {
+    userId,
+    subOrderNo,
+    applyNo: order.applyNo ?? '',
+    orderState: order.orderState == null ? '' : String(order.orderState),
+    caseStatus: order.caseStatus == null ? 'null' : String(order.caseStatus),
+  };
+
+  await addEndpoint('medicalmanager/recommendations', commonRecRequest);
+  await addEndpoint('medicalmanager/caseInfo', { subOrderNo });
+
+  if (poolKind === 'register') {
+    if (caseId) await addEndpoint('register/getIntendClinicInfo', { caseId });
+    await addEndpoint('register/getLatestRegisterInfo', { subOrderNo });
+    await addEndpoint('register/ExceInfo', { subOrderNo });
+  } else {
+    await addEndpoint('operator/trackingStages', { subOrderNo, code: '72' });
+    await addEndpoint('casemanager/clinicOrderInfo', {
+      subOrderNo,
+      fileType: '42',
+      pageNum: 1,
+      pageSize: 5,
+    });
+    await addEndpoint('accompanyInfo/getAccompanyInfoList', {
+      subOrderNo,
+      pageNum: 1,
+      pageSize: 5,
+    });
+    await addEndpoint('medicalmanager/selectExcpHandleRecord', {
+      subOrderNo,
+      pageNum: 1,
+      pageSize: 5,
+    });
+    await addEndpoint('medicalmanager/selectChooseCaseManagerInfo', { subOrderNo });
+  }
+
+  return {
+    serviceType,
+    serviceName,
+    poolKind,
+    orderState: order.orderState == null ? null : String(order.orderState),
+    orderStateName: order.orderStateName == null ? null : String(order.orderStateName),
+    sourceOrderNoTail: tailOrderNo(subOrderNo),
+    endpoints,
+    fieldCatalog,
+  };
+}
+
 let trackingAnalysisRunning = false;
 
-async function runTrackingPoolAnalysis(mode: 'all' | 'missing' = 'all'): Promise<void> {
+async function runTrackingPoolAnalysis(mode: TrackingAnalysisMode = 'all'): Promise<void> {
   if (trackingAnalysisRunning) return;
   trackingAnalysisRunning = true;
   const startedAt = new Date().toISOString();
   try {
     const user = await getUser();
     if (!user) throw new Error('未获取到泰康用户信息');
-    const greenServices = mode === 'all' ? await getServiceTypeOptions() : [];
+    const greenServices = mode === 'all' || mode === 'zh-green' ? await getServiceTypeOptions() : [];
     const services =
       mode === 'missing'
         ? TRACKING_ANALYSIS_MISSING_SERVICE_TYPES
-        : [
+        : mode === 'zh-register'
+          ? [{ serviceType: REGISTER_SERVICE_TYPE, serviceName: '挂号协助', poolKind: 'register' as const }]
+          : mode === 'zh-green'
+            ? greenServices.filter((svc) => svc.serviceType !== REGISTER_SERVICE_TYPE)
+            : [
             ...greenServices,
             { serviceType: REGISTER_SERVICE_TYPE, serviceName: '挂号协助', poolKind: 'register' as const },
           ];
@@ -688,6 +1432,7 @@ async function runTrackingPoolAnalysis(mode: 'all' | 'missing' = 'all'): Promise
       const svc = services[idx];
       await saveTrackingAnalysisState({
         status: 'running',
+        mode,
         startedAt,
         updatedAt: new Date().toISOString(),
         progress: {
@@ -699,7 +1444,7 @@ async function runTrackingPoolAnalysis(mode: 'all' | 'missing' = 'all'): Promise
         result: {
           mode,
           generatedAt: new Date().toISOString(),
-          sampleLimitPerService: TRACKING_ANALYSIS_SAMPLE_LIMIT,
+          sampleLimitPerService: mode === 'zh-register' || mode === 'zh-green' ? TRACKING_ZH_SAMPLE_LIMIT : TRACKING_ANALYSIS_SAMPLE_LIMIT,
           serviceTypes: services,
           samples,
         },
@@ -709,13 +1454,23 @@ async function runTrackingPoolAnalysis(mode: 'all' | 'missing' = 'all'): Promise
       const candidates =
         mode === 'missing'
           ? await fetchTrackingCandidatesDeep(svc.serviceType, svc.serviceName, svc.poolKind, user.userId)
-          : await fetchTrackingCandidates(svc.serviceType, svc.serviceName, svc.poolKind, user.userId);
+          : await fetchTrackingCandidates(
+              svc.serviceType,
+              svc.serviceName,
+              svc.poolKind,
+              user.userId,
+              mode === 'zh-register' || mode === 'zh-green' ? TRACKING_ZH_SAMPLE_LIMIT : TRACKING_ANALYSIS_SAMPLE_LIMIT,
+              mode === 'zh-register' || mode === 'zh-green' ? TRACKING_ZH_MAX_PAGES : TRACKING_ANALYSIS_MAX_FALLBACK_PAGES
+            );
       for (const order of candidates) {
         samples.push(
-          await inspectTrackingOrder(user.userId, svc.serviceType, svc.serviceName, svc.poolKind, order)
+          mode === 'zh-register' || mode === 'zh-green'
+            ? await inspectTrackingOrderWithCatalog(user.userId, svc.serviceType, svc.serviceName, svc.poolKind, order)
+            : await inspectTrackingOrder(user.userId, svc.serviceType, svc.serviceName, svc.poolKind, order)
         );
         await saveTrackingAnalysisState({
           status: 'running',
+          mode,
           startedAt,
           updatedAt: new Date().toISOString(),
           progress: {
@@ -727,12 +1482,12 @@ async function runTrackingPoolAnalysis(mode: 'all' | 'missing' = 'all'): Promise
           result: {
             mode,
             generatedAt: new Date().toISOString(),
-            sampleLimitPerService: TRACKING_ANALYSIS_SAMPLE_LIMIT,
+            sampleLimitPerService: mode === 'zh-register' || mode === 'zh-green' ? TRACKING_ZH_SAMPLE_LIMIT : TRACKING_ANALYSIS_SAMPLE_LIMIT,
             serviceTypes: services,
             samples,
           },
         });
-        await sleep(TRACKING_ANALYSIS_THROTTLE_MS);
+        await sleep(mode === 'zh-register' || mode === 'zh-green' ? TRACKING_ZH_THROTTLE_MS : TRACKING_ANALYSIS_THROTTLE_MS);
       }
     }
 
@@ -750,7 +1505,7 @@ async function runTrackingPoolAnalysis(mode: 'all' | 'missing' = 'all'): Promise
       result: {
         mode,
         generatedAt: new Date().toISOString(),
-        sampleLimitPerService: TRACKING_ANALYSIS_SAMPLE_LIMIT,
+        sampleLimitPerService: mode === 'zh-register' || mode === 'zh-green' ? TRACKING_ZH_SAMPLE_LIMIT : TRACKING_ANALYSIS_SAMPLE_LIMIT,
         serviceTypes: services,
         samples,
       },
@@ -1024,7 +1779,7 @@ async function saveFingerprints(): Promise<void> {
 
 async function isCollectPaused(): Promise<boolean> {
   const cfg = await chrome.storage.local.get('collectPaused');
-  return !!cfg.collectPaused;
+  return cfg.collectPaused !== false;
 }
 
 // 把本地已知的全部指纹推给后端对账（不只新抓的）。
@@ -1289,6 +2044,26 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  if (msg?.type === 'START_TRACKING_POOL_ZH_REGISTER') {
+    if (trackingAnalysisRunning) {
+      sendResponse?.({ ok: true, running: true });
+      return true;
+    }
+    void runTrackingPoolAnalysis('zh-register');
+    sendResponse?.({ ok: true, running: true });
+    return true;
+  }
+
+  if (msg?.type === 'START_TRACKING_POOL_ZH_GREEN') {
+    if (trackingAnalysisRunning) {
+      sendResponse?.({ ok: true, running: true });
+      return true;
+    }
+    void runTrackingPoolAnalysis('zh-green');
+    sendResponse?.({ ok: true, running: true });
+    return true;
+  }
+
   if (msg?.type === 'START_EDIT_PAGE_PROBE') {
     void (async () => {
       const now = new Date().toISOString();
@@ -1298,6 +2073,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         updatedAt: now,
         snapshots: prev.snapshots,
         networkEvents: prev.networkEvents,
+        automationEvents: prev.automationEvents,
       });
       installEditPageProbe();
       sendResponse?.({ ok: true });
@@ -1306,8 +2082,57 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 
   if (msg?.type === 'SCAN_EDIT_PAGE_FORM') {
-    void appendEditSnapshot()
+    void appendEditSnapshot('manual')
       .then((snapshot) => sendResponse?.({ ok: true, fieldCount: snapshot.fields.length }))
+      .catch((e) => sendResponse?.({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+    return true;
+  }
+
+  if (msg?.type === 'START_EDIT_PAGE_AUTO_TRIAL') {
+    void runEditPageAutoTrial()
+      .then((result) => sendResponse?.({ ok: true, ...result }))
+      .catch((e) => sendResponse?.({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+    return true;
+  }
+
+  if (msg?.type === 'START_EDIT_AUTO_REGISTER_PERSONAL') {
+    void runEditPageAutoEntry('register-personal')
+      .then((result) => sendResponse?.({ ok: true, ...result }))
+      .catch((e) => sendResponse?.({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+    return true;
+  }
+
+  if (msg?.type === 'START_EDIT_AUTO_GREEN_PERSONAL') {
+    void runEditPageAutoEntry('green-personal')
+      .then((result) => sendResponse?.({ ok: true, ...result }))
+      .catch((e) => sendResponse?.({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+    return true;
+  }
+
+  if (msg?.type === 'START_EDIT_AUTO_CASE_SERVICE') {
+    void runEditPageAutoEntry('case-service')
+      .then((result) => sendResponse?.({ ok: true, ...result }))
+      .catch((e) => sendResponse?.({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+    return true;
+  }
+
+  if (msg?.type === 'START_EDIT_BATCH_REGISTER_PERSONAL') {
+    void runEditPageBatchEntry('register-personal')
+      .then((result) => sendResponse?.({ ok: true, ...result }))
+      .catch((e) => sendResponse?.({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+    return true;
+  }
+
+  if (msg?.type === 'START_EDIT_BATCH_GREEN_PERSONAL') {
+    void runEditPageBatchEntry('green-personal')
+      .then((result) => sendResponse?.({ ok: true, ...result }))
+      .catch((e) => sendResponse?.({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+    return true;
+  }
+
+  if (msg?.type === 'START_EDIT_BATCH_CASE_SERVICE') {
+    void runEditPageBatchEntry('case-service')
+      .then((result) => sendResponse?.({ ok: true, ...result }))
       .catch((e) => sendResponse?.({ ok: false, error: e instanceof Error ? e.message : String(e) }));
     return true;
   }

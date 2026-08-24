@@ -41,11 +41,20 @@
       #clear-cache { background: #dc2626; }
       #start-tracking-analysis { background: #2563eb; }
       #start-missing-tracking-analysis { background: #1d4ed8; }
+      #start-tracking-zh-register { background: #0f766e; }
+      #start-tracking-zh-green { background: #0d9488; }
       #refresh-tracking-analysis { background: #4b5563; }
       #download-tracking-analysis { background: #059669; }
       #clear-tracking-analysis { background: #7c2d12; }
       #start-edit-probe { background: #0f766e; }
       #scan-edit-page { background: #0369a1; }
+      #start-edit-auto-trial { background: #7c3aed; }
+      #start-edit-register-personal { background: #7c3aed; }
+      #start-edit-green-personal { background: #6d28d9; }
+      #start-edit-case-service { background: #5b21b6; }
+      #start-edit-batch-register-personal { background: #4338ca; }
+      #start-edit-batch-green-personal { background: #3730a3; }
+      #start-edit-batch-case-service { background: #312e81; }
       #download-edit-analysis { background: #059669; }
       #clear-edit-analysis { background: #7c2d12; }
       .debug-note { margin-top: 8px; color: #9a3412; font-size: 11px; line-height: 1.45; }
@@ -55,7 +64,7 @@
   <body>
     <div class="header">
       <h1>寰宇医道探针</h1>
-      <span class="ver" id="ver">v1.2.4</span>
+      <span class="ver" id="ver">v1.2.12</span>
     </div>
 
     <div class="row">
@@ -91,6 +100,10 @@
       <div class="debug-buttons wide">
         <button id="start-tracking-analysis">开始追踪池分析</button>
       </div>
+      <div class="debug-buttons">
+        <button id="start-tracking-zh-register">梳理挂号追踪池</button>
+        <button id="start-tracking-zh-green">梳理绿通追踪池</button>
+      </div>
       <div class="debug-buttons wide">
         <button id="start-missing-tracking-analysis">深挖缺失类型</button>
       </div>
@@ -110,6 +123,23 @@
       <div class="debug-buttons">
         <button id="start-edit-probe">开始监听</button>
         <button id="scan-edit-page">扫描当前页</button>
+      </div>
+      <div class="debug-buttons wide">
+        <button id="start-edit-auto-trial">自动试跑1单</button>
+      </div>
+      <div class="debug-buttons wide">
+        <button id="start-edit-register-personal">梳理挂号个人池</button>
+      </div>
+      <div class="debug-buttons">
+        <button id="start-edit-green-personal">梳理绿通个人池</button>
+        <button id="start-edit-case-service">梳理个案服务待办</button>
+      </div>
+      <div class="debug-buttons wide">
+        <button id="start-edit-batch-register-personal">批量挂号个人池</button>
+      </div>
+      <div class="debug-buttons">
+        <button id="start-edit-batch-green-personal">批量绿通个人池</button>
+        <button id="start-edit-batch-case-service">批量个案服务待办</button>
       </div>
       <div class="debug-buttons">
         <button id="download-edit-analysis">下载结果</button>

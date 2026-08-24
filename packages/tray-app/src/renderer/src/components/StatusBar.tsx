@@ -73,13 +73,13 @@ export default function StatusBar({ backendOk, presence }: Props): React.JSX.Ele
       ? 'bg-emerald-500'
       : presence?.mobileState === 'background'
         ? 'bg-amber-500'
-        : 'bg-slate-400'
+        : 'bg-red-500'
   const mobileText =
     presence?.mobileState === 'active'
-      ? '移动端活跃'
+      ? '移动端在线采集中'
       : presence?.mobileState === 'background'
-        ? '移动端后台正常'
-        : '移动端长时间未联系'
+        ? '移动端后台等待中'
+        : '移动端需要打开 App'
 
   return (
     <footer className="border-t border-line bg-surface px-5 py-2 flex items-center justify-between text-xs text-fg-muted shrink-0">
@@ -96,7 +96,7 @@ export default function StatusBar({ backendOk, presence }: Props): React.JSX.Ele
           <span className={`inline-block w-2 h-2 rounded-full ${tokenDot}`} />
           {tokenText}
         </span>
-        <span className="flex items-center gap-1.5" title={`最后联系: ${mobileLastSeen} · 来源: ${presence?.mobileHeartbeatSource ?? '无'}`}>
+        <span className="flex items-center gap-1.5" title={`最后联系: ${mobileLastSeen} · 来源: ${presence?.mobileHeartbeatSource ?? '无'} · Android 后台不保证持续心跳，红色表示需要打开 App 触发补传`}>
           <span className={`inline-block w-2 h-2 rounded-full ${mobileDot}`} />
           {mobileText}
         </span>

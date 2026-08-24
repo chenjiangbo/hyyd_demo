@@ -114,7 +114,7 @@ export interface Presence {
   taikangTabOpen: boolean
   trackingPoolPageActive: boolean
   mobileOnline?: boolean
-  mobileState?: 'active' | 'background' | 'stale'
+  mobileState?: 'active' | 'background' | 'needs_open' | 'stale'
   mobileOnlineReason?: 'heartbeat' | 'recent_call' | null
   mobileLastSeenAt?: string | null
   mobileHeartbeatSource?: string | null

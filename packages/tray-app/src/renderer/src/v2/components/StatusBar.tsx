@@ -64,14 +64,14 @@ export default function StatusBar({ session }: { session: Session }): React.JSX.
   const mobileLastSeen = presence?.mobileLastSeenAt
     ? new Date(presence.mobileLastSeenAt).toLocaleTimeString('zh-CN')
     : '无'
-  const mobileTitle = `最后联系: ${mobileLastSeen} · 来源: ${presence?.mobileHeartbeatSource ?? '无'}`
+  const mobileTitle = `最后联系: ${mobileLastSeen} · 来源: ${presence?.mobileHeartbeatSource ?? '无'} · Android 后台不保证持续心跳，红色表示需要打开 App 触发补传`
   const mobile: { dot: Dot; text: string; title?: string } = !backendOk
     ? { dot: 'idle', text: '移动端 —' }
     : presence?.mobileState === 'active'
-      ? { dot: 'ok', text: '移动端活跃', title: mobileTitle }
+      ? { dot: 'ok', text: '移动端在线采集中', title: mobileTitle }
       : presence?.mobileState === 'background'
-        ? { dot: 'warn', text: '移动端后台正常', title: mobileTitle }
-        : { dot: 'idle', text: '移动端长时间未联系', title: mobileTitle }
+        ? { dot: 'warn', text: '移动端后台等待中', title: mobileTitle }
+        : { dot: 'bad', text: '移动端需要打开 App', title: mobileTitle }
 
   // 后端 host:port（去掉协议）
   const backendUrl = getBackendUrl()

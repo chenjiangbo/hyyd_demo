@@ -22,6 +22,7 @@ let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
 let closePromptInFlight = false
+const launchHidden = process.argv.includes('--hidden')
 const captureSidecar = new CaptureSidecarClient()
 // 现场采集素材的本地落地 + 异步同步：粘贴→落 sqlite/文件→worker 上传后端
 const materialStore = new MaterialStore()
@@ -65,6 +66,26 @@ function closeToTray(): void {
 function quitApplication(): void {
   isQuitting = true
   app.quit()
+}
+
+function ensureAutoLaunchEnabled(): void {
+  if (process.platform !== 'win32' || is.dev) return
+
+  const settings = {
+    openAtLogin: true,
+    path: process.execPath,
+    args: ['--hidden']
+  }
+
+  app.setLoginItemSettings(settings)
+  const current = app.getLoginItemSettings({
+    path: settings.path,
+    args: settings.args
+  })
+
+  if (!current.openAtLogin) {
+    throw new Error('注册 Windows 开机自启失败')
+  }
 }
 
 async function requestWindowClose(): Promise<void> {
@@ -146,7 +167,7 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
-    mainWindow?.show()
+    if (!launchHidden) mainWindow?.show()
   })
 
   // 关闭窗口时按用户偏好处理：首次询问，可记住最小化到托盘或直接退出。
@@ -355,6 +376,7 @@ if (!gotLock) {
       captureSidecar.setSaveDebug(!!value)
     )
 
+    ensureAutoLaunchEnabled()
     createTray()
     createWindow()
     // sidecar 是订单生命周期沟通数据的核心来源；Windows 桌面端默认随应用启动。

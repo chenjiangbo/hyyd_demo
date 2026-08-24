@@ -116,8 +116,8 @@ function presenceIsFresh(lastSeenAt: number): boolean {
   return Date.now() - lastSeenAt < PRESENCE_FRESH_MS
 }
 
-// Tray 桌面端是否在线：靠 /me/presence REST 心跳（每 5s 一次），15s 内算在线。
-const TRAY_FRESH_MS = 15_000
+// Tray 桌面端是否在线：靠 /me/presence REST 心跳，90s 内有一次就算在线。
+const TRAY_FRESH_MS = 90_000
 function trayInfo(employeeId: number): { online: boolean; lastSeenAt: string | null } {
   const ts = trayRestSeenMap.get(employeeId)
   return {

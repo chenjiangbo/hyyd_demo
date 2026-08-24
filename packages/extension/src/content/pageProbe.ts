@@ -76,6 +76,21 @@
     }
   }
 
+  const unsafeWritePattern = /save|submit|commit|confirm|approve|audit|finish|cancel|update|insert|delete|upload|refund|pay/i;
+
+  function assertReadOnly(method: string, path: string) {
+    if (method.toUpperCase() !== 'GET' && unsafeWritePattern.test(path)) {
+      post({
+        kind: 'blocked-write',
+        method,
+        path,
+        requestFields: [],
+        responseFields: [],
+      });
+      throw new Error(`[HYYD_EDIT_PAGE_PROBE] blocked unsafe write request: ${method} ${path}`);
+    }
+  }
+
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const info = urlInfo(input);
@@ -85,6 +100,7 @@
       'GET';
     const body = init?.body ?? (input instanceof Request ? null : null);
     const requestFields = fields(parseMaybeJson(typeof body === 'string' ? body : null));
+    if (info.url.includes('ccm.taikang.com')) assertReadOnly(method, info.path);
     const response = await originalFetch(input, init);
     if (info.url.includes('ccm.taikang.com')) {
       response
@@ -124,6 +140,7 @@
     const probe = (this as any).__hyydProbe;
     if (probe?.url?.includes('ccm.taikang.com')) {
       const requestFields = fields(parseMaybeJson(typeof body === 'string' ? body : null));
+      assertReadOnly(probe.method || 'GET', probe.path || '');
       this.addEventListener('loadend', () => {
         const data = parseMaybeJson(this.responseText);
         post({
