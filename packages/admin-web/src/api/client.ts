@@ -23,7 +23,8 @@ import type {
   MaterialOrderGroup,
   CaptureQuality,
   CaptureHealthRow,
-  UnmatchedRefItem
+  UnmatchedRefItem,
+  CaptureDiagnosticImageItem
 } from './types'
 
 // 把筛选对象拼成 query string（跳过空值）。
@@ -114,6 +115,12 @@ export const adminApi = {
   },
   unmatchedRefs(status = 'pending') {
     return request<UnmatchedRefItem[]>(`/api/v1/admin/unmatched-order-refs${qs({ status })}`)
+  },
+  captureDiagnosticImages() {
+    return request<CaptureDiagnosticImageItem[]>('/api/v1/admin/capture-diagnostic-images')
+  },
+  deleteCaptureDiagnosticImage(objectKey: string) {
+    return request<{ ok: boolean }>(`/api/v1/admin/capture-diagnostic-images/${objectKey}`, { method: 'DELETE' })
   },
 
   // ───── 员工 ─────

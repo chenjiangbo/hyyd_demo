@@ -32,7 +32,8 @@ if (process.env.NODE_ENV !== 'production') {
 const appEnv = getEnv()
 
 const server = fastify({
-  logger: true
+  logger: true,
+  bodyLimit: 25 * 1024 * 1024
 })
 
 const prisma = new PrismaClient()
@@ -60,7 +61,7 @@ const minioPublicClient = new Minio.Client({
 
 // 确保 MinIO 桶存在（启动时调用）
 async function ensureBuckets() {
-  const buckets = ['order-attachments', 'recordings', 'screenshots', 'materials']
+  const buckets = ['order-attachments', 'recordings', 'screenshots', 'materials', 'capture-diagnostics']
   for (const name of buckets) {
     const exists = await minioClient.bucketExists(name).catch(() => false)
     if (!exists) {

@@ -8,67 +8,67 @@ generator client {
 }
 
 model Employee {
-  id             Int      @id @default(autoincrement())
-  name           String
-  phone          String
-  wechatId       String?  @map("wechat_id")
-  taikangAccount String?  @map("taikang_account")
-  token          String   @unique
-  orders             Order[]
-  messages           Message[]
-  calls              Call[]
-  materials          Material[]
-  unmatchedOrderRefs UnmatchedOrderRef[]
+  id                      Int                      @id @default(autoincrement())
+  name                    String
+  phone                   String
+  wechatId                String?                  @map("wechat_id")
+  taikangAccount          String?                  @map("taikang_account")
+  token                   String                   @unique
+  orders                  Order[]
+  messages                Message[]
+  calls                   Call[]
+  materials               Material[]
+  unmatchedOrderRefs      UnmatchedOrderRef[]
 
   @@map("employees")
 }
 
 model Order {
-  id                 Int          @id @default(autoincrement())
-  source             String       // 'taikang' | 'pingan'
-  sourceOrderNo      String       @map("source_order_no")
-  customerName       String       @map("customer_name")
-  customerPhone      String?      @map("customer_phone")
-  hospital           String?
-  dept               String?
-  doctor             String?
-  status             String       @default("候选") // 泰康 orderStateName 原文，如"待处理 / 待就诊 / 待支付 / 已完成"。默认值留旧文案仅作迁移兼容。
-  assignedEmployeeId Int?         @map("assigned_employee_id")
-  assignedEmployee   Employee?    @relation(fields: [assignedEmployeeId], references: [id])
-  rawJson            Json?        @map("raw_json")
-  detailJson         Json?        @map("detail_json")
-  detailFetchedAt    DateTime?    @map("detail_fetched_at")
-  detailFingerprint  String?      @map("detail_fingerprint") // 插件算的状态指纹，用于增量基线
-  orderState         String?      @map("order_state") // 泰康订单状态码原值，用于检测状态变化
+  id                      Int                      @id @default(autoincrement())
+  source                  String // 'taikang' | 'pingan'
+  sourceOrderNo           String                   @map("source_order_no")
+  customerName            String                   @map("customer_name")
+  customerPhone           String?                  @map("customer_phone")
+  hospital                String?
+  dept                    String?
+  doctor                  String?
+  status                  String                   @default("候选") // 泰康 orderStateName 原文，如"待处理 / 待就诊 / 待支付 / 已完成"。默认值留旧文案仅作迁移兼容。
+  assignedEmployeeId      Int?                     @map("assigned_employee_id")
+  assignedEmployee        Employee?                @relation(fields: [assignedEmployeeId], references: [id])
+  rawJson                 Json?                    @map("raw_json")
+  detailJson              Json?                    @map("detail_json")
+  detailFetchedAt         DateTime?                @map("detail_fetched_at")
+  detailFingerprint       String?                  @map("detail_fingerprint") // 插件算的状态指纹，用于增量基线
+  orderState              String?                  @map("order_state") // 泰康订单状态码原值，用于检测状态变化
   // AI 滚动简报（综合微信/企微消息 + 通话/录音转写，一次调用产出 摘要/阶段/待办/风险/回填关键信息）
   // 见 docs/设计_订单AI滚动简报.md。aiBriefJson 存整份简报；brief* 是增量水位。
-  aiBriefJson        Json?        @map("ai_brief_json")
-  briefUpdatedAt     DateTime?    @map("brief_updated_at")
-  briefLastMsgId     Int?         @map("brief_last_msg_id")  // 上次处理到的最大 Message.id
-  briefLastCallId    Int?         @map("brief_last_call_id") // 上次处理到的最大 Call.id
-  briefLastMaterialId Int?        @map("brief_last_material_id") // 上次处理到的最大 Material.id（手工补录）
-  createdAt          DateTime     @default(now()) @map("created_at")
-  updatedAt          DateTime     @updatedAt @map("updated_at")
-  messages           Message[]
-  calls              Call[]
-  aiSummaries        AiSummary[]
-  attachments        OrderAttachment[]
-  materials          Material[]
-  statusHistory      OrderStatusHistory[]
+  aiBriefJson             Json?                    @map("ai_brief_json")
+  briefUpdatedAt          DateTime?                @map("brief_updated_at")
+  briefLastMsgId          Int?                     @map("brief_last_msg_id") // 上次处理到的最大 Message.id
+  briefLastCallId         Int?                     @map("brief_last_call_id") // 上次处理到的最大 Call.id
+  briefLastMaterialId     Int?                     @map("brief_last_material_id") // 上次处理到的最大 Material.id（手工补录）
+  createdAt               DateTime                 @default(now()) @map("created_at")
+  updatedAt               DateTime                 @updatedAt @map("updated_at")
+  messages                Message[]
+  calls                   Call[]
+  aiSummaries             AiSummary[]
+  attachments             OrderAttachment[]
+  materials               Material[]
+  statusHistory           OrderStatusHistory[]
 
   @@unique([source, sourceOrderNo])
   @@map("orders")
 }
 
 model ApplicationBrief {
-  id                  Int      @id @default(autoincrement())
-  applicationNo       String   @unique @map("application_no")
-  briefJson           Json?    @map("brief_json")
-  briefUpdatedAt      DateTime? @map("brief_updated_at")
-  briefLastMsgId      Int?     @map("brief_last_msg_id")
-  briefLastCallId     Int?     @map("brief_last_call_id")
-  createdAt           DateTime @default(now()) @map("created_at")
-  updatedAt           DateTime @updatedAt @map("updated_at")
+  id              Int       @id @default(autoincrement())
+  applicationNo   String    @unique @map("application_no")
+  briefJson       Json?     @map("brief_json")
+  briefUpdatedAt  DateTime? @map("brief_updated_at")
+  briefLastMsgId  Int?      @map("brief_last_msg_id")
+  briefLastCallId Int?      @map("brief_last_call_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
 
   @@map("application_briefs")
 }
@@ -79,7 +79,7 @@ model OrderStatusHistory {
   id             Int      @id @default(autoincrement())
   orderId        Int      @map("order_id")
   order          Order    @relation(fields: [orderId], references: [id])
-  orderState     String?  @map("order_state")      // 状态码，如 "2002" / "8"
+  orderState     String?  @map("order_state") // 状态码，如 "2002" / "8"
   orderStateName String?  @map("order_state_name") // 状态名，如 "待处理" / "待分配医学陪诊"
   recordedAt     DateTime @default(now()) @map("recorded_at")
 
@@ -111,23 +111,23 @@ model OrderAttachment {
 // clientUuid 由 tray-app 本地 sqlite 在落地时生成，
 // 用 (orderId, clientUuid) 做幂等键，避免离线补传时双插。
 model Material {
-  id           Int      @id @default(autoincrement())
-  orderId      Int      @map("order_id")
-  order        Order    @relation(fields: [orderId], references: [id])
-  employeeId   Int      @map("employee_id")
-  employee     Employee @relation(fields: [employeeId], references: [id])
-  type         String   // 'text' | 'image'
-  textContent  String?  @map("text_content")
-  minioBucket  String?  @map("minio_bucket")
-  minioKey     String?  @map("minio_key")
-  mimeType     String?  @map("mime_type")
-  byteSize     Int?     @map("byte_size")
-  clientUuid   String   @map("client_uuid")
+  id                 Int       @id @default(autoincrement())
+  orderId            Int       @map("order_id")
+  order              Order     @relation(fields: [orderId], references: [id])
+  employeeId         Int       @map("employee_id")
+  employee           Employee  @relation(fields: [employeeId], references: [id])
+  type               String // 'text' | 'image'
+  textContent        String?   @map("text_content")
+  minioBucket        String?   @map("minio_bucket")
+  minioKey           String?   @map("minio_key")
+  mimeType           String?   @map("mime_type")
+  byteSize           Int?      @map("byte_size")
+  clientUuid         String    @map("client_uuid")
   // 图片素材的 AI 识图缓存（qwen-vl 分类 + OCR，识一次复用）。供订单 AI 简报使用。
-  aiImageKind  String?  @map("ai_image_kind")  // 聊天截图 / 单据 / 短信 / 其他
-  aiImageText  String?  @map("ai_image_text")  // 从图中提取的文字/关键信息
+  aiImageKind        String?   @map("ai_image_kind") // 聊天截图 / 单据 / 短信 / 其他
+  aiImageText        String?   @map("ai_image_text") // 从图中提取的文字/关键信息
   aiImageProcessedAt DateTime? @map("ai_image_processed_at")
-  createdAt    DateTime @default(now()) @map("created_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
 
   @@unique([orderId, clientUuid])
   @@index([orderId])
@@ -139,7 +139,7 @@ model Message {
   orderId          Int?     @map("order_id")
   order            Order?   @relation(fields: [orderId], references: [id])
   applicationNo    String?  @map("application_no")
-  channel          String   // 'wechat' | 'wxwork'
+  channel          String // 'wechat' | 'wxwork'
   conversationName String   @map("conversation_name")
   senderName       String?  @map("sender_name")
   contentText      String   @map("content_text")
@@ -169,49 +169,49 @@ model Message {
 /// 让员工/客户确认绑定到哪张订单。UI 由另一端开发，本表只负责"存"。
 /// 详见 docs/订单号待确认_交接说明.md。
 model UnmatchedOrderRef {
-  id               Int       @id @default(autoincrement())
-  employeeId       Int       @map("employee_id")
-  employee         Employee  @relation(fields: [employeeId], references: [id])
-  channel          String // 'wechat' | 'wxwork'
-  conversationName String    @map("conversation_name") // OCR 到的会话标题原文
-  candidate        String // 抽到的订单号候选（去空白后）
-  candidateKind    String    @map("candidate_kind") // 'fwyy' | 'cod' | 'ccod' | 'od' | 'so' | 'lt' | 'tail8' | 'unknown'
-  reason           String // 'no_match'（找不到） | 'ambiguous'（多单并列）
-  bestDist         Int?      @map("best_dist") // 最近编辑距离（none 时是超阈值的最小值，便于排查）
-  candidateOrderIds Json?    @map("candidate_order_ids") // ambiguous 时并列的订单 id 列表
-  screenshotOssKey String?   @map("screenshot_oss_key")
-  capturedAt       DateTime  @map("captured_at")
-  seenCount        Int       @default(1) @map("seen_count") // 同一候选重复出现次数
-  status           String    @default("pending") // 'pending' | 'confirmed' | 'rejected'
-  resolvedOrderId       Int?    @map("resolved_order_id") // 确认时选择的订单（兼容/审计）
-  resolvedApplicationNo String? @map("resolved_application_no") // 确认后绑定的申领号
-  note             String?
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
+  id                    Int      @id @default(autoincrement())
+  employeeId            Int      @map("employee_id")
+  employee              Employee @relation(fields: [employeeId], references: [id])
+  channel               String // 'wechat' | 'wxwork'
+  conversationName      String   @map("conversation_name") // OCR 到的会话标题原文
+  candidate             String // 抽到的订单号候选（去空白后）
+  candidateKind         String   @map("candidate_kind") // 'fwyy' | 'cod' | 'ccod' | 'od' | 'so' | 'lt' | 'tail8' | 'unknown'
+  reason                String // 'no_match'（找不到） | 'ambiguous'（多单并列）
+  bestDist              Int?     @map("best_dist") // 最近编辑距离（none 时是超阈值的最小值，便于排查）
+  candidateOrderIds     Json?    @map("candidate_order_ids") // ambiguous 时并列的订单 id 列表
+  screenshotOssKey      String?  @map("screenshot_oss_key")
+  capturedAt            DateTime @map("captured_at")
+  seenCount             Int      @default(1) @map("seen_count") // 同一候选重复出现次数
+  status                String   @default("pending") // 'pending' | 'confirmed' | 'rejected'
+  resolvedOrderId       Int?     @map("resolved_order_id") // 确认时选择的订单（兼容/审计）
+  resolvedApplicationNo String?  @map("resolved_application_no") // 确认后绑定的申领号
+  note                  String?
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
 
   @@unique([employeeId, candidate], name: "employee_candidate")
   @@map("unmatched_order_refs")
 }
 
 model Call {
-  id              Int      @id @default(autoincrement())
-  orderId         Int?     @map("order_id")
-  order           Order?   @relation(fields: [orderId], references: [id])
-  applicationNo   String?  @map("application_no")
-  employeeId      Int      @map("employee_id")
-  employee        Employee @relation(fields: [employeeId], references: [id])
+  id              Int       @id @default(autoincrement())
+  orderId         Int?      @map("order_id")
+  order           Order?    @relation(fields: [orderId], references: [id])
+  applicationNo   String?   @map("application_no")
+  employeeId      Int       @map("employee_id")
+  employee        Employee  @relation(fields: [employeeId], references: [id])
   phone           String
-  contactName     String?  @map("contact_name") // 通讯录里的姓名（移动端采集时带上，可能为空）
-  direction       String   // 'in' | 'out'
-  callStatus      String   @default("answered") @map("call_status") // 'answered' | 'missed' | 'rejected' | 'outgoing_unanswered'
-  durationSec     Int      @map("duration_sec")
-  startedAt       DateTime @map("started_at")
-  recordingOssKey String?  @map("recording_oss_key")
-  asrText         String?  @map("asr_text")
-  asrStatus       String   @default("no_recording") @map("asr_status") // 'no_recording' | 'pending' | 'processing' | 'done' | 'failed' | 'requires_manual'
+  contactName     String?   @map("contact_name") // 通讯录里的姓名（移动端采集时带上，可能为空）
+  direction       String // 'in' | 'out'
+  callStatus      String    @default("answered") @map("call_status") // 'answered' | 'missed' | 'rejected' | 'outgoing_unanswered'
+  durationSec     Int       @map("duration_sec")
+  startedAt       DateTime  @map("started_at")
+  recordingOssKey String?   @map("recording_oss_key")
+  asrText         String?   @map("asr_text")
+  asrStatus       String    @default("no_recording") @map("asr_status") // 'no_recording' | 'pending' | 'processing' | 'done' | 'failed' | 'requires_manual'
   // Fun-ASR (DashScope) 任务追踪
-  dashscopeTaskId String?  @map("dashscope_task_id")
-  asrResultJson   Json?    @map("asr_result_json")
+  dashscopeTaskId String?   @map("dashscope_task_id")
+  asrResultJson   Json?     @map("asr_result_json")
   asrFinishedAt   DateTime? @map("asr_finished_at")
 
   @@index([employeeId, applicationNo, startedAt])
@@ -220,8 +220,8 @@ model Call {
 
 model Command {
   id          Int       @id @default(autoincrement())
-  target      String    // 'ext' | 'tray'
-  action      String    // 'claim' | 'fill_form'
+  target      String // 'ext' | 'tray'
+  action      String // 'claim' | 'fill_form'
   payloadJson Json      @map("payload_json")
   status      String    @default("pending") // 'pending' | 'done' | 'failed' | 'requires_manual'
   createdAt   DateTime  @default(now()) @map("created_at")
@@ -234,8 +234,8 @@ model AiSummary {
   id        Int      @id @default(autoincrement())
   orderId   Int      @map("order_id")
   order     Order    @relation(fields: [orderId], references: [id])
-  callId    Int?     @map("call_id")  // 关联到具体某次通话；message/full 类型可为 null
-  type      String   // 'call' | 'message' | 'full'
+  callId    Int?     @map("call_id") // 关联到具体某次通话；message/full 类型可为 null
+  type      String // 'call' | 'message' | 'full'
   content   String
   model     String
   createdAt DateTime @default(now()) @map("created_at")

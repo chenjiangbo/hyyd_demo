@@ -64,6 +64,18 @@ export interface UnmatchedRefItem {
   screenshotUrl: string | null
 }
 
+export interface CaptureDiagnosticImageItem {
+  objectKey: string
+  employee: { id: number; name: string }
+  applicationNo: string
+  channel: string
+  conversationName: string
+  capturedAt: string
+  createdAt: string
+  byteSize: number
+  imageUrl: string | null
+}
+
 // 订单详情里的结构化消息
 export interface OrderMessage {
   id: number

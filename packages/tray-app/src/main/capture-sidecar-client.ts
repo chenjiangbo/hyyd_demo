@@ -42,6 +42,15 @@ interface CaptureBackendConfig {
   employeeCode: string
 }
 
+interface DiagnosticCandidate {
+  applicationNo: string
+  channel: string
+  conversationName: string
+  capturedAt: string
+  path: string
+  slot: string
+}
+
 export class CaptureSidecarClient {
   private child: ChildProcessWithoutNullStreams | null = null
   private store: CaptureStore | null = null
@@ -74,6 +83,8 @@ export class CaptureSidecarClient {
   // 【调试】过程日志环形缓冲：sidecar stderr + TS 侧 insert/structure/upload 结果，最新在前。
   private static readonly DIAG_LOG_MAX = 500
   private diagLog: DiagLogEntry[] = []
+  private diagnosticCandidates = new Map<string, DiagnosticCandidate>()
+  private diagnosticTimer: NodeJS.Timeout
 
   private addLog(tag: DiagLogEntry['tag'], msg: string): void {
     this.diagLog.unshift({ ts: new Date().toISOString(), tag, msg })
@@ -113,6 +124,8 @@ export class CaptureSidecarClient {
       this.saveDebug = false
     }
     this.status.saveDebug = this.saveDebug
+    this.diagnosticTimer = setInterval(() => void this.uploadDueDiagnosticImages(), 30_000)
+    this.diagnosticTimer.unref()
   }
 
   private prefsPath(): string {
@@ -399,7 +412,11 @@ export class CaptureSidecarClient {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       // 现场验证开关：开=sidecar 保存截图+.debug.json 供调试页查看；关=OCR 用完即删图、不写调试文件
-      env: { ...process.env, HYYD_SAVE_DEBUG: this.saveDebug ? '1' : '0' }
+      env: {
+        ...process.env,
+        HYYD_SAVE_DEBUG: this.saveDebug ? '1' : '0',
+        HYYD_KEEP_CAPTURE_FRAMES: '1'
+      }
     })
 
     this.addLog('info' as DiagLogEntry['tag'], `sidecar 进程已启动: ${sidecarPath}`)
@@ -444,6 +461,64 @@ export class CaptureSidecarClient {
     this.status.running = false
     this.status.collecting = false
     if (this.status.enabled) this.status.mode = 'ready'
+  }
+
+  private localHour(iso: string): string {
+    const date = new Date(iso)
+    if (Number.isNaN(date.getTime())) throw new Error(`采集时间非法: ${iso}`)
+    const pad = (value: number): string => String(value).padStart(2, '0')
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}`
+  }
+
+  private setDiagnosticCandidate(frame: CaptureFrameEvent): boolean {
+    const applicationNo = frame.orderNo?.trim()
+    if (!applicationNo || !frame.messages?.length || !existsSync(frame.screenshotPath)) return false
+    const slot = this.localHour(frame.capturedAt)
+    const key = `${applicationNo}|${slot}`
+    const previous = this.diagnosticCandidates.get(key)
+    if (previous && previous.path !== frame.screenshotPath) rmSync(previous.path, { force: true })
+    this.diagnosticCandidates.set(key, {
+      applicationNo,
+      channel: frame.channel,
+      conversationName: frame.title ?? frame.windowTitle ?? frame.processName,
+      capturedAt: frame.capturedAt,
+      path: frame.screenshotPath,
+      slot
+    })
+    this.addLog('info', `诊断图片候选 ${applicationNo} ${slot}`)
+    return true
+  }
+
+  private async uploadDueDiagnosticImages(): Promise<void> {
+    if (!this.backendConfig || this.diagnosticCandidates.size === 0) return
+    const currentSlot = this.localHour(new Date().toISOString())
+    const due = [...this.diagnosticCandidates.entries()].filter(([, candidate]) => candidate.slot < currentSlot)
+    for (const [key, candidate] of due) {
+      this.diagnosticCandidates.delete(key)
+      try {
+        if (!existsSync(candidate.path)) throw new Error('候选图片已不存在')
+        const imageBase64 = readFileSync(candidate.path).toString('base64')
+        const res = await fetch(`${this.backendConfig.backendUrl}/api/v1/capture/diagnostic-image`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Employee-Code': this.backendConfig.employeeCode },
+          body: JSON.stringify({
+            applicationNo: candidate.applicationNo,
+            channel: candidate.channel,
+            conversationName: candidate.conversationName,
+            capturedAt: candidate.capturedAt,
+            mimeType: 'image/png',
+            imageBase64
+          })
+        })
+        const json = (await res.json().catch(() => null)) as { error?: string } | null
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${json?.error ?? res.statusText}`)
+        this.addLog('upload', `✓ 诊断图片 ${candidate.applicationNo} ${candidate.slot} 已上传`)
+      } catch (error) {
+        this.addLog('upload', `✗ 诊断图片 ${candidate.applicationNo} ${candidate.slot} 上传失败，已跳过: ${(error as Error).message}`)
+      } finally {
+        rmSync(candidate.path, { force: true })
+      }
+    }
   }
 
   private resolveSidecarPath(): string {
@@ -525,6 +600,7 @@ export class CaptureSidecarClient {
       if (message.filtered) {
         this.status.lastFrameAt = message.capturedAt
         this.status.lastTextPreview = message.ocr.text.replace(/\s+/g, ' ').slice(0, 120)
+        rmSync(message.screenshotPath, { force: true })
         return
       }
       if (!this.store) {
@@ -548,6 +624,11 @@ export class CaptureSidecarClient {
         this.addLog('insert', `新帧 ${message.channel} "${convName}" → ${result.newMessages.length} 条新消息 申请号候选=${result.orderNo ?? '无'}`)
       }
       this.status.lastTextPreview = message.ocr.text.replace(/\s+/g, ' ').slice(0, 120)
+
+      // 临时诊断证据只保留本地非重复客户帧中、每个申领号每小时最新的一张。
+      if (!result.duplicate) {
+        if (!this.setDiagnosticCandidate(message)) rmSync(message.screenshotPath, { force: true })
+      } else rmSync(message.screenshotPath, { force: true })
 
       // 整帧没变（chat_text_hash 命中）就不重复上报；变了就把整帧消息(含 system)发后端，
       // 由后端做跨帧单消息去重 + 时间链还原 + 订单关联。

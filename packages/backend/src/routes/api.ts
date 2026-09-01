@@ -11,7 +11,7 @@ import { extractKeyInfo, type KeyInfoMessage, type KeyInfoContext } from '../llm
 import { structureMessages, type StructInput } from '../lib/messageStructure.js'
 import { refreshApplicationBrief, refreshOrderBrief } from '../jobs/orderBriefRunner.js'
 import { getRecordingPlaybackInfo } from '../audioTranscode.js'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   CreateOrderPayload,
   ClaimOrderPayload, 
@@ -1390,6 +1390,60 @@ export function registerApiRoutes(
       }
     }
     return reply.send({ data: { orderId, applicationNo, created, merged } })
+  })
+
+  interface CaptureDiagnosticImageBody {
+    applicationNo: string
+    channel: string
+    conversationName: string
+    capturedAt: string
+    mimeType: string
+    imageBase64: string
+  }
+
+  // 临时诊断图片：不参与消息去重，只保存客户端明确选中的一张图片及业务元数据。
+  fastify.post<{ Body: CaptureDiagnosticImageBody }>('/api/v1/capture/diagnostic-image', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录或缺少工号' })
+    const body = request.body
+    if (!body || typeof body !== 'object') return reply.status(400).send({ error: '请求体不能为空' })
+    const applicationNo = String(body.applicationNo ?? '').trim()
+    const channel = String(body.channel ?? '').trim()
+    const conversationName = String(body.conversationName ?? '').trim()
+    const mimeType = String(body.mimeType ?? '').trim().toLowerCase()
+    const capturedAt = new Date(body.capturedAt)
+    if (!applicationNo || !channel || !conversationName || Number.isNaN(capturedAt.getTime())) {
+      return reply.status(400).send({ error: 'applicationNo、channel、conversationName、capturedAt 必填且合法' })
+    }
+    if (!/^image\/(png|jpeg|jpg|bmp|webp)$/.test(mimeType)) {
+      return reply.status(400).send({ error: 'mimeType 必须是支持的图片类型' })
+    }
+    if (typeof body.imageBase64 !== 'string' || !body.imageBase64.trim()) {
+      return reply.status(400).send({ error: 'imageBase64 必填' })
+    }
+
+    let image: Buffer
+    try {
+      image = Buffer.from(body.imageBase64, 'base64')
+    } catch {
+      return reply.status(400).send({ error: '图片内容不是合法 base64' })
+    }
+    if (image.length === 0) return reply.status(400).send({ error: '图片内容为空' })
+    if (image.length > 18 * 1024 * 1024) return reply.status(413).send({ error: '图片不能超过 18MB' })
+
+    const minioBucket = 'capture-diagnostics'
+    const extension = mimeType === 'image/jpeg' || mimeType === 'image/jpg' ? 'jpg' : mimeType.slice('image/'.length)
+    const safeApplicationNo = encodeURIComponent(applicationNo)
+    const safeConversationName = encodeURIComponent(conversationName).slice(0, 180)
+    const timestamp = capturedAt.toISOString().replace(/[-:TZ.]/g, '').slice(0, 17)
+    const minioKey = `capture-diagnostics/emp-${request.employee.id}__app-${safeApplicationNo}__at-${timestamp}__channel-${channel}__conv-${safeConversationName}__${randomUUID()}.${extension}`
+    try {
+      await minioClient.putObject(minioBucket, minioKey, image, image.length, { 'Content-Type': mimeType })
+      return reply.send({ data: { objectKey: minioKey, applicationNo, capturedAt: capturedAt.toISOString() } })
+    } catch (error: any) {
+      await minioClient.removeObject(minioBucket, minioKey).catch(() => undefined)
+      fastify.log.error('诊断图片上传失败:', error)
+      return reply.status(500).send({ error: '诊断图片上传失败: ' + error.message })
+    }
   })
 
   // 8.3 关键信息抽取（路线1 的 AI 环节）—— 后端调百炼文本 LLM，从"带说话人的对话"抽可回填关键字段。

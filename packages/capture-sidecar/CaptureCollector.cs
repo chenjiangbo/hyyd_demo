@@ -36,6 +36,8 @@ internal sealed class CaptureCollector : IDisposable
     // 保留这些产物供采集调试页看截图/OCR/分区可视化。注意：此开关不影响"手动跑图"调试工具。
     private static readonly bool SaveDebugArtifacts =
         Environment.GetEnvironmentVariable("HYYD_SAVE_DEBUG") is "1" or "true" or "TRUE";
+    private static readonly bool KeepCaptureFrames =
+        Environment.GetEnvironmentVariable("HYYD_KEEP_CAPTURE_FRAMES") is "1" or "true" or "TRUE";
 
     private readonly JsonLineWriter _writer;
     private readonly WindowInspector _windowInspector = new();
@@ -557,7 +559,7 @@ internal sealed class CaptureCollector : IDisposable
             if (SaveDebugArtifacts)
                 _writer.WriteDebugFileSafe(DebugJsonPath(image.Path), filteredPayload);
             await _writer.WriteAsync(filteredPayload);
-            if (!SaveDebugArtifacts) TryDeleteFrameFile(image.Path);
+            if (!SaveDebugArtifacts && !KeepCaptureFrames) TryDeleteFrameFile(image.Path);
             return;
         }
 
@@ -615,7 +617,7 @@ internal sealed class CaptureCollector : IDisposable
         if (SaveDebugArtifacts)
             _writer.WriteDebugFileSafe(DebugJsonPath(image.Path), payload);
         await _writer.WriteAsync(payload);
-        if (!SaveDebugArtifacts) TryDeleteFrameFile(image.Path);
+        if (!SaveDebugArtifacts && !KeepCaptureFrames) TryDeleteFrameFile(image.Path);
     }
 
     // 关闭"保存采集调试数据"时：截图只是给 OCR 用的临时文件，OCR 完即删（不在员工机留客户聊天截图）。

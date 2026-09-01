@@ -15,6 +15,7 @@ import CaptureHealthPage from './pages/CaptureHealthPage'
 import UnmatchedRefsPage from './pages/UnmatchedRefsPage'
 import HealthPage from './pages/HealthPage'
 import SettingsPage from './pages/SettingsPage'
+import CaptureDiagnosticImagesPage from './pages/CaptureDiagnosticImagesPage'
 
 export default function App(): React.JSX.Element {
   const { status } = useAuth()
@@ -43,6 +44,7 @@ export default function App(): React.JSX.Element {
         <Route path="messages" element={<MessagesPage />} />
         <Route path="calls" element={<CallsPage />} />
         <Route path="capture-health" element={<CaptureHealthPage />} />
+        <Route path="capture-diagnostic-images" element={<CaptureDiagnosticImagesPage />} />
         <Route path="unmatched-refs" element={<UnmatchedRefsPage />} />
         <Route path="health" element={<HealthPage />} />
         <Route path="settings" element={<SettingsPage />} />

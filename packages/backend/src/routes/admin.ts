@@ -586,6 +586,66 @@ export function registerAdminRoutes(
     const presign = (bucket: string, key: string): Promise<string> =>
       minioPublicClient.presignedGetObject(bucket, key, 60 * 60)
 
+    // ───── 采集诊断图片 ─────
+    fastify.get('/api/v1/admin/capture-diagnostic-images', async (_request, reply) => {
+      try {
+        const objects = await new Promise<any[]>((resolve, reject) => {
+          const rows: any[] = []
+          const stream = minioClient.listObjectsV2('capture-diagnostics', 'capture-diagnostics/', true)
+          stream.on('data', (object) => rows.push(object))
+          stream.on('end', () => resolve(rows))
+          stream.on('error', reject)
+        })
+        const data = await Promise.all(objects.map(async (object) => {
+          const key = String(object.name ?? '')
+          const match = key.match(/^capture-diagnostics\/emp-(\d+)__app-(.+?)__at-(\d{17})__channel-([^_]+)__conv-(.+?)__[^/]+\.(png|jpg|jpeg|bmp|webp)$/i)
+          if (!match) return null
+          const capturedAt = parseDiagnosticTimestamp(match[3])
+          return {
+            objectKey: key,
+            employee: { id: Number(match[1]), name: String(match[1]) },
+            applicationNo: decodeURIComponent(match[2]),
+            channel: match[4],
+            conversationName: decodeURIComponent(match[5]),
+            capturedAt: capturedAt.toISOString(),
+            createdAt: object.lastModified instanceof Date ? object.lastModified.toISOString() : new Date(object.lastModified).toISOString(),
+            byteSize: Number(object.size ?? 0),
+            imageUrl: await presign('capture-diagnostics', key).catch(() => null)
+          }
+        }))
+        data.sort((a, b) => (a && b ? b.capturedAt.localeCompare(a.capturedAt) : a ? -1 : 1))
+        return reply.send({ data: data.filter(Boolean) })
+      } catch (err: any) {
+        rootFastify.log.error('admin capture diagnostic images 失败:', err)
+        return reply.status(500).send({ error: '诊断图片查询失败: ' + err.message })
+      }
+    })
+
+    fastify.delete<{ Params: { '*': string } }>('/api/v1/admin/capture-diagnostic-images/*', async (request, reply) => {
+      const key = request.params['*']
+      if (!key.startsWith('capture-diagnostics/')) return reply.status(400).send({ error: '图片路径非法' })
+      try {
+        await minioClient.removeObject('capture-diagnostics', key)
+        return reply.send({ data: { ok: true } })
+      } catch (err: any) {
+        rootFastify.log.error('admin capture diagnostic image 删除失败:', err)
+        return reply.status(500).send({ error: '诊断图片删除失败: ' + err.message })
+      }
+    })
+
+    function parseDiagnosticTimestamp(value: string): Date {
+      const year = Number(value.slice(0, 4))
+      const month = Number(value.slice(4, 6))
+      const day = Number(value.slice(6, 8))
+      const hour = Number(value.slice(8, 10))
+      const minute = Number(value.slice(10, 12))
+      const second = Number(value.slice(12, 14))
+      const millis = Number(value.slice(14, 17))
+      const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second, millis))
+      if (Number.isNaN(date.getTime())) throw new Error('诊断图片文件名时间非法')
+      return date
+    }
+
     // 把一条 material 序列化给前端：文本截断 300 字，图片附 presigned URL。
     const serializeMaterial = async (m: {
       id: number
