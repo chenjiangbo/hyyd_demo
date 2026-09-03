@@ -463,17 +463,18 @@ export class CaptureSidecarClient {
     if (this.status.enabled) this.status.mode = 'ready'
   }
 
-  private localHour(iso: string): string {
+  private localSlot(iso: string): string {
     const date = new Date(iso)
     if (Number.isNaN(date.getTime())) throw new Error(`采集时间非法: ${iso}`)
     const pad = (value: number): string => String(value).padStart(2, '0')
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}`
+    const slotMinute = Math.floor(date.getMinutes() / 20) * 20
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(slotMinute)}`
   }
 
   private setDiagnosticCandidate(frame: CaptureFrameEvent): boolean {
     const applicationNo = frame.orderNo?.trim()
     if (!applicationNo || !frame.messages?.length || !existsSync(frame.screenshotPath)) return false
-    const slot = this.localHour(frame.capturedAt)
+    const slot = this.localSlot(frame.capturedAt)
     const key = `${applicationNo}|${slot}`
     const previous = this.diagnosticCandidates.get(key)
     if (previous && previous.path !== frame.screenshotPath) rmSync(previous.path, { force: true })
@@ -491,7 +492,7 @@ export class CaptureSidecarClient {
 
   private async uploadDueDiagnosticImages(): Promise<void> {
     if (!this.backendConfig || this.diagnosticCandidates.size === 0) return
-    const currentSlot = this.localHour(new Date().toISOString())
+    const currentSlot = this.localSlot(new Date().toISOString())
     const due = [...this.diagnosticCandidates.entries()].filter(([, candidate]) => candidate.slot < currentSlot)
     for (const [key, candidate] of due) {
       this.diagnosticCandidates.delete(key)
