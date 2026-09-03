@@ -1537,9 +1537,9 @@ let cachedUserId: number | null = null;
 let cachedUserName: string | null = null; // 接口入参用的登录名（如 syx）
 let cachedNickName: string | null = null; // 展示用（如 孙艳霞）
 
-async function getUser(): Promise<{ userId: number; userName: string } | null> {
+async function getUser(): Promise<{ userId: number; userName: string; nickName: string | null } | null> {
   if (cachedUserId && cachedUserName) {
-    return { userId: cachedUserId, userName: cachedUserName };
+    return { userId: cachedUserId, userName: cachedUserName, nickName: cachedNickName };
   }
   const j = await apiGet(SYSTEM_BASE, 'system/user/getInfo');
   cachedUserId = j?.data?.userid ?? null;
@@ -1547,7 +1547,7 @@ async function getUser(): Promise<{ userId: number; userName: string } | null> {
   cachedNickName = j?.data?.nickName ?? j?.data?.sysUser?.nickName ?? cachedUserName;
   if (cachedUserId && cachedUserName) {
     console.log(`[寰宇探针] 泰康用户: ${cachedNickName} (userId=${cachedUserId}, userName=${cachedUserName})`);
-    return { userId: cachedUserId, userName: cachedUserName };
+    return { userId: cachedUserId, userName: cachedUserName, nickName: cachedNickName };
   }
   return null;
 }
@@ -1992,6 +1992,13 @@ window.addEventListener('message', (event) => {
 // 这是避免"刷新/换机时全量重抓泰康"的关键：本地无缓存时也能从后端拿到
 // 已采订单的状态指纹，只对新增/状态变化的订单访问泰康。
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type === 'GET_TAIKANG_USER') {
+    void getUser()
+      .then((user) => sendResponse?.(user ? { ok: true, user } : { ok: false, error: '未获取到泰康登录账号' }))
+      .catch((error) => sendResponse?.({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
+
   if (msg?.type === 'FINGERPRINT_BASELINE' && msg.payload && typeof msg.payload === 'object') {
     const backendEntries = Object.entries(msg.payload).filter(([, v]) => typeof v === 'string');
     const backendKeys = new Set(backendEntries.map(([k]) => k));

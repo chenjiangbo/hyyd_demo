@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "寰宇医道 - 泰康助手探针",
-  "version": "1.2.12",
+  "version": "1.2.13",
   "description": "连接泰康系统与寰宇医道中枢",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx+eRKwwiXRozhlnfB8hHD80wvPiTRQDkCBYwWY9nmSgzrflZHwK5fgcx4aX8fAC+UbghYJhUH8u0p5esr0eV5FZuP6YGoW2eKLLBRDbRxyjas61M6y/w8ttHkp3ckk7lAEuenfziOuYC54c/UInKU4jNg0gj42E4GD/AOPe0fWyj9W0NPHk1KcKuCgsItDsoTHS6x1io/JNybriuiu66yawh2ggp4c0gj2cliVHxhrJfSoAgcYnE6wka9CrDmyVe5I9i8u2OXp2KiFfe/S36cSjbgLPlVYYDq2jPZESQb6jSo5YTgN0XiLw+5cZgQDMgziqAvE1iVQIdvtXkCy3sPQIDAQAB",
   "update_url": "http://47.95.14.233:9093/ext/update.xml",

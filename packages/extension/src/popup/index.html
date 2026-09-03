@@ -64,7 +64,7 @@
   <body>
     <div class="header">
       <h1>寰宇医道探针</h1>
-      <span class="ver" id="ver">v1.2.12</span>
+      <span class="ver" id="ver">v1.2.13</span>
     </div>
 
     <div class="row">
@@ -80,6 +80,10 @@
         <span class="dot dot-gray" id="tk-dot"></span>
         <span id="tk-text">检查中…</span>
       </span>
+    </div>
+    <div class="row">
+      <span class="label">泰康账号</span>
+      <span class="value" id="tk-account-text">检查中…</span>
     </div>
 
     <div class="separator"></div>
@@ -156,11 +160,7 @@
         <span>后端 WS</span>
         <input id="backend-ws-url" placeholder="ws://server:13000/ws" />
       </label>
-      <label>
-        <span>员工 ID</span>
-        <input id="employee-code" placeholder="zhangsan" />
-      </label>
-      <button id="save-config">保存配置</button>
+      <button id="save-config">保存后端地址</button>
     </div>
 
     <script src="popup.global.js"></script>

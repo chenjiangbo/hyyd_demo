@@ -11,6 +11,8 @@ import {
   presenceMap,
   ensureEmployeeByCode,
   normalizeEmployeeCode,
+  normalizeTaikangAccount,
+  findEmployeeByTaikangAccount,
   setExtPresenceInstance,
   deleteExtPresenceInstance
 } from './routes/api.js'
@@ -93,25 +95,46 @@ async function start() {
     await server.register(websocket)
 
     // 3. 注册 WebSocket 路由
-    // 客户端使用 ws://localhost:3000/ws?employeeCode=zhangsan&client=ext (浏览器插件)
-    // 或 ws://localhost:3000/ws?employeeCode=zhangsan&client=tray (托盘)
+    // 浏览器插件以当前泰康账号连接；托盘继续以员工 ID 连接。
     server.register(async (fastifyInstance) => {
       // 注意: @fastify/websocket v10+ 的回调签名变了
       // 旧 v9: (connection, request) - connection.socket 是 WebSocket
       // 新 v10: (socket, request) - socket 直接就是 WebSocket
       fastifyInstance.get('/ws', { websocket: true }, async (socket, request) => {
         const query = request.query as any
-        const employeeCode = normalizeEmployeeCode(query?.employeeCode)
         const client = query?.client // 'ext' | 'tray'
+        const employeeCode = normalizeEmployeeCode(query?.employeeCode)
+        const taikangAccount = normalizeTaikangAccount(query?.taikangAccount)
 
-        if (!employeeCode || !client || (client !== 'ext' && client !== 'tray')) {
-          server.log.warn('WS 连接请求缺少 employeeCode 或 client 参数，已拒绝连接')
+        if (!client || (client !== 'ext' && client !== 'tray')) {
+          server.log.warn('WS 连接请求缺少或包含无效 client 参数，已拒绝连接')
           try { socket.send(JSON.stringify({ error: '认证参数缺失或 client 格式错误' })) } catch {}
           socket.close()
           return
         }
 
-        const employee = await ensureEmployeeByCode(prisma, employeeCode)
+        let employee
+        if (client === 'tray') {
+          if (!employeeCode) {
+            try { socket.send(JSON.stringify({ error: '缺少员工 ID' })) } catch {}
+            socket.close()
+            return
+          }
+          employee = await ensureEmployeeByCode(prisma, employeeCode)
+        } else {
+          const binding = await findEmployeeByTaikangAccount(prisma, taikangAccount)
+          if (binding.status !== 'ok') {
+            const type = binding.status === 'ambiguous' ? 'EMPLOYEE_BINDING_AMBIGUOUS' : 'EMPLOYEE_BINDING_NOT_FOUND'
+            const error = binding.status === 'ambiguous'
+              ? `泰康账号 ${taikangAccount} 绑定了多个寰宇员工，请联系管理员处理`
+              : `未找到泰康账号 ${taikangAccount || '（空）'} 对应的寰宇员工，请先在 Trayapp 完成员工绑定`
+            server.log.warn({ taikangAccount, bindingStatus: binding.status }, '浏览器插件员工绑定失败')
+            try { socket.send(JSON.stringify({ type, error })) } catch {}
+            socket.close(1008, 'employee binding failed')
+            return
+          }
+          employee = binding.employee
+        }
 
         const employeeId = employee.id
         const extInstanceId = client === 'ext'
@@ -132,7 +155,8 @@ async function start() {
         socket.send(JSON.stringify({
           type: 'connection_established',
           client,
-          employee: { id: employee.id, name: employee.name }
+          employee: { id: employee.id, name: employee.name },
+          taikangAccount: employee.taikangAccount
         }))
 
         // 注：现行 chrome 插件已不再处理任何 command（claim / fetch_detail），

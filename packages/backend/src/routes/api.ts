@@ -232,6 +232,25 @@ export async function ensureEmployeeByCode(prisma: PrismaClient, employeeCode: s
   })
 }
 
+export function normalizeTaikangAccount(raw: unknown): string {
+  const account = typeof raw === 'string' ? raw.trim() : ''
+  if (!/^[A-Za-z0-9_.@-]{1,64}$/.test(account)) return ''
+  return account
+}
+
+export async function findEmployeeByTaikangAccount(prisma: PrismaClient, taikangAccount: string) {
+  const account = normalizeTaikangAccount(taikangAccount)
+  if (!account) return { status: 'invalid' as const, employee: null }
+
+  const employees = await prisma.employee.findMany({
+    where: { taikangAccount: account },
+    take: 2,
+  })
+  if (employees.length === 1) return { status: 'ok' as const, employee: employees[0] }
+  if (employees.length === 0) return { status: 'not_found' as const, employee: null }
+  return { status: 'ambiguous' as const, employee: null }
+}
+
 export function registerApiRoutes(
   fastify: FastifyInstance,
   prisma: PrismaClient,

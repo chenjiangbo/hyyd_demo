@@ -2,7 +2,7 @@ export {};
 
 /**
  * 寰宇探针 Popup
- * 配置后端地址 + 员工 ID，展示连接状态
+ * 配置后端地址并展示泰康账号与员工绑定状态。
  */
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -10,29 +10,17 @@ const FINGERPRINT_STORAGE_KEY = 'orderFingerprints';
 const TRACKING_ANALYSIS_STORAGE_KEY = 'trackingPoolAnalysis';
 const EDIT_PAGE_ANALYSIS_STORAGE_KEY = 'editPageAnalysis';
 
-// 后端 WS 地址有默认；员工 ID 不给默认，必须手工填，
-// 否则数据可能错误归到默认员工名下。
-async function getConfig(): Promise<{ backendWsUrl: string; employeeCode: string; collectPaused: boolean }> {
-  const r = await chrome.storage.local.get(['backendWsUrl', 'employeeCode', 'collectPaused']);
+async function getConfig(): Promise<{ backendWsUrl: string; collectPaused: boolean }> {
+  const r = await chrome.storage.local.get(['backendWsUrl', 'collectPaused']);
   return {
     backendWsUrl: (r.backendWsUrl as string) || 'ws://47.95.14.233:9093/ws',
-    employeeCode: ((r.employeeCode as string) || '').trim(),
     collectPaused: r.collectPaused !== false,
   };
 }
 
 async function setConfig() {
   const backendWsUrl = ($('backend-ws-url') as HTMLInputElement).value.trim();
-  const employeeCode = ($('employee-code') as HTMLInputElement).value.trim();
-  if (!employeeCode) {
-    alert('员工 ID 必填，请填写后再保存。\n（必须和 trayapp、移动端一致）');
-    return;
-  }
-  if (!/^[A-Za-z0-9_-]{1,32}$/.test(employeeCode)) {
-    alert('员工 ID 只能用英文字母 / 数字 / 横线 / 下划线，长度 1-32。');
-    return;
-  }
-  await chrome.storage.local.set({ backendWsUrl, employeeCode });
+  await chrome.storage.local.set({ backendWsUrl });
   await refreshStatus();
 }
 
@@ -44,14 +32,22 @@ async function refreshStatus() {
   chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (resp) => {
     const wsDot = $('ws-dot');
     const wsText = $('ws-text');
+    const accountText = $('tk-account-text');
     if (chrome.runtime.lastError || !resp) {
       wsDot.className = 'dot dot-red';
       wsText.textContent = '未响应';
+      accountText.textContent = '无法识别';
       return;
     }
+    accountText.textContent = resp.taikangAccount
+      ? `${resp.taikangNickName ? `${resp.taikangNickName}（${resp.taikangAccount}）` : resp.taikangAccount}`
+      : '未识别';
     if (resp.wsConnected) {
       wsDot.className = 'dot dot-green';
-      wsText.textContent = `已连接 ${resp.employeeName ?? resp.employeeCode ?? ''}`;
+      wsText.textContent = `已连接 ${resp.employeeName ?? ''}`;
+    } else if (resp.connectionError) {
+      wsDot.className = 'dot dot-red';
+      wsText.textContent = resp.connectionError;
     } else {
       wsDot.className = 'dot dot-red';
       wsText.textContent = '未连接';
@@ -320,7 +316,6 @@ async function clearEditAnalysis() {
 (async function init() {
   const config = await getConfig();
   ($('backend-ws-url') as HTMLInputElement).value = config.backendWsUrl;
-  ($('employee-code') as HTMLInputElement).value = config.employeeCode;
   renderCollectStatus(config.collectPaused);
   await refreshStatus();
   await refreshTrackingAnalysisStatus();
