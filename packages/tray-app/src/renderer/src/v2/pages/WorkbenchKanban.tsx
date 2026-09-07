@@ -206,12 +206,12 @@ export default function WorkbenchKanban({
 }: {
   employeeCode: string
   query: string
-  onOpenApplication: (group: ApplicationGroup) => void
+  onOpenApplication: (group: ApplicationGroup, selectedOrderId?: number) => void
 }): React.JSX.Element {
   const [orders, setOrders] = useState<Order[]>(() => getCachedOrders(employeeCode) ?? [])
   const [loading, setLoading] = useState(getCachedOrders(employeeCode) === null)
   const [error, setError] = useState<string | null>(null)
-  const [view, setView] = useState<View>('board')
+  const [view, setView] = useState<View>('list')
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [detailRegions, setDetailRegions] = useState<Record<string, string | null>>({})
 
@@ -609,7 +609,7 @@ function ApplicationCopyButtons({
       <span className="truncate font-mono-data">{applicationNo}</span>
       <IconCopyButton
         icon="content_copy"
-        title={`复制完整申领号 ${applicationNo}`}
+        title={`复制完整申请号 ${applicationNo}`}
         copied={copied === applicationNo}
         onClick={(e) => {
           e.stopPropagation()
@@ -753,7 +753,7 @@ function ApplicationCard({
         (isDoing ? 'border-2 border-primary' : 'border border-border-subtle border-l-2 hover:border-outline-variant ' + LANE_ACCENT[lane])
       }
     >
-      {/* 申领号 + 来源 */}
+      {/* 申请号 + 来源 */}
       <div className="flex items-center gap-2 mb-2 rounded-md bg-surface-bg border border-border-subtle px-2 py-1">
         <ApplicationCopyButtons
           applicationNo={group.applicationNo}
@@ -832,7 +832,13 @@ function ApplicationCard({
 // ─── 列表视图（密集、可排序、可按泳道筛选）──────────────
 type SortKey = 'customerName' | 'hospital' | 'status' | 'poolEnteredAt'
 
-function ListView({ groups, onOpen }: { groups: ApplicationGroup[]; onOpen: (group: ApplicationGroup) => void }): React.JSX.Element {
+function ListView({
+  groups,
+  onOpen
+}: {
+  groups: ApplicationGroup[]
+  onOpen: (group: ApplicationGroup, selectedOrderId?: number) => void
+}): React.JSX.Element {
   const [laneFilter, setLaneFilter] = useState<LaneKey | 'all'>('all')
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'poolEnteredAt', dir: 'desc' })
 
@@ -908,18 +914,20 @@ function ListView({ groups, onOpen }: { groups: ApplicationGroup[]; onOpen: (gro
         <div className="overflow-hidden rounded-lg border border-border-subtle bg-white shadow-sm">
           <table className="w-full table-fixed border-collapse text-body-sm">
             <colgroup>
-              <col className="w-[250px]" />
+              <col className="w-[220px]" />
+              <col className="w-[210px]" />
+              <col className="w-[190px]" />
               <col className="w-[215px]" />
-              <col className="w-[230px]" />
-              <col className="w-[180px]" />
-              <col className="w-[130px]" />
+              <col className="w-[165px]" />
               <col className="w-[120px]" />
+              <col className="w-[112px]" />
               <col className="w-[68px]" />
               <col className="w-[104px]" />
             </colgroup>
             <thead className="sticky top-0 bg-white z-10">
               <tr className="text-left text-[#454a5a] border-b border-border-subtle">
-                <th className="py-3.5 px-5 font-bold">申领号</th>
+                <th className="py-3.5 px-5 font-bold">申请号</th>
+                <th className="py-3.5 px-4 font-bold">订单号</th>
                 <SortHead label="客户" k="customerName" sort={sort} onSort={toggleSort} />
                 <SortHead label="医院 / 科室" k="hospital" sort={sort} onSort={toggleSort} />
                 <th className="py-3.5 px-4 font-bold">业务类型</th>
@@ -932,87 +940,21 @@ function ListView({ groups, onOpen }: { groups: ApplicationGroup[]; onOpen: (gro
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={8} className="py-12 text-center text-text-muted">
+                <td colSpan={9} className="py-12 text-center text-text-muted">
                   暂无{activeFilter.label}申请
                 </td>
               </tr>
             ) : (
-              rows.map((group) => {
-                const o = group.primary
-                const displayName = group.customerName
-                const services = dedupeServices(group.orders)
-                const lane = groupLaneOf(group)
-                const rowAccent =
-                  lane === 'todo' ? 'border-l-status-urgent' :
-                    lane === 'doing' ? 'border-l-status-info' :
-                      lane === 'await_backfill' ? 'border-l-ai-purple' : 'border-l-status-success'
-                return (
-                <tr
-                  key={group.key}
-                  onClick={() => onOpen(group)}
-                  className={'border-b border-border-subtle border-l-2 hover:bg-surface-bg cursor-pointer transition-colors ' + rowAccent}
-                >
-                  <td className="py-3 px-5 text-[#161a22] font-mono-data font-semibold">
-                    <ApplicationCopyButtons applicationNo={group.applicationNo} customerName={displayName} className="max-w-full" />
-                  </td>
-                  <td className="py-3 px-4">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className="shrink-0 font-semibold text-text-main">{displayName}</span>
-                      {o.customerPhone ? (
-                        <Copyable value={o.customerPhone} className="min-w-0 text-[12px] text-[#6f7f95] font-mono-data">
-                          <span className="truncate">{o.customerPhone}</span>
-                        </Copyable>
-                      ) : (
-                        <span className="min-w-0 truncate text-[12px] text-text-muted">手机号待补</span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="py-3 px-4 text-[#454a5a]">
-                    <div className="font-semibold truncate">
-                      {o.hospital || '医院待定'}
-                      <span className="mx-1 text-text-muted font-normal">/</span>
-                      <span className="font-normal text-text-muted">{o.dept || '科室待定'}</span>
-                    </div>
-                  </td>
-                  <td className="py-3 px-4">
-                    <div className="flex flex-wrap gap-1 max-w-[160px]">
-                      {services.slice(0, 3).map((service) => (
-                        <span key={service.label} className={'text-[12px] leading-5 px-2 rounded font-semibold border border-current/20 ' + bizChipClass(service.order)}>
-                          {service.label}{service.count > 1 ? ` x${service.count}` : ''}
-                        </span>
-                      ))}
-                      {services.length > 3 && (
-                        <span className="text-[12px] leading-5 px-2 rounded bg-surface-bg text-text-muted">
-                          +{services.length - 3}
-                        </span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="py-3 px-4 whitespace-nowrap">
-                    <LaneBadge order={o} />
-                  </td>
-                  <td className="py-3 px-4 text-[#454a5a] font-mono-data">
-                    <div className="flex items-center gap-2.5">
-                      <span className="inline-flex items-center gap-1" title="文本与图片数量">
-                        <span className="material-symbols-outlined filled text-[#6d5dfc]" style={{ fontSize: '15px' }}>article</span>
-                        {o.textCount + o.imageCount}
-                      </span>
-                      <span className="inline-flex items-center gap-1" title="录音数量">
-                        <span className="material-symbols-outlined filled text-[#0b8fd9]" style={{ fontSize: '15px' }}>mic</span>
-                        {o.audioCount}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="py-3 px-3">
-                    <span className={'inline-flex items-center rounded px-2 py-0.5 text-[11px] font-medium ' + sourceStyle(o).bg + ' ' + sourceStyle(o).text}>
-                      {sourceLabel(o)}
-                    </span>
-                  </td>
-                  <td className="py-3 px-4 text-[#454a5a] whitespace-nowrap" title={group.poolEnteredAt}>
-                    {relativeTime(group.poolEnteredAt)}
-                  </td>
-                </tr>
-                )
+              rows.flatMap((group) => {
+                if (group.orders.length === 1) {
+                  return [<OrderTreeRow key={group.key} group={group} order={group.primary} onOpen={onOpen} />]
+                }
+                return [
+                  <ApplicationTreeRow key={`${group.key}:application`} group={group} onOpen={onOpen} />,
+                  ...group.orders.map((order) => (
+                    <OrderTreeRow key={`${group.key}:order:${order.id}`} group={group} order={order} child onOpen={onOpen} />
+                  ))
+                ]
               })
             )}
           </tbody>
@@ -1021,6 +963,157 @@ function ListView({ groups, onOpen }: { groups: ApplicationGroup[]; onOpen: (gro
       </div>
     </div>
   )
+}
+
+function rowAccentOf(lane: LaneKey): string {
+  return lane === 'todo'
+    ? 'border-l-status-urgent'
+    : lane === 'doing'
+      ? 'border-l-status-info'
+      : lane === 'await_backfill'
+        ? 'border-l-ai-purple'
+        : 'border-l-status-success'
+}
+
+function ApplicationTreeRow({
+  group,
+  onOpen
+}: {
+  group: ApplicationGroup
+  onOpen: (group: ApplicationGroup, selectedOrderId?: number) => void
+}): React.JSX.Element {
+  const order = group.primary
+  const services = dedupeServices(group.orders)
+  const lane = groupLaneOf(group)
+  return (
+    <tr
+      onClick={() => onOpen(group)}
+      className={'border-b border-border-subtle border-l-2 bg-surface-container-low/70 hover:bg-primary-fixed/35 cursor-pointer transition-colors ' + rowAccentOf(lane)}
+    >
+      <td className="py-3 px-5 text-[#161a22] font-mono-data font-semibold">
+        <ApplicationCopyButtons applicationNo={group.applicationNo} customerName={group.customerName} className="max-w-full" />
+      </td>
+      <td className="py-3 px-4 text-text-muted">
+        <span className="inline-flex items-center gap-1 rounded bg-white px-2 py-1 text-[11px] font-semibold">
+          <span className="material-symbols-outlined text-primary" style={{ fontSize: '14px' }}>account_tree</span>
+          {group.orders.length} 个订单
+        </span>
+      </td>
+      <td className="py-3 px-4">
+        <span className="font-semibold text-text-main">{group.customerName}</span>
+      </td>
+      <td className="py-3 px-4 text-[#454a5a]">
+        <span className="font-semibold">{order.hospital || '医院待定'}</span>
+        <span className="mx-1 text-text-muted font-normal">/</span>
+        <span className="font-normal text-text-muted">{order.dept || '科室待定'}</span>
+      </td>
+      <td className="py-3 px-4"><ServiceChips services={services} /></td>
+      <td className="py-3 px-4 whitespace-nowrap"><LaneBadge order={order} /></td>
+      <td className="py-3 px-4"><DataCounts order={order} /></td>
+      <td className="py-3 px-3"><SourceBadge order={order} /></td>
+      <td className="py-3 px-4 text-[#454a5a] whitespace-nowrap" title={group.poolEnteredAt}>{relativeTime(group.poolEnteredAt)}</td>
+    </tr>
+  )
+}
+
+function OrderTreeRow({
+  group,
+  order,
+  child = false,
+  onOpen
+}: {
+  group: ApplicationGroup
+  order: Order
+  child?: boolean
+  onOpen: (group: ApplicationGroup, selectedOrderId?: number) => void
+}): React.JSX.Element {
+  const lane = laneOf(order)
+  return (
+    <tr
+      onClick={() => onOpen(group, order.id)}
+      className={
+        'border-b border-border-subtle border-l-2 hover:bg-surface-bg cursor-pointer transition-colors ' +
+        rowAccentOf(lane) +
+        (child ? ' bg-white' : '')
+      }
+    >
+      <td className="py-3 px-5 text-[#161a22] font-mono-data font-semibold">
+        {child ? (
+          <span className="inline-flex items-center gap-1.5 pl-3 text-[11px] text-text-muted">
+            <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>subdirectory_arrow_right</span>
+            子订单
+          </span>
+        ) : (
+          <ApplicationCopyButtons applicationNo={group.applicationNo} customerName={group.customerName} className="max-w-full" />
+        )}
+      </td>
+      <td className="py-3 px-4 text-[#161a22] font-mono-data font-semibold">
+        <Copyable value={order.sourceOrderNo} className="max-w-full"><span className="truncate">{order.sourceOrderNo}</span></Copyable>
+      </td>
+      <td className="py-3 px-4"><CustomerCell order={order} fallbackName={group.customerName} /></td>
+      <td className="py-3 px-4 text-[#454a5a]"><HospitalCell order={order} /></td>
+      <td className="py-3 px-4"><ServiceChips services={[{ label: bizType(order), count: 1, order }]} /></td>
+      <td className="py-3 px-4 whitespace-nowrap"><LaneBadge order={order} /></td>
+      <td className="py-3 px-4"><DataCounts order={order} /></td>
+      <td className="py-3 px-3"><SourceBadge order={order} /></td>
+      <td className="py-3 px-4 text-[#454a5a] whitespace-nowrap" title={poolEnteredAtOf(order)}>{relativeTime(poolEnteredAtOf(order))}</td>
+    </tr>
+  )
+}
+
+function CustomerCell({ order, fallbackName }: { order: Order; fallbackName: string }): React.JSX.Element {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="shrink-0 font-semibold text-text-main">{displayCustomerNameOf(order) || fallbackName}</span>
+      {order.customerPhone ? (
+        <Copyable value={order.customerPhone} className="min-w-0 text-[12px] text-[#6f7f95] font-mono-data"><span className="truncate">{order.customerPhone}</span></Copyable>
+      ) : (
+        <span className="min-w-0 truncate text-[12px] text-text-muted">手机号待补</span>
+      )}
+    </div>
+  )
+}
+
+function HospitalCell({ order }: { order: Order }): React.JSX.Element {
+  return (
+    <div className="font-semibold truncate">
+      {order.hospital || '医院待定'}
+      <span className="mx-1 text-text-muted font-normal">/</span>
+      <span className="font-normal text-text-muted">{order.dept || '科室待定'}</span>
+    </div>
+  )
+}
+
+function ServiceChips({ services }: { services: Array<{ label: string; count: number; order: Order }> }): React.JSX.Element {
+  return (
+    <div className="flex flex-wrap gap-1 max-w-[160px]">
+      {services.slice(0, 3).map((service) => (
+        <span key={service.label} className={'text-[12px] leading-5 px-2 rounded font-semibold border border-current/20 ' + bizChipClass(service.order)}>
+          {service.label}{service.count > 1 ? ` x${service.count}` : ''}
+        </span>
+      ))}
+      {services.length > 3 && <span className="text-[12px] leading-5 px-2 rounded bg-surface-bg text-text-muted">+{services.length - 3}</span>}
+    </div>
+  )
+}
+
+function DataCounts({ order }: { order: Order }): React.JSX.Element {
+  return (
+    <div className="flex items-center gap-2.5 text-[#454a5a] font-mono-data">
+      <span className="inline-flex items-center gap-1" title="文本与图片数量">
+        <span className="material-symbols-outlined filled text-[#6d5dfc]" style={{ fontSize: '15px' }}>article</span>
+        {order.textCount + order.imageCount}
+      </span>
+      <span className="inline-flex items-center gap-1" title="录音数量">
+        <span className="material-symbols-outlined filled text-[#0b8fd9]" style={{ fontSize: '15px' }}>mic</span>
+        {order.audioCount}
+      </span>
+    </div>
+  )
+}
+
+function SourceBadge({ order }: { order: Order }): React.JSX.Element {
+  return <span className={'inline-flex items-center rounded px-2 py-0.5 text-[11px] font-medium ' + sourceStyle(order).bg + ' ' + sourceStyle(order).text}>{sourceLabel(order)}</span>
 }
 
 function SortHead({

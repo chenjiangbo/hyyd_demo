@@ -34,7 +34,7 @@ export default function App(): React.JSX.Element {
   })
   const [nav, setNav] = useState<NavKey>('workbench')
   const [openOrder, setOpenOrder] = useState<Order | null>(null)
-  const [openApplication, setOpenApplication] = useState<ApplicationGroup | null>(null)
+  const [openApplication, setOpenApplication] = useState<{ group: ApplicationGroup; selectedOrderId?: number } | null>(null)
   // 顶部导航全局搜索（驱动工作台过滤）
   const [search, setSearch] = useState('')
 
@@ -68,7 +68,13 @@ export default function App(): React.JSX.Element {
     // 详情是聚焦视图，覆盖 AppShell
     content = <OrderDetailPage order={openOrder} onBack={() => setOpenOrder(null)} />
   } else if (openApplication) {
-    content = <ApplicationDetailPage group={openApplication} onBack={() => setOpenApplication(null)} />
+    content = (
+      <ApplicationDetailPage
+        group={openApplication.group}
+        initialOrderId={openApplication.selectedOrderId}
+        onBack={() => setOpenApplication(null)}
+      />
+    )
   } else {
     content = (
       <AppShell
@@ -83,7 +89,11 @@ export default function App(): React.JSX.Element {
         }}
       >
         <div className={nav === 'workbench' ? 'flex-1 min-h-0 flex flex-col' : 'hidden'}>
-          <WorkbenchKanban employeeCode={session.employeeCode} query={search} onOpenApplication={setOpenApplication} />
+          <WorkbenchKanban
+            employeeCode={session.employeeCode}
+            query={search}
+            onOpenApplication={(group, selectedOrderId) => setOpenApplication({ group, selectedOrderId })}
+          />
         </div>
         {nav === 'claim' && <ClaimPage />}
         {nav === 'customers' && <CustomersPage onOpenOrder={setOpenOrder} />}

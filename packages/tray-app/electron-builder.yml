@@ -1,9 +1,11 @@
 appId: com.electron.app
 productName: tray-app
+afterPack: build/after-pack-icon.cjs
 directories:
   buildResources: build
 files:
   - '!**/.vscode/*'
+  - '!**/.electron-dist-build/**'
   - '!src/**'
   - '!resources/capture-sidecar/**'
   - '!node_modules/@fontsource/noto-sans-sc/**'
@@ -12,6 +14,8 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+asarUnpack:
+  - node_modules/better-sqlite3/**
 extraResources:
   - from: resources/capture-sidecar
     to: capture-sidecar
@@ -19,13 +23,20 @@ extraResources:
       - '**/*'
 win:
   executableName: tray-app
+  icon: resources/icon.ico
+  # 当前交付不配置代码签名证书；图标由 afterPack 使用本地 rcedit 写入。
+  signAndEditExecutable: false
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
   oneClick: false
+  perMachine: true
+  allowElevation: true
   allowToChangeInstallationDirectory: true
+  installerIcon: resources/icon.ico
+  uninstallerIcon: resources/icon.ico
   include: build/installer.nsh
 mac:
   entitlementsInherit: build/entitlements.mac.plist
@@ -46,7 +57,8 @@ linux:
   category: Utility
 appImage:
   artifactName: ${name}-${version}.${ext}
-npmRebuild: false
+# better-sqlite3 是原生模块，Windows 安装包必须按当前 Electron ABI 重建其 .node 文件。
+npmRebuild: true
 publish:
   provider: generic
   url: https://example.com/auto-updates

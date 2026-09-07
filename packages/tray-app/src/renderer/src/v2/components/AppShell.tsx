@@ -84,7 +84,7 @@ export default function AppShell({
             <input
               value={search}
               onChange={(e) => onSearch(e.target.value)}
-              placeholder="搜索申领号、患者姓名、电话…"
+              placeholder="搜索申请号、患者姓名、电话…"
               className="w-full pl-10 pr-16 py-2 bg-surface-container-low border border-transparent rounded-lg text-body-md focus:outline-none focus:bg-white focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
             />
             <button className="absolute right-3 text-primary text-[12px] leading-4 font-bold hover:bg-primary-fixed/30 px-2 py-1 rounded transition-colors">
