@@ -1282,34 +1282,30 @@ function HuanyuOrderDetailPanel({ order }: { order: Order }): React.JSX.Element 
     <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
       <HuanyuFormSection title="订单基本信息">
         <HuanyuFormGrid>
-          <HuanyuInput label="订单号" value={form.orderNo} onChange={(value) => changeField('orderNo', value)} />
-          <HuanyuInput label="订单状态" value={form.orderStatus} onChange={(value) => changeField('orderStatus', value)} />
-          <HuanyuInput label="B端渠道" value={form.channel} onChange={(value) => changeField('channel', value)} />
-          <HuanyuInput label="B端渠道订单号" value={form.channelOrderNo} onChange={(value) => changeField('channelOrderNo', value)} />
+          <HuanyuInput label="订单号" value={form.orderNo} onChange={(value) => changeField('orderNo', value)} disabled />
+          <HuanyuSelect label="订单状态" value={form.orderStatus} onChange={(value) => changeField('orderStatus', value)} />
+          <HuanyuSelect label="B端渠道" value={form.channel} onChange={(value) => changeField('channel', value)} />
+          <HuanyuInput label="B端渠道订单号" value={form.channelOrderNo} onChange={(value) => changeField('channelOrderNo', value)} disabled />
           <HuanyuInput label="备用订单号" value={form.backupOrderNo} onChange={(value) => changeField('backupOrderNo', value)} />
           <HuanyuInput label="B端细分渠道" value={form.channelDetail} onChange={(value) => changeField('channelDetail', value)} />
           <HuanyuInput label="B端对接人" value={form.channelContact} onChange={(value) => changeField('channelContact', value)} />
           <HuanyuInput label="B端对接人（备用）" value={form.channelBackupContact} onChange={(value) => changeField('channelBackupContact', value)} />
-          <HuanyuInput label="B端渠道服务项目" value={form.channelService} onChange={(value) => changeField('channelService', value)} />
-          <HuanyuInput label="内部一级" value={form.internalLevelOne} onChange={(value) => changeField('internalLevelOne', value)} />
-          <HuanyuInput label="内部二级" value={form.internalLevelTwo} onChange={(value) => changeField('internalLevelTwo', value)} />
-          <HuanyuInput label="订单金额" value={form.orderAmount} onChange={(value) => changeField('orderAmount', value)} />
-          <label className="flex h-full items-end gap-2 pb-2 text-body-sm text-text-main">
-            <input type="checkbox" checked={Boolean(form.amountChanged)} onChange={(event) => changeField('amountChanged', event.target.checked)} className="h-4 w-4 accent-primary" />
-            金额修改
-          </label>
-          <HuanyuInput label="客户经理" value={form.accountManager} onChange={(value) => changeField('accountManager', value)} />
-          <HuanyuInput label="预约渠道类型" value={form.bookingChannelType} onChange={(value) => changeField('bookingChannelType', value)} />
-          <HuanyuInput label="BD" value={form.bd} onChange={(value) => changeField('bd', value)} />
+          <HuanyuSelect label="B端渠道服务项目" value={form.channelService} onChange={(value) => changeField('channelService', value)} />
+          <HuanyuInput label="内部一级" value={form.internalLevelOne} onChange={(value) => changeField('internalLevelOne', value)} disabled />
+          <HuanyuInput label="内部二级" value={form.internalLevelTwo} onChange={(value) => changeField('internalLevelTwo', value)} disabled />
+          <HuanyuAmountField value={form.orderAmount} editable={Boolean(form.amountChanged)} onChange={(value) => changeField('orderAmount', value)} onEditableChange={(value) => changeField('amountChanged', value)} />
+          <HuanyuSelect label="客户经理" value={form.accountManager} onChange={(value) => changeField('accountManager', value)} />
+          <HuanyuSelect label="预约渠道类型" value={form.bookingChannelType} onChange={(value) => changeField('bookingChannelType', value)} />
+          <HuanyuSelect label="BD" value={form.bd} onChange={(value) => changeField('bd', value)} />
         </HuanyuFormGrid>
       </HuanyuFormSection>
 
       <HuanyuFormSection title="就诊人信息">
         <HuanyuFormGrid>
-          <HuanyuInput label="就诊人姓名" value={form.patientName} onChange={(value) => changeField('patientName', value)} />
-          <HuanyuInput label="证件类型" value={form.documentType} onChange={(value) => changeField('documentType', value)} />
+          <HuanyuInput label="就诊人姓名" value={form.patientName} onChange={(value) => changeField('patientName', value)} disabled />
+          <HuanyuSelect label="证件类型" value={form.documentType} onChange={(value) => changeField('documentType', value)} />
           <HuanyuInput label="证件号码" value={form.documentNo} onChange={(value) => changeField('documentNo', value)} />
-          <HuanyuInput label="就诊人性别" value={form.patientGender} onChange={(value) => changeField('patientGender', value)} />
+          <HuanyuSelect label="就诊人性别" value={form.patientGender} options={['男', '女']} onChange={(value) => changeField('patientGender', value)} />
           <HuanyuInput label="就诊人年龄" value={form.patientAge} onChange={(value) => changeField('patientAge', value)} />
           <HuanyuInput label="就诊人联系电话" value={form.patientPhone} onChange={(value) => changeField('patientPhone', value)} />
           <HuanyuInput label="家属姓名" value={form.familyName} onChange={(value) => changeField('familyName', value)} />
@@ -1323,69 +1319,63 @@ function HuanyuOrderDetailPanel({ order }: { order: Order }): React.JSX.Element 
 
       <HuanyuFormSection title="医院信息">
         <HuanyuFormGrid>
-          <HuanyuInput label="医院" value={form.hospital} onChange={(value) => changeField('hospital', value)} />
-          <HuanyuInput label="医院地址" value={form.hospitalAddress} onChange={(value) => changeField('hospitalAddress', value)} />
-          <HuanyuInput label="科室" value={form.department} onChange={(value) => changeField('department', value)} />
-          <HuanyuInput label="内对一级" value={form.internalHospitalLevelOne} onChange={(value) => changeField('internalHospitalLevelOne', value)} />
-          <HuanyuInput label="内对二级" value={form.internalHospitalLevelTwo} onChange={(value) => changeField('internalHospitalLevelTwo', value)} />
-          <HuanyuInput label="医生" value={form.doctor} onChange={(value) => changeField('doctor', value)} />
-          <HuanyuInput label="专家级别" value={form.expertLevel} onChange={(value) => changeField('expertLevel', value)} />
+          <HuanyuSelect label="医院" value={form.hospital} onChange={(value) => changeField('hospital', value)} />
+          <HuanyuSelect label="医院地址" value={form.hospitalAddress} onChange={(value) => changeField('hospitalAddress', value)} />
+          <HuanyuSelect label="科室" value={form.department} onChange={(value) => changeField('department', value)} />
+          <HuanyuInput label="内对一级" value={form.internalHospitalLevelOne} onChange={(value) => changeField('internalHospitalLevelOne', value)} disabled />
+          <HuanyuInput label="内对二级" value={form.internalHospitalLevelTwo} onChange={(value) => changeField('internalHospitalLevelTwo', value)} disabled />
+          <HuanyuSelect label="医生" value={form.doctor} onChange={(value) => changeField('doctor', value)} />
+          <HuanyuInput label="专家级别" value={form.expertLevel} onChange={(value) => changeField('expertLevel', value)} disabled />
           <HuanyuInput label="订单服务备注" value={form.serviceRemark} onChange={(value) => changeField('serviceRemark', value)} wide />
-          <HuanyuInput label="泰康医院" value={form.tkHospital} onChange={(value) => changeField('tkHospital', value)} />
-          <HuanyuInput label="泰康省份" value={form.tkProvince} onChange={(value) => changeField('tkProvince', value)} />
-          <HuanyuInput label="泰康城市" value={form.tkCity} onChange={(value) => changeField('tkCity', value)} />
-          <HuanyuInput label="泰康科室" value={form.tkDepartment} onChange={(value) => changeField('tkDepartment', value)} />
+          <HuanyuInput label="泰康医院" value={form.tkHospital} onChange={(value) => changeField('tkHospital', value)} disabled />
+          <HuanyuInput label="泰康省份" value={form.tkProvince} onChange={(value) => changeField('tkProvince', value)} disabled />
+          <HuanyuInput label="泰康城市" value={form.tkCity} onChange={(value) => changeField('tkCity', value)} disabled />
+          <HuanyuInput label="泰康科室" value={form.tkDepartment} onChange={(value) => changeField('tkDepartment', value)} disabled />
         </HuanyuFormGrid>
       </HuanyuFormSection>
 
       <HuanyuFormSection title="时间信息">
-        <HuanyuFormGrid>
-          <HuanyuInput label="需求时间" value={form.requestTime} onChange={(value) => changeField('requestTime', value)} />
-          <HuanyuInput label="应答时间" value={form.responseTime} onChange={(value) => changeField('responseTime', value)} />
-          <HuanyuInput label="启动服务时间" value={form.serviceStartTime} onChange={(value) => changeField('serviceStartTime', value)} />
-          <HuanyuInput label="预约反馈时间" value={form.bookingFeedbackTime} onChange={(value) => changeField('bookingFeedbackTime', value)} />
-          <HuanyuInput label="最晚取号时间" value={form.latestTicketTime} onChange={(value) => changeField('latestTicketTime', value)} />
-          <HuanyuInput label="默认日期" value={form.defaultDate} onChange={(value) => changeField('defaultDate', value)} />
-          <HuanyuInput label="默认时间" value={form.defaultTime} onChange={(value) => changeField('defaultTime', value)} />
-        </HuanyuFormGrid>
+        <HuanyuTimeInformation form={form} onChange={changeField} />
       </HuanyuFormSection>
 
       <HuanyuFormSection title="陪诊信息">
-        <HuanyuFormGrid>
-          <HuanyuInput label="订单号" value={form.escortOrderNo} onChange={(value) => changeField('escortOrderNo', value)} />
-          <HuanyuInput label="服务日期" value={form.escortServiceDate} onChange={(value) => changeField('escortServiceDate', value)} />
-          <HuanyuInput label="陪诊人员" value={form.escortName} onChange={(value) => changeField('escortName', value)} />
-          <HuanyuInput label="陪诊人类型" value={form.escortType} onChange={(value) => changeField('escortType', value)} />
-          <HuanyuInput label="默认电话" value={form.escortPhone} onChange={(value) => changeField('escortPhone', value)} />
-          <HuanyuInput label="所在地区" value={form.escortArea} onChange={(value) => changeField('escortArea', value)} />
-          <HuanyuInput label="陪诊人序号" value={form.escortSequence} onChange={(value) => changeField('escortSequence', value)} />
-        </HuanyuFormGrid>
+        <HuanyuEscortInformationTable
+          initialRow={{
+            orderNo: typeof form.orderNo === 'string' ? form.orderNo : '',
+            serviceDate: typeof form.escortServiceDate === 'string' ? form.escortServiceDate : '',
+            escortName: typeof form.escortName === 'string' ? form.escortName : '',
+            escortType: typeof form.escortType === 'string' ? form.escortType : '',
+            phone: typeof form.escortPhone === 'string' ? form.escortPhone : '',
+            area: typeof form.escortArea === 'string' ? form.escortArea : '',
+            sequence: typeof form.escortSequence === 'string' ? form.escortSequence : '1'
+          }}
+        />
       </HuanyuFormSection>
 
       <HuanyuFormSection title="挂号费及医保信息">
         <HuanyuFormGrid>
-          <HuanyuInput label="挂号费金额" value={form.registrationFee} onChange={(value) => changeField('registrationFee', value)} />
-          <HuanyuInput label="是否垫付" value={form.advancePayment} onChange={(value) => changeField('advancePayment', value)} />
-          <HuanyuInput label="垫付挂号费金额" value={form.advanceRegistrationFee} onChange={(value) => changeField('advanceRegistrationFee', value)} />
-          <HuanyuInput label="垫付是否收回" value={form.advanceRecovered} onChange={(value) => changeField('advanceRecovered', value)} />
-          <HuanyuInput label="挂号费退款客户金额" value={form.registrationRefund} onChange={(value) => changeField('registrationRefund', value)} />
-          <HuanyuInput label="支付宝支付账号" value={form.alipayAccount} onChange={(value) => changeField('alipayAccount', value)} />
-          <HuanyuInput label="是否有医保" value={form.hasInsurance} onChange={(value) => changeField('hasInsurance', value)} />
-          <HuanyuInput label="医保类型" value={form.insuranceType} onChange={(value) => changeField('insuranceType', value)} />
-          <HuanyuInput label="短信链接" value={form.smsLink} onChange={(value) => changeField('smsLink', value)} />
+          <HuanyuInput label="挂号费金额" value={form.registrationFee} onChange={(value) => changeField('registrationFee', value)} type="number" />
+          <HuanyuSelect label="是否垫付" value={form.advancePayment} options={[{ value: '0', label: '否' }, { value: '1', label: '是' }]} onChange={(value) => changeField('advancePayment', value)} />
+          <HuanyuInput label="垫付挂号费金额" value={form.advanceRegistrationFee} onChange={(value) => changeField('advanceRegistrationFee', value)} disabled />
+          <HuanyuInput label="垫付是否收回" value={form.advanceRecovered} onChange={(value) => changeField('advanceRecovered', value)} disabled />
+          <HuanyuInput label="挂号费退款客户金额" value={form.registrationRefund} onChange={(value) => changeField('registrationRefund', value)} disabled />
+          <HuanyuInput label="支付宝支付账号" value={form.alipayAccount} onChange={(value) => changeField('alipayAccount', value)} disabled />
+          <HuanyuInput label="是否有医保" value={form.hasInsurance} onChange={(value) => changeField('hasInsurance', value)} disabled />
+          <HuanyuSelect label="医保类型" value={form.insuranceType} onChange={(value) => changeField('insuranceType', value)} />
+          <HuanyuInput label="短信链接" value={form.smsLink} onChange={(value) => changeField('smsLink', value)} disabled />
         </HuanyuFormGrid>
       </HuanyuFormSection>
 
       <HuanyuFormSection title="预约模板信息（对内）">
-        <HuanyuTextarea value={form.internalBookingTemplate} onChange={(value) => changeField('internalBookingTemplate', value)} />
+        <HuanyuTextarea label="预约模板内容" value={form.internalBookingTemplate} onChange={(value) => changeField('internalBookingTemplate', value)} disabled copyable />
       </HuanyuFormSection>
 
       <HuanyuFormSection title="预约模板信息（对外）">
-        <HuanyuTextarea value={form.externalBookingTemplate} onChange={(value) => changeField('externalBookingTemplate', value)} />
+        <HuanyuTextarea label="预约模板内容" value={form.externalBookingTemplate} onChange={(value) => changeField('externalBookingTemplate', value)} disabled copyable />
       </HuanyuFormSection>
 
       <HuanyuFormSection title="陪诊服务小结">
-        <HuanyuTextarea value={form.escortSummary} onChange={(value) => changeField('escortSummary', value)} placeholder="请输入陪诊服务小结" minHeight="min-h-44" />
+        <HuanyuTextarea label="服务小结" value={form.escortSummary} onChange={(value) => changeField('escortSummary', value)} placeholder="请输入陪诊服务小结" minHeight="min-h-44" />
         <div className="mt-4 border-t border-border-subtle pt-4">
           <div className="mb-3 text-body-sm font-semibold text-text-main">陪诊相关附件上传</div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
@@ -1419,8 +1409,17 @@ function buildHuanyuForm(order: Order): Record<string, string | boolean> {
   const department = value(['dept', 'department', 'intendDept'], order.dept)
   const doctor = value(['doctor', 'doctorName', 'intendDoc'], order.doctor)
 
+  const requestTime = toHuanyuDateTimeLocal(value(['requestTime', 'demandTime']))
+  const responseTime = toHuanyuDateTimeLocal(value(['responseTime']))
+  const serviceStartTime = toHuanyuDateTimeLocal(value(['serviceStartTime']))
+  const bookingFeedbackTime = toHuanyuDateTimeLocal(value(['bookingFeedbackTime']))
+  const latestTicketTime = toHuanyuDateTimeLocal(value(['latestTicketTime', 'ticketDeadline'], bookingTime))
+  const fallbackDefaultDate = value(['defaultDate']).replace(/\D/g, '').slice(0, 8)
+  const fallbackDefaultTime = value(['defaultTime'])
+
   return {
-    orderNo: value(['orderNo', 'hyydOrderNo', 'sourceOrderNo'], order.sourceOrderNo),
+    // 寰宇订单号由后续后台生成，初始状态只读且留空。
+    orderNo: '',
     orderStatus: value(['orderStatus', 'status'], order.status),
     channel: value(['channel', 'bChannel', 'sourceChannel'], sourceStyle(order).label),
     channelOrderNo: value(['bOrderNo', 'channelOrderNo', 'sourceOrderNo'], order.sourceOrderNo),
@@ -1460,14 +1459,23 @@ function buildHuanyuForm(order: Order): Record<string, string | boolean> {
     tkProvince: value(['tkProvince', 'taikangProvince', 'province']),
     tkCity: value(['tkCity', 'taikangCity', 'city']),
     tkDepartment: value(['tkDepartment', 'taikangDept'], department),
-    requestTime: value(['requestTime', 'demandTime']),
-    responseTime: value(['responseTime']),
-    serviceStartTime: value(['serviceStartTime']),
-    bookingFeedbackTime: value(['bookingFeedbackTime']),
-    latestTicketTime: value(['latestTicketTime', 'ticketDeadline'], bookingTime),
-    defaultDate: value(['defaultDate']),
-    defaultTime: value(['defaultTime']),
-    escortOrderNo: value(['escortOrderNo', 'orderNo'], order.sourceOrderNo),
+    requestTime,
+    requestDefaultDate: huanyuDatePart(requestTime),
+    requestDefaultTime: huanyuTimePart(requestTime),
+    responseTime,
+    responseDefaultDate: huanyuDatePart(responseTime),
+    responseDefaultTime: huanyuTimePart(responseTime),
+    serviceStartTime,
+    serviceStartDefaultDate: huanyuDatePart(serviceStartTime),
+    serviceStartDefaultTime: huanyuTimePart(serviceStartTime),
+    bookingFeedbackTime,
+    bookingFeedbackDefaultDate: huanyuDatePart(bookingFeedbackTime),
+    bookingFeedbackDefaultTime: huanyuTimePart(bookingFeedbackTime),
+    latestTicketTime,
+    latestTicketDefaultDate: huanyuDatePart(latestTicketTime) || fallbackDefaultDate,
+    latestTicketDefaultTime: huanyuTimePart(latestTicketTime) || fallbackDefaultTime,
+    // 陪诊信息关联寰宇订单号，不使用 B 端渠道订单号；订单号当前由后台生成，前端先留空。
+    escortOrderNo: value(['escortOrderNo', 'hyydOrderNo', 'orderNo']),
     escortServiceDate: value(['escortServiceDate', 'serviceDate'], bookingTime),
     escortName: value(['escortName', 'companionName']),
     escortType: value(['escortType', 'companionType']),
@@ -1480,7 +1488,7 @@ function buildHuanyuForm(order: Order): Record<string, string | boolean> {
     advanceRecovered: value(['advanceRecovered']),
     registrationRefund: value(['registrationRefund']),
     alipayAccount: value(['alipayAccount']),
-    hasInsurance: value(['hasInsurance', 'medicalInsurance']),
+    hasInsurance: huanyuInsuranceLabel(value(['hasInsurance', 'medicalInsurance'])),
     insuranceType: value(['insuranceType', 'medicalInsuranceType']),
     smsLink: value(['smsLink']),
     internalBookingTemplate: buildHuanyuBookingTemplate('对内', { channel: value(['channel', 'bChannel'], sourceStyle(order).label), orderNo: value(['orderNo', 'hyydOrderNo'], order.sourceOrderNo), channelOrderNo: value(['bOrderNo', 'channelOrderNo'], order.sourceOrderNo), service: value(['channelService', 'serviceProject'], bizType(order)), patientName, patientPhone, hospital, department, doctor, bookingTime, escortName: value(['escortName', 'companionName']), escortPhone: value(['escortPhone', 'companionPhone']), hospitalAddress: value(['hospitalAddress', 'address']), remark: value(['serviceRemark', 'orderRemark', 'comments']) }),
@@ -1498,6 +1506,28 @@ function buildHuanyuBookingTemplate(kind: '对内' | '对外', values: Record<st
     .join('\n')
 }
 
+function huanyuInsuranceLabel(value: string): string {
+  if (value === '0') return '无医保'
+  if (value === '1') return '有医保'
+  return value
+}
+
+function toHuanyuDateTimeLocal(value: string): string {
+  const match = value.trim().match(/^(\d{4})[-/]?(\d{2})[-/]?(\d{2})[ T]?(\d{2})?:?(\d{2})?(?::?(\d{2}))?$/)
+  if (!match || !match[4] || !match[5]) return ''
+  return `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6] || '00'}`
+}
+
+function huanyuDatePart(value: string): string {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T/)
+  return match ? `${match[1]}${match[2]}${match[3]}` : ''
+}
+
+function huanyuTimePart(value: string): string {
+  const match = value.match(/T(\d{2}:\d{2})(?::(\d{2}))?$/)
+  return match ? `${match[1]}:${match[2] || '00'}` : ''
+}
+
 function HuanyuFormSection({ title, children }: { title: string; children: React.ReactNode }): React.JSX.Element {
   return (
     <section className="rounded-lg border border-border-subtle bg-white p-4">
@@ -1508,20 +1538,245 @@ function HuanyuFormSection({ title, children }: { title: string; children: React
 }
 
 function HuanyuFormGrid({ children }: { children: React.ReactNode }): React.JSX.Element {
-  return <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-3">{children}</div>
+  return <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-4">{children}</div>
 }
 
-function HuanyuInput({ label, value, onChange, wide = false }: { label: string; value: string | boolean; onChange: (value: string) => void; wide?: boolean }): React.JSX.Element {
+function HuanyuTimeInformation({
+  form,
+  onChange
+}: {
+  form: Record<string, string | boolean>
+  onChange: (key: string, value: string | boolean) => void
+}): React.JSX.Element {
+  const rows = [
+    { label: '需求时间', timeKey: 'requestTime', dateKey: 'requestDefaultDate', defaultTimeKey: 'requestDefaultTime' },
+    { label: '应答时间', timeKey: 'responseTime', dateKey: 'responseDefaultDate', defaultTimeKey: 'responseDefaultTime' },
+    { label: '启动服务时间', timeKey: 'serviceStartTime', dateKey: 'serviceStartDefaultDate', defaultTimeKey: 'serviceStartDefaultTime' },
+    { label: '预约反馈时间', timeKey: 'bookingFeedbackTime', dateKey: 'bookingFeedbackDefaultDate', defaultTimeKey: 'bookingFeedbackDefaultTime' },
+    { label: '最晚取号时间', timeKey: 'latestTicketTime', dateKey: 'latestTicketDefaultDate', defaultTimeKey: 'latestTicketDefaultTime' }
+  ]
+
   return (
-    <label className={wide ? 'md:col-span-2 xl:col-span-3' : ''}>
-      <span className="mb-1 block text-body-sm font-medium text-text-muted">{label}</span>
-      <input value={typeof value === 'string' ? value : ''} onChange={(event) => onChange(event.target.value)} className="h-9 w-full rounded-md border border-border-subtle bg-white px-3 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary" />
+    <div className="space-y-3">
+      {rows.map(({ label, timeKey, dateKey, defaultTimeKey }) => (
+        <div key={timeKey} className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-3">
+          <label className="flex min-w-0 items-center gap-2">
+            <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
+            <input
+              type="datetime-local"
+              step="1"
+              value={typeof form[timeKey] === 'string' ? form[timeKey] : ''}
+              onChange={(event) => {
+                const nextValue = event.target.value
+                onChange(timeKey, nextValue)
+                onChange(dateKey, huanyuDatePart(nextValue))
+                onChange(defaultTimeKey, huanyuTimePart(nextValue))
+              }}
+              className="h-9 min-w-0 flex-1 rounded-md border border-border-subtle bg-white px-3 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary"
+            />
+          </label>
+          <HuanyuInput label="默认日期" value={form[dateKey]} onChange={(value) => onChange(dateKey, value)} disabled />
+          <HuanyuInput label="默认时间" value={form[defaultTimeKey]} onChange={(value) => onChange(defaultTimeKey, value)} disabled />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+interface HuanyuEscortRow {
+  id: number
+  orderNo: string
+  serviceDate: string
+  escortName: string
+  escortType: string
+  phone: string
+  area: string
+  sequence: string
+}
+
+function HuanyuEscortInformationTable({
+  initialRow
+}: {
+  initialRow: Omit<HuanyuEscortRow, 'id'>
+}): React.JSX.Element {
+  const [rows, setRows] = useState<HuanyuEscortRow[]>(() => [{ id: 1, ...initialRow }])
+
+  function changeRow(id: number, field: Exclude<keyof HuanyuEscortRow, 'id' | 'orderNo'>, value: string): void {
+    setRows((current) => current.map((row) => row.id === id ? { ...row, [field]: value } : row))
+  }
+
+  function addRow(): void {
+    setRows((current) => [
+      ...current,
+      {
+        id: Date.now(),
+        orderNo: initialRow.orderNo,
+        serviceDate: '',
+        escortName: '',
+        escortType: '',
+        phone: '',
+        area: '',
+        sequence: String(current.length + 1)
+      }
+    ])
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-[980px] w-full border-collapse text-body-sm">
+        <thead>
+          <tr className="bg-surface-bg text-text-main">
+            {['订单号', '服务日期', '陪诊人员', '陪诊人类型', '默认电话', '所在地区', '陪诊人序号'].map((label) => (
+              <th key={label} className="border border-border-subtle px-3 py-2 text-center font-semibold whitespace-nowrap">{label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.id}>
+              <td className="border border-border-subtle p-1.5"><input disabled value={row.orderNo} className="h-8 w-full border-0 bg-surface-container px-2 text-center text-text-muted outline-none" /></td>
+              <td className="border border-border-subtle p-1.5"><input value={row.serviceDate} onChange={(event) => changeRow(row.id, 'serviceDate', event.target.value)} className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary" /></td>
+              <td className="border border-border-subtle p-1.5"><input value={row.escortName} onChange={(event) => changeRow(row.id, 'escortName', event.target.value)} className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary" /></td>
+              <td className="border border-border-subtle p-1.5"><input value={row.escortType} onChange={(event) => changeRow(row.id, 'escortType', event.target.value)} className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary" /></td>
+              <td className="border border-border-subtle p-1.5"><input value={row.phone} onChange={(event) => changeRow(row.id, 'phone', event.target.value)} className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary" /></td>
+              <td className="border border-border-subtle p-1.5"><input value={row.area} onChange={(event) => changeRow(row.id, 'area', event.target.value)} className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary" /></td>
+              <td className="border border-border-subtle p-1.5"><input value={row.sequence} onChange={(event) => changeRow(row.id, 'sequence', event.target.value)} className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary" /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="mt-3 flex justify-end">
+        <button type="button" onClick={addRow} className="inline-flex items-center gap-1.5 rounded-md bg-action-green px-3 py-2 text-body-sm font-semibold text-white hover:bg-action-green/90">
+          <span className="material-symbols-outlined" style={{ fontSize: '17px' }}>add</span>
+          新增陪诊信息
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function HuanyuInput({
+  label,
+  value,
+  onChange,
+  wide = false,
+  disabled = false,
+  type = 'text'
+}: {
+  label: string
+  value: string | boolean
+  onChange: (value: string) => void
+  wide?: boolean
+  disabled?: boolean
+  type?: React.HTMLInputTypeAttribute
+}): React.JSX.Element {
+  return (
+    <label className={'flex min-w-0 items-center gap-2 ' + (wide ? 'md:col-span-2 xl:col-span-4' : '')}>
+      <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
+      <input type={type} disabled={disabled} value={typeof value === 'string' ? value : ''} onChange={(event) => onChange(event.target.value)} className={'h-9 min-w-0 flex-1 rounded-md border border-border-subtle px-3 text-body-sm text-text-main outline-none transition-colors ' + (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary')} />
     </label>
   )
 }
 
-function HuanyuTextarea({ value, onChange, placeholder = '请输入内容', minHeight = 'min-h-36' }: { value: string | boolean; onChange: (value: string) => void; placeholder?: string; minHeight?: string }): React.JSX.Element {
-  return <textarea value={typeof value === 'string' ? value : ''} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className={'w-full resize-y rounded-md border border-border-subtle bg-white p-3 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary ' + minHeight} />
+interface HuanyuSelectOption {
+  value: string
+  label: string
+}
+
+function HuanyuSelect({
+  label,
+  value,
+  options = [],
+  onChange
+}: {
+  label: string
+  value: string | boolean
+  options?: Array<string | HuanyuSelectOption>
+  onChange: (value: string) => void
+}): React.JSX.Element {
+  const currentValue = typeof value === 'string' ? value : ''
+  const normalizedOptions = options.map((option) => typeof option === 'string' ? { value: option, label: option } : option)
+  const visibleOptions = currentValue && !normalizedOptions.some((option) => option.value === currentValue)
+    ? [{ value: currentValue, label: currentValue }, ...normalizedOptions]
+    : normalizedOptions
+  return (
+    <label className="flex min-w-0 items-center gap-2">
+      <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
+      <select value={currentValue} onChange={(event) => onChange(event.target.value)} className="h-9 min-w-0 flex-1 rounded-md border border-border-subtle bg-white px-3 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary">
+        {visibleOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    </label>
+  )
+}
+
+function HuanyuAmountField({
+  value,
+  editable,
+  onChange,
+  onEditableChange
+}: {
+  value: string | boolean
+  editable: boolean
+  onChange: (value: string) => void
+  onEditableChange: (value: boolean) => void
+}): React.JSX.Element {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">订单金额：</span>
+      <input type="number" inputMode="decimal" step="0.01" disabled={!editable} value={typeof value === 'string' ? value : ''} onChange={(event) => onChange(event.target.value)} className={'h-9 w-24 shrink-0 rounded-md border border-border-subtle px-3 text-body-sm text-text-main outline-none transition-colors ' + (editable ? 'bg-white focus:border-primary focus:ring-1 focus:ring-primary' : 'cursor-not-allowed bg-surface-container text-text-muted')} />
+      <label className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-body-sm text-text-main">
+        <input type="checkbox" checked={editable} onChange={(event) => onEditableChange(event.target.checked)} className="h-4 w-4 accent-primary" />
+        金额修改
+      </label>
+    </div>
+  )
+}
+
+function HuanyuTextarea({
+  label,
+  value,
+  onChange,
+  placeholder = '请输入内容',
+  minHeight = 'min-h-36',
+  disabled = false,
+  copyable = false
+}: {
+  label: string
+  value: string | boolean
+  onChange: (value: string) => void
+  placeholder?: string
+  minHeight?: string
+  disabled?: boolean
+  copyable?: boolean
+}): React.JSX.Element {
+  const textValue = typeof value === 'string' ? value : ''
+  const [copied, setCopied] = useState(false)
+
+  return (
+    <div className="flex min-w-0 items-start gap-2">
+      <span className="w-28 shrink-0 pt-2 text-right text-body-sm font-medium text-text-muted">{label}：</span>
+      <div className="min-w-0 flex-1">
+        <textarea disabled={disabled} value={textValue} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className={'min-w-0 w-full resize-y rounded-md border border-border-subtle p-3 text-body-sm text-text-main outline-none transition-colors ' + (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary') + ' ' + minHeight} />
+        {copyable && (
+          <div className="mt-1 flex justify-end">
+            <button
+              type="button"
+              disabled={!textValue}
+              onClick={() => {
+                void navigator.clipboard?.writeText(textValue)
+                setCopied(true)
+                setTimeout(() => setCopied(false), 1200)
+              }}
+              className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline disabled:cursor-not-allowed disabled:text-text-muted"
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>{copied ? 'check' : 'content_copy'}</span>
+              {copied ? '已复制' : '复制内容'}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function CompactLifecycleTimeline({ order }: { order: Order }): React.JSX.Element {
