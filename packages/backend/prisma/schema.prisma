@@ -14,6 +14,8 @@ model Employee {
   wechatId                String?                  @map("wechat_id")
   taikangAccount          String?                  @map("taikang_account")
   token                   String                   @unique
+  password                String?                  @map("PASSWORD")
+  enabled                 Int                      @default(1) @map("ENABLED")
   orders                  Order[]
   messages                Message[]
   calls                   Call[]

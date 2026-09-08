@@ -1,3 +1,4 @@
+import ChangePasswordModal from './components/ChangePasswordModal'
 import { useEffect, useState } from 'react'
 import LoginPage from './pages/LoginPage'
 import WorkbenchKanban from './pages/WorkbenchKanban'
@@ -25,6 +26,7 @@ import type { ApplicationGroup } from './pages/WorkbenchKanban'
  * 登录后进入带顶部导航的 AppShell；打开订单时切到聚焦式详情页（无顶部导航）。
  */
 export default function App(): React.JSX.Element {
+  const [showPasswordModal, setShowPasswordModal] = useState(false)
   const [session, setSession] = useState<Session | null>(() => {
     if (!getBackendUrl()) {
       clearSession()
@@ -87,6 +89,7 @@ export default function App(): React.JSX.Element {
           clearSession()
           setSession(null)
         }}
+        onChangePassword={() => setShowPasswordModal(true)}
       >
         <div className={nav === 'workbench' ? 'flex-1 min-h-0 flex flex-col' : 'hidden'}>
           <WorkbenchKanban
@@ -101,7 +104,15 @@ export default function App(): React.JSX.Element {
         {nav === 'debug' && <SidecarDebugPage />}
         {nav === 'settings' && <SettingsPage />}
         {nav === 'dashboard' && <Placeholder name={navLabel(nav)} />}
-      </AppShell>
+        <ChangePasswordModal
+        isOpen={showPasswordModal}
+        onClose={() => setShowPasswordModal(false)}
+        onSuccessLogout={() => {
+          clearSession()
+          setSession(null)
+        }}
+      />
+    </AppShell>
     )
   }
 

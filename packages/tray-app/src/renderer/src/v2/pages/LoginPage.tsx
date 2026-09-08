@@ -18,10 +18,22 @@ export default function LoginPage({
   async function handleSubmit(e: React.FormEvent): Promise<void> {
     e.preventDefault()
     setError(null)
+
+    const acc = account.trim()
+    const pwd = password.trim()
+    if (!acc) {
+      setError('请输入工作账号（工号）')
+      return
+    }
+    if (!pwd) {
+      setError('请输入密码')
+      return
+    }
+
     setLoading(true)
     try {
       setBackendUrl(backendUrl)
-      const me = await login(account)
+      const me = await login(acc, pwd)
       const session = { employeeCode: me.employeeCode, displayName: me.displayName }
       if (remember) saveSession(session)
       onLoggedIn(session)
@@ -113,13 +125,12 @@ export default function LoginPage({
                 </div>
               </div>
 
-              {/* 密码（当前后端无密码体系，暂不校验） */}
+              {/* 密码 */}
               <div className="space-y-1">
                 <div className="flex items-center justify-between">
                   <label className="block text-label-caps text-text-muted uppercase" htmlFor="password">
                     密码
                   </label>
-                  <span className="text-body-sm text-text-muted/70">暂未启用</span>
                 </div>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">

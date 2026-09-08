@@ -408,17 +408,27 @@ export function confirmUnmatchedOrderRef(
 }
 
 /**
- * 用工号向后端换取身份。现阶段后端没有密码体系，
- * 鉴权只认 X-Employee-Code，所以"登录"= 校验工号存在。
+ * 用工号和密码向后端换取身份。
  */
-export async function login(employeeCode: string): Promise<MeResponse> {
+export async function login(employeeCode: string, password?: string): Promise<MeResponse> {
   const code = employeeCode.trim()
   if (!code) throw new Error('请输入工号')
-  const res = await fetch(`${requireBackendUrl()}/api/v1/me`, {
-    headers: { 'X-Employee-Code': code }
+  const backendUrl = requireBackendUrl()
+  const res = await fetch(`${backendUrl}/api/v1/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ employeeCode: code, password })
   })
   if (res.status === 401 || res.status === 403 || res.status === 404) {
-    throw new Error('工号不存在或未授权，请联系管理员')
+    const text = await res.text()
+    let msg = '工号不存在、密码错误或未授权，请联系管理员'
+    try {
+      const json = JSON.parse(text)
+      if (json.error) msg = json.error
+    } catch {
+      //
+    }
+    throw new Error(msg)
   }
   if (!res.ok) {
     throw new Error(`登录失败（${res.status}），请检查服务器地址或网络`)
@@ -428,4 +438,33 @@ export async function login(employeeCode: string): Promise<MeResponse> {
   const me = body.data ?? (body as MeResponse)
   if (!me || !me.employeeCode) throw new Error('登录响应异常')
   return me
+}
+
+export async function changePassword(oldPassword: string, newPassword: string): Promise<void> {
+  const session = getSession()
+  if (!session) throw new Error('未登录或会话已过期')
+  const backendUrl = requireBackendUrl()
+  const res = await fetch(`${backendUrl}/api/v1/me/password`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Employee-Code': session.employeeCode
+    },
+    body: JSON.stringify({
+      employeeCode: session.employeeCode,
+      oldPassword,
+      newPassword
+    })
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    let msg = `修改密码失败（HTTP ${res.status}）`
+    try {
+      const json = JSON.parse(text)
+      if (json.error) msg = json.error
+    } catch {
+      //
+    }
+    throw new Error(msg)
+  }
 }

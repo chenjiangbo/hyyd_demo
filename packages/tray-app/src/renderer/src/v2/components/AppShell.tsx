@@ -32,6 +32,7 @@ export default function AppShell({
   onNavigate,
   session,
   onLogout,
+  onChangePassword,
   search,
   onSearch,
   children
@@ -40,6 +41,7 @@ export default function AppShell({
   onNavigate: (k: NavKey) => void
   session: Session
   onLogout: () => void
+  onChangePassword?: () => void
   search: string
   onSearch: (v: string) => void
   children: ReactNode
@@ -108,7 +110,7 @@ export default function AppShell({
           >
             <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>settings</span>
           </button>
-          <UserMenu session={session} onLogout={onLogout} />
+          <UserMenu session={session} onLogout={onLogout} onChangePassword={onChangePassword} />
         </div>
       </header>
 
@@ -125,7 +127,7 @@ export default function AppShell({
  * 右上角头像菜单：点击展开/收起，点击外部或选择后关闭。
  * （原来用纯 CSS group-hover，头像与菜单间有 8px 空隙，鼠标移过去就隐藏了，点不到"退出登录"。）
  */
-function UserMenu({ session, onLogout }: { session: Session; onLogout: () => void }): React.JSX.Element {
+function UserMenu({ session, onLogout, onChangePassword }: { session: Session; onLogout: () => void; onChangePassword?: () => void }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -155,10 +157,21 @@ function UserMenu({ session, onLogout }: { session: Session; onLogout: () => voi
           <button
             onClick={() => {
               setOpen(false)
+              onChangePassword?.()
+            }}
+            className="w-full text-left px-3 py-1.5 text-body-sm text-text-main hover:bg-surface-container-low flex items-center gap-2"
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>key</span>
+            修改密码
+          </button>
+          <button
+            onClick={() => {
+              setOpen(false)
               onLogout()
             }}
-            className="w-full text-left px-3 py-1.5 text-body-sm text-text-main hover:bg-surface-container-low"
+            className="w-full text-left px-3 py-1.5 text-body-sm text-red-600 hover:bg-surface-container-low flex items-center gap-2"
           >
+            <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>logout</span>
             退出登录
           </button>
         </div>
