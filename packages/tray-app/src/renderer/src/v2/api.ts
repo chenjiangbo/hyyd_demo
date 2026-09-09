@@ -468,3 +468,56 @@ export async function changePassword(oldPassword: string, newPassword: string): 
     throw new Error(msg)
   }
 }
+
+// ─── 科室管理字典 (f_hy_kswh + f_hy_xfks) ───────────────────
+export interface SubDepartmentItem {
+  id: string // 数据库物理主键 (如 00010002)
+  xh: string // 序号ID (如 0002)
+  parentDeptId: string // 所属上级科室ID (如 0001)
+  name: string // 科室细分名称
+  status: 'enabled' | 'disabled'
+  updatedAt: string
+}
+
+export interface DepartmentItem {
+  id: string // 一级科室ID (如 0001)
+  name: string // 科室大类名称
+  desc: string // 体系描述
+  status: 'enabled' | 'disabled'
+  createdAt: string
+  updatedAt: string
+  subDepartments: SubDepartmentItem[]
+}
+
+/** 从数据库获取科室字典列表 */
+export async function fetchDepartments(): Promise<DepartmentItem[]> {
+  const backendUrl = getBackendUrl() || 'http://localhost:13000'
+  const res = await fetch(`${backendUrl}/api/v1/departments`)
+  if (!res.ok) {
+    throw new Error(`获取科室字典失败（HTTP ${res.status}）`)
+  }
+  const body = (await res.json()) as { ok?: boolean; data?: DepartmentItem[] }
+  return body.data || []
+}
+
+/** 批量保存科室字典数据至数据库 */
+export async function saveDepartments(departments: DepartmentItem[]): Promise<void> {
+  const backendUrl = getBackendUrl() || 'http://localhost:13000'
+  const res = await fetch(`${backendUrl}/api/v1/departments/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(departments)
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    let msg = `保存科室字典失败（HTTP ${res.status}）`
+    try {
+      const json = JSON.parse(text)
+      if (json.error) msg = json.error
+    } catch {
+      //
+    }
+    throw new Error(msg)
+  }
+}
+

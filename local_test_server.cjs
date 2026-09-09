@@ -182,7 +182,122 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
-  // 3. 健康检查接口
+  // 3. 本地处理科室管理字典 (f_hy_kswh + f_hy_xfks)
+  if ((url === '/api/v1/departments' || url === '/api/v1/departments/') && req.method === 'GET') {
+    try {
+      const yjList = await prisma.$queryRawUnsafe(`
+        SELECT id, name, "desc", status, created_at AS "createdAt", updated_at AS "updatedAt"
+        FROM f_hy_kswh
+        ORDER BY id ASC;
+      `)
+      const ejList = await prisma.$queryRawUnsafe(`
+        SELECT id, xh, parent_dept_id AS "parentDeptId", name, status, updated_at AS "updatedAt"
+        FROM f_hy_xfks
+        ORDER BY parent_dept_id ASC, xh ASC;
+      `)
+
+      const ejMap = new Map()
+      for (const ej of ejList) {
+        if (!ejMap.has(ej.parentDeptId)) {
+          ejMap.set(ej.parentDeptId, [])
+        }
+        ejMap.get(ej.parentDeptId).push(ej)
+      }
+
+      const result = yjList.map(yj => ({
+        ...yj,
+        subDepartments: ejMap.get(yj.id) || []
+      }))
+
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, data: result }))
+    } catch (err) {
+      console.error('Fetch departments error:', err)
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: false, error: `获取科室列表失败: ${err.message}` }))
+    }
+    return
+  }
+
+  if ((url === '/api/v1/departments/save' || url === '/api/v1/departments/batch' || url === '/api/v1/departments') && (req.method === 'POST' || req.method === 'PUT')) {
+    let body = ''
+    req.on('data', chunk => { body += chunk })
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}')
+        const deptList = Array.isArray(payload) ? payload : (payload.data || payload.departments || [])
+
+        if (!Array.isArray(deptList)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: '无效的数据格式，需为科室数组' }))
+          return
+        }
+
+        // 使用数据库事务全量同步至 f_hy_kswh 与 f_hy_xfks
+        await prisma.$transaction(async (tx) => {
+          const currentYj = await tx.$queryRawUnsafe(`SELECT id FROM f_hy_kswh`)
+          const currentYjIds = new Set(currentYj.map(r => r.id))
+          const newYjIds = new Set(deptList.map(d => String(d.id).trim()))
+
+          for (const oldId of currentYjIds) {
+            if (!newYjIds.has(oldId)) {
+              await tx.$executeRawUnsafe(`DELETE FROM f_hy_kswh WHERE id = $1`, oldId)
+            }
+          }
+
+          for (const d of deptList) {
+            const dId = String(d.id).trim()
+            await tx.$executeRawUnsafe(`
+              INSERT INTO f_hy_kswh (id, name, "desc", status, created_at, updated_at)
+              VALUES ($1, $2, $3, $4, $5, $6)
+              ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name,
+                "desc" = EXCLUDED."desc",
+                status = EXCLUDED.status,
+                created_at = EXCLUDED.created_at,
+                updated_at = EXCLUDED.updated_at;
+            `, dId, d.name || '', d.desc || '', d.status || 'enabled', d.createdAt || '', d.updatedAt || '')
+
+            const subList = d.subDepartments || []
+            const currentEj = await tx.$queryRawUnsafe(`SELECT id FROM f_hy_xfks WHERE parent_dept_id = $1`, dId)
+            const currentEjIds = new Set(currentEj.map(r => r.id))
+            const newEjIds = new Set(subList.map(s => String(s.id).trim()))
+
+            for (const oldSubId of currentEjIds) {
+              if (!newEjIds.has(oldSubId)) {
+                await tx.$executeRawUnsafe(`DELETE FROM f_hy_xfks WHERE id = $1`, oldSubId)
+              }
+            }
+
+            for (const sub of subList) {
+              const subId = String(sub.id).trim()
+              const xh = String(sub.xh || subId.slice(-4)).trim()
+              await tx.$executeRawUnsafe(`
+                INSERT INTO f_hy_xfks (id, xh, parent_dept_id, name, status, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (id) DO UPDATE SET
+                  xh = EXCLUDED.xh,
+                  parent_dept_id = EXCLUDED.parent_dept_id,
+                  name = EXCLUDED.name,
+                  status = EXCLUDED.status,
+                  updated_at = EXCLUDED.updated_at;
+              `, subId, xh, dId, sub.name || '', sub.status || 'enabled', sub.updatedAt || '')
+            }
+          }
+        })
+
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, message: '科室数据已成功保存至 PostgreSQL 数据库' }))
+      } catch (err) {
+        console.error('Save departments error:', err)
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, error: `保存科室失败: ${err.message}` }))
+      }
+    })
+    return
+  }
+
+  // 4. 健康检查接口
   if (url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ status: 'OK', localDb: 'PostgreSQL-16', port: 15432, timestamp: new Date().toISOString() }))

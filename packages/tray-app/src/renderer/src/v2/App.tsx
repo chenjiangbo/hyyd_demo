@@ -9,6 +9,7 @@ import SettingsPage from './pages/SettingsPage'
 import ClaimPage from './pages/ClaimPage'
 import KnowledgePage from './pages/KnowledgePage'
 import CustomersPage from './pages/CustomersPage'
+import DictionaryPage from './pages/DictionaryPage'
 import AppShell, { type NavKey } from './components/AppShell'
 import TitleBar from './components/TitleBar'
 import {
@@ -100,6 +101,7 @@ export default function App(): React.JSX.Element {
         </div>
         {nav === 'claim' && <ClaimPage />}
         {nav === 'customers' && <CustomersPage onOpenOrder={setOpenOrder} />}
+        {nav === 'dictionary' && <DictionaryPage />}
         {nav === 'knowledge' && <KnowledgePage />}
         {nav === 'debug' && <SidecarDebugPage />}
         {nav === 'settings' && <SettingsPage />}

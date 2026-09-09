@@ -10,15 +10,16 @@ import {
 import StatusBar from './StatusBar'
 import type { Session } from '../api'
 
-export type NavKey = 'claim' | 'workbench' | 'customers' | 'knowledge' | 'dashboard' | 'debug' | 'settings'
+export type NavKey = 'claim' | 'workbench' | 'customers' | 'dictionary' | 'knowledge' | 'dashboard' | 'debug' | 'settings'
 
-// 顺序与命名对齐原型（数据看板 / 申领台 / 工作台 / 知识库 / 档案库）
+// 顺序与命名对齐原型（数据看板 / 申领台 / 工作台 / 知识库 / 档案库 / 字典维护）
 const NAV: { key: NavKey; label: string }[] = [
   { key: 'dashboard', label: '数据看板' },
   { key: 'claim', label: '申领台' },
   { key: 'workbench', label: '工作台' },
   { key: 'knowledge', label: '知识库' },
   { key: 'customers', label: '档案库' },
+  { key: 'dictionary', label: '字典维护' },
   // 【临时】sidecar 采集调试，验证完成后连同页面一起删除
   { key: 'debug', label: '🔧 采集调试' }
 ]
