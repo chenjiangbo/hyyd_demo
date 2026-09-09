@@ -202,11 +202,13 @@ function progressColorClass(stage: number): string {
 export default function WorkbenchKanban({
   employeeCode,
   query,
-  onOpenApplication
+  onOpenApplication,
+  onCreateHuanyuOrder
 }: {
   employeeCode: string
   query: string
   onOpenApplication: (group: ApplicationGroup, selectedOrderId?: number) => void
+  onCreateHuanyuOrder: () => void
 }): React.JSX.Element {
   const [orders, setOrders] = useState<Order[]>(() => getCachedOrders(employeeCode) ?? [])
   const [loading, setLoading] = useState(getCachedOrders(employeeCode) === null)
@@ -379,7 +381,7 @@ export default function WorkbenchKanban({
       ) : view === 'board' ? (
         <BoardView groups={boardGroups} detailRegions={detailRegions} onOpen={onOpenApplication} />
       ) : (
-        <ListView groups={filteredGroups} onOpen={onOpenApplication} />
+        <ListView groups={filteredGroups} onOpen={onOpenApplication} onCreateHuanyuOrder={onCreateHuanyuOrder} />
       )}
     </div>
   )
@@ -834,10 +836,12 @@ type SortKey = 'customerName' | 'hospital' | 'status' | 'poolEnteredAt'
 
 function ListView({
   groups,
-  onOpen
+  onOpen,
+  onCreateHuanyuOrder
 }: {
   groups: ApplicationGroup[]
   onOpen: (group: ApplicationGroup, selectedOrderId?: number) => void
+  onCreateHuanyuOrder: () => void
 }): React.JSX.Element {
   const [laneFilter, setLaneFilter] = useState<LaneKey | 'all'>('all')
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'poolEnteredAt', dir: 'desc' })
@@ -883,6 +887,14 @@ function ListView({
           <p className="mt-0.5 text-body-sm text-text-muted">按申请号查看全部工作台记录</p>
         </div>
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={onCreateHuanyuOrder}
+            className="inline-flex h-10 items-center gap-1.5 rounded-md bg-primary px-4 text-body-md font-semibold text-white shadow-sm transition-colors hover:bg-primary/90"
+          >
+            <span className="material-symbols-outlined text-[18px]">add</span>
+            新建寰宇订单
+          </button>
           <select
             value={laneFilter}
             onChange={(e) => setLaneFilter(e.target.value as LaneKey | 'all')}

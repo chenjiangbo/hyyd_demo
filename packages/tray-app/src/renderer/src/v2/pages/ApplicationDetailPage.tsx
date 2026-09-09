@@ -1283,7 +1283,44 @@ function OrderDetailPanel({
 }
 
 function HuanyuOrderDetailPanel({ order }: { order: Order }): React.JSX.Element {
-  const [form, setForm] = useState(() => buildHuanyuForm(order))
+  return <HuanyuOrderForm initialForm={buildHuanyuForm(order)} />
+}
+
+export function HuanyuOrderCreatePage({ onBack }: { onBack: () => void }): React.JSX.Element {
+  const [initialForm] = useState(() => buildEmptyHuanyuForm())
+
+  return (
+    <main className="flex h-full min-h-0 flex-col bg-surface-bg">
+      <header className="shrink-0 border-b border-border-subtle bg-white px-6 py-4">
+        <div className="mx-auto flex w-full max-w-[1600px] items-center gap-4">
+          <button type="button" onClick={onBack} className="flex h-9 w-9 items-center justify-center rounded-md text-text-muted hover:bg-surface-bg hover:text-text-main" title="返回工作台">
+            <span className="material-symbols-outlined">arrow_back</span>
+          </button>
+          <div className="min-w-0">
+            <h1 className="text-h2-header text-text-main">新建寰宇订单</h1>
+            <p className="mt-0.5 text-body-sm text-text-muted">寰宇自建订单，不关联 B 端订单</p>
+          </div>
+          <div className="ml-auto rounded-md bg-surface-bg px-3 py-2 text-body-sm text-text-muted">
+            DDBH：<span className="font-mono-data font-semibold text-text-main">{String(initialForm.orderNo)}</span>
+          </div>
+        </div>
+      </header>
+      <div className="mx-auto flex w-full max-w-[1600px] min-h-0 flex-1">
+        <HuanyuOrderForm initialForm={initialForm} mode="create" />
+      </div>
+    </main>
+  )
+}
+
+function HuanyuOrderForm({
+  initialForm,
+  mode = 'detail'
+}: {
+  initialForm: Record<string, string | boolean>
+  mode?: 'detail' | 'create'
+}): React.JSX.Element {
+  const [form, setForm] = useState(() => initialForm)
+  const isCreate = mode === 'create'
 
   function changeField(key: string, value: string | boolean): void {
     setForm((current) => ({ ...current, [key]: value }))
@@ -1313,7 +1350,7 @@ function HuanyuOrderDetailPanel({ order }: { order: Order }): React.JSX.Element 
 
       <HuanyuFormSection title="就诊人信息">
         <HuanyuFormGrid>
-          <HuanyuInput label="就诊人姓名" value={form.patientName} onChange={(value) => changeField('patientName', value)} disabled />
+          <HuanyuInput label="就诊人姓名" value={form.patientName} onChange={(value) => changeField('patientName', value)} disabled={!isCreate} />
           <HuanyuSelect label="证件类型" value={form.documentType} onChange={(value) => changeField('documentType', value)} />
           <HuanyuInput label="证件号码" value={form.documentNo} onChange={(value) => changeField('documentNo', value)} />
           <HuanyuSelect label="就诊人性别" value={form.patientGender} options={['男', '女']} onChange={(value) => changeField('patientGender', value)} />
@@ -1399,15 +1436,109 @@ function HuanyuOrderDetailPanel({ order }: { order: Order }): React.JSX.Element 
         </div>
       </HuanyuFormSection>
 
-      <div className="flex flex-wrap justify-end gap-2 pb-2">
-        {['保存', '刷新预约模板信息', '数据留痕', '复制订单', '退款', '推送泰康支付失败', '推送泰康支付成功', '确认推送寰宇订单信息'].map((label) => (
-          <button key={label} type="button" className={'rounded-md px-3 py-2 text-body-sm font-semibold text-white ' + (label === '确认推送寰宇订单信息' ? 'bg-primary hover:bg-primary/90' : 'bg-action-green hover:bg-action-green/90')}>
-            {label}
+      {isCreate ? (
+        <div className="flex justify-end border-t border-border-subtle pt-4 pb-2">
+          <button type="button" title="新建寰宇订单的保存功能后续接入" className="rounded-md bg-action-green px-5 py-2 text-body-sm font-semibold text-white hover:bg-action-green/90">
+            保存
           </button>
-        ))}
-      </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap justify-end gap-2 pb-2">
+          {['保存', '刷新预约模板信息', '数据留痕', '复制订单', '退款', '推送泰康支付失败', '推送泰康支付成功', '确认推送寰宇订单信息'].map((label) => (
+            <button key={label} type="button" className={'rounded-md px-3 py-2 text-body-sm font-semibold text-white ' + (label === '确认推送寰宇订单信息' ? 'bg-primary hover:bg-primary/90' : 'bg-action-green hover:bg-action-green/90')}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
+}
+
+function generateHuanyuOrderNo(date = new Date()): string {
+  const ymd = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`
+  const random = Array.from({ length: 8 }, () => Math.floor(Math.random() * 10)).join('')
+  return `HYDD${ymd}${random}`
+}
+
+function buildEmptyHuanyuForm(): Record<string, string | boolean> {
+  const orderNo = generateHuanyuOrderNo()
+  return {
+    orderNo,
+    orderStatus: '',
+    channel: '',
+    channelOrderNo: '',
+    backupOrderNo: '',
+    channelDetail: '',
+    channelContact: '',
+    channelBackupContact: '',
+    channelService: '',
+    internalLevelOne: '',
+    internalLevelTwo: '',
+    orderAmount: '',
+    amountChanged: false,
+    accountManager: '',
+    bookingChannelType: '',
+    bd: '',
+    patientName: '',
+    documentType: '',
+    documentNo: '',
+    patientGender: '',
+    patientAge: '',
+    patientPhone: '',
+    familyName: '',
+    familyRelation: '',
+    familyPhone: '',
+    disease: '',
+    expectedBookingTime: '',
+    patientRequest: '',
+    hospital: '',
+    hospitalAddress: '',
+    department: '',
+    internalHospitalLevelOne: '',
+    internalHospitalLevelTwo: '',
+    doctor: '',
+    expertLevel: '',
+    serviceRemark: '',
+    tkHospital: '',
+    tkProvince: '',
+    tkCity: '',
+    tkDepartment: '',
+    requestTime: '',
+    requestDefaultDate: '',
+    requestDefaultTime: '',
+    responseTime: '',
+    responseDefaultDate: '',
+    responseDefaultTime: '',
+    serviceStartTime: '',
+    serviceStartDefaultDate: '',
+    serviceStartDefaultTime: '',
+    bookingFeedbackTime: '',
+    bookingFeedbackDefaultDate: '',
+    bookingFeedbackDefaultTime: '',
+    latestTicketTime: '',
+    latestTicketDefaultDate: '',
+    latestTicketDefaultTime: '',
+    escortOrderNo: orderNo,
+    escortServiceDate: '',
+    escortName: '',
+    escortType: '',
+    escortPhone: '',
+    escortArea: '',
+    escortSequence: '1',
+    registrationFee: '',
+    advancePayment: '',
+    advanceRegistrationFee: '',
+    advanceRecovered: '',
+    registrationRefund: '',
+    alipayAccount: '',
+    hasInsurance: '',
+    insuranceType: '',
+    smsLink: '',
+    internalBookingTemplate: '',
+    externalBookingTemplate: '',
+    escortSummary: ''
+  }
 }
 
 function buildHuanyuForm(order: Order): Record<string, string | boolean> {

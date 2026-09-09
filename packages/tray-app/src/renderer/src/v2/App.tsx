@@ -2,7 +2,7 @@ import ChangePasswordModal from './components/ChangePasswordModal'
 import { useEffect, useState } from 'react'
 import LoginPage from './pages/LoginPage'
 import WorkbenchKanban from './pages/WorkbenchKanban'
-import ApplicationDetailPage from './pages/ApplicationDetailPage'
+import ApplicationDetailPage, { HuanyuOrderCreatePage } from './pages/ApplicationDetailPage'
 import OrderDetailPage from './pages/OrderDetailPage'
 import SidecarDebugPage from './pages/SidecarDebugPage'
 import SettingsPage from './pages/SettingsPage'
@@ -38,6 +38,7 @@ export default function App(): React.JSX.Element {
   const [nav, setNav] = useState<NavKey>('workbench')
   const [openOrder, setOpenOrder] = useState<Order | null>(null)
   const [openApplication, setOpenApplication] = useState<{ group: ApplicationGroup; selectedOrderId?: number } | null>(null)
+  const [openHuanyuCreate, setOpenHuanyuCreate] = useState(false)
   // 顶部导航全局搜索（驱动工作台过滤）
   const [search, setSearch] = useState('')
 
@@ -78,6 +79,8 @@ export default function App(): React.JSX.Element {
         onBack={() => setOpenApplication(null)}
       />
     )
+  } else if (openHuanyuCreate) {
+    content = <HuanyuOrderCreatePage onBack={() => setOpenHuanyuCreate(false)} />
   } else {
     content = (
       <AppShell
@@ -97,6 +100,7 @@ export default function App(): React.JSX.Element {
             employeeCode={session.employeeCode}
             query={search}
             onOpenApplication={(group, selectedOrderId) => setOpenApplication({ group, selectedOrderId })}
+            onCreateHuanyuOrder={() => setOpenHuanyuCreate(true)}
           />
         </div>
         {nav === 'claim' && <ClaimPage />}
