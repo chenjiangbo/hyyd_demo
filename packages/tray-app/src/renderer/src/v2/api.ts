@@ -469,24 +469,45 @@ export async function changePassword(oldPassword: string, newPassword: string): 
   }
 }
 
+// ─── 字典通用日期工具函数 ──────────────────────────────────────────────
+export function formatDisplayDate(val?: string | null): string {
+  if (!val) return '-'
+  const s = String(val).trim()
+  if (/^\d{8}$/.test(s)) {
+    const y = parseInt(s.slice(0, 4), 10)
+    const m = parseInt(s.slice(4, 6), 10)
+    const d = parseInt(s.slice(6, 8), 10)
+    return `${y}年${m}月${d}日`
+  }
+  return s
+}
+
+export function getToday8(): string {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const date = String(d.getDate()).padStart(2, '0')
+  return `${y}${m}${date}`
+}
+
 // ─── 科室管理字典 (f_hy_kswh + f_hy_xfks) ───────────────────
 export interface SubDepartmentItem {
   id: string // 数据库物理主键 (如 00010002)
   xh: string // 序号ID (如 0002)
-  parentDeptId: string // 所属上级科室ID (如 0001)
+  name_yjks: string // 所属上级科室ID (如 0001)
   name: string // 科室细分名称
-  status: 'enabled' | 'disabled'
-  updatedAt: string
+  state: string // '启用' | '停用'
+  u_date: string // 8位紧凑日期 (如 20231209)
 }
 
 export interface DepartmentItem {
   id: string // 一级科室ID (如 0001)
   name: string // 科室大类名称
-  desc: string // 体系描述
-  status: 'enabled' | 'disabled'
-  createdAt: string
-  updatedAt: string
-  subDepartments: SubDepartmentItem[]
+  ms: string // 描述说明
+  state: string // '启用' | '停用'
+  c_date: string // 8位紧凑日期 (如 20231209)
+  u_date: string // 8位紧凑日期 (如 20231209)
+  subDepartments?: SubDepartmentItem[]
 }
 
 /** 从数据库获取科室字典列表 */
@@ -520,4 +541,317 @@ export async function saveDepartments(departments: DepartmentItem[]): Promise<vo
     throw new Error(msg)
   }
 }
+
+// ─── 医院管理字典 (f_hy_yywh + f_hy_yy_ks) ───────────────────
+export interface HospitalDeptItem {
+  id: string // 如 00010001
+  xh: string // 如 0001
+  id_yy: string // 所属医院ID 如 0001
+  name: string // 医院对外科室名称
+  ksdl: string // 对应对内一级科室 (如 0002)
+  ksxf: string // 对应对内二级科室 (如 00020001)
+  state: string // '启用' | '停用'
+  u_date: string // 8位日期
+}
+export type ExternalDepartmentItem = HospitalDeptItem
+
+export interface HospitalItem {
+  id: string // 医院ID (如 0001)
+  name: string // 医院名称
+  level: string // 级别
+  bq: string // 标签
+  dq: string // 地区
+  dz: string // 总地址
+  tips: string // 就医提示
+  bz: string // 备注
+  state: string // '启用' | '停用'
+  dz1: string // 地址1
+  dz2: string // 地址2
+  dz3: string // 地址3
+  dq_sf: string // 省份
+  dq_cs: string // 城市
+  c_date: string // 8位日期
+  u_date: string // 8位日期
+  externalDepartments?: HospitalDeptItem[]
+}
+
+export async function fetchHospitals(): Promise<HospitalItem[]> {
+  const backendUrl = getBackendUrl() || 'http://localhost:13000'
+  const res = await fetch(`${backendUrl}/api/v1/hospitals`)
+  if (!res.ok) throw new Error(`获取医院字典失败（HTTP ${res.status}）`)
+  const body = (await res.json()) as { ok?: boolean; data?: HospitalItem[] }
+  return body.data || []
+}
+
+export async function saveHospitals(hospitals: HospitalItem[]): Promise<void> {
+  const backendUrl = getBackendUrl() || 'http://localhost:13000'
+  const res = await fetch(`${backendUrl}/api/v1/hospitals/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(hospitals)
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    let msg = `保存医院字典失败（HTTP ${res.status}）`
+    try {
+      const json = JSON.parse(text)
+      if (json.error) msg = json.error
+    } catch {
+      //
+    }
+    throw new Error(msg)
+  }
+}
+
+// ─── 医生档案字典 (f_hy_ys) ───────────────────
+export interface DoctorItem {
+  id: string // 5位如 00001
+  name: string // 姓名
+  sex: string // 性别 (男 / 女)
+  tel: string // 手机
+  em: string // 邮箱
+  dq_sf: string // 省份
+  dq_cs: string // 城市
+  yy: string // 所属医院编码
+  dwks: string // 所属对外科室编码
+  zc: string // 临床职称
+  jxzc: string // 教学职称
+  yyxzzw: string // 医院行政职务
+  shrz: string // 社会任职
+  sc: string // 擅长领域
+  bz: string // 备注
+  state: string // '启用' | '停用'
+  csrq: string // 出生日期 (如 19800101)
+  c_date: string // 创建时间 (8位如 20231209)
+  u_date: string // 更新时间 (8位如 20231209)
+}
+
+export async function fetchDoctors(): Promise<DoctorItem[]> {
+  const backendUrl = getBackendUrl() || 'http://localhost:13000'
+  const res = await fetch(`${backendUrl}/api/v1/doctors`)
+  if (!res.ok) throw new Error(`获取医生字典失败（HTTP ${res.status}）`)
+  const body = (await res.json()) as { ok?: boolean; data?: DoctorItem[] }
+  return body.data || []
+}
+
+export async function saveDoctors(doctors: DoctorItem[]): Promise<void> {
+  const backendUrl = getBackendUrl() || 'http://localhost:13000'
+  const res = await fetch(`${backendUrl}/api/v1/doctors/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(doctors)
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    let msg = `保存医生字典失败（HTTP ${res.status}）`
+    try {
+      const json = JSON.parse(text)
+      if (json.error) msg = json.error
+    } catch {
+      //
+    }
+    throw new Error(msg)
+  }
+}
+
+// ─── 渠道管理字典 (f_hy_qd + f_hy_cp_qd) ───────────────────
+export interface ChannelProductItem {
+  id: string // 7位如 0001001
+  xh: string // 3位如 001
+  id_yj: string // 所属渠道ID如 0001
+  name: string // 渠道产品名称
+  cpjg: number // 渠道价格
+  nbyjcp: string // 对应对内一级产品
+  nbejcp: string // 对应对内二级产品
+  state: string // '启用' | '停用'
+  u_date: string // 8位更新时间
+}
+
+export interface ChannelItem {
+  id: string // 渠道ID如 0001
+  name: string // 渠道名称
+  state: string // '启用' | '停用'
+  c_date: string // 创建时间
+  u_date: string // 更新时间
+  products?: ChannelProductItem[]
+}
+
+export async function fetchChannels(): Promise<ChannelItem[]> {
+  const backendUrl = getBackendUrl() || 'http://localhost:13000'
+  const res = await fetch(`${backendUrl}/api/v1/channels`)
+  if (!res.ok) throw new Error(`获取渠道字典失败（HTTP ${res.status}）`)
+  const body = (await res.json()) as { ok?: boolean; data?: ChannelItem[] }
+  return body.data || []
+}
+
+export async function saveChannels(channels: ChannelItem[]): Promise<void> {
+  const backendUrl = getBackendUrl() || 'http://localhost:13000'
+  const res = await fetch(`${backendUrl}/api/v1/channels/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(channels)
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    let msg = `保存渠道字典失败（HTTP ${res.status}）`
+    try {
+      const json = JSON.parse(text)
+      if (json.error) msg = json.error
+    } catch {
+      //
+    }
+    throw new Error(msg)
+  }
+}
+
+// ─── 对内产品字典 (f_hy_cp + f_hy_zcp) ───────────────────
+export interface SubProductItem {
+  id: string // 8位如 00010001
+  xh: string // 4位如 0001
+  id_yj: string // 所属产品大类如 0001
+  name: string // 子产品名称
+  state: string // '启用' | '停用'
+  u_date: string // 8位更新时间
+}
+
+export interface InternalProductItem {
+  id: string // 4位如 0001
+  name: string // 产品大类名称
+  ms: string // 体系描述
+  lx: string // 产品类型
+  state: string // '启用' | '停用'
+  c_date: string // 创建时间
+  u_date: string // 更新时间
+  subProducts?: SubProductItem[]
+}
+
+export async function fetchInternalProducts(): Promise<InternalProductItem[]> {
+  const backendUrl = getBackendUrl() || 'http://localhost:13000'
+  const res = await fetch(`${backendUrl}/api/v1/internal-products`)
+  if (!res.ok) throw new Error(`获取对内产品字典失败（HTTP ${res.status}）`)
+  const body = (await res.json()) as { ok?: boolean; data?: InternalProductItem[] }
+  return body.data || []
+}
+
+export async function saveInternalProducts(products: InternalProductItem[]): Promise<void> {
+  const backendUrl = getBackendUrl() || 'http://localhost:13000'
+  const res = await fetch(`${backendUrl}/api/v1/internal-products/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(products)
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    let msg = `保存对内产品字典失败（HTTP ${res.status}）`
+    try {
+      const json = JSON.parse(text)
+      if (json.error) msg = json.error
+    } catch {
+      //
+    }
+    throw new Error(msg)
+  }
+}
+
+// ─── 支付渠道字典 (zfqd) ───────────────────
+export interface PaymentChannelItem {
+  id: string // 4位如 0001
+  name: string // 支付渠道名称
+  yy: string // 所属医院编码
+  start: string // '启用' | '停用'
+  zf_id: string // 支付商户号/平台账号ID
+  by1: string // 省份编码
+  by2: string // 城市编码
+  c_date?: string
+  u_date: string
+}
+
+export async function fetchPaymentChannels(): Promise<PaymentChannelItem[]> {
+  const backendUrl = getBackendUrl() || 'http://localhost:13000'
+  const res = await fetch(`${backendUrl}/api/v1/payment-channels`)
+  if (!res.ok) throw new Error(`获取支付渠道字典失败（HTTP ${res.status}）`)
+  const body = (await res.json()) as { ok?: boolean; data?: PaymentChannelItem[] }
+  return body.data || []
+}
+
+export async function savePaymentChannels(paymentChannels: PaymentChannelItem[]): Promise<void> {
+  const backendUrl = getBackendUrl() || 'http://localhost:13000'
+  const res = await fetch(`${backendUrl}/api/v1/payment-channels/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(paymentChannels)
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    let msg = `保存支付渠道字典失败（HTTP ${res.status}）`
+    try {
+      const json = JSON.parse(text)
+      if (json.error) msg = json.error
+    } catch {
+      //
+    }
+    throw new Error(msg)
+  }
+}
+
+// ─── 陪诊人员字典 (f_hy_pzr) ───────────────────
+export interface EscortItem {
+  id: string // 5位如 00001
+  name: string // 陪诊人姓名
+  xb: string // 性别 (男 / 女)
+  sj: string // 手机号码
+  sf: string // 省份编码
+  cs: string // 城市编码
+  pzrlx: string // 陪诊人员类型 (外包 / 本部)
+  bz: string // 备注信息
+  state: string // '启用' | '停用'
+  c_date: string // 创建时间
+  u_date: string // 更新时间
+}
+
+export async function fetchEscorts(): Promise<EscortItem[]> {
+  const backendUrl = getBackendUrl() || 'http://localhost:13000'
+  const res = await fetch(`${backendUrl}/api/v1/escorts`)
+  if (!res.ok) throw new Error(`获取陪诊人员字典失败（HTTP ${res.status}）`)
+  const body = (await res.json()) as { ok?: boolean; data?: EscortItem[] }
+  return body.data || []
+}
+
+export async function saveEscorts(escorts: EscortItem[]): Promise<void> {
+  const backendUrl = getBackendUrl() || 'http://localhost:13000'
+  const res = await fetch(`${backendUrl}/api/v1/escorts/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(escorts)
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    let msg = `保存陪诊人员字典失败（HTTP ${res.status}）`
+    try {
+      const json = JSON.parse(text)
+      if (json.error) msg = json.error
+    } catch {
+      //
+    }
+    throw new Error(msg)
+  }
+}
+
+// ─── 城市列表字典 (dim_cslb) ───────────────────
+export interface RegionCityItem {
+  s_id: string
+  s_name: string
+  x_id: string
+  x_name: string
+}
+
+export async function fetchRegions(): Promise<RegionCityItem[]> {
+  const backendUrl = getBackendUrl() || 'http://localhost:13000'
+  const res = await fetch(`${backendUrl}/api/v1/regions`)
+  if (!res.ok) throw new Error(`获取省市字典失败（HTTP ${res.status}）`)
+  const body = (await res.json()) as { ok?: boolean; data?: RegionCityItem[] }
+  return body.data || []
+}
+
+
 

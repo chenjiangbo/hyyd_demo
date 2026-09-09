@@ -3,12 +3,13 @@ import {
   DepartmentItem,
   SubDepartmentItem,
   fetchDepartments,
-  saveDepartments
+  saveDepartments,
+  formatDisplayDate,
+  getToday8
 } from '../../api'
 
 function getTodayString(): string {
-  const d = new Date()
-  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
+  return getToday8()
 }
 
 interface ConfirmModalConfig {
@@ -132,7 +133,21 @@ export default function InternalDepartmentView(): React.JSX.Element {
   const loadDataFromDb = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await fetchDepartments()
+      const rawData = await fetchDepartments()
+      const data: DepartmentItem[] = rawData.map((d) => ({
+        ...d,
+        desc: d.desc !== undefined ? d.desc : d.ms || '',
+        status: d.status || (d.state === '停用' ? 'disabled' : 'enabled'),
+        createdAt: d.createdAt || d.c_date || getToday8(),
+        updatedAt: d.updatedAt || d.u_date || getToday8(),
+        subDepartments: (d.subDepartments || []).map((s) => ({
+          ...s,
+          xh: s.xh || s.id.slice(-4),
+          parentDeptId: s.parentDeptId || s.name_yjks || d.id,
+          status: s.status || (s.state === '停用' ? 'disabled' : 'enabled'),
+          updatedAt: s.updatedAt || s.u_date || getToday8()
+        }))
+      }))
       setDeptList(data)
       setSavedDeptSnapshot(JSON.parse(JSON.stringify(data)))
       setNewlyAddedDeptIds([])
@@ -155,7 +170,22 @@ export default function InternalDepartmentView(): React.JSX.Element {
   const persistDeleteDeptList = async (nextList: DepartmentItem[]): Promise<void> => {
     setSaving(true)
     try {
-      await saveDepartments(nextList)
+      const prepared: DepartmentItem[] = nextList.map((d) => ({
+        ...d,
+        ms: d.desc !== undefined ? d.desc : d.ms || '',
+        state: d.status === 'disabled' ? '停用' : '启用',
+        c_date: d.c_date || d.createdAt || getToday8(),
+        u_date: getToday8(),
+        subDepartments: (d.subDepartments || []).map((s) => ({
+          ...s,
+          id: `${d.id}${s.xh || s.id.slice(-4)}`,
+          xh: s.xh || s.id.slice(-4),
+          name_yjks: d.id,
+          state: s.status === 'disabled' ? '停用' : '启用',
+          u_date: getToday8()
+        }))
+      }))
+      await saveDepartments(prepared)
       setDeptList(nextList)
       setSavedDeptSnapshot(JSON.parse(JSON.stringify(nextList)))
       showAlert('删除成功', '提示', 'success')
@@ -467,7 +497,22 @@ export default function InternalDepartmentView(): React.JSX.Element {
 
     setSaving(true)
     try {
-      await saveDepartments(deptList)
+      const prepared: DepartmentItem[] = deptList.map((d) => ({
+        ...d,
+        ms: d.desc !== undefined ? d.desc : d.ms || '',
+        state: d.status === 'disabled' ? '停用' : '启用',
+        c_date: d.c_date || d.createdAt || getToday8(),
+        u_date: getToday8(),
+        subDepartments: (d.subDepartments || []).map((s) => ({
+          ...s,
+          id: `${d.id}${s.xh || s.id.slice(-4)}`,
+          xh: s.xh || s.id.slice(-4),
+          name_yjks: d.id,
+          state: s.status === 'disabled' ? '停用' : '启用',
+          u_date: getToday8()
+        }))
+      }))
+      await saveDepartments(prepared)
       setSavedDeptSnapshot(JSON.parse(JSON.stringify(deptList)))
       setNewlyAddedDeptIds([])
       setNewlyAddedSubIds([])
@@ -959,7 +1004,7 @@ export default function InternalDepartmentView(): React.JSX.Element {
                           </td>
 
                           <td className="py-3 px-6 text-center whitespace-nowrap font-mono-data text-body-sm text-text-muted">
-                            {subItem.updatedAt}
+                            {formatDisplayDate(subItem.updatedAt || subItem.u_date)}
                           </td>
 
                           <td className="py-2.5 px-4 text-center whitespace-nowrap">
@@ -1497,12 +1542,12 @@ export default function InternalDepartmentView(): React.JSX.Element {
 
                           {/* 创建时间 */}
                           <td className="py-3 px-5 text-center whitespace-nowrap font-mono-data text-body-sm text-text-muted">
-                            {item.createdAt}
+                            {formatDisplayDate(item.createdAt || item.c_date)}
                           </td>
 
                           {/* 更新时间 */}
                           <td className="py-3 px-5 text-center whitespace-nowrap font-mono-data text-body-sm text-text-muted">
-                            {item.updatedAt}
+                            {formatDisplayDate(item.updatedAt || item.u_date)}
                           </td>
 
                           {/* 行删除 */}
