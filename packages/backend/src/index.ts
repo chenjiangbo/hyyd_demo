@@ -25,6 +25,7 @@ import fastifyStatic from '@fastify/static'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { getEnv } from './env.js'
+import { ensureHuanyuTables } from './db/ensureHuanyuTables.js'
 
 if (process.env.NODE_ENV !== 'production') {
   // 开发期允许从 .env 启动；生产由 Docker/宿主机显式注入环境变量。
@@ -78,6 +79,9 @@ async function ensureBuckets() {
 
 async function start() {
   try {
+    // 先确保寰宇订单相关业务表存在，再注册路由和启动服务。
+    // 该检查幂等，已有表不会被修改。
+    await ensureHuanyuTables(prisma)
     await ensureBuckets()
 
     // 1. 注册 CORS 跨域插件
