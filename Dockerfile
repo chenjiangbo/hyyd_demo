@@ -14,7 +14,9 @@ COPY packages/backend/package.json packages/backend/package.json
 COPY packages/admin-web/package.json packages/admin-web/package.json
 COPY packages/shared-types/package.json packages/shared-types/package.json
 
-RUN pnpm install --frozen-lockfile
+# 后端的远端字典库驱动由此构建阶段按 package.json 下载；开发机无需安装。
+# 非冻结模式也让部署环境在新增依赖后能够同步生成锁定版本。
+RUN pnpm install --no-frozen-lockfile
 
 COPY packages/backend packages/backend
 COPY packages/admin-web packages/admin-web

@@ -11,6 +11,8 @@ import { extractKeyInfo, type KeyInfoMessage, type KeyInfoContext } from '../llm
 import { structureMessages, type StructInput } from '../lib/messageStructure.js'
 import { refreshApplicationBrief, refreshOrderBrief } from '../jobs/orderBriefRunner.js'
 import { getRecordingPlaybackInfo } from '../audioTranscode.js'
+import { listHuanyuBdUsers, listHuanyuChannelProducts, listHuanyuChannels, listHuanyuEscorts, listHuanyuHospitalAddresses, listHuanyuHospitalDepartments, listHuanyuHospitalDoctors, listHuanyuHospitals } from '../db/remoteDictionary.js'
+import { huanyuBookingChannelTypes, huanyuDocumentTypes, huanyuExpertLevels } from '../dictionaries/huanyuOrder.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   CreateOrderPayload,
@@ -450,6 +452,67 @@ export function registerApiRoutes(
         displayName: request.employee.name
       }
     })
+  })
+
+  // 寰宇订单下拉字典：仅调用 remoteDictionary 中固定的参数化 SELECT。
+  fastify.get<{ Querystring: { q?: string } }>('/api/v1/dictionaries/huanyu/channels', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const options = await listHuanyuChannels(request.query.q)
+    return reply.send({ data: options })
+  })
+
+  fastify.get<{ Querystring: { channelId?: string; q?: string } }>('/api/v1/dictionaries/huanyu/channel-products', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const options = await listHuanyuChannelProducts(request.query.channelId, request.query.q)
+    return reply.send({ data: options })
+  })
+
+  // 寰宇订单预约渠道类型为后端固定字典，不连接远端数据库。
+  fastify.get('/api/v1/dictionaries/huanyu/booking-channel-types', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    return reply.send({ data: huanyuBookingChannelTypes() })
+  })
+
+  // 寰宇订单证件类型为后端固定字典，id 与展示名称一致。
+  fastify.get('/api/v1/dictionaries/huanyu/document-types', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    return reply.send({ data: huanyuDocumentTypes() })
+  })
+
+  fastify.get<{ Querystring: { q?: string } }>('/api/v1/dictionaries/huanyu/bd-users', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const options = await listHuanyuBdUsers(request.query.q)
+    return reply.send({ data: options })
+  })
+
+  fastify.get<{ Querystring: { q?: string } }>('/api/v1/dictionaries/huanyu/hospitals', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    return reply.send({ data: await listHuanyuHospitals(request.query.q) })
+  })
+
+  fastify.get<{ Querystring: { hospitalId?: string; q?: string } }>('/api/v1/dictionaries/huanyu/hospital-addresses', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    return reply.send({ data: await listHuanyuHospitalAddresses(request.query.hospitalId, request.query.q) })
+  })
+
+  fastify.get<{ Querystring: { hospitalId?: string; q?: string } }>('/api/v1/dictionaries/huanyu/hospital-departments', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    return reply.send({ data: await listHuanyuHospitalDepartments(request.query.hospitalId, request.query.q) })
+  })
+
+  fastify.get<{ Querystring: { hospitalId?: string; q?: string } }>('/api/v1/dictionaries/huanyu/hospital-doctors', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    return reply.send({ data: await listHuanyuHospitalDoctors(request.query.hospitalId, request.query.q) })
+  })
+
+  fastify.get<{ Querystring: { q?: string } }>('/api/v1/dictionaries/huanyu/expert-levels', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    return reply.send({ data: huanyuExpertLevels(request.query.q) })
+  })
+
+  fastify.get<{ Querystring: { q?: string } }>('/api/v1/dictionaries/huanyu/escorts', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    return reply.send({ data: await listHuanyuEscorts(request.query.q) })
   })
 
   // 2.5 当前员工 presence 状态查询（给 Tray App 显示警告 banner 用）

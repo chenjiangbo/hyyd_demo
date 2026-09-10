@@ -9,6 +9,17 @@ import {
   fetchOrderAggregate,
   fetchOrderBrief,
   fetchOrderDetail,
+  fetchHuanyuChannelProducts,
+  fetchHuanyuChannels,
+  fetchHuanyuBookingChannelTypes,
+  fetchHuanyuBdUsers,
+  fetchHuanyuDocumentTypes,
+  fetchHuanyuExpertLevels,
+  fetchHuanyuEscorts,
+  fetchHuanyuHospitalAddresses,
+  fetchHuanyuHospitalDepartments,
+  fetchHuanyuHospitalDoctors,
+  fetchHuanyuHospitals,
   getSession,
   refreshApplicationBrief,
   refreshOrderBrief,
@@ -19,6 +30,11 @@ import {
   type OrderBrief,
   type OrderCall,
   type CallRecordingUrl,
+  type HuanyuChannelOption,
+  type HuanyuChannelProductOption,
+  type HuanyuHospitalDepartmentOption,
+  type HuanyuDoctorOption,
+  type HuanyuEscortOption,
   type OrderDetailResponse,
   type OrderMessage,
 } from '../api'
@@ -1269,21 +1285,26 @@ function OrderDetailPanel({
       {groups.filter((group) => group.title === '运营审核信息').map((group) => (
         <BOrderDetailGroup key={group.title} title={group.title} rows={group.rows} />
       ))}
+      {/* 两个同级组件必须使用不同的 key。订单详情首屏会在多个请求回填后重渲染，
+          相同 key 会让 React 的节点协调失去确定性，从而可能重复保留沟通记录区域。 */}
+      <CommunicationRecordPanel key={`communication-${order.id}`} />
       <ServiceInformationFlow key={`service-flow-${order.id}`} order={order} onEscortEntryActiveChange={setEscortEntryActive} />
       {hasEscortEntryTab && (
         <div hidden={!escortEntryActive}>
           <CheckCompanionInformationPanel key={`check-companion-${order.id}`} />
         </div>
       )}
-      {/* 两个同级组件必须使用不同的 key。订单详情首屏会在多个请求回填后重渲染，
-          相同 key 会让 React 的节点协调失去确定性，从而可能重复保留沟通记录区域。 */}
-      <CommunicationRecordPanel key={`communication-${order.id}`} />
     </div>
   )
 }
 
 function HuanyuOrderDetailPanel({ order }: { order: Order }): React.JSX.Element {
   return <HuanyuOrderForm initialForm={buildHuanyuForm(order)} />
+}
+
+function isHuanyuCancelledOrderStatus(value: unknown): boolean {
+  const status = typeof value === 'string' ? value.trim() : ''
+  return status === '已取消' || status === '无责取消'
 }
 
 export function HuanyuOrderCreatePage({ onBack }: { onBack: () => void }): React.JSX.Element {
@@ -1319,11 +1340,298 @@ function HuanyuOrderForm({
   initialForm: Record<string, string | boolean>
   mode?: 'detail' | 'create'
 }): React.JSX.Element {
-  const [form, setForm] = useState(() => initialForm)
+  const currentAccountManager = getSession()?.displayName || getSession()?.employeeCode || ''
+  const defaultedInitialForm = {
+    ...initialForm,
+    accountManager: currentAccountManager || initialForm.accountManager,
+    ...(initialForm.bookingChannelType === '3' ? { bd: '无' } : {})
+  }
+  const [form, setForm] = useState(() => (
+    isHuanyuCancelledOrderStatus(defaultedInitialForm.orderStatus)
+      ? { ...defaultedInitialForm, orderAmount: '0', amountChanged: false }
+      : defaultedInitialForm
+  ))
   const isCreate = mode === 'create'
+  const initialChannelServiceId = useRef(typeof initialForm.channelService === 'string' ? initialForm.channelService : '')
+  const initialOrderAmount = useRef(typeof initialForm.orderAmount === 'string' ? initialForm.orderAmount : '')
+  const hasSwitchedAwayFromInitialService = useRef(false)
+  const [channelSearch, setChannelSearch] = useState('')
+  const [channelOptions, setChannelOptions] = useState<HuanyuChannelOption[]>([])
+  const [channelLoading, setChannelLoading] = useState(false)
+  const [channelError, setChannelError] = useState<string | null>(null)
+  const [serviceSearch, setServiceSearch] = useState('')
+  const [serviceOptions, setServiceOptions] = useState<HuanyuChannelProductOption[]>([])
+  const [serviceLoading, setServiceLoading] = useState(false)
+  const [serviceError, setServiceError] = useState<string | null>(null)
+  const [bookingChannelTypeOptions, setBookingChannelTypeOptions] = useState<HuanyuChannelOption[]>([])
+  const [documentTypeOptions, setDocumentTypeOptions] = useState<HuanyuChannelOption[]>([])
+  const [bdSearch, setBdSearch] = useState('')
+  const [bdOptions, setBdOptions] = useState<HuanyuChannelOption[]>([])
+  const [bdLoading, setBdLoading] = useState(false)
+  const [bdError, setBdError] = useState<string | null>(null)
+  const [hospitalSearch, setHospitalSearch] = useState('')
+  const [hospitalOptions, setHospitalOptions] = useState<HuanyuChannelOption[]>([])
+  const [hospitalLoading, setHospitalLoading] = useState(false)
+  const [hospitalError, setHospitalError] = useState<string | null>(null)
+  const [addressSearch, setAddressSearch] = useState('')
+  const [addressOptions, setAddressOptions] = useState<HuanyuChannelOption[]>([])
+  const [addressLoading, setAddressLoading] = useState(false)
+  const [addressError, setAddressError] = useState<string | null>(null)
+  const [departmentSearch, setDepartmentSearch] = useState('')
+  const [departmentOptions, setDepartmentOptions] = useState<HuanyuHospitalDepartmentOption[]>([])
+  const [departmentLoading, setDepartmentLoading] = useState(false)
+  const [departmentError, setDepartmentError] = useState<string | null>(null)
+  const [doctorSearch, setDoctorSearch] = useState('')
+  const [doctorOptions, setDoctorOptions] = useState<HuanyuDoctorOption[]>([])
+  const [doctorLoading, setDoctorLoading] = useState(false)
+  const [doctorError, setDoctorError] = useState<string | null>(null)
+  const [expertSearch, setExpertSearch] = useState('')
+  const [expertOptions, setExpertOptions] = useState<HuanyuChannelOption[]>([])
+  const channelId = typeof form.channel === 'string' ? form.channel : ''
+  const hospitalId = typeof form.hospital === 'string' ? form.hospital : ''
+  const amountLocked = isHuanyuCancelledOrderStatus(form.orderStatus)
+  const bdSelectable = form.bookingChannelType === '1' || form.bookingChannelType === '2'
+  const doctorAllowsExpertSelection = typeof form.doctor === 'string' && form.doctor.endsWith('WXSYSXM')
+
+  useEffect(() => {
+    let active = true
+    const timer = window.setTimeout(() => {
+      setChannelLoading(true)
+      setChannelError(null)
+      fetchHuanyuChannels(channelSearch)
+        .then((options) => active && setChannelOptions(options))
+        .catch((error: unknown) => active && setChannelError(error instanceof Error ? error.message : 'B端渠道加载失败'))
+        .finally(() => active && setChannelLoading(false))
+    }, 180)
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+    }
+  }, [channelSearch])
+
+  useEffect(() => {
+    if (!channelId) {
+      setServiceOptions([])
+      setServiceError(null)
+      return
+    }
+    let active = true
+    const timer = window.setTimeout(() => {
+      setServiceLoading(true)
+      setServiceError(null)
+      fetchHuanyuChannelProducts(channelId, serviceSearch)
+        .then((options) => active && setServiceOptions(options))
+        .catch((error: unknown) => active && setServiceError(error instanceof Error ? error.message : 'B端渠道服务项目加载失败'))
+        .finally(() => active && setServiceLoading(false))
+    }, 180)
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+    }
+  }, [channelId, serviceSearch])
+
+  useEffect(() => {
+    let active = true
+    fetchHuanyuBookingChannelTypes()
+      .then((options) => active && setBookingChannelTypeOptions(options))
+      .catch(() => active && setBookingChannelTypeOptions([]))
+    return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    fetchHuanyuDocumentTypes()
+      .then((options) => active && setDocumentTypeOptions(options))
+      .catch(() => active && setDocumentTypeOptions([]))
+    return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    if (!bdSelectable) {
+      setBdOptions([])
+      setBdError(null)
+      return
+    }
+    let active = true
+    const timer = window.setTimeout(() => {
+      setBdLoading(true)
+      setBdError(null)
+      fetchHuanyuBdUsers(bdSearch)
+        .then((options) => active && setBdOptions(options))
+        .catch((error: unknown) => active && setBdError(error instanceof Error ? error.message : 'BD加载失败'))
+        .finally(() => active && setBdLoading(false))
+    }, 180)
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+    }
+  }, [bdSelectable, bdSearch])
+
+  useEffect(() => {
+    let active = true
+    const timer = window.setTimeout(() => {
+      setHospitalLoading(true)
+      setHospitalError(null)
+      fetchHuanyuHospitals(hospitalSearch)
+        .then((options) => active && setHospitalOptions(options))
+        .catch((error: unknown) => active && setHospitalError(error instanceof Error ? error.message : '医院加载失败'))
+        .finally(() => active && setHospitalLoading(false))
+    }, 180)
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [hospitalSearch])
+
+  useEffect(() => {
+    if (!hospitalId) {
+      setAddressOptions([])
+      setDepartmentOptions([])
+      setDoctorOptions([])
+      return
+    }
+    let active = true
+    const timer = window.setTimeout(() => {
+      setAddressLoading(true)
+      setAddressError(null)
+      fetchHuanyuHospitalAddresses(hospitalId, addressSearch)
+        .then((options) => active && setAddressOptions(options))
+        .catch((error: unknown) => active && setAddressError(error instanceof Error ? error.message : '医院地址加载失败'))
+        .finally(() => active && setAddressLoading(false))
+    }, 180)
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [hospitalId, addressSearch])
+
+  useEffect(() => {
+    if (!hospitalId) return
+    let active = true
+    const timer = window.setTimeout(() => {
+      setDepartmentLoading(true)
+      setDepartmentError(null)
+      fetchHuanyuHospitalDepartments(hospitalId, departmentSearch)
+        .then((options) => active && setDepartmentOptions(options))
+        .catch((error: unknown) => active && setDepartmentError(error instanceof Error ? error.message : '科室加载失败'))
+        .finally(() => active && setDepartmentLoading(false))
+    }, 180)
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [hospitalId, departmentSearch])
+
+  useEffect(() => {
+    if (!hospitalId) return
+    let active = true
+    const timer = window.setTimeout(() => {
+      setDoctorLoading(true)
+      setDoctorError(null)
+      fetchHuanyuHospitalDoctors(hospitalId, doctorSearch)
+        .then((options) => active && setDoctorOptions(options))
+        .catch((error: unknown) => active && setDoctorError(error instanceof Error ? error.message : '医生加载失败'))
+        .finally(() => active && setDoctorLoading(false))
+    }, 180)
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [hospitalId, doctorSearch])
+
+  useEffect(() => {
+    if (!doctorAllowsExpertSelection) {
+      setExpertOptions([])
+      return
+    }
+    let active = true
+    fetchHuanyuExpertLevels(expertSearch)
+      .then((options) => active && setExpertOptions(options))
+      .catch(() => active && setExpertOptions([]))
+    return () => { active = false }
+  }, [doctorAllowsExpertSelection, expertSearch])
 
   function changeField(key: string, value: string | boolean): void {
-    setForm((current) => ({ ...current, [key]: value }))
+    setForm((current) => {
+      if (key === 'orderStatus') {
+        const next = { ...current, orderStatus: value }
+        return isHuanyuCancelledOrderStatus(value)
+          ? { ...next, orderAmount: '0', amountChanged: false }
+          : next
+      }
+      if (key === 'bookingChannelType') {
+        if (value === '3') return { ...current, bookingChannelType: value, bd: '无' }
+        if (value === '1' || value === '2') {
+          return { ...current, bookingChannelType: value, bd: current.bd === '无' ? '' : current.bd }
+        }
+        return { ...current, bookingChannelType: value, bd: '' }
+      }
+      // 取消订单不允许开启“金额修改”，避免 UI 状态与只读金额不一致。
+      if (key === 'amountChanged' && isHuanyuCancelledOrderStatus(current.orderStatus)) {
+        return { ...current, amountChanged: false, orderAmount: '0' }
+      }
+      return { ...current, [key]: value }
+    })
+  }
+
+  function selectChannel(nextChannelId: string): void {
+    setForm((current) => ({
+      ...current,
+      channel: nextChannelId,
+      channelService: '',
+      internalLevelOne: '',
+      internalLevelTwo: ''
+    }))
+    setServiceSearch('')
+  }
+
+  function selectChannelService(nextServiceId: string): void {
+    const service = serviceOptions.find((item) => item.id === nextServiceId)
+    if (!service) return
+    const isInitialService = service.id === initialChannelServiceId.current
+    if (!isInitialService) hasSwitchedAwayFromInitialService.current = true
+    setForm((current) => {
+      return {
+        ...current,
+        channelService: service.id,
+        internalLevelOne: service.internalLevelOne,
+        internalLevelTwo: service.internalLevelTwo,
+        orderAmount: isHuanyuCancelledOrderStatus(current.orderStatus)
+          ? '0'
+          : isInitialService
+            ? hasSwitchedAwayFromInitialService.current ? initialOrderAmount.current : current.orderAmount
+            : service.price,
+        // 选择或切换服务项目后，价格必须由字典控制，不能手动修改。
+        amountChanged: false
+      }
+    })
+  }
+
+  function selectHospital(nextHospitalId: string): void {
+    setForm((current) => ({
+      ...current,
+      hospital: nextHospitalId,
+      hospitalAddress: '',
+      department: '',
+      internalHospitalLevelOne: '',
+      internalHospitalLevelTwo: '',
+      doctor: '',
+      expertLevel: ''
+    }))
+    setAddressSearch('')
+    setDepartmentSearch('')
+    setDoctorSearch('')
+    setExpertSearch('')
+  }
+
+  function selectHospitalDepartment(nextDepartmentId: string): void {
+    const department = departmentOptions.find((item) => item.id === nextDepartmentId)
+    if (!department) return
+    setForm((current) => ({
+      ...current,
+      department: department.id,
+      internalHospitalLevelOne: department.internalLevelOne,
+      internalHospitalLevelTwo: department.internalLevelTwo
+    }))
+  }
+
+  function selectHospitalDoctor(nextDoctorId: string): void {
+    const doctor = doctorOptions.find((item) => item.id === nextDoctorId)
+    if (!doctor) return
+    setForm((current) => ({
+      ...current,
+      doctor: doctor.id,
+      expertLevel: doctor.id.endsWith('WXSYSXM') ? '' : doctor.expertLevel
+    }))
+    setExpertSearch('')
   }
 
   return (
@@ -1332,26 +1640,28 @@ function HuanyuOrderForm({
         <HuanyuFormGrid>
           <HuanyuInput label="订单号" value={form.orderNo} onChange={(value) => changeField('orderNo', value)} disabled />
           <HuanyuSelect label="订单状态" value={form.orderStatus} onChange={(value) => changeField('orderStatus', value)} />
-          <HuanyuSelect label="B端渠道" value={form.channel} onChange={(value) => changeField('channel', value)} />
+          <HuanyuSearchSelect label="B端渠道" value={form.channel} options={channelOptions} loading={channelLoading} error={channelError} onSearch={setChannelSearch} onChange={selectChannel} />
           <HuanyuInput label="B端渠道订单号" value={form.channelOrderNo} onChange={(value) => changeField('channelOrderNo', value)} disabled />
           <HuanyuInput label="备用订单号" value={form.backupOrderNo} onChange={(value) => changeField('backupOrderNo', value)} />
           <HuanyuInput label="B端细分渠道" value={form.channelDetail} onChange={(value) => changeField('channelDetail', value)} />
           <HuanyuInput label="B端对接人" value={form.channelContact} onChange={(value) => changeField('channelContact', value)} />
           <HuanyuInput label="B端对接人（备用）" value={form.channelBackupContact} onChange={(value) => changeField('channelBackupContact', value)} />
-          <HuanyuSelect label="B端渠道服务项目" value={form.channelService} onChange={(value) => changeField('channelService', value)} />
+          <HuanyuSearchSelect label="B端渠道服务项目" value={form.channelService} options={serviceOptions} loading={serviceLoading} error={serviceError} disabled={!channelId} disabledPlaceholder="请先选择 B端渠道" onSearch={setServiceSearch} onChange={selectChannelService} />
           <HuanyuInput label="内部一级" value={form.internalLevelOne} onChange={(value) => changeField('internalLevelOne', value)} disabled />
           <HuanyuInput label="内部二级" value={form.internalLevelTwo} onChange={(value) => changeField('internalLevelTwo', value)} disabled />
-          <HuanyuAmountField value={form.orderAmount} editable={Boolean(form.amountChanged)} onChange={(value) => changeField('orderAmount', value)} onEditableChange={(value) => changeField('amountChanged', value)} />
-          <HuanyuSelect label="客户经理" value={form.accountManager} onChange={(value) => changeField('accountManager', value)} />
-          <HuanyuSelect label="预约渠道类型" value={form.bookingChannelType} onChange={(value) => changeField('bookingChannelType', value)} />
-          <HuanyuSelect label="BD" value={form.bd} onChange={(value) => changeField('bd', value)} />
+          <HuanyuAmountField value={amountLocked ? '0' : form.orderAmount} editable={Boolean(form.amountChanged)} locked={amountLocked} onChange={(value) => changeField('orderAmount', value)} onEditableChange={(value) => changeField('amountChanged', value)} />
+          <HuanyuInput label="客户经理" value={form.accountManager} onChange={(value) => changeField('accountManager', value)} disabled />
+          <HuanyuSelect label="预约渠道类型" value={form.bookingChannelType} options={bookingChannelTypeOptions.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => changeField('bookingChannelType', value)} />
+          {form.bookingChannelType === '3'
+            ? <HuanyuInput label="BD" value="无" onChange={(value) => changeField('bd', value)} disabled />
+            : <HuanyuSearchSelect label="BD" value={form.bd} options={bdOptions} loading={bdLoading} error={bdError} disabled={!bdSelectable} disabledPlaceholder="请先选择预约渠道类型为 BD 或公共" onSearch={setBdSearch} onChange={(value) => changeField('bd', value)} />}
         </HuanyuFormGrid>
       </HuanyuFormSection>
 
       <HuanyuFormSection title="就诊人信息">
         <HuanyuFormGrid>
           <HuanyuInput label="就诊人姓名" value={form.patientName} onChange={(value) => changeField('patientName', value)} disabled={!isCreate} />
-          <HuanyuSelect label="证件类型" value={form.documentType} onChange={(value) => changeField('documentType', value)} />
+          <HuanyuSelect label="证件类型" value={form.documentType} options={documentTypeOptions.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => changeField('documentType', value)} />
           <HuanyuInput label="证件号码" value={form.documentNo} onChange={(value) => changeField('documentNo', value)} />
           <HuanyuSelect label="就诊人性别" value={form.patientGender} options={['男', '女']} onChange={(value) => changeField('patientGender', value)} />
           <HuanyuInput label="就诊人年龄" value={form.patientAge} onChange={(value) => changeField('patientAge', value)} />
@@ -1367,13 +1677,15 @@ function HuanyuOrderForm({
 
       <HuanyuFormSection title="医院信息">
         <HuanyuFormGrid>
-          <HuanyuSelect label="医院" value={form.hospital} onChange={(value) => changeField('hospital', value)} />
-          <HuanyuSelect label="医院地址" value={form.hospitalAddress} onChange={(value) => changeField('hospitalAddress', value)} />
-          <HuanyuSelect label="科室" value={form.department} onChange={(value) => changeField('department', value)} />
+          <HuanyuSearchSelect label="医院" value={form.hospital} options={hospitalOptions} loading={hospitalLoading} error={hospitalError} onSearch={setHospitalSearch} onChange={selectHospital} />
+          <HuanyuSearchSelect label="医院地址" value={form.hospitalAddress} options={addressOptions} loading={addressLoading} error={addressError} disabled={!hospitalId} disabledPlaceholder="请先选择医院" onSearch={setAddressSearch} onChange={(value) => changeField('hospitalAddress', value)} />
+          <HuanyuSearchSelect label="科室" value={form.department} options={departmentOptions} loading={departmentLoading} error={departmentError} disabled={!hospitalId} disabledPlaceholder="请先选择医院" onSearch={setDepartmentSearch} onChange={selectHospitalDepartment} />
           <HuanyuInput label="内对一级" value={form.internalHospitalLevelOne} onChange={(value) => changeField('internalHospitalLevelOne', value)} disabled />
           <HuanyuInput label="内对二级" value={form.internalHospitalLevelTwo} onChange={(value) => changeField('internalHospitalLevelTwo', value)} disabled />
-          <HuanyuSelect label="医生" value={form.doctor} onChange={(value) => changeField('doctor', value)} />
-          <HuanyuInput label="专家级别" value={form.expertLevel} onChange={(value) => changeField('expertLevel', value)} disabled />
+          <HuanyuSearchSelect label="医生" value={form.doctor} options={doctorOptions} loading={doctorLoading} error={doctorError} disabled={!hospitalId} disabledPlaceholder="请先选择医院" onSearch={setDoctorSearch} onChange={selectHospitalDoctor} />
+          {doctorAllowsExpertSelection
+            ? <HuanyuSearchSelect label="专家级别" value={form.expertLevel} options={expertOptions} loading={false} error={null} onSearch={setExpertSearch} onChange={(value) => changeField('expertLevel', value)} />
+            : <HuanyuInput label="专家级别" value={form.expertLevel} onChange={(value) => changeField('expertLevel', value)} disabled />}
           <HuanyuInput label="订单服务备注" value={form.serviceRemark} onChange={(value) => changeField('serviceRemark', value)} wide />
           <HuanyuInput label="泰康医院" value={form.tkHospital} onChange={(value) => changeField('tkHospital', value)} disabled />
           <HuanyuInput label="泰康省份" value={form.tkProvince} onChange={(value) => changeField('tkProvince', value)} disabled />
@@ -1390,7 +1702,7 @@ function HuanyuOrderForm({
         <HuanyuEscortInformationTable
           initialRow={{
             orderNo: typeof form.orderNo === 'string' ? form.orderNo : '',
-            serviceDate: typeof form.escortServiceDate === 'string' ? form.escortServiceDate : '',
+            serviceDate: escortServiceDateInputValue(typeof form.escortServiceDate === 'string' ? form.escortServiceDate : ''),
             escortName: typeof form.escortName === 'string' ? form.escortName : '',
             escortType: typeof form.escortType === 'string' ? form.escortType : '',
             phone: typeof form.escortPhone === 'string' ? form.escortPhone : '',
@@ -1660,6 +1972,11 @@ function toHuanyuDateTimeLocal(value: string): string {
   return `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6] || '00'}`
 }
 
+function escortServiceDateInputValue(value: string): string {
+  const match = value.trim().match(/^(\d{4})[-/]?(\d{2})[-/]?(\d{2})/)
+  return match ? `${match[1]}-${match[2]}-${match[3]}` : ''
+}
+
 function huanyuDatePart(value: string): string {
   const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T/)
   return match ? `${match[1]}${match[2]}${match[3]}` : ''
@@ -1742,6 +2059,23 @@ function HuanyuEscortInformationTable({
   initialRow: Omit<HuanyuEscortRow, 'id'>
 }): React.JSX.Element {
   const [rows, setRows] = useState<HuanyuEscortRow[]>(() => [{ id: 1, ...initialRow }])
+  const [escortSearch, setEscortSearch] = useState('')
+  const [escortOptions, setEscortOptions] = useState<HuanyuEscortOption[]>([])
+  const [escortLoading, setEscortLoading] = useState(false)
+  const [escortError, setEscortError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    const timer = window.setTimeout(() => {
+      setEscortLoading(true)
+      setEscortError(null)
+      fetchHuanyuEscorts(escortSearch)
+        .then((options) => active && setEscortOptions(options))
+        .catch((error: unknown) => active && setEscortError(error instanceof Error ? error.message : '陪诊人员加载失败'))
+        .finally(() => active && setEscortLoading(false))
+    }, 180)
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [escortSearch])
 
   function changeRow(id: number, field: Exclude<keyof HuanyuEscortRow, 'id' | 'orderNo'>, value: string): void {
     setRows((current) => current.map((row) => row.id === id ? { ...row, [field]: value } : row))
@@ -1763,6 +2097,18 @@ function HuanyuEscortInformationTable({
     ])
   }
 
+  function selectEscort(rowId: number, escortId: string): void {
+    const escort = escortOptions.find((item) => item.id === escortId)
+    if (!escort) return
+    setRows((current) => current.map((row) => row.id === rowId ? {
+      ...row,
+      escortName: escort.id,
+      escortType: escort.escortType,
+      phone: escort.phone,
+      area: escort.area
+    } : row))
+  }
+
   return (
     <div className="overflow-x-auto">
       <table className="min-w-[980px] w-full border-collapse text-body-sm">
@@ -1777,11 +2123,11 @@ function HuanyuEscortInformationTable({
           {rows.map((row) => (
             <tr key={row.id}>
               <td className="border border-border-subtle p-1.5"><input disabled value={row.orderNo} className="h-8 w-full border-0 bg-surface-container px-2 text-center text-text-muted outline-none" /></td>
-              <td className="border border-border-subtle p-1.5"><input value={row.serviceDate} onChange={(event) => changeRow(row.id, 'serviceDate', event.target.value)} className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary" /></td>
-              <td className="border border-border-subtle p-1.5"><input value={row.escortName} onChange={(event) => changeRow(row.id, 'escortName', event.target.value)} className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary" /></td>
-              <td className="border border-border-subtle p-1.5"><input value={row.escortType} onChange={(event) => changeRow(row.id, 'escortType', event.target.value)} className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary" /></td>
-              <td className="border border-border-subtle p-1.5"><input value={row.phone} onChange={(event) => changeRow(row.id, 'phone', event.target.value)} className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary" /></td>
-              <td className="border border-border-subtle p-1.5"><input value={row.area} onChange={(event) => changeRow(row.id, 'area', event.target.value)} className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary" /></td>
+              <td className="border border-border-subtle p-1.5"><input type="date" value={row.serviceDate} onChange={(event) => changeRow(row.id, 'serviceDate', event.target.value)} className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary" /></td>
+              <td className="border border-border-subtle p-1.5"><HuanyuEscortSelectCell value={row.escortName} options={escortOptions} loading={escortLoading} error={escortError} onSearch={setEscortSearch} onChange={(value) => selectEscort(row.id, value)} /></td>
+              <td className="border border-border-subtle p-1.5"><input disabled value={row.escortType} className="h-8 w-full border-0 bg-surface-container px-2 text-center text-text-muted outline-none" /></td>
+              <td className="border border-border-subtle p-1.5"><input disabled value={row.phone} className="h-8 w-full border-0 bg-surface-container px-2 text-center text-text-muted outline-none" /></td>
+              <td className="border border-border-subtle p-1.5"><input disabled value={row.area} className="h-8 w-full border-0 bg-surface-container px-2 text-center text-text-muted outline-none" /></td>
               <td className="border border-border-subtle p-1.5"><input value={row.sequence} onChange={(event) => changeRow(row.id, 'sequence', event.target.value)} className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary" /></td>
             </tr>
           ))}
@@ -1793,6 +2139,72 @@ function HuanyuEscortInformationTable({
           新增陪诊信息
         </button>
       </div>
+    </div>
+  )
+}
+
+function HuanyuEscortSelectCell({
+  value,
+  options,
+  loading,
+  error,
+  onSearch,
+  onChange
+}: {
+  value: string
+  options: HuanyuEscortOption[]
+  loading: boolean
+  error: string | null
+  onSearch: (value: string) => void
+  onChange: (value: string) => void
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const selected = options.find((option) => option.id === value)
+  const shownValue = open ? search : selected?.name ?? value
+
+  return (
+    <div className="relative min-w-36">
+      <input
+        value={shownValue}
+        placeholder="搜索陪诊人员"
+        onFocus={() => {
+          setOpen(true)
+          setSearch('')
+          onSearch('')
+        }}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        onChange={(event) => {
+          const next = event.target.value
+          setSearch(next)
+          onSearch(next)
+          setOpen(true)
+        }}
+        className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary"
+      />
+      {open && (
+        <div className="absolute z-30 mt-1 max-h-48 w-72 overflow-y-auto rounded-md border border-border-subtle bg-white py-1 text-left shadow-lg">
+          {loading && <div className="px-3 py-2 text-text-muted">加载中…</div>}
+          {!loading && error && <div className="px-3 py-2 text-error">{error}</div>}
+          {!loading && !error && options.length === 0 && <div className="px-3 py-2 text-text-muted">暂无匹配数据</div>}
+          {!loading && !error && options.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                onChange(option.id)
+                setSearch('')
+                setOpen(false)
+              }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-surface-bg"
+            >
+              <span className="min-w-0 flex-1 truncate">{option.name}</span>
+              <span className="shrink-0 font-mono-data text-[11px] text-text-muted">{option.id}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -1825,6 +2237,92 @@ interface HuanyuSelectOption {
   label: string
 }
 
+interface HuanyuSearchOption {
+  id: string
+  name: string
+}
+
+function HuanyuSearchSelect({
+  label,
+  value,
+  options,
+  loading,
+  error,
+  disabled = false,
+  disabledPlaceholder = '请先选择上级字段',
+  onSearch,
+  onChange
+}: {
+  label: string
+  value: string | boolean
+  options: HuanyuSearchOption[]
+  loading: boolean
+  error: string | null
+  disabled?: boolean
+  disabledPlaceholder?: string
+  onSearch: (value: string) => void
+  onChange: (value: string) => void
+}): React.JSX.Element {
+  const currentValue = typeof value === 'string' ? value : ''
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const selected = options.find((option) => option.id === currentValue)
+  const shownValue = open ? search : selected?.name ?? currentValue
+
+  function closeSoon(): void {
+    window.setTimeout(() => setOpen(false), 120)
+  }
+
+  return (
+    <label className="relative flex min-w-0 items-center gap-2">
+      <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
+      <div className="relative min-w-0 flex-1">
+        <input
+          value={shownValue}
+          disabled={disabled}
+          placeholder={disabled ? disabledPlaceholder : '输入名称或码值搜索'}
+          onFocus={() => {
+            setOpen(true)
+            setSearch('')
+            onSearch('')
+          }}
+          onBlur={closeSoon}
+          onChange={(event) => {
+            const next = event.target.value
+            setSearch(next)
+            onSearch(next)
+            setOpen(true)
+          }}
+          className={'h-9 min-w-0 w-full rounded-md border border-border-subtle px-3 text-body-sm text-text-main outline-none transition-colors ' + (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary')}
+        />
+        {open && !disabled && (
+          <div className="absolute z-20 mt-1 max-h-52 w-full overflow-y-auto rounded-md border border-border-subtle bg-white py-1 shadow-lg">
+            {loading && <div className="px-3 py-2 text-body-sm text-text-muted">加载中…</div>}
+            {!loading && error && <div className="px-3 py-2 text-body-sm text-error">{error}</div>}
+            {!loading && !error && options.length === 0 && <div className="px-3 py-2 text-body-sm text-text-muted">暂无匹配数据</div>}
+            {!loading && !error && options.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  onChange(option.id)
+                  setSearch('')
+                  setOpen(false)
+                }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-body-sm text-text-main hover:bg-surface-bg"
+              >
+                <span className="min-w-0 flex-1 truncate">{option.name}</span>
+                <span className="shrink-0 font-mono-data text-[11px] text-text-muted">{option.id}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </label>
+  )
+}
+
 function HuanyuSelect({
   label,
   value,
@@ -1854,20 +2352,22 @@ function HuanyuSelect({
 function HuanyuAmountField({
   value,
   editable,
+  locked = false,
   onChange,
   onEditableChange
 }: {
   value: string | boolean
   editable: boolean
+  locked?: boolean
   onChange: (value: string) => void
   onEditableChange: (value: boolean) => void
 }): React.JSX.Element {
   return (
     <div className="flex min-w-0 items-center gap-2">
       <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">订单金额：</span>
-      <input type="number" inputMode="decimal" step="0.01" disabled={!editable} value={typeof value === 'string' ? value : ''} onChange={(event) => onChange(event.target.value)} className={'h-9 w-24 shrink-0 rounded-md border border-border-subtle px-3 text-body-sm text-text-main outline-none transition-colors ' + (editable ? 'bg-white focus:border-primary focus:ring-1 focus:ring-primary' : 'cursor-not-allowed bg-surface-container text-text-muted')} />
+      <input type="number" inputMode="decimal" step="0.01" disabled={locked || !editable} value={typeof value === 'string' ? value : ''} onChange={(event) => onChange(event.target.value)} className={'h-9 w-24 shrink-0 rounded-md border border-border-subtle px-3 text-body-sm text-text-main outline-none transition-colors ' + (!locked && editable ? 'bg-white focus:border-primary focus:ring-1 focus:ring-primary' : 'cursor-not-allowed bg-surface-container text-text-muted')} />
       <label className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-body-sm text-text-main">
-        <input type="checkbox" checked={editable} onChange={(event) => onEditableChange(event.target.checked)} className="h-4 w-4 accent-primary" />
+        <input type="checkbox" checked={editable} disabled={locked} onChange={(event) => onEditableChange(event.target.checked)} className="h-4 w-4 accent-primary disabled:cursor-not-allowed" />
         金额修改
       </label>
     </div>

@@ -23,6 +23,7 @@
     "fastify": "^4.27.0",
     "jsonwebtoken": "^9.0.3",
     "minio": "^8.0.1",
+    "mysql2": "^3.15.3",
     "zod": "^3.23.8"
   },
   "devDependencies": {

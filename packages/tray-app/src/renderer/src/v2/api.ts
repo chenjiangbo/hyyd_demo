@@ -160,6 +160,32 @@ export interface OrderAggregateResponse {
   messages: OrderMessage[]
 }
 
+export interface HuanyuChannelOption {
+  id: string
+  name: string
+}
+
+export interface HuanyuChannelProductOption extends HuanyuChannelOption {
+  internalLevelOne: string
+  internalLevelTwo: string
+  price: string
+}
+
+export interface HuanyuHospitalDepartmentOption extends HuanyuChannelOption {
+  internalLevelOne: string
+  internalLevelTwo: string
+}
+
+export interface HuanyuDoctorOption extends HuanyuChannelOption {
+  expertLevel: string
+}
+
+export interface HuanyuEscortOption extends HuanyuChannelOption {
+  escortType: string
+  phone: string
+  area: string
+}
+
 async function authedGet<T>(path: string): Promise<T> {
   const code = getSession()?.employeeCode
   if (!code) throw new Error('未登录')
@@ -216,6 +242,70 @@ export function fetchOrderDetail(orderId: number): Promise<OrderDetailResponse> 
 
 export function fetchOrderAggregate(orderId: number): Promise<OrderAggregateResponse> {
   return authedGet<OrderAggregateResponse>(`/api/v1/orders/${orderId}/aggregate`)
+}
+
+/** 寰宇订单 B 端渠道字典（后端仅执行参数化 SELECT）。 */
+export function fetchHuanyuChannels(search = ''): Promise<HuanyuChannelOption[]> {
+  const params = new URLSearchParams()
+  if (search.trim()) params.set('q', search.trim())
+  const suffix = params.size ? `?${params}` : ''
+  return authedGet<HuanyuChannelOption[]>(`/api/v1/dictionaries/huanyu/channels${suffix}`)
+}
+
+/** 按 B 端渠道 ID 前四位过滤的服务项目字典（后端仅执行参数化 SELECT）。 */
+export function fetchHuanyuChannelProducts(channelId: string, search = ''): Promise<HuanyuChannelProductOption[]> {
+  const params = new URLSearchParams({ channelId })
+  if (search.trim()) params.set('q', search.trim())
+  return authedGet<HuanyuChannelProductOption[]>(`/api/v1/dictionaries/huanyu/channel-products?${params}`)
+}
+
+/** 寰宇订单预约渠道类型（后端固定：BD/1、公共/2、无/3）。 */
+export function fetchHuanyuBookingChannelTypes(): Promise<HuanyuChannelOption[]> {
+  return authedGet<HuanyuChannelOption[]>('/api/v1/dictionaries/huanyu/booking-channel-types')
+}
+
+/** 寰宇订单证件类型（后端固定，id 与展示名称一致）。 */
+export function fetchHuanyuDocumentTypes(): Promise<HuanyuChannelOption[]> {
+  return authedGet<HuanyuChannelOption[]>('/api/v1/dictionaries/huanyu/document-types')
+}
+
+/** 寰宇订单 BD 用户字典（后端仅执行参数化 SELECT）。 */
+export function fetchHuanyuBdUsers(search = ''): Promise<HuanyuChannelOption[]> {
+  const params = new URLSearchParams()
+  if (search.trim()) params.set('q', search.trim())
+  const suffix = params.size ? `?${params}` : ''
+  return authedGet<HuanyuChannelOption[]>(`/api/v1/dictionaries/huanyu/bd-users${suffix}`)
+}
+
+function huanyuDictionarySearchPath(path: string, search = '', hospitalId?: string): string {
+  const params = new URLSearchParams()
+  if (hospitalId) params.set('hospitalId', hospitalId)
+  if (search.trim()) params.set('q', search.trim())
+  return params.size ? `${path}?${params}` : path
+}
+
+export function fetchHuanyuHospitals(search = ''): Promise<HuanyuChannelOption[]> {
+  return authedGet<HuanyuChannelOption[]>(huanyuDictionarySearchPath('/api/v1/dictionaries/huanyu/hospitals', search))
+}
+
+export function fetchHuanyuHospitalAddresses(hospitalId: string, search = ''): Promise<HuanyuChannelOption[]> {
+  return authedGet<HuanyuChannelOption[]>(huanyuDictionarySearchPath('/api/v1/dictionaries/huanyu/hospital-addresses', search, hospitalId))
+}
+
+export function fetchHuanyuHospitalDepartments(hospitalId: string, search = ''): Promise<HuanyuHospitalDepartmentOption[]> {
+  return authedGet<HuanyuHospitalDepartmentOption[]>(huanyuDictionarySearchPath('/api/v1/dictionaries/huanyu/hospital-departments', search, hospitalId))
+}
+
+export function fetchHuanyuHospitalDoctors(hospitalId: string, search = ''): Promise<HuanyuDoctorOption[]> {
+  return authedGet<HuanyuDoctorOption[]>(huanyuDictionarySearchPath('/api/v1/dictionaries/huanyu/hospital-doctors', search, hospitalId))
+}
+
+export function fetchHuanyuExpertLevels(search = ''): Promise<HuanyuChannelOption[]> {
+  return authedGet<HuanyuChannelOption[]>(huanyuDictionarySearchPath('/api/v1/dictionaries/huanyu/expert-levels', search))
+}
+
+export function fetchHuanyuEscorts(search = ''): Promise<HuanyuEscortOption[]> {
+  return authedGet<HuanyuEscortOption[]>(huanyuDictionarySearchPath('/api/v1/dictionaries/huanyu/escorts', search))
 }
 
 // ─── 在线状态（状态栏用）────────────────────────────────
@@ -852,6 +942,3 @@ export async function fetchRegions(): Promise<RegionCityItem[]> {
   const body = (await res.json()) as { ok?: boolean; data?: RegionCityItem[] }
   return body.data || []
 }
-
-
-

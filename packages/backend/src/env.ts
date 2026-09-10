@@ -18,6 +18,12 @@ export interface AppEnv {
   gatewayApiKey: string
   dashscopeApiKey: string
   adminWebDist?: string
+  remoteDictDbHost?: string
+  remoteDictDbPort?: string
+  remoteDictDbName?: string
+  remoteDictDbUser?: string
+  remoteDictDbPassword?: string
+  remoteDictDbSsl?: string
 }
 
 let cached: AppEnv | null = null
@@ -63,7 +69,14 @@ export function getEnv(): AppEnv {
     gatewayAppId: required('GATEWAY_APP_ID'),
     gatewayApiKey: required('GATEWAY_API_KEY'),
     dashscopeApiKey: required('DASHSCOPE_API_KEY'),
-    adminWebDist: optional('ADMIN_WEB_DIST')
+    adminWebDist: optional('ADMIN_WEB_DIST'),
+    // 远端字典库只在下拉读取接口被调用时才校验，避免未配置的环境无法启动常规服务。
+    remoteDictDbHost: optional('REMOTE_DICT_DB_HOST'),
+    remoteDictDbPort: optional('REMOTE_DICT_DB_PORT'),
+    remoteDictDbName: optional('REMOTE_DICT_DB_NAME'),
+    remoteDictDbUser: optional('REMOTE_DICT_DB_USER'),
+    remoteDictDbPassword: optional('REMOTE_DICT_DB_PASSWORD'),
+    remoteDictDbSsl: optional('REMOTE_DICT_DB_SSL')
   }
   return cached
 }
