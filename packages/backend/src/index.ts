@@ -65,16 +65,23 @@ const minioPublicClient = new Minio.Client({
 // 确保 MinIO 桶存在（启动时调用）
 async function ensureBuckets() {
   const buckets = ['order-attachments', 'recordings', 'screenshots', 'materials', 'capture-diagnostics']
-  for (const name of buckets) {
-    const exists = await minioClient.bucketExists(name).catch(() => false)
-    if (!exists) {
-      await minioClient.makeBucket(name).catch((e) => {
-        // 已存在或并发创建时忽略
-        if (!String(e?.message || '').includes('exists')) throw e
-      })
-      server.log.info(`MinIO bucket 已创建: ${name}`)
-    }
-  }
+  await Promise.all(
+    buckets.map(async (name) => {
+      try {
+        const checkPromise = minioClient.bucketExists(name).catch(() => false)
+        const timeoutPromise = new Promise<boolean>((_, reject) => setTimeout(() => reject(new Error('MinIO 检查超时')), 1000))
+        const exists = await Promise.race([checkPromise, timeoutPromise])
+        if (!exists) {
+          await minioClient.makeBucket(name).catch((e) => {
+            if (!String(e?.message || '').includes('exists')) throw e
+          })
+          server.log.info(`MinIO bucket 已创建: ${name}`)
+        }
+      } catch (e: any) {
+        server.log.warn(`MinIO bucket 检查/创建跳过 (${name}): ${e?.message || e}`)
+      }
+    })
+  )
 }
 
 async function start() {

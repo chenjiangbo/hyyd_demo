@@ -20,6 +20,7 @@ import {
   fetchHuanyuHospitalDepartments,
   fetchHuanyuHospitalDoctors,
   fetchHuanyuHospitals,
+  saveHuanyuOrder,
   getSession,
   refreshApplicationBrief,
   refreshOrderBrief,
@@ -39,7 +40,7 @@ import {
   type OrderMessage,
 } from '../api'
 import { bizChipClass, bizType, LIFECYCLE_STAGES, sourceStyle, stageIndexOf } from '../lib/orderMapping'
-import type { ApplicationGroup } from './WorkbenchKanban'
+import { clearOrdersCache, type ApplicationGroup } from './WorkbenchKanban'
 
 type RightTab = 'taikang-detail' | 'huanyu-detail' | 'entry' | 'ai'
 type CaptureTab = 'wxwork' | 'wechat' | 'call'
@@ -1151,6 +1152,7 @@ function OrderExecutionPanel({
 }): React.JSX.Element {
   const [tab, setTab] = useState<RightTab>('taikang-detail')
   const [detailResp, setDetailResp] = useState<OrderDetailResponse | null>(null)
+  const [detailLoading, setDetailLoading] = useState(true)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [aggregate, setAggregate] = useState<OrderAggregateResponse | null>(null)
   const [materials, setMaterials] = useState<Material[]>([])
@@ -1162,11 +1164,20 @@ function OrderExecutionPanel({
 
   useEffect(() => {
     let alive = true
+    setDetailLoading(true)
     setDetailResp(null)
     setDetailError(null)
     fetchOrderDetail(selectedOrder.id)
-      .then((resp) => alive && setDetailResp(resp))
-      .catch((e) => alive && setDetailError(e instanceof Error ? e.message : '加载订单详情失败'))
+      .then((resp) => {
+        if (!alive) return
+        setDetailResp(resp)
+        setDetailLoading(false)
+      })
+      .catch((e) => {
+        if (!alive) return
+        setDetailError(e instanceof Error ? e.message : '加载订单详情失败')
+        setDetailLoading(false)
+      })
     fetchOrderAggregate(selectedOrder.id)
       .then((resp) => alive && setAggregate(resp))
       .catch(() => alive && setAggregate(null))
@@ -1232,25 +1243,49 @@ function OrderExecutionPanel({
         <PanelTab label="数据补录" active={tab === 'entry'} onClick={() => setTab('entry')} />
         <PanelTab label="AI 任务" active={tab === 'ai'} onClick={() => setTab('ai')} />
       </div>
-      {tab === 'taikang-detail' && (
-        <OrderDetailPanel order={selectedOrder} detailResp={detailResp} error={detailError} />
+
+      {detailLoading ? (
+        <div className="flex-1 min-h-0 flex flex-col items-center justify-center p-12 text-text-muted gap-3">
+          <div className="w-8 h-8 border-3 border-primary/25 border-t-primary rounded-full animate-spin" />
+          <span className="text-body-sm font-medium">正在拉取最新订单数据…</span>
+        </div>
+      ) : detailError ? (
+        <div className="p-6 m-4 rounded-lg bg-red-50 border border-error/25 text-error text-body-sm flex items-center gap-2">
+          <span className="material-symbols-outlined text-error">error</span>
+          <span>{detailError}</span>
+        </div>
+      ) : (
+        <>
+          {tab === 'taikang-detail' && (
+            <OrderDetailPanel order={selectedOrder} detailResp={detailResp} error={detailError} />
+          )}
+          {tab === 'huanyu-detail' && (
+            <HuanyuOrderDetailPanel
+              key={selectedOrder.id}
+              order={selectedOrder}
+              detailResp={detailResp}
+            />
+          )}
+          {tab === 'entry' && (
+            <OrderDataEntryPanel order={selectedOrder} materials={materials} onReload={reloadMaterials} />
+          )}
+          {tab === 'ai' && (
+            <OrderAiTaskPanel order={selectedOrder} aggregate={aggregate} />
+          )}
+        </>
       )}
-      {tab === 'huanyu-detail' && <HuanyuOrderDetailPanel key={selectedOrder.id} order={selectedOrder} />}
-      {tab === 'entry' && (
-        <OrderDataEntryPanel order={selectedOrder} materials={materials} onReload={reloadMaterials} />
+
+      {!detailLoading && tab !== 'huanyu-detail' && (
+        <div className="shrink-0 border-t border-border-subtle bg-white p-4 flex justify-end gap-3 shadow-[0_-4px_12px_rgba(0,0,0,0.02)]">
+          <button disabled className="px-4 py-2 bg-surface-container border border-border-subtle text-text-main text-body-sm font-bold rounded opacity-70">
+            Hold Order
+          </button>
+          <button disabled className="px-4 py-2 bg-primary text-white text-body-sm font-bold rounded inline-flex items-center gap-2 opacity-70">
+            <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>check_circle</span>
+            Complete & Next
+          </button>
+        </div>
       )}
-      {tab === 'ai' && (
-        <OrderAiTaskPanel order={selectedOrder} aggregate={aggregate} />
-      )}
-      <div className="shrink-0 border-t border-border-subtle bg-white p-4 flex justify-end gap-3 shadow-[0_-4px_12px_rgba(0,0,0,0.02)]">
-        <button disabled className="px-4 py-2 bg-surface-container border border-border-subtle text-text-main text-body-sm font-bold rounded opacity-70">
-          Hold Order
-        </button>
-        <button disabled className="px-4 py-2 bg-primary text-white text-body-sm font-bold rounded inline-flex items-center gap-2 opacity-70">
-          <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>check_circle</span>
-          Complete & Next
-        </button>
-      </div>
     </aside>
   )
 }
@@ -1298,8 +1333,61 @@ function OrderDetailPanel({
   )
 }
 
-function HuanyuOrderDetailPanel({ order }: { order: Order }): React.JSX.Element {
-  return <HuanyuOrderForm initialForm={buildHuanyuForm(order)} />
+function HuanyuOrderDetailPanel({
+  order,
+  detailResp,
+  onOrderUpdated
+}: {
+  order: Order
+  detailResp?: OrderDetailResponse | null
+  onOrderUpdated?: (order: Order) => void
+}): React.JSX.Element {
+  const detailOrder = (detailResp as any)?.order ?? (detailResp as any)?.data?.order
+  const currentOrder = detailOrder
+    ? {
+        ...order,
+        ...detailOrder,
+        rawJson: {
+          ...(typeof order.rawJson === 'object' && order.rawJson ? order.rawJson : {}),
+          ...(typeof detailOrder.rawJson === 'object' && detailOrder.rawJson ? detailOrder.rawJson : {})
+        }
+      }
+    : order
+
+  const formKey = useMemo(() => {
+    const raw = (currentOrder.rawJson ?? {}) as Record<string, unknown>
+    return `${currentOrder.id}_${currentOrder.updatedAt || ''}_${JSON.stringify(raw)}`
+  }, [currentOrder])
+
+  const initialEscorts: HuanyuEscortRow[] = useMemo(() => {
+    const list = (currentOrder.rawJson as any)?.escortList
+    if (Array.isArray(list) && list.length > 0) {
+      return list.map((item: any, idx: number) => ({
+        id: idx + 1,
+        orderNo: item.orderNo || (currentOrder.rawJson as any)?.orderNo || '',
+        serviceDate: escortServiceDateInputValue(item.serviceDate || ''),
+        escortName: item.escortName || '',
+        escortType: item.escortType || '',
+        phone: item.phone || '',
+        area: item.area || '',
+        sequence: item.sequence || String(idx + 1)
+      }))
+    }
+    return []
+  }, [currentOrder])
+
+  return (
+    <HuanyuOrderForm
+      key={formKey}
+      initialForm={buildHuanyuForm(currentOrder)}
+      initialEscorts={initialEscorts}
+      onSaveSuccess={(savedOrder) => {
+        clearOrdersCache()
+        window.dispatchEvent(new CustomEvent('huanyu-orders-updated'))
+        onOrderUpdated?.(savedOrder)
+      }}
+    />
+  )
 }
 
 function isHuanyuCancelledOrderStatus(value: unknown): boolean {
@@ -1307,7 +1395,7 @@ function isHuanyuCancelledOrderStatus(value: unknown): boolean {
   return status === '已取消' || status === '无责取消'
 }
 
-export function HuanyuOrderCreatePage({ onBack }: { onBack: () => void }): React.JSX.Element {
+export function HuanyuOrderCreatePage({ onBack, onCreated }: { onBack: () => void; onCreated?: (order: Order) => void }): React.JSX.Element {
   const [initialForm] = useState(() => buildEmptyHuanyuForm())
 
   return (
@@ -1327,7 +1415,14 @@ export function HuanyuOrderCreatePage({ onBack }: { onBack: () => void }): React
         </div>
       </header>
       <div className="mx-auto flex w-full max-w-[1600px] min-h-0 flex-1">
-        <HuanyuOrderForm initialForm={initialForm} mode="create" />
+        <HuanyuOrderForm initialForm={initialForm} mode="create" onSaveSuccess={(order) => {
+          if (onCreated) {
+            onCreated(order)
+          } else {
+            window.alert('寰宇订单创建成功！')
+            onBack()
+          }
+        }} />
       </div>
     </main>
   )
@@ -1335,15 +1430,21 @@ export function HuanyuOrderCreatePage({ onBack }: { onBack: () => void }): React
 
 function HuanyuOrderForm({
   initialForm,
-  mode = 'detail'
+  initialEscorts,
+  mode = 'detail',
+  onSaveSuccess
 }: {
   initialForm: Record<string, string | boolean>
+  initialEscorts?: HuanyuEscortRow[]
   mode?: 'detail' | 'create'
+  onSaveSuccess?: (order: Order) => void
 }): React.JSX.Element {
   const currentAccountManager = getSession()?.displayName || getSession()?.employeeCode || ''
   const defaultedInitialForm = {
     ...initialForm,
-    accountManager: currentAccountManager || initialForm.accountManager,
+    accountManager: mode === 'create'
+      ? (currentAccountManager || initialForm.accountManager)
+      : (initialForm.accountManager || ''),
     ...(initialForm.bookingChannelType === '3' ? { bd: '无' } : {})
   }
   const [form, setForm] = useState(() => (
@@ -1351,6 +1452,33 @@ function HuanyuOrderForm({
       ? { ...defaultedInitialForm, orderAmount: '0', amountChanged: false }
       : defaultedInitialForm
   ))
+
+  useEffect(() => {
+    setForm(
+      isHuanyuCancelledOrderStatus(defaultedInitialForm.orderStatus)
+        ? { ...defaultedInitialForm, orderAmount: '0', amountChanged: false }
+        : defaultedInitialForm
+    )
+  }, [initialForm])
+  const [escortRows, setEscortRows] = useState<HuanyuEscortRow[]>(() => {
+    if (initialEscorts && initialEscorts.length > 0) {
+      return initialEscorts
+    }
+    return [
+      {
+        id: 1,
+        orderNo: typeof defaultedInitialForm.orderNo === 'string' ? defaultedInitialForm.orderNo : '',
+        serviceDate: escortServiceDateInputValue(typeof defaultedInitialForm.escortServiceDate === 'string' ? defaultedInitialForm.escortServiceDate : ''),
+        escortName: typeof defaultedInitialForm.escortName === 'string' ? defaultedInitialForm.escortName : '',
+        escortType: typeof defaultedInitialForm.escortType === 'string' ? defaultedInitialForm.escortType : '',
+        phone: typeof defaultedInitialForm.escortPhone === 'string' ? defaultedInitialForm.escortPhone : '',
+        area: typeof defaultedInitialForm.escortArea === 'string' ? defaultedInitialForm.escortArea : '',
+        sequence: typeof defaultedInitialForm.escortSequence === 'string' ? defaultedInitialForm.escortSequence : '1'
+      }
+    ]
+  })
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const isCreate = mode === 'create'
   const initialChannelServiceId = useRef(typeof initialForm.channelService === 'string' ? initialForm.channelService : '')
   const initialOrderAmount = useRef(typeof initialForm.orderAmount === 'string' ? initialForm.orderAmount : '')
@@ -1392,6 +1520,103 @@ function HuanyuOrderForm({
   const amountLocked = isHuanyuCancelledOrderStatus(form.orderStatus)
   const bdSelectable = form.bookingChannelType === '1' || form.bookingChannelType === '2'
   const doctorAllowsExpertSelection = typeof form.doctor === 'string' && form.doctor.endsWith('WXSYSXM')
+
+  async function handleSave(): Promise<void> {
+    setIsSaving(true)
+    setSaveStatus(null)
+    try {
+      const res = await saveHuanyuOrder({
+        mode: isCreate ? 'create' : 'update',
+        orderNo: String(form.orderNo || ''),
+        orderStatus: String(form.orderStatus || '待处理'),
+        channel: String(form.channel || ''),
+        channelOrderNo: String(form.channelOrderNo || ''),
+        backupOrderNo: String(form.backupOrderNo || ''),
+        channelDetail: String(form.channelDetail || ''),
+        channelContact: String(form.channelContact || ''),
+        channelBackupContact: String(form.channelBackupContact || ''),
+        channelService: String(form.channelService || ''),
+        internalLevelOne: String(form.internalLevelOne || ''),
+        internalLevelTwo: String(form.internalLevelTwo || ''),
+        orderAmount: String(form.orderAmount || ''),
+        accountManager: String(form.accountManager || currentAccountManager),
+        bookingChannelType: String(form.bookingChannelType || ''),
+        bd: String(form.bd || ''),
+        patientName: String(form.patientName || ''),
+        documentType: String(form.documentType || ''),
+        documentNo: String(form.documentNo || ''),
+        patientGender: String(form.patientGender || ''),
+        patientAge: String(form.patientAge || ''),
+        patientPhone: String(form.patientPhone || ''),
+        familyName: String(form.familyName || ''),
+        familyRelation: String(form.familyRelation || ''),
+        familyPhone: String(form.familyPhone || ''),
+        disease: String(form.disease || ''),
+        expectedBookingTime: String(form.expectedBookingTime || ''),
+        patientRequest: String(form.patientRequest || ''),
+        hospital: String(form.hospital || ''),
+        hospitalAddress: String(form.hospitalAddress || ''),
+        department: String(form.department || ''),
+        internalHospitalLevelOne: String(form.internalHospitalLevelOne || ''),
+        internalHospitalLevelTwo: String(form.internalHospitalLevelTwo || ''),
+        doctor: String(form.doctor || ''),
+        expertLevel: String(form.expertLevel || ''),
+        serviceRemark: String(form.serviceRemark || ''),
+        tkHospital: String(form.tkHospital || ''),
+        tkProvince: String(form.tkProvince || ''),
+        tkCity: String(form.tkCity || ''),
+        tkDepartment: String(form.tkDepartment || ''),
+        requestTime: String(form.requestTime || ''),
+        requestDefaultDate: String(form.requestDefaultDate || ''),
+        responseTime: String(form.responseTime || ''),
+        responseDefaultDate: String(form.responseDefaultDate || ''),
+        serviceStartTime: String(form.serviceStartTime || ''),
+        serviceStartDefaultDate: String(form.serviceStartDefaultDate || ''),
+        bookingFeedbackTime: String(form.bookingFeedbackTime || ''),
+        bookingFeedbackDefaultDate: String(form.bookingFeedbackDefaultDate || ''),
+        latestTicketTime: String(form.latestTicketTime || ''),
+        latestTicketDefaultDate: String(form.latestTicketDefaultDate || ''),
+        registrationFee: String(form.registrationFee || ''),
+        advancePayment: String(form.advancePayment || ''),
+        advanceRegistrationFee: String(form.advanceRegistrationFee || ''),
+        advanceRecovered: String(form.advanceRecovered || ''),
+        registrationRefund: String(form.registrationRefund || ''),
+        alipayAccount: String(form.alipayAccount || ''),
+        hasInsurance: String(form.hasInsurance || ''),
+        insuranceType: String(form.insuranceType || ''),
+        smsLink: String(form.smsLink || ''),
+        escortSummary: String(form.escortSummary || ''),
+        escortList: escortRows.map((r) => ({
+          serviceDate: r.serviceDate,
+          escortName: r.escortName,
+          escortType: r.escortType,
+          phone: r.phone,
+          area: r.area,
+          sequence: r.sequence
+        }))
+      })
+
+      if (res.ok) {
+        clearOrdersCache()
+        if (res.order) {
+          const nextOrderNo = (res.order.rawJson as any)?.orderNo || (res.order.rawJson as any)?.DDBH || res.order.sourceOrderNo || ''
+          if (nextOrderNo) {
+            setForm((current) => ({ ...current, orderNo: nextOrderNo }))
+          }
+        }
+        setSaveStatus({ type: 'success', message: '保存成功！' })
+        if (onSaveSuccess) {
+          onSaveSuccess(res.order)
+        }
+      } else {
+        setSaveStatus({ type: 'error', message: res.message || '保存失败' })
+      }
+    } catch (err) {
+      setSaveStatus({ type: 'error', message: err instanceof Error ? err.message : '保存失败' })
+    } finally {
+      setIsSaving(false)
+    }
+  }
 
   useEffect(() => {
     let active = true
@@ -1635,8 +1860,60 @@ function HuanyuOrderForm({
   }
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
-      <HuanyuFormSection title="订单基本信息">
+    <div className="flex-1 min-h-0 overflow-y-auto relative flex flex-col">
+      {/* 顶部吸顶固定操作栏 */}
+      <div className="sticky top-0 z-20 shrink-0 border-b border-border-subtle bg-white/95 px-4 py-2.5 backdrop-blur shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span className="text-[13px] font-bold text-text-main">
+              {isCreate ? '新建寰宇订单' : `寰宇订单：${form.orderNo || '待生成'}`}
+            </span>
+            {saveStatus && (
+              <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${
+                saveStatus.type === 'success' ? 'bg-green-50 text-action-green border border-action-green/30' : 'bg-red-50 text-error border border-error/30'
+              }`}>
+                {saveStatus.message}
+              </span>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {isCreate ? (
+              <button
+                type="button"
+                disabled={isSaving}
+                onClick={handleSave}
+                className="rounded-md bg-action-green px-4 py-1.5 text-body-sm font-semibold text-white shadow-sm hover:bg-action-green/90 disabled:opacity-50 inline-flex items-center gap-1.5"
+              >
+                <span className="material-symbols-outlined text-[16px]">save</span>
+                {isSaving ? '保存中…' : '保存'}
+              </button>
+            ) : (
+              ['保存', '刷新预约模板信息', '数据留痕', '复制订单', '退款', '推送泰康支付失败', '推送泰康支付成功', '确认推送寰宇订单信息'].map((label) => (
+                <button
+                  key={label}
+                  type="button"
+                  disabled={label === '保存' && isSaving}
+                  onClick={label === '保存' ? handleSave : undefined}
+                  className={
+                    'rounded-md px-3 py-1.5 text-body-sm font-semibold text-white shadow-sm disabled:opacity-50 transition-colors ' +
+                    (label === '确认推送寰宇订单信息'
+                      ? 'bg-primary hover:bg-primary/90'
+                      : label === '保存'
+                        ? 'bg-action-green hover:bg-action-green/90'
+                        : 'bg-action-green/90 hover:bg-action-green')
+                  }
+                >
+                  {label === '保存' && isSaving ? '保存中…' : label}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* 表单内容滚动区 */}
+      <div className="p-4 space-y-4">
+        <HuanyuFormSection title="订单基本信息">
         <HuanyuFormGrid>
           <HuanyuInput label="订单号" value={form.orderNo} onChange={(value) => changeField('orderNo', value)} disabled />
           <HuanyuSelect label="订单状态" value={form.orderStatus} onChange={(value) => changeField('orderStatus', value)} />
@@ -1709,6 +1986,8 @@ function HuanyuOrderForm({
             area: typeof form.escortArea === 'string' ? form.escortArea : '',
             sequence: typeof form.escortSequence === 'string' ? form.escortSequence : '1'
           }}
+          rows={escortRows}
+          onChangeRows={setEscortRows}
         />
       </HuanyuFormSection>
 
@@ -1747,22 +2026,7 @@ function HuanyuOrderForm({
           </div>
         </div>
       </HuanyuFormSection>
-
-      {isCreate ? (
-        <div className="flex justify-end border-t border-border-subtle pt-4 pb-2">
-          <button type="button" title="新建寰宇订单的保存功能后续接入" className="rounded-md bg-action-green px-5 py-2 text-body-sm font-semibold text-white hover:bg-action-green/90">
-            保存
-          </button>
-        </div>
-      ) : (
-        <div className="flex flex-wrap justify-end gap-2 pb-2">
-          {['保存', '刷新预约模板信息', '数据留痕', '复制订单', '退款', '推送泰康支付失败', '推送泰康支付成功', '确认推送寰宇订单信息'].map((label) => (
-            <button key={label} type="button" className={'rounded-md px-3 py-2 text-body-sm font-semibold text-white ' + (label === '确认推送寰宇订单信息' ? 'bg-primary hover:bg-primary/90' : 'bg-action-green hover:bg-action-green/90')}>
-              {label}
-            </button>
-          ))}
-        </div>
-      )}
+      </div>
     </div>
   )
 }
@@ -1775,6 +2039,7 @@ function generateHuanyuOrderNo(date = new Date()): string {
 
 function buildEmptyHuanyuForm(): Record<string, string | boolean> {
   const orderNo = generateHuanyuOrderNo()
+  const currentAccountManager = getSession()?.displayName || getSession()?.employeeCode || ''
   return {
     orderNo,
     orderStatus: '',
@@ -1789,7 +2054,7 @@ function buildEmptyHuanyuForm(): Record<string, string | boolean> {
     internalLevelTwo: '',
     orderAmount: '',
     amountChanged: false,
-    accountManager: '',
+    accountManager: currentAccountManager,
     bookingChannelType: '',
     bd: '',
     patientName: '',
@@ -1872,8 +2137,8 @@ function buildHuanyuForm(order: Order): Record<string, string | boolean> {
   const fallbackDefaultTime = value(['defaultTime'])
 
   return {
-    // 寰宇订单号由后续后台生成，初始状态只读且留空。
-    orderNo: '',
+    // 寰宇订单号：若已有维护保存的 DDBH 单号则回显，否则初始留空
+    orderNo: value(['orderNo', 'DDBH', 'hyOrderNo', 'hyydOrderNo']),
     orderStatus: value(['orderStatus', 'status'], order.status),
     channel: value(['channel', 'bChannel', 'sourceChannel'], sourceStyle(order).label),
     channelOrderNo: value(['bOrderNo', 'channelOrderNo', 'sourceOrderNo'], order.sourceOrderNo),
@@ -2054,11 +2319,17 @@ interface HuanyuEscortRow {
 }
 
 function HuanyuEscortInformationTable({
-  initialRow
+  initialRow,
+  rows: externalRows,
+  onChangeRows
 }: {
   initialRow: Omit<HuanyuEscortRow, 'id'>
+  rows?: HuanyuEscortRow[]
+  onChangeRows?: (rows: HuanyuEscortRow[]) => void
 }): React.JSX.Element {
-  const [rows, setRows] = useState<HuanyuEscortRow[]>(() => [{ id: 1, ...initialRow }])
+  const [internalRows, setInternalRows] = useState<HuanyuEscortRow[]>(() => [{ id: 1, ...initialRow }])
+  const rows = externalRows ?? internalRows
+  const setRows = onChangeRows ?? setInternalRows
   const [escortSearch, setEscortSearch] = useState('')
   const [escortOptions, setEscortOptions] = useState<HuanyuEscortOption[]>([])
   const [escortLoading, setEscortLoading] = useState(false)
@@ -2078,35 +2349,46 @@ function HuanyuEscortInformationTable({
   }, [escortSearch])
 
   function changeRow(id: number, field: Exclude<keyof HuanyuEscortRow, 'id' | 'orderNo'>, value: string): void {
-    setRows((current) => current.map((row) => row.id === id ? { ...row, [field]: value } : row))
+    if (onChangeRows) {
+      onChangeRows(rows.map((row) => row.id === id ? { ...row, [field]: value } : row))
+    } else {
+      setInternalRows((current) => current.map((row) => row.id === id ? { ...row, [field]: value } : row))
+    }
   }
 
   function addRow(): void {
-    setRows((current) => [
-      ...current,
-      {
-        id: Date.now(),
-        orderNo: initialRow.orderNo,
-        serviceDate: '',
-        escortName: '',
-        escortType: '',
-        phone: '',
-        area: '',
-        sequence: String(current.length + 1)
-      }
-    ])
+    const nextRow: HuanyuEscortRow = {
+      id: Date.now(),
+      orderNo: initialRow.orderNo,
+      serviceDate: '',
+      escortName: '',
+      escortType: '',
+      phone: '',
+      area: '',
+      sequence: String(rows.length + 1)
+    }
+    if (onChangeRows) {
+      onChangeRows([...rows, nextRow])
+    } else {
+      setInternalRows((current) => [...current, nextRow])
+    }
   }
 
   function selectEscort(rowId: number, escortId: string): void {
     const escort = escortOptions.find((item) => item.id === escortId)
     if (!escort) return
-    setRows((current) => current.map((row) => row.id === rowId ? {
+    const updated = rows.map((row) => row.id === rowId ? {
       ...row,
       escortName: escort.id,
       escortType: escort.escortType,
       phone: escort.phone,
       area: escort.area
-    } : row))
+    } : row)
+    if (onChangeRows) {
+      onChangeRows(updated)
+    } else {
+      setInternalRows(updated)
+    }
   }
 
   return (

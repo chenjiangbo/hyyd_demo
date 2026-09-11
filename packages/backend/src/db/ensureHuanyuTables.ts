@@ -1,12 +1,181 @@
 import type { PrismaClient } from '@prisma/client'
 
 /**
- * 寰宇订单相关的业务表不属于当前采集模型，但后端需要保证它们在启动时存在，
- * 这样部署到已有数据库或全新数据库时都可以直接使用。
- *
- * 字段定义来源：`(对应数据库表)表格视图.xlsx`。
+ * 寰宇订单与基础字典维护表在启动时自动检测与创建（幂等）。
  */
 const CREATE_STATEMENTS = [
+  // 1. 科室维护表 f_hy_kswh
+  `
+    CREATE TABLE IF NOT EXISTS f_hy_kswh (
+      id VARCHAR(50) PRIMARY KEY,
+      name VARCHAR(100),
+      ms VARCHAR(200),
+      state VARCHAR(50) DEFAULT '启用',
+      c_date VARCHAR(50),
+      u_date VARCHAR(50)
+    );
+  `,
+  // 2. 细分科室表 f_hy_xfks
+  `
+    CREATE TABLE IF NOT EXISTS f_hy_xfks (
+      id VARCHAR(50) PRIMARY KEY,
+      name VARCHAR(100),
+      state VARCHAR(50) DEFAULT '启用',
+      u_date VARCHAR(50),
+      name_yjks VARCHAR(50),
+      xh VARCHAR(50)
+    );
+  `,
+  // 3. 医院维护表 f_hy_yywh
+  `
+    CREATE TABLE IF NOT EXISTS f_hy_yywh (
+      id VARCHAR(50) PRIMARY KEY,
+      name VARCHAR(200),
+      level VARCHAR(100),
+      bq VARCHAR(200),
+      dq VARCHAR(100),
+      dz VARCHAR(200),
+      tips VARCHAR(500),
+      bz VARCHAR(500),
+      state VARCHAR(50) DEFAULT '启用',
+      dz1 VARCHAR(200),
+      dz2 VARCHAR(200),
+      dq_sf VARCHAR(50),
+      dq_cs VARCHAR(50),
+      dz3 VARCHAR(200),
+      u_date VARCHAR(50)
+    );
+  `,
+  // 4. 医院科室子表 f_hy_yy_ks
+  `
+    CREATE TABLE IF NOT EXISTS f_hy_yy_ks (
+      id VARCHAR(50) PRIMARY KEY,
+      name VARCHAR(200),
+      ksdl VARCHAR(100),
+      ksxf VARCHAR(100),
+      state VARCHAR(50) DEFAULT '启用',
+      u_date VARCHAR(50),
+      id_yy VARCHAR(50),
+      xh VARCHAR(50)
+    );
+  `,
+  // 5. 医生档案表 f_hy_ys
+  `
+    CREATE TABLE IF NOT EXISTS f_hy_ys (
+      id VARCHAR(50) PRIMARY KEY,
+      name VARCHAR(100),
+      sex VARCHAR(50),
+      tel VARCHAR(200),
+      em VARCHAR(100),
+      dq_sf VARCHAR(50),
+      dq_cs VARCHAR(50),
+      yy VARCHAR(100),
+      dwks VARCHAR(100),
+      zc VARCHAR(50),
+      jxzc VARCHAR(50),
+      yyxzzw VARCHAR(100),
+      shrz VARCHAR(100),
+      sc VARCHAR(500),
+      bz VARCHAR(500),
+      state VARCHAR(50) DEFAULT '启用',
+      csrq VARCHAR(50),
+      c_date VARCHAR(50),
+      u_date VARCHAR(50)
+    );
+  `,
+  // 6. 渠道主表 f_hy_qd
+  `
+    CREATE TABLE IF NOT EXISTS f_hy_qd (
+      id VARCHAR(50) PRIMARY KEY,
+      name VARCHAR(100),
+      state VARCHAR(50) DEFAULT '启用',
+      c_date VARCHAR(50),
+      u_date VARCHAR(50)
+    );
+  `,
+  // 7. 渠道产品表 f_hy_cp_qd
+  `
+    CREATE TABLE IF NOT EXISTS f_hy_cp_qd (
+      id VARCHAR(100) PRIMARY KEY,
+      xh VARCHAR(50),
+      name VARCHAR(100),
+      cpjg NUMERIC(18, 2),
+      nbyjcp VARCHAR(100),
+      nbejcp VARCHAR(100),
+      state VARCHAR(50) DEFAULT '启用',
+      id_yj VARCHAR(50),
+      u_date VARCHAR(50)
+    );
+  `,
+  // 8. 对内产品表 f_hy_cp
+  `
+    CREATE TABLE IF NOT EXISTS f_hy_cp (
+      id VARCHAR(50) PRIMARY KEY,
+      name VARCHAR(100),
+      ms VARCHAR(200),
+      lx VARCHAR(50),
+      state VARCHAR(50) DEFAULT '启用',
+      c_date VARCHAR(50),
+      u_date VARCHAR(50)
+    );
+  `,
+  // 9. 对内子产品表 f_hy_zcp
+  `
+    CREATE TABLE IF NOT EXISTS f_hy_zcp (
+      id VARCHAR(100) PRIMARY KEY,
+      xh VARCHAR(50),
+      name VARCHAR(100),
+      state VARCHAR(50) DEFAULT '启用',
+      u_date VARCHAR(50),
+      id_yj VARCHAR(50)
+    );
+  `,
+  // 10. 支付渠道表 zfqd
+  `
+    CREATE TABLE IF NOT EXISTS zfqd (
+      id VARCHAR(50) PRIMARY KEY,
+      name VARCHAR(100),
+      yy VARCHAR(50),
+      start VARCHAR(50) DEFAULT '启用',
+      u_date VARCHAR(50),
+      zf_id VARCHAR(50),
+      by1 VARCHAR(50),
+      by2 VARCHAR(50)
+    );
+  `,
+  // 11. 陪诊人员表 f_hy_pzr
+  `
+    CREATE TABLE IF NOT EXISTS f_hy_pzr (
+      id VARCHAR(50) PRIMARY KEY,
+      name VARCHAR(100),
+      xb VARCHAR(50),
+      sj VARCHAR(100),
+      sf VARCHAR(50),
+      cs VARCHAR(50),
+      bz VARCHAR(500),
+      state VARCHAR(50) DEFAULT '启用',
+      c_date VARCHAR(50),
+      u_date VARCHAR(50),
+      pzrlx VARCHAR(50)
+    );
+  `,
+  // 12. 城市列表维度表 dim_cslb
+  `
+    CREATE TABLE IF NOT EXISTS dim_cslb (
+      s_id VARCHAR(20),
+      s_name VARCHAR(50),
+      x_id VARCHAR(20) PRIMARY KEY,
+      x_name VARCHAR(50)
+    );
+  `,
+  // 13. 医院等级维度表 dim_yydjb486
+  `
+    CREATE TABLE IF NOT EXISTS dim_yydjb486 (
+      id VARCHAR(100) PRIMARY KEY,
+      name VARCHAR(100)
+    );
+  `,
+  // 14. 寰宇订单主表 HY_FACT_DDCX_NEW
   `
     CREATE TABLE IF NOT EXISTS "HY_FACT_DDCX_NEW" (
       "DDBH" VARCHAR(50) NOT NULL,
@@ -71,8 +240,9 @@ const CREATE_STATEMENTS = [
       "aliPayTradeNo" VARCHAR(30),
       "expert_level" VARCHAR(50),
       CONSTRAINT "HY_FACT_DDCX_NEW_DDBH_key" UNIQUE ("DDBH")
-    )
+    );
   `,
+  // 15. 陪诊人员明细关联表 fact_hy_pzrxx
   `
     CREATE TABLE IF NOT EXISTS "fact_hy_pzrxx" (
       "DDBH" VARCHAR(50),
@@ -81,8 +251,9 @@ const CREATE_STATEMENTS = [
       "ZJ" VARCHAR(100) NOT NULL,
       "xtsj" VARCHAR(50),
       CONSTRAINT "fact_hy_pzrxx_ZJ_key" UNIQUE ("ZJ")
-    )
+    );
   `,
+  // 16. 订单附件表 hy_d_tp
   `
     CREATE TABLE IF NOT EXISTS "hy_d_tp" (
       "DDBH" VARCHAR(100),
@@ -106,12 +277,17 @@ const CREATE_STATEMENTS = [
       "FIELD19_" VARCHAR(100),
       "FIELD20_" VARCHAR(100),
       CONSTRAINT "hy_d_tp_DDBH_key" UNIQUE ("DDBH")
-    )
+    );
   `
 ]
 
 export async function ensureHuanyuTables(prisma: PrismaClient): Promise<void> {
   for (const statement of CREATE_STATEMENTS) {
-    await prisma.$executeRawUnsafe(statement)
+    try {
+      await prisma.$executeRawUnsafe(statement)
+    } catch {
+      // 忽略已存在提示
+    }
   }
 }
+

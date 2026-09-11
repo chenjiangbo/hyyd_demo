@@ -37,6 +37,13 @@ export type ApplicationGroup = {
 const REFRESH_INTERVAL_MS = 30_000
 const BOARD_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 
+export function clearOrdersCache(): void {
+  cachedOrders = null
+  cachedEmployeeCode = null
+  inflightOrders = null
+  inflightEmployeeCode = null
+}
+
 let cachedOrders: Order[] | null = null
 let cachedEmployeeCode: string | null = null
 let inflightOrders: Promise<Order[]> | null = null
@@ -228,12 +235,20 @@ export default function WorkbenchKanban({
         .finally(() => alive && showLoading && setLoading(false))
     }
 
-    refresh(getCachedOrders(employeeCode) === null)
+    refresh(getCachedOrders(employeeCode) === null, true)
     const timer = window.setInterval(() => refresh(false, true), REFRESH_INTERVAL_MS)
+
+    const handleOrdersUpdated = (): void => {
+      refresh(false, true)
+    }
+    window.addEventListener('huanyu-orders-updated', handleOrdersUpdated)
+    window.addEventListener('focus', handleOrdersUpdated)
 
     return () => {
       alive = false
       window.clearInterval(timer)
+      window.removeEventListener('huanyu-orders-updated', handleOrdersUpdated)
+      window.removeEventListener('focus', handleOrdersUpdated)
     }
   }, [employeeCode])
 

@@ -13,6 +13,7 @@ import { refreshApplicationBrief, refreshOrderBrief } from '../jobs/orderBriefRu
 import { getRecordingPlaybackInfo } from '../audioTranscode.js'
 import { listHuanyuBdUsers, listHuanyuChannelProducts, listHuanyuChannels, listHuanyuEscorts, listHuanyuHospitalAddresses, listHuanyuHospitalDepartments, listHuanyuHospitalDoctors, listHuanyuHospitals } from '../db/remoteDictionary.js'
 import { huanyuBookingChannelTypes, huanyuDocumentTypes, huanyuExpertLevels } from '../dictionaries/huanyuOrder.js'
+import { registerDictionaryManageRoutes } from './dictionaryManage.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   CreateOrderPayload,
@@ -420,11 +421,21 @@ export function registerApiRoutes(
     // 这些都不参与员工 X-Employee-Code 体系，直接放行。
     if (
       request.url === '/health' ||
+      request.url === '/api/v1/login' ||
       request.url.startsWith('/ws') ||
       request.url.startsWith('/api/v1/admin') ||
       request.url.startsWith('/api/v1/order-attachments/') ||
       request.url.startsWith('/admin') ||
-      request.url.startsWith('/ext') // 插件分发文件（.crx / update.xml），公开资源
+      request.url.startsWith('/ext') || // 插件分发文件（.crx / update.xml），公开资源
+      request.url.startsWith('/api/v1/departments') ||
+      request.url.startsWith('/api/v1/hospitals') ||
+      request.url.startsWith('/api/v1/doctors') ||
+      request.url.startsWith('/api/v1/channels') ||
+      request.url.startsWith('/api/v1/internal-products') ||
+      request.url.startsWith('/api/v1/payment-channels') ||
+      request.url.startsWith('/api/v1/escorts') ||
+      request.url.startsWith('/api/v1/regions') ||
+      request.url.startsWith('/api/v1/dim_cslb')
     ) {
       return
     }
@@ -441,6 +452,112 @@ export function registerApiRoutes(
   // 2. 健康检查接口
   fastify.get('/health', async () => {
     return { status: 'OK', timestamp: new Date().toISOString() }
+  })
+
+  // 2.1 员工登录接口（用工号密码换取身份会话）
+  fastify.post('/api/v1/login', async (request: FastifyRequest, reply: FastifyReply) => {
+    const body = (request.body ?? {}) as { username?: string; employeeCode?: string; account?: string; password?: string }
+    const user = (body.username || body.employeeCode || body.account || '').trim()
+    const pwd = (body.password || '').trim()
+
+    if (!user || !pwd) {
+      return reply.status(400).send({ error: '工号和密码不能为空' })
+    }
+
+    const emp = await prisma.employee.findUnique({
+      where: { token: user }
+    })
+
+    if (!emp) {
+      return reply.status(401).send({ error: '用户名或密码错误' })
+    }
+
+    if (emp.enabled === 0) {
+      return reply.status(403).send({ error: '账号已被停用，请联系管理员' })
+    }
+
+    const inputMd5 = /^[a-f0-9]{32}$/i.test(pwd)
+      ? pwd.toLowerCase()
+      : createHash('md5').update(pwd).digest('hex').toLowerCase()
+
+    const storedPwd = (emp.password || '').trim()
+    if (!storedPwd) {
+      return reply.status(401).send({ error: '用户名或密码错误' })
+    }
+
+    const storedMd5 = /^[a-f0-9]{32}$/i.test(storedPwd)
+      ? storedPwd.toLowerCase()
+      : createHash('md5').update(storedPwd).digest('hex').toLowerCase()
+
+    if (inputMd5 !== storedMd5) {
+      return reply.status(401).send({ error: '用户名或密码错误' })
+    }
+
+    return reply.send({
+      data: {
+        id: emp.id,
+        employeeCode: emp.token,
+        displayName: emp.name || emp.token,
+        token: emp.token
+      }
+    })
+  })
+
+  // 2.2 修改密码接口
+  fastify.post('/api/v1/me/password', async (request: FastifyRequest, reply: FastifyReply) => {
+    const parsed = (request.body ?? {}) as any
+    const empCode = request.headers['x-employee-code'] || parsed.employeeCode || request.employee?.token
+    if (!empCode) {
+      return reply.status(401).send({ error: '未登录或缺少工号信息' })
+    }
+
+    const { oldPassword, newPassword } = parsed
+    const oldPwd = String(oldPassword || '').trim()
+    const newPwd = String(newPassword || '').trim()
+
+    if (!oldPwd || !newPwd) {
+      return reply.status(400).send({ error: '旧密码和新密码不能为空' })
+    }
+
+    const emp = await prisma.employee.findUnique({
+      where: { token: String(empCode).trim() }
+    })
+
+    if (!emp) {
+      return reply.status(401).send({ error: '未找到当前登录用户' })
+    }
+
+    const inputOldMd5 = /^[a-f0-9]{32}$/i.test(oldPwd)
+      ? oldPwd.toLowerCase()
+      : createHash('md5').update(oldPwd).digest('hex').toLowerCase()
+
+    const storedPwd = (emp.password || '').trim()
+    if (!storedPwd) {
+      return reply.status(400).send({ error: '原账号未设置密码，请联系管理员' })
+    }
+
+    const storedOldMd5 = /^[a-f0-9]{32}$/i.test(storedPwd)
+      ? storedPwd.toLowerCase()
+      : createHash('md5').update(storedPwd).digest('hex').toLowerCase()
+
+    if (inputOldMd5 !== storedOldMd5) {
+      return reply.status(400).send({ error: '旧密码输入不正确' })
+    }
+
+    const newMd5 = /^[a-f0-9]{32}$/i.test(newPwd)
+      ? newPwd.toLowerCase()
+      : createHash('md5').update(newPwd).digest('hex').toLowerCase()
+
+    if (newMd5 === storedOldMd5) {
+      return reply.status(400).send({ error: '新密码不能与旧密码相同' })
+    }
+
+    await prisma.employee.update({
+      where: { id: emp.id },
+      data: { password: newMd5 }
+    })
+
+    return reply.send({ ok: true, message: '密码修改成功' })
   })
 
   fastify.get('/api/v1/me', async (request, reply) => {
@@ -639,6 +756,354 @@ export function registerApiRoutes(
     } catch (err: any) {
       fastify.log.error('创建/更新订单失败:', err)
       return reply.status(500).send({ error: '创建/更新订单失败: ' + err.message })
+    }
+  })
+
+async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
+  if (!orderObj) return orderObj
+  try {
+    const rawObj = (orderObj.rawJson || {})
+    const orderNoCandidates = [
+      orderObj.sourceOrderNo,
+      rawObj.sourceOrderNo,
+      rawObj.channelOrderNo,
+      rawObj.bOrderNo,
+      rawObj.bChannelOrderNo,
+      orderObj.orderNo,
+      rawObj.orderNo,
+      orderObj.id ? String(orderObj.id) : null
+    ].filter(Boolean)
+
+    if (orderNoCandidates.length === 0) return orderObj
+
+    const placeholders = orderNoCandidates.map((_, i) => `$${i + 1}`).join(',')
+    const huanyuRows = await prisma.$queryRawUnsafe<any[]>(`
+      SELECT * FROM "HY_FACT_DDCX_NEW"
+      WHERE "BDQD_DDBH" IN (${placeholders})
+         OR "DDBH" IN (${placeholders})
+      ORDER BY "xtsj_" DESC NULLS LAST
+      LIMIT 1;
+    `, ...orderNoCandidates)
+
+    if (!huanyuRows || huanyuRows.length === 0) {
+      return orderObj
+    }
+
+    const h = huanyuRows[0]
+    const ddbh = h.DDBH
+
+    const escortRows = await prisma.$queryRawUnsafe<any[]>(`
+      SELECT * FROM "fact_hy_pzrxx"
+      WHERE "DDBH" = $1
+      ORDER BY "ZJ" ASC;
+    `, ddbh)
+
+    const escortList = (escortRows || []).map((r: any, idx: number) => ({
+      sequence: String(idx + 1),
+      escortName: r.PZR || '',
+      serviceDate: r.BBQ_FW || '',
+      escortType: '',
+      phone: '',
+      area: ''
+    }))
+
+    const raw = {
+      ...rawObj,
+      orderNo: h.DDBH || '',
+      orderStatus: h.DD_state || orderObj.status || '',
+      channel: h.BDQD || '',
+      channelOrderNo: h.BDQD_DDBH || orderObj.sourceOrderNo || '',
+      backupOrderNo: h.BDQD_DDBH2 || '',
+      channelDetail: h.BDQD_XF || '',
+      channelContact: h.BDQD_DJR || '',
+      channelBackupContact: h.BDQD_DJR2 || '',
+      channelService: h.BDQD_FWXM || '',
+      orderAmount: h.DDJE != null ? String(h.DDJE) : '',
+      accountManager: h.KHJL || '',
+      patientName: h.JZR_XM || orderObj.customerName || '',
+      documentType: h.JZR_ZJLX || '',
+      documentNo: h.JZR_ZJHM || '',
+      patientGender: h.JZR_XB || '',
+      patientAge: h.JZR_NL != null ? String(h.JZR_NL) : '',
+      patientPhone: h.JZR_LXDH || orderObj.customerPhone || '',
+      familyName: h.JZR_JSMC || '',
+      familyRelation: h.JZR_JSGX || '',
+      familyPhone: h.JZR_JSLXFS || '',
+      disease: h.JZR_JB || '',
+      patientRequest: h.JZR_BZ || '',
+      hospital: h.H_NAME || orderObj.hospital || '',
+      hospitalAddress: h.H_ADDRESS || '',
+      department: h.H_KS || orderObj.dept || '',
+      doctor: h.H_YS || orderObj.doctor || '',
+      serviceRemark: h.DDFWBZ || '',
+      requestTime: h.DATE_XQ || h.BBQ_XQ || '',
+      responseTime: h.DATE_YD || h.BBQ_YD || '',
+      serviceStartTime: h.DATE_QDFW || h.BBQ_QDFW || '',
+      bookingFeedbackTime: h.DATE_FK || h.BBQ_FK || '',
+      latestTicketTime: h.DATE_FW || h.BBQ_FW || '',
+      escortName: h.PZR || '',
+      escortSummary: h.PZXJ || '',
+      bookingChannelType: h.YYQDLX || '',
+      bd: h.BDYH || '',
+      registrationFee: h.registerAmount != null ? String(h.registerAmount) : '',
+      advancePayment: h.isAdvancePay || '',
+      advanceRegistrationFee: h.advanceRegisterAmount != null ? String(h.advanceRegisterAmount) : '',
+      advanceRecovered: h.registerPayStatus || '',
+      registrationRefund: h.refundCustAmount != null ? String(h.refundCustAmount) : '',
+      hasInsurance: h.medicare || '',
+      insuranceType: h.medicareType || '',
+      isTaiKang: h.isTaiKang || '0',
+      expertLevel: h.expert_level || '',
+      escortList
+    }
+
+    return {
+      ...orderObj,
+      customerName: h.JZR_XM || orderObj.customerName,
+      customerPhone: h.JZR_LXDH || orderObj.customerPhone,
+      hospital: h.H_NAME || orderObj.hospital,
+      dept: h.H_KS || orderObj.dept,
+      doctor: h.H_YS || orderObj.doctor,
+      status: h.DD_state || orderObj.status,
+      rawJson: raw
+    }
+  } catch (err) {
+    fastify.log.error('enrichOrderWithHuanyuFact error:', err)
+    return orderObj
+  }
+}
+
+  // 3.1 保存/更新寰宇订单（同时落库 HY_FACT_DDCX_NEW, fact_hy_pzrxx 和 orders 表）
+  fastify.post('/api/v1/orders/huanyu/save', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const body = (request.body as any) || {}
+    let orderNo = String(body.orderNo || '').trim()
+    if (!orderNo && body.channelOrderNo) {
+      const existing = await prisma.$queryRawUnsafe<Array<{ DDBH: string }>>(
+        `SELECT "DDBH" FROM "HY_FACT_DDCX_NEW" WHERE "BDQD_DDBH" = $1 AND "DDBH" LIKE 'HYDD%' LIMIT 1;`,
+        String(body.channelOrderNo).trim()
+      )
+      if (existing && existing.length > 0 && existing[0].DDBH) {
+        orderNo = existing[0].DDBH
+      }
+    }
+    if (!orderNo) {
+      const ymd = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+      const rnd = Math.floor(10000000 + Math.random() * 90000000)
+      orderNo = `HYDD${ymd}${rnd}`
+    }
+    const patientName = String(body.patientName || '').trim()
+
+    const employeeName = request.employee.name || request.employee.token
+    const accountManager = String(body.accountManager || '').trim() || employeeName
+    const orderStatus = String(body.orderStatus || '待处理').trim()
+    const nowStr = new Date().toISOString()
+
+    try {
+      // 1. 保存/更新主表 HY_FACT_DDCX_NEW
+      await prisma.$executeRawUnsafe(`
+        INSERT INTO "HY_FACT_DDCX_NEW" (
+          "DDBH", "DD_state", "BDQD", "BDQD_DDBH", "BDQD_DDBH2", "BDQD_XF",
+          "BDQD_DJR", "BDQD_DJR2", "BDQD_FWXM", "DDJE", "KHJL", "JZR_XM",
+          "JZR_ZJLX", "JZR_ZJHM", "JZR_XB", "JZR_NL", "JZR_LXDH", "JZR_JSMC",
+          "JZR_JSGX", "JZR_JSLXFS", "JZR_JB", "JZR_BZ", "H_NAME", "H_ADDRESS",
+          "H_KS", "H_YS", "DDFWBZ", "BBQ_XQ", "DATE_XQ", "BBQ_YD", "DATE_YD",
+          "BBQ_QDFW", "DATE_QDFW", "BBQ_FK", "DATE_FK", "BBQ_FW", "DATE_FW",
+          "PZR", "PZXJ", "YYQDLX", "BDYH", "registerAmount", "isAdvancePay",
+          "advanceRegisterAmount", "registerPayStatus", "refundCustAmount",
+          "medicare", "medicareType", "isTaiKang", "expert_level", "xtsj_"
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6,
+          $7, $8, $9, $10, $11, $12,
+          $13, $14, $15, $16, $17, $18,
+          $19, $20, $21, $22, $23, $24,
+          $25, $26, $27, $28, $29, $30, $31,
+          $32, $33, $34, $35, $36, $37,
+          $38, $39, $40, $41, $42, $43,
+          $44, $45, $46,
+          $47, $48, $49, $50, $51
+        )
+        ON CONFLICT ("DDBH") DO UPDATE SET
+          "DD_state" = EXCLUDED."DD_state",
+          "BDQD" = EXCLUDED."BDQD",
+          "BDQD_DDBH" = EXCLUDED."BDQD_DDBH",
+          "BDQD_DDBH2" = EXCLUDED."BDQD_DDBH2",
+          "BDQD_XF" = EXCLUDED."BDQD_XF",
+          "BDQD_DJR" = EXCLUDED."BDQD_DJR",
+          "BDQD_DJR2" = EXCLUDED."BDQD_DJR2",
+          "BDQD_FWXM" = EXCLUDED."BDQD_FWXM",
+          "DDJE" = EXCLUDED."DDJE",
+          "KHJL" = EXCLUDED."KHJL",
+          "JZR_XM" = EXCLUDED."JZR_XM",
+          "JZR_ZJLX" = EXCLUDED."JZR_ZJLX",
+          "JZR_ZJHM" = EXCLUDED."JZR_ZJHM",
+          "JZR_XB" = EXCLUDED."JZR_XB",
+          "JZR_NL" = EXCLUDED."JZR_NL",
+          "JZR_LXDH" = EXCLUDED."JZR_LXDH",
+          "JZR_JSMC" = EXCLUDED."JZR_JSMC",
+          "JZR_JSGX" = EXCLUDED."JZR_JSGX",
+          "JZR_JSLXFS" = EXCLUDED."JZR_JSLXFS",
+          "JZR_JB" = EXCLUDED."JZR_JB",
+          "JZR_BZ" = EXCLUDED."JZR_BZ",
+          "H_NAME" = EXCLUDED."H_NAME",
+          "H_ADDRESS" = EXCLUDED."H_ADDRESS",
+          "H_KS" = EXCLUDED."H_KS",
+          "H_YS" = EXCLUDED."H_YS",
+          "DDFWBZ" = EXCLUDED."DDFWBZ",
+          "BBQ_XQ" = EXCLUDED."BBQ_XQ",
+          "DATE_XQ" = EXCLUDED."DATE_XQ",
+          "BBQ_YD" = EXCLUDED."BBQ_YD",
+          "DATE_YD" = EXCLUDED."DATE_YD",
+          "BBQ_QDFW" = EXCLUDED."BBQ_QDFW",
+          "DATE_QDFW" = EXCLUDED."DATE_QDFW",
+          "BBQ_FK" = EXCLUDED."BBQ_FK",
+          "DATE_FK" = EXCLUDED."DATE_FK",
+          "BBQ_FW" = EXCLUDED."BBQ_FW",
+          "DATE_FW" = EXCLUDED."DATE_FW",
+          "PZR" = EXCLUDED."PZR",
+          "PZXJ" = EXCLUDED."PZXJ",
+          "YYQDLX" = EXCLUDED."YYQDLX",
+          "BDYH" = EXCLUDED."BDYH",
+          "registerAmount" = EXCLUDED."registerAmount",
+          "isAdvancePay" = EXCLUDED."isAdvancePay",
+          "advanceRegisterAmount" = EXCLUDED."advanceRegisterAmount",
+          "registerPayStatus" = EXCLUDED."registerPayStatus",
+          "refundCustAmount" = EXCLUDED."refundCustAmount",
+          "medicare" = EXCLUDED."medicare",
+          "medicareType" = EXCLUDED."medicareType",
+          "isTaiKang" = EXCLUDED."isTaiKang",
+          "expert_level" = EXCLUDED."expert_level",
+          "xtsj_" = EXCLUDED."xtsj_";
+      `,
+        orderNo,
+        orderStatus,
+        body.channel || null,
+        body.channelOrderNo || null,
+        body.backupOrderNo || null,
+        body.channelDetail || null,
+        body.channelContact || null,
+        body.channelBackupContact || null,
+        body.channelService || null,
+        body.orderAmount ? parseFloat(body.orderAmount) || 0 : null,
+        accountManager,
+        patientName,
+        body.documentType || null,
+        body.documentNo || null,
+        body.patientGender || null,
+        body.patientAge ? parseInt(body.patientAge, 10) || null : null,
+        body.patientPhone || null,
+        body.familyName || null,
+        body.familyRelation || null,
+        body.familyPhone || null,
+        body.disease || null,
+        body.patientRequest || null,
+        body.hospital || null,
+        body.hospitalAddress || null,
+        body.department || null,
+        body.doctor || null,
+        body.serviceRemark || null,
+        body.requestDefaultDate || null,
+        body.requestTime || null,
+        body.responseDefaultDate || null,
+        body.responseTime || body.expectedBookingTime || null,
+        body.serviceStartDefaultDate || null,
+        body.serviceStartTime || null,
+        body.bookingFeedbackDefaultDate || null,
+        body.bookingFeedbackTime || null,
+        body.latestTicketDefaultDate || null,
+        body.latestTicketTime || null,
+        body.escortName || null,
+        body.escortSummary || null,
+        body.bookingChannelType || null,
+        body.bd || null,
+        body.registrationFee ? parseFloat(body.registrationFee) || null : null,
+        body.advancePayment || null,
+        body.advanceRegistrationFee ? parseFloat(body.advanceRegistrationFee) || null : null,
+        body.advanceRecovered || null,
+        body.registrationRefund ? parseFloat(body.registrationRefund) || null : null,
+        body.hasInsurance || null,
+        body.insuranceType || null,
+        body.isTaiKang || '0',
+        body.expertLevel || null,
+        nowStr
+      )
+
+      // 2. 更新陪诊人表 fact_hy_pzrxx
+      if (Array.isArray(body.escortList)) {
+        await prisma.$executeRawUnsafe(`DELETE FROM "fact_hy_pzrxx" WHERE "DDBH" = $1;`, orderNo)
+        for (let i = 0; i < body.escortList.length; i++) {
+          const item = body.escortList[i]
+          if (item && item.escortName) {
+            const seq = item.sequence || String(i + 1)
+            const zj = `${orderNo}_${seq}`
+            await prisma.$executeRawUnsafe(`
+              INSERT INTO "fact_hy_pzrxx" ("DDBH", "PZR", "BBQ_FW", "ZJ", "xtsj")
+              VALUES ($1, $2, $3, $4, $5)
+              ON CONFLICT ("ZJ") DO UPDATE SET
+                "PZR" = EXCLUDED."PZR",
+                "BBQ_FW" = EXCLUDED."BBQ_FW",
+                "xtsj" = EXCLUDED."xtsj";
+            `, orderNo, item.escortName, item.serviceDate || '', zj, nowStr)
+          }
+        }
+      }
+
+      // 3. 同步更新工作台 orders 表，保留原有 B端订单编号
+      const channelOrderNoStr = String(body.channelOrderNo || '').trim()
+      let existingOrder = null
+      if (channelOrderNoStr) {
+        existingOrder = await prisma.order.findFirst({
+          where: { sourceOrderNo: channelOrderNoStr }
+        })
+      }
+      if (!existingOrder && orderNo) {
+        existingOrder = await prisma.order.findFirst({
+          where: { sourceOrderNo: orderNo }
+        })
+      }
+
+      let syncedOrder
+      if (existingOrder) {
+        // 原地更新已有订单，保留其原有 source 和 sourceOrderNo（B端订单编号不被篡改）
+        syncedOrder = await prisma.order.update({
+          where: { id: existingOrder.id },
+          data: {
+            customerName: patientName || existingOrder.customerName,
+            customerPhone: body.patientPhone || existingOrder.customerPhone,
+            hospital: body.hospital || existingOrder.hospital,
+            dept: body.department || existingOrder.dept,
+            doctor: body.doctor || existingOrder.doctor,
+            status: orderStatus,
+            rawJson: {
+              ...(typeof existingOrder.rawJson === 'object' && existingOrder.rawJson ? existingOrder.rawJson : {}),
+              ...body,
+              orderNo,
+              DDBH: orderNo
+            }
+          }
+        })
+      } else {
+        // 全新自建寰宇订单
+        syncedOrder = await prisma.order.create({
+          data: {
+            source: 'huanyu',
+            sourceOrderNo: orderNo,
+            customerName: patientName,
+            customerPhone: body.patientPhone || null,
+            hospital: body.hospital || null,
+            dept: body.department || null,
+            doctor: body.doctor || null,
+            status: orderStatus,
+            assignedEmployee: { connect: { id: request.employee.id } },
+            rawJson: { ...body, orderNo, DDBH: orderNo }
+          }
+        })
+      }
+
+      return reply.send({ ok: true, order: syncedOrder, message: '寰宇订单保存成功' })
+    } catch (err: any) {
+      fastify.log.error('保存寰宇订单失败:', err)
+      return reply.status(500).send({ ok: false, error: '保存寰宇订单失败: ' + err.message })
     }
   })
 
@@ -2143,14 +2608,16 @@ export function registerApiRoutes(
         orderBy: { createdAt: 'desc' }
       })
 
+      const enrichedOrder = await enrichOrderWithHuanyuFact(order)
+
       // 组装聚合响应
       const data: OrderAggregate = {
-        ...order,
-        source: order.source as any,
-        status: order.status as any,
-        rawJson: order.rawJson as any,
-        createdAt: order.createdAt.toISOString(),
-        updatedAt: order.updatedAt.toISOString(),
+        ...enrichedOrder,
+        source: enrichedOrder.source as any,
+        status: enrichedOrder.status as any,
+        rawJson: enrichedOrder.rawJson as any,
+        createdAt: enrichedOrder.createdAt.toISOString(),
+        updatedAt: enrichedOrder.updatedAt.toISOString(),
         messages: messages.map(m => ({
           ...m,
           channel: m.channel as any,
@@ -2188,6 +2655,8 @@ export function registerApiRoutes(
       const order = await prisma.order.findUnique({ where: { id: orderId } })
       if (!order) return reply.status(404).send({ error: '订单不存在' })
 
+      const enrichedOrder = await enrichOrderWithHuanyuFact(order)
+
       const attachments = await prisma.orderAttachment.findMany({
         where: { orderId },
         orderBy: { id: 'asc' }
@@ -2210,12 +2679,12 @@ export function registerApiRoutes(
       return reply.send({
         data: {
           order: {
-            ...order,
-            createdAt: order.createdAt.toISOString(),
-            updatedAt: order.updatedAt.toISOString(),
-            detailFetchedAt: order.detailFetchedAt?.toISOString() ?? null
+            ...enrichedOrder,
+            createdAt: enrichedOrder.createdAt.toISOString(),
+            updatedAt: enrichedOrder.updatedAt.toISOString(),
+            detailFetchedAt: enrichedOrder.detailFetchedAt?.toISOString() ?? null
           },
-          detail: order.detailJson ?? null,
+          detail: enrichedOrder.detailJson ?? null,
           attachments: attachmentsOut
         }
       })
@@ -2571,4 +3040,6 @@ export function registerApiRoutes(
     }
   )
 
+  // 13. 字典配置管理 CRUD 路由 (科室、医院、医生、渠道、产品、支付渠道、陪诊人、地区)
+  registerDictionaryManageRoutes(fastify, prisma)
 }

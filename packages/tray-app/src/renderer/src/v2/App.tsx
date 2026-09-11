@@ -76,7 +76,11 @@ export default function App(): React.JSX.Element {
       <ApplicationDetailPage
         group={openApplication.group}
         initialOrderId={openApplication.selectedOrderId}
-        onBack={() => setOpenApplication(null)}
+        onBack={() => {
+          setOpenApplication(null)
+          clearOrdersCache()
+          window.dispatchEvent(new CustomEvent('huanyu-orders-updated'))
+        }}
       />
     )
   } else if (openHuanyuCreate) {

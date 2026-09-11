@@ -236,6 +236,81 @@ export function createOrder(input: CreateOrderInput): Promise<Order> {
   })
 }
 
+export interface SaveHuanyuOrderPayload {
+  mode?: 'create' | 'update'
+  orderNo: string
+  orderStatus?: string
+  channel?: string
+  channelOrderNo?: string
+  backupOrderNo?: string
+  channelDetail?: string
+  channelContact?: string
+  channelBackupContact?: string
+  channelService?: string
+  internalLevelOne?: string
+  internalLevelTwo?: string
+  orderAmount?: string
+  accountManager?: string
+  bookingChannelType?: string
+  bd?: string
+  patientName?: string
+  documentType?: string
+  documentNo?: string
+  patientGender?: string
+  patientAge?: string
+  patientPhone?: string
+  familyName?: string
+  familyRelation?: string
+  familyPhone?: string
+  disease?: string
+  expectedBookingTime?: string
+  patientRequest?: string
+  hospital?: string
+  hospitalAddress?: string
+  department?: string
+  internalHospitalLevelOne?: string
+  internalHospitalLevelTwo?: string
+  doctor?: string
+  expertLevel?: string
+  serviceRemark?: string
+  tkHospital?: string
+  tkProvince?: string
+  tkCity?: string
+  tkDepartment?: string
+  requestTime?: string
+  requestDefaultDate?: string
+  responseTime?: string
+  responseDefaultDate?: string
+  serviceStartTime?: string
+  serviceStartDefaultDate?: string
+  bookingFeedbackTime?: string
+  bookingFeedbackDefaultDate?: string
+  latestTicketTime?: string
+  latestTicketDefaultDate?: string
+  registrationFee?: string
+  advancePayment?: string
+  advanceRegistrationFee?: string
+  advanceRecovered?: string
+  registrationRefund?: string
+  alipayAccount?: string
+  hasInsurance?: string
+  insuranceType?: string
+  smsLink?: string
+  escortSummary?: string
+  escortList?: Array<{
+    serviceDate?: string
+    escortName?: string
+    escortType?: string
+    phone?: string
+    area?: string
+    sequence?: string
+  }>
+}
+
+export function saveHuanyuOrder(payload: SaveHuanyuOrderPayload): Promise<{ ok: boolean; order: Order; message?: string }> {
+  return authedSend<{ ok: boolean; order: Order; message?: string }>('/api/v1/orders/huanyu/save', 'POST', payload)
+}
+
 export function fetchOrderDetail(orderId: number): Promise<OrderDetailResponse> {
   return authedGet<OrderDetailResponse>(`/api/v1/orders/${orderId}/detail`)
 }
