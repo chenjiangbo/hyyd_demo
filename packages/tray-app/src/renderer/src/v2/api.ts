@@ -82,15 +82,16 @@ export interface Order {
   hospital: string | null
   dept: string | null
   doctor: string | null
-  status: string // 泰康/平安原始状态名
+  status: string // 当前展示的寰宇订单状态
+  huanyuOrderStatus?: string | null
   orderState?: string | null
   taikangOrderState?: string | null
   taikangOrderStateName?: string | null
   taikangCaseStatus?: string | null
   taikangWaitType?: string | null
   taikangServState?: string | null
-  workbenchLane?: 'todo' | 'doing' | 'await_backfill' | 'done'
-  serviceStage?: 'claimed' | 'communicating' | 'delivering' | 'settlement' | 'closing'
+  workbenchLane?: 'todo' | 'doing' | 'await_backfill' | 'done' | null
+  serviceStage?: 'claimed' | 'communicating' | 'delivering' | 'settlement' | 'closing' | null
   intendDate: string | null
   claimedAt: string | null
   createdAt?: string

@@ -15,6 +15,7 @@ const ORDER_STATUSES: readonly HuanyuFixedDictionaryOption[] = [
   { id: '待预约', name: '待预约' },
   { id: '预约完成-待支付', name: '预约完成-待支付' },
   { id: '待交付', name: '待交付' },
+  { id: '预约完成待支付', name: '预约完成待支付' },
   { id: '已完成', name: '已完成' },
   { id: '已取消', name: '已取消' },
   { id: '爽约', name: '爽约' },

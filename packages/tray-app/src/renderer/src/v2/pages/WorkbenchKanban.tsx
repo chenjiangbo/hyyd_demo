@@ -171,12 +171,12 @@ function groupOrdersByApplication(orders: Order[]): ApplicationGroup[] {
     .sort((a, b) => timeValue(b.poolEnteredAt) - timeValue(a.poolEnteredAt))
 }
 
-function groupLaneOf(group: ApplicationGroup): LaneKey {
-  const priority: LaneKey[] = ['await_backfill', 'doing', 'todo', 'done']
+function groupLaneOf(group: ApplicationGroup): LaneKey | null {
+  const priority: LaneKey[] = ['todo', 'doing', 'await_backfill', 'done']
   for (const lane of priority) {
     if (group.orders.some((order) => laneOf(order) === lane)) return lane
   }
-  return laneOf(group.primary)
+  return null
 }
 
 function dedupeServices(orders: Order[]): Array<{ label: string; count: number; order: Order }> {
@@ -502,7 +502,10 @@ function BoardView({
 }): React.JSX.Element {
   const grouped = useMemo(() => {
     const g: Record<LaneKey, ApplicationGroup[]> = { todo: [], doing: [], await_backfill: [], done: [] }
-    for (const group of groups) g[groupLaneOf(group)].push(group)
+    for (const group of groups) {
+      const lane = groupLaneOf(group)
+      if (lane) g[lane].push(group)
+    }
     for (const key of Object.keys(g) as LaneKey[]) {
       g[key].sort((a, b) => timeValue(b.poolEnteredAt) - timeValue(a.poolEnteredAt))
     }
@@ -513,7 +516,6 @@ function BoardView({
     <div className="flex-1 min-h-0 overflow-hidden p-6 bg-surface-bg flex gap-4">
       {LANES.map((lane) => {
         const items = grouped[lane.key]
-        const isAi = lane.key === 'await_backfill'
         return (
           <div
             key={lane.key}
@@ -524,11 +526,7 @@ function BoardView({
           >
             <div className="p-3 border-b border-border-subtle flex justify-between items-center shrink-0 rounded-t-xl">
               <h3 className="text-h3-title flex items-center gap-2 text-text-main">
-                {isAi ? (
-                  <span className="material-symbols-outlined filled text-ai-purple text-[18px]">smart_toy</span>
-                ) : (
-                  <span className={'w-2 h-2 rounded-full ' + lane.dotClass} />
-                )}
+                <span className={'w-2 h-2 rounded-full ' + lane.dotClass} />
                 {lane.label}
               </h3>
               <span className="text-body-sm text-text-muted bg-surface-variant px-2 py-0.5 rounded">{items.length}</span>
@@ -538,9 +536,9 @@ function BoardView({
               {items.length === 0 ? (
                 <div className="flex-1 flex flex-col items-center justify-center text-text-muted/50 py-8">
                   <span className="material-symbols-outlined text-[48px] mb-2">
-                    {isAi ? 'smart_toy' : 'inventory_2'}
+                    inventory_2
                   </span>
-                  <p className="text-body-sm">{isAi ? 'AI 提取完成的订单会出现在这里' : '暂无'}</p>
+                  <p className="text-body-sm">暂无</p>
                 </div>
               ) : (
                 items.map((group) => (
@@ -864,7 +862,10 @@ function ListView({
   // 各泳道计数（用于筛选条徽标）
   const laneCounts = useMemo(() => {
     const c: Record<LaneKey, number> = { todo: 0, doing: 0, await_backfill: 0, done: 0 }
-    for (const group of groups) c[groupLaneOf(group)]++
+    for (const group of groups) {
+      const lane = groupLaneOf(group)
+      if (lane) c[lane]++
+    }
     return c
   }, [groups])
 
@@ -958,7 +959,7 @@ function ListView({
                 <SortHead label="客户" k="customerName" sort={sort} onSort={toggleSort} />
                 <SortHead label="医院 / 科室" k="hospital" sort={sort} onSort={toggleSort} />
                 <th className="py-3.5 px-4 font-bold">业务类型</th>
-                <SortHead label="状态 / 阶段" k="status" sort={sort} onSort={toggleSort} />
+                <SortHead label="订单状态" k="status" sort={sort} onSort={toggleSort} />
                 <th className="py-3.5 px-4 font-bold">数据量</th>
                 <th className="py-3.5 px-3 font-bold">来源</th>
                 <SortHead label="入池" k="poolEnteredAt" sort={sort} onSort={toggleSort} />
@@ -992,14 +993,16 @@ function ListView({
   )
 }
 
-function rowAccentOf(lane: LaneKey): string {
+function rowAccentOf(lane: LaneKey | null): string {
   return lane === 'todo'
     ? 'border-l-status-urgent'
     : lane === 'doing'
       ? 'border-l-status-info'
       : lane === 'await_backfill'
         ? 'border-l-ai-purple'
-        : 'border-l-status-success'
+        : lane === 'done'
+          ? 'border-l-status-success'
+          : 'border-l-border-subtle'
 }
 
 function ApplicationTreeRow({
@@ -1169,7 +1172,6 @@ function SortHead({
 
 function LaneBadge({ order }: { order: Order }): React.JSX.Element {
   const key = laneOf(order)
-  const lane = LANES.find((l) => l.key === key)!
   const color =
     key === 'todo'
       ? 'text-text-muted bg-surface-variant'
@@ -1177,10 +1179,12 @@ function LaneBadge({ order }: { order: Order }): React.JSX.Element {
         ? 'text-primary bg-primary-container/15'
         : key === 'await_backfill'
           ? 'text-ai-purple bg-ai-purple/10'
-          : 'text-action-green bg-action-green/10'
+          : key === 'done'
+            ? 'text-action-green bg-action-green/10'
+            : 'text-text-muted bg-surface-variant'
   return (
-    <span className={'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-label-caps ' + color} title={order.status}>
-      {lane.label}
+    <span className={'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-label-caps ' + color} title={order.huanyuOrderStatus || '未设置'}>
+      {order.huanyuOrderStatus || '未设置'}
     </span>
   )
 }

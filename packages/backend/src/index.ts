@@ -26,6 +26,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { getEnv } from './env.js'
 import { ensureHuanyuTables } from './db/ensureHuanyuTables.js'
+import { ensureBOrderFormTables } from './db/ensureBOrderFormTables.js'
 import { syncHuanyuOrderFromTaikang } from './huanyuOrderSync.js'
 
 if (process.env.NODE_ENV !== 'production') {
@@ -87,9 +88,10 @@ async function ensureBuckets() {
 
 async function start() {
   try {
-    // 先确保寰宇订单相关业务表存在，再注册路由和启动服务。
+    // 先确保寰宇订单与 B 端运营表单相关业务表存在，再注册路由和启动服务。
     // 该检查幂等，已有表不会被修改。
     await ensureHuanyuTables(prisma)
+    await ensureBOrderFormTables(prisma)
     await ensureBuckets()
 
     // 1. 注册 CORS 跨域插件

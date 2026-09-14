@@ -1,6 +1,5 @@
 /**
- * 订单业务映射：把泰康/平安的原始状态、池类型等，翻译成 v2 工作台的展示语义。
- * 映射规则集中在这里，方便后续按真实业务调整（这是和用户约定可随时改的地方）。
+ * 订单业务映射：工作台状态仅以寰宇订单详情的订单状态为准。
  */
 import type { Order } from '../api'
 
@@ -9,16 +8,15 @@ export type LaneKey = 'todo' | 'doing' | 'await_backfill' | 'done'
 export interface LaneDef {
   key: LaneKey
   label: string
-  /** 圆点颜色 class（待确认回填用 AI 机器人图标，不用圆点） */
-  dotClass?: string
-  ai?: boolean
+  /** 圆点颜色 class */
+  dotClass: string
 }
 
 export const LANES: LaneDef[] = [
-  { key: 'todo', label: '待处理', dotClass: 'bg-status-urgent' },
-  { key: 'doing', label: '进行中', dotClass: 'bg-status-info' },
-  { key: 'await_backfill', label: '待确认回填', ai: true },
-  { key: 'done', label: '待结束', dotClass: 'bg-status-success' }
+  { key: 'todo', label: '待跟进', dotClass: 'bg-status-urgent' },
+  { key: 'doing', label: '待预约', dotClass: 'bg-status-info' },
+  { key: 'await_backfill', label: '待交付', dotClass: 'bg-ai-purple' },
+  { key: 'done', label: '预约完成待支付', dotClass: 'bg-status-success' }
 ]
 
 /** 泳道左色条（卡片 border-l 颜色），与泳道点同语义 */
@@ -29,24 +27,20 @@ export const LANE_ACCENT: Record<LaneKey, string> = {
   done: 'border-l-status-success'
 }
 
-/** 把订单原始状态映射到泳道 */
-export function laneOf(o: Order): LaneKey {
-  if (
-    o.workbenchLane === 'todo' ||
-    o.workbenchLane === 'doing' ||
-    o.workbenchLane === 'await_backfill' ||
-    o.workbenchLane === 'done'
-  ) {
-    return o.workbenchLane
+/** 把寰宇订单详情的订单状态映射到工作台泳道；其他状态不进入这四个泳道。 */
+export function laneOf(o: Order): LaneKey | null {
+  switch (o.huanyuOrderStatus?.trim()) {
+    case '待跟进':
+      return 'todo'
+    case '待预约':
+      return 'doing'
+    case '待交付':
+      return 'await_backfill'
+    case '预约完成待支付':
+      return 'done'
+    default:
+      return null
   }
-
-  const s = o.taikangOrderStateName || o.status || ''
-  if (['已完成', '已取消', '爽约'].includes(s)) return 'done'
-  if (['待录入', '取消待确认', '点名待确认', '爽约待确认', '关闭待确认', '待退款'].includes(s)) {
-    return 'await_backfill'
-  }
-  if (['待处理', '确认申请', '更改申请', '待补充资料', '已申领'].includes(s)) return 'todo'
-  return 'doing'
 }
 
 /** 服务生命周期阶段（绿通/挂号共用的抽象阶段） */

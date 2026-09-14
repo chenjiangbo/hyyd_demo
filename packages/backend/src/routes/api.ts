@@ -157,9 +157,14 @@ type ApplicationMatch = {
 type WorkbenchLane = 'todo' | 'doing' | 'await_backfill' | 'done'
 type ServiceStage = 'claimed' | 'communicating' | 'delivering' | 'settlement' | 'closing'
 
-const TODO_STATUS = new Set(['待处理', '确认申请', '更改申请', '待补充资料', '已申领'])
-const AWAIT_BACKFILL_STATUS = new Set(['待录入', '取消待确认', '点名待确认', '爽约待确认', '关闭待确认', '待退款'])
-const DONE_STATUS = new Set(['已完成', '已取消', '爽约'])
+// 工作台只认寰宇订单详情 HY_FACT_DDCX_NEW.DD_state 的这四个状态。
+// 不再把泰康/B 端原始状态映射到工作台泳道，其他寰宇状态也不挤进这四列。
+const HUANYU_WORKBENCH_LANES: Readonly<Record<string, WorkbenchLane>> = {
+  '待跟进': 'todo',
+  '待预约': 'doing',
+  '待交付': 'await_backfill',
+  '预约完成待支付': 'done'
+}
 
 function stringOrNull(value: unknown): string | null {
   if (value == null) return null
@@ -181,14 +186,11 @@ function taikangOrderStateOf(raw: Record<string, unknown>, fallback: unknown): s
   return stringOrNull(raw.taikangOrderState) ?? stringOrNull(raw.orderState) ?? stringOrNull(fallback)
 }
 
-function deriveWorkbenchLane(statusName: string): WorkbenchLane {
-  if (DONE_STATUS.has(statusName)) return 'done'
-  if (AWAIT_BACKFILL_STATUS.has(statusName)) return 'await_backfill'
-  if (TODO_STATUS.has(statusName)) return 'todo'
-  return 'doing'
+function deriveWorkbenchLane(huanyuOrderStatus: string | null): WorkbenchLane | null {
+  return huanyuOrderStatus ? HUANYU_WORKBENCH_LANES[huanyuOrderStatus] ?? null : null
 }
 
-function deriveServiceStage(lane: WorkbenchLane): ServiceStage {
+function deriveServiceStage(lane: WorkbenchLane | null): ServiceStage | null {
   switch (lane) {
     case 'todo':
       return 'communicating'
@@ -198,6 +200,8 @@ function deriveServiceStage(lane: WorkbenchLane): ServiceStage {
       return 'settlement'
     case 'done':
       return 'closing'
+    default:
+      return null
   }
 }
 
@@ -982,7 +986,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
 
     const employeeName = request.employee.name || request.employee.token
     const accountManager = String(body.accountManager || '').trim() || employeeName
-    const orderStatus = String(body.orderStatus || '待处理').trim()
+    const orderStatus = String(body.orderStatus || '待跟进').trim()
     const nowStr = new Date().toISOString()
 
     const toHuanyuStorageFormat = (val: string | null | undefined): string | null => {
@@ -1270,6 +1274,45 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
             }
           }
         })
+
+        // 工作台的状态唯一来源是寰宇订单详情 HY_FACT_DDCX_NEW.DD_state。
+        // 一次批量查询，避免在下面逐单查寰宇表造成 N+1 查询。
+        const huanyuOrderKeys = Array.from(
+          new Set(
+            orders.flatMap((o) => {
+              const raw = (o.rawJson ?? {}) as Record<string, unknown>
+              return [
+                o.huanyuOrderNo,
+                o.sourceOrderNo,
+                stringOrNull(raw.sourceOrderNo),
+                stringOrNull(raw.channelOrderNo),
+                stringOrNull(raw.bOrderNo),
+                stringOrNull(raw.bChannelOrderNo),
+                stringOrNull(raw.orderNo)
+              ].filter((value): value is string => Boolean(value))
+            })
+          )
+        )
+        const huanyuRows = huanyuOrderKeys.length > 0
+          ? await prisma.$queryRaw<Array<{ DDBH: string; BDQD_DDBH: string | null; DD_state: string | null }>>`
+              SELECT "DDBH", "BDQD_DDBH", "DD_state"
+              FROM "HY_FACT_DDCX_NEW"
+              WHERE "DDBH" IN (${Prisma.join(huanyuOrderKeys)})
+                 OR "BDQD_DDBH" IN (${Prisma.join(huanyuOrderKeys)})
+            `
+          : []
+        const huanyuStatusByOrderKey = new Map<string, string>()
+        for (const row of huanyuRows) {
+          const status = stringOrNull(row.DD_state)
+          if (!status) continue
+          if (row.DDBH && !huanyuStatusByOrderKey.has(row.DDBH)) {
+            huanyuStatusByOrderKey.set(row.DDBH, status)
+          }
+          if (row.BDQD_DDBH && !huanyuStatusByOrderKey.has(row.BDQD_DDBH)) {
+            huanyuStatusByOrderKey.set(row.BDQD_DDBH, status)
+          }
+        }
+
         const orderIds = orders.map((o) => o.id)
         const applicationNos = Array.from(
           new Set(
@@ -1322,12 +1365,24 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         //   - lastMaterialAt：任何素材的最近一次入库时间（取 max(call, material)）
         const data = orders.map((o: any) => {
           const raw = (o.rawJson ?? {}) as Record<string, unknown>
+          const huanyuOrderStatus = [
+            o.huanyuOrderNo,
+            o.sourceOrderNo,
+            stringOrNull(raw.sourceOrderNo),
+            stringOrNull(raw.channelOrderNo),
+            stringOrNull(raw.bOrderNo),
+            stringOrNull(raw.bChannelOrderNo),
+            stringOrNull(raw.orderNo)
+          ]
+            .filter((value): value is string => Boolean(value))
+            .map((value) => huanyuStatusByOrderKey.get(value))
+            .find((value): value is string => Boolean(value)) ?? null
           const taikangOrderStateName = taikangOrderStateNameOf(raw, o.status)
           const taikangOrderState = taikangOrderStateOf(raw, o.orderState)
           const taikangCaseStatus = stringOrNull(raw.taikangCaseStatus) ?? stringOrNull(raw.caseStatus)
           const taikangWaitType = stringOrNull(raw.taikangWaitType) ?? stringOrNull(raw.waitType)
           const taikangServState = stringOrNull(raw.taikangServState) ?? stringOrNull(raw.servState)
-          const workbenchLane = deriveWorkbenchLane(taikangOrderStateName)
+          const workbenchLane = deriveWorkbenchLane(huanyuOrderStatus)
           const serviceStage = deriveServiceStage(workbenchLane)
           // chrome 插件抓的详情扁平挂在 detailJson.recommendations 下
           const rec = ((o.detailJson as any)?.recommendations ?? {}) as Record<string, unknown>
@@ -1401,6 +1456,9 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           void materials
           return {
             ...rest,
+            // status 为列表展示字段；不回退 B 端状态，确保页面只展示寰宇订单状态。
+            status: huanyuOrderStatus ?? '',
+            huanyuOrderStatus,
             taikangOrderState,
             taikangOrderStateName,
             taikangCaseStatus,

@@ -1593,7 +1593,7 @@ function HuanyuOrderForm({
       const res = await saveHuanyuOrder({
         mode: isCreate ? 'create' : 'update',
         orderNo: String(form.orderNo || ''),
-        orderStatus: String(form.orderStatus || '待处理'),
+        orderStatus: String(form.orderStatus || '待跟进'),
         channel: String(form.channel || ''),
         channelOrderNo: String(form.channelOrderNo || ''),
         backupOrderNo: String(form.backupOrderNo || ''),
