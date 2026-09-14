@@ -339,6 +339,11 @@ export function fetchHuanyuBookingChannelTypes(): Promise<HuanyuChannelOption[]>
   return authedGet<HuanyuChannelOption[]>('/api/v1/dictionaries/huanyu/booking-channel-types')
 }
 
+/** 寰宇订单状态（后端固定维表）。 */
+export function fetchHuanyuOrderStatuses(): Promise<HuanyuChannelOption[]> {
+  return authedGet<HuanyuChannelOption[]>('/api/v1/dictionaries/huanyu/order-statuses')
+}
+
 /** 寰宇订单证件类型（后端固定，id 与展示名称一致）。 */
 export function fetchHuanyuDocumentTypes(): Promise<HuanyuChannelOption[]> {
   return authedGet<HuanyuChannelOption[]>('/api/v1/dictionaries/huanyu/document-types')

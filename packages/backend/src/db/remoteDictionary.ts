@@ -110,6 +110,92 @@ export async function listHuanyuChannelProducts(channelId: unknown, rawSearch: u
   }))
 }
 
+/**
+ * 按展示名称精确取渠道码值。用于泰康订单自动落寰宇订单时的固定映射，
+ * 不使用模糊匹配，避免相近名称被误写入订单。
+ */
+export async function findHuanyuChannelByName(name: string): Promise<HuanyuChannelOption | null> {
+  const target = searchTerm(name)
+  if (!target) return null
+  const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
+    `SELECT CAST(id AS CHAR) AS id, name
+       FROM dim_hy_qd
+      WHERE name = ?
+      ORDER BY id
+      LIMIT 1`,
+    [target]
+  )
+  const row = rows[0]
+  return row ? { id: String(row.id), name: String(row.name ?? '') } : null
+}
+
+/** 按渠道和服务项目展示名称精确取服务项目码值；全程只执行参数化 SELECT。 */
+export async function findHuanyuChannelProductByName(channelId: string, name: string): Promise<HuanyuChannelProductOption | null> {
+  const channel = searchTerm(channelId).slice(0, 4)
+  const target = searchTerm(name)
+  if (!channel || !target) return null
+  const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
+    `SELECT CAST(id AS CHAR) AS id, name, nbyjcp, nbejcp, CPJG AS price
+       FROM dim_hy_qd_cp
+      WHERE LEFT(CAST(id AS CHAR), 4) = ?
+        AND name = ?
+      ORDER BY id
+      LIMIT 1`,
+    [channel, target]
+  )
+  const row = rows[0]
+  return row
+    ? {
+        id: String(row.id),
+        name: String(row.name ?? ''),
+        internalLevelOne: String(row.nbyjcp ?? ''),
+        internalLevelTwo: String(row.nbejcp ?? ''),
+        price: row.price == null ? '' : String(row.price)
+      }
+    : null
+}
+
+/**
+ * 按 B 端渠道服务项目码值读取衍生字段。订单详情页加载时使用该方法，
+ * 全程为固定、参数化的只读 SELECT。
+ */
+export async function findHuanyuChannelProductById(id: unknown): Promise<HuanyuChannelProductOption | null> {
+  const target = searchTerm(id)
+  if (!target) return null
+  const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
+    `SELECT CAST(id AS CHAR) AS id, name, nbyjcp, nbejcp, CPJG AS price
+       FROM dim_hy_qd_cp
+      WHERE CAST(id AS CHAR) = ?
+      LIMIT 1`,
+    [target]
+  )
+  const row = rows[0]
+  return row
+    ? {
+        id: String(row.id),
+        name: String(row.name ?? ''),
+        internalLevelOne: String(row.nbyjcp ?? ''),
+        internalLevelTwo: String(row.nbejcp ?? ''),
+        price: row.price == null ? '' : String(row.price)
+      }
+    : null
+}
+
+/** 按 BD 用户码值精确读取名称，供客户经理字段自动带出。 */
+export async function findHuanyuBdUserNameByUserId(userId: string): Promise<string | null> {
+  const target = searchTerm(userId)
+  if (!target) return null
+  const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
+    `SELECT CAPTION_ AS name
+       FROM dim_bdyh
+      WHERE CAST(userid_ AS CHAR) = ?
+      ORDER BY userid_
+      LIMIT 1`,
+    [target]
+  )
+  return rows[0] ? String(rows[0].name ?? '').trim() || null : null
+}
+
 /** BD 用户字典：userid_ 为码值，CAPTION_ 为展示名；仅支持码值/名称模糊搜索。 */
 export async function listHuanyuBdUsers(rawSearch: unknown): Promise<HuanyuChannelOption[]> {
   const search = searchTerm(rawSearch)

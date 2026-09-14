@@ -11,8 +11,8 @@ import { extractKeyInfo, type KeyInfoMessage, type KeyInfoContext } from '../llm
 import { structureMessages, type StructInput } from '../lib/messageStructure.js'
 import { refreshApplicationBrief, refreshOrderBrief } from '../jobs/orderBriefRunner.js'
 import { getRecordingPlaybackInfo } from '../audioTranscode.js'
-import { listHuanyuBdUsers, listHuanyuChannelProducts, listHuanyuChannels, listHuanyuEscorts, listHuanyuHospitalAddresses, listHuanyuHospitalDepartments, listHuanyuHospitalDoctors, listHuanyuHospitals } from '../db/remoteDictionary.js'
-import { huanyuBookingChannelTypes, huanyuDocumentTypes, huanyuExpertLevels } from '../dictionaries/huanyuOrder.js'
+import { findHuanyuChannelProductById, listHuanyuBdUsers, listHuanyuChannelProducts, listHuanyuChannels, listHuanyuEscorts, listHuanyuHospitalAddresses, listHuanyuHospitalDepartments, listHuanyuHospitalDoctors, listHuanyuHospitals } from '../db/remoteDictionary.js'
+import { huanyuBookingChannelTypes, huanyuDocumentTypes, huanyuExpertLevels, huanyuOrderStatuses } from '../dictionaries/huanyuOrder.js'
 import { registerDictionaryManageRoutes } from './dictionaryManage.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
@@ -590,6 +590,12 @@ export function registerApiRoutes(
     return reply.send({ data: huanyuBookingChannelTypes() })
   })
 
+  // 寰宇订单状态为后端固定字典，不连接远端数据库。
+  fastify.get('/api/v1/dictionaries/huanyu/order-statuses', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    return reply.send({ data: huanyuOrderStatuses() })
+  })
+
   // 寰宇订单证件类型为后端固定字典，id 与展示名称一致。
   fastify.get('/api/v1/dictionaries/huanyu/document-types', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
@@ -791,6 +797,16 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
 
     const h = huanyuRows[0]
     const ddbh = h.DDBH
+    // 内部一级/二级不落 orders；每次进入详情页都按已选服务项目码值只读查询维表。
+    // 字典库暂时不可用时不影响订单详情其他字段展示。
+    let channelProduct = null
+    if (h.BDQD_FWXM) {
+      try {
+        channelProduct = await findHuanyuChannelProductById(String(h.BDQD_FWXM))
+      } catch {
+        channelProduct = null
+      }
+    }
 
     const escortRows = await prisma.$queryRawUnsafe<any[]>(`
       SELECT * FROM "fact_hy_pzrxx"
@@ -818,6 +834,8 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       channelContact: h.BDQD_DJR || '',
       channelBackupContact: h.BDQD_DJR2 || '',
       channelService: h.BDQD_FWXM || '',
+      internalLevelOne: channelProduct?.internalLevelOne || '',
+      internalLevelTwo: channelProduct?.internalLevelTwo || '',
       orderAmount: h.DDJE != null ? String(h.DDJE) : '',
       accountManager: h.KHJL || '',
       patientName: h.JZR_XM || orderObj.customerName || '',
@@ -877,6 +895,8 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
   fastify.post('/api/v1/orders/huanyu/save', async (request: FastifyRequest, reply: FastifyReply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
     const body = (request.body as any) || {}
+    // 内部一级/二级是 B 端服务项目的维表衍生展示字段，不应写回 orders.raw_json。
+    const { internalLevelOne: _internalLevelOne, internalLevelTwo: _internalLevelTwo, ...orderRawBody } = body
     let orderNo = String(body.orderNo || '').trim()
     if (!orderNo && body.channelOrderNo) {
       const existing = await prisma.$queryRawUnsafe<Array<{ DDBH: string }>>(
@@ -1076,7 +1096,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
             status: orderStatus,
             rawJson: {
               ...(typeof existingOrder.rawJson === 'object' && existingOrder.rawJson ? existingOrder.rawJson : {}),
-              ...body,
+              ...orderRawBody,
               orderNo,
               DDBH: orderNo
             }
@@ -1095,7 +1115,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
             doctor: body.doctor || null,
             status: orderStatus,
             assignedEmployee: { connect: { id: request.employee.id } },
-            rawJson: { ...body, orderNo, DDBH: orderNo }
+            rawJson: { ...orderRawBody, orderNo, DDBH: orderNo }
           }
         })
       }

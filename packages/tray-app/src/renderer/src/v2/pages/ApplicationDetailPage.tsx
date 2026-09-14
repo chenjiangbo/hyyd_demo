@@ -12,6 +12,7 @@ import {
   fetchHuanyuChannelProducts,
   fetchHuanyuChannels,
   fetchHuanyuBookingChannelTypes,
+  fetchHuanyuOrderStatuses,
   fetchHuanyuBdUsers,
   fetchHuanyuDocumentTypes,
   fetchHuanyuExpertLevels,
@@ -1492,6 +1493,7 @@ function HuanyuOrderForm({
   const [serviceLoading, setServiceLoading] = useState(false)
   const [serviceError, setServiceError] = useState<string | null>(null)
   const [bookingChannelTypeOptions, setBookingChannelTypeOptions] = useState<HuanyuChannelOption[]>([])
+  const [orderStatusOptions, setOrderStatusOptions] = useState<HuanyuChannelOption[]>([])
   const [documentTypeOptions, setDocumentTypeOptions] = useState<HuanyuChannelOption[]>([])
   const [bdSearch, setBdSearch] = useState('')
   const [bdOptions, setBdOptions] = useState<HuanyuChannelOption[]>([])
@@ -1654,6 +1656,14 @@ function HuanyuOrderForm({
       window.clearTimeout(timer)
     }
   }, [channelId, serviceSearch])
+
+  useEffect(() => {
+    let active = true
+    fetchHuanyuOrderStatuses()
+      .then((options) => active && setOrderStatusOptions(options))
+      .catch(() => active && setOrderStatusOptions([]))
+    return () => { active = false }
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -1916,7 +1926,7 @@ function HuanyuOrderForm({
         <HuanyuFormSection title="订单基本信息">
         <HuanyuFormGrid>
           <HuanyuInput label="订单号" value={form.orderNo} onChange={(value) => changeField('orderNo', value)} disabled />
-          <HuanyuSelect label="订单状态" value={form.orderStatus} onChange={(value) => changeField('orderStatus', value)} />
+          <HuanyuSelect label="订单状态" value={form.orderStatus} options={orderStatusOptions.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => changeField('orderStatus', value)} />
           <HuanyuSearchSelect label="B端渠道" value={form.channel} options={channelOptions} loading={channelLoading} error={channelError} onSearch={setChannelSearch} onChange={selectChannel} />
           <HuanyuInput label="B端渠道订单号" value={form.channelOrderNo} onChange={(value) => changeField('channelOrderNo', value)} disabled />
           <HuanyuInput label="备用订单号" value={form.backupOrderNo} onChange={(value) => changeField('backupOrderNo', value)} />
@@ -1948,8 +1958,10 @@ function HuanyuOrderForm({
           <HuanyuInput label="家属联系电话" value={form.familyPhone} onChange={(value) => changeField('familyPhone', value)} />
           <HuanyuInput label="就诊人疾病" value={form.disease} onChange={(value) => changeField('disease', value)} />
           <HuanyuInput label="期望预约时间" value={form.expectedBookingTime} onChange={(value) => changeField('expectedBookingTime', value)} />
-          <HuanyuInput label="客户就诊需求备注" value={form.patientRequest} onChange={(value) => changeField('patientRequest', value)} wide />
         </HuanyuFormGrid>
+        <div className="mt-3">
+          <HuanyuTextarea label="客户就诊需求备注" value={form.patientRequest} onChange={(value) => changeField('patientRequest', value)} minHeight="min-h-16" />
+        </div>
       </HuanyuFormSection>
 
       <HuanyuFormSection title="医院信息">

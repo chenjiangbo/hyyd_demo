@@ -10,6 +10,16 @@ const BOOKING_CHANNEL_TYPES: readonly HuanyuFixedDictionaryOption[] = [
   { id: '3', name: '无' }
 ]
 
+const ORDER_STATUSES: readonly HuanyuFixedDictionaryOption[] = [
+  { id: '待跟进', name: '待跟进' },
+  { id: '待预约', name: '待预约' },
+  { id: '待交付', name: '待交付' },
+  { id: '已完成', name: '已完成' },
+  { id: '已取消', name: '已取消' },
+  { id: '爽约', name: '爽约' },
+  { id: '无责取消', name: '无责取消' }
+]
+
 const DOCUMENT_TYPES: readonly HuanyuFixedDictionaryOption[] = [
   { id: '身份证', name: '身份证' },
   { id: '护照', name: '护照' },
@@ -31,6 +41,11 @@ const EXPERT_LEVELS: readonly HuanyuFixedDictionaryOption[] = [
 
 export function huanyuBookingChannelTypes(): HuanyuFixedDictionaryOption[] {
   return BOOKING_CHANNEL_TYPES.map((item) => ({ ...item }))
+}
+
+/** 寰宇订单状态：后端固定字典，id 与展示名称一致。 */
+export function huanyuOrderStatuses(): HuanyuFixedDictionaryOption[] {
+  return ORDER_STATUSES.map((item) => ({ ...item }))
 }
 
 export function huanyuDocumentTypes(): HuanyuFixedDictionaryOption[] {

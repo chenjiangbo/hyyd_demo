@@ -26,6 +26,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { getEnv } from './env.js'
 import { ensureHuanyuTables } from './db/ensureHuanyuTables.js'
+import { syncHuanyuOrderFromTaikang } from './huanyuOrderSync.js'
 
 if (process.env.NODE_ENV !== 'production') {
   // 开发期允许从 .env 启动；生产由 Docker/宿主机显式注入环境变量。
@@ -217,6 +218,9 @@ async function start() {
               server.log.info(`收到员工 ${employee.name} 同步的订单数据: ${message.payload.length} 条`)
               const orders = message.payload
               if (Array.isArray(orders)) {
+                const taikangAccount = typeof message.taikangAccount === 'string'
+                  ? message.taikangAccount.trim() || null
+                  : employee.taikangAccount
                 for (const orderData of orders) {
                   // 归属规则：
                   // - 个人池(pool=personal)：订单已申领到当前员工，assign 到 employeeId，
@@ -234,7 +238,9 @@ async function start() {
                     taikangOrderStateName: taikangStatus,
                     taikangCaseStatus: orderData.taikangCaseStatus ?? orderData.caseStatus ?? null,
                     taikangWaitType: orderData.taikangWaitType ?? null,
-                    taikangServState: orderData.taikangServState ?? null
+                    taikangServState: orderData.taikangServState ?? null,
+                    // 为历史回填保留抓单账号；用于 dim_bdyh.userid_ → CAPTION_ 的客户经理映射。
+                    taikangAccount
                   }
 
                   // 先取旧状态码，用于判断是否需要记一条状态变更历史
@@ -286,6 +292,20 @@ async function start() {
                       server.log.info(`订单 ${orderData.orderId} 状态变化: ${oldState} → ${newState} (${taikangStatus})`)
                     }
                   }
+
+                  // orders 落库成功后再创建寰宇主订单。同步失败不影响泰康订单抓取，
+                  // 下次抓单或执行 huanyu:backfill 会按同一个 DDBH 幂等补齐。
+                  try {
+                    const result = await syncHuanyuOrderFromTaikang(prisma, saved, taikangAccount, employee.name)
+                    if (result.created) {
+                      server.log.info(`已创建寰宇订单 ${result.ddbh}（泰康订单 ${orderData.orderId}）`)
+                    }
+                    if (!result.channelFound || !result.productFound) {
+                      server.log.warn(`寰宇订单 ${result.ddbh} 字典映射不完整：渠道=${result.channelFound}，服务项目=${result.productFound}`)
+                    }
+                  } catch (error) {
+                    server.log.error(error, `泰康订单 ${orderData.orderId} 同步寰宇订单失败，将在下次同步/回填时重试`)
+                  }
                 }
               }
             } else if (message.type === 'TAIKANG_TOKEN_STATUS') {
@@ -330,6 +350,29 @@ async function start() {
                     attachments: payload.attachments || [],
                     fingerprint: payload.fingerprint
                   })
+                  // 客户信息主要来自 recommendations 详情。详情成功后立即补齐寰宇订单中
+                  // 当前为空的就诊人字段；同步函数不会覆盖页面上已有的人工值。
+                  const orderForHuanyu = await prisma.order.findUnique({
+                    where: { id: result.orderId },
+                    select: {
+                      id: true,
+                      sourceOrderNo: true,
+                      customerName: true,
+                      status: true,
+                      createdAt: true,
+                      rawJson: true,
+                      detailJson: true,
+                      huanyuOrderNo: true
+                    }
+                  })
+                  if (orderForHuanyu) {
+                    await syncHuanyuOrderFromTaikang(
+                      prisma,
+                      orderForHuanyu,
+                      employee.taikangAccount,
+                      employee.name
+                    )
+                  }
                   server.log.info(`订单详情入库成功: orderId=${result.orderId} 附件=${result.attachmentCount} 跳过=${result.skipped}`)
                   // 注：原本要把对应的 pending command mark done，但插件
                   // 已不再消费 command，没有指令补推回路，无需 mark。

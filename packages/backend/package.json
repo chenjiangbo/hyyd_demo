@@ -10,7 +10,10 @@
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
-    "db:generate": "prisma generate"
+    "db:generate": "prisma generate",
+    "huanyu:backfill": "tsx src/scripts/backfillHuanyuOrders.ts",
+    "huanyu:backfill-patient": "tsx src/scripts/backfillHuanyuPatientInfo.ts",
+    "huanyu:backfill-product": "tsx src/scripts/backfillHuanyuChannelProductFields.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^9.4.0",

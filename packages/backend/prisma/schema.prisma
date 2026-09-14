@@ -42,6 +42,7 @@ model Order {
   detailFetchedAt         DateTime?                @map("detail_fetched_at")
   detailFingerprint       String?                  @map("detail_fingerprint") // 插件算的状态指纹，用于增量基线
   orderState              String?                  @map("order_state") // 泰康订单状态码原值，用于检测状态变化
+  huanyuOrderNo           String?                  @unique @map("huanyu_order_no") // 对应 HY_FACT_DDCX_NEW.DDBH；创建后不再改变
   // AI 滚动简报（综合微信/企微消息 + 通话/录音转写，一次调用产出 摘要/阶段/待办/风险/回填关键信息）
   // 见 docs/设计_订单AI滚动简报.md。aiBriefJson 存整份简报；brief* 是增量水位。
   aiBriefJson             Json?                    @map("ai_brief_json")
