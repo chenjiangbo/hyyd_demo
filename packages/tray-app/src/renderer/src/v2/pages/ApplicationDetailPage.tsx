@@ -15,6 +15,7 @@ import {
   fetchHuanyuOrderStatuses,
   fetchHuanyuBdUsers,
   fetchHuanyuDocumentTypes,
+  fetchHuanyuMedicareTypes,
   fetchHuanyuExpertLevels,
   fetchHuanyuEscorts,
   fetchHuanyuHospitalAddresses,
@@ -1495,6 +1496,7 @@ function HuanyuOrderForm({
   const [bookingChannelTypeOptions, setBookingChannelTypeOptions] = useState<HuanyuChannelOption[]>([])
   const [orderStatusOptions, setOrderStatusOptions] = useState<HuanyuChannelOption[]>([])
   const [documentTypeOptions, setDocumentTypeOptions] = useState<HuanyuChannelOption[]>([])
+  const [medicareTypeOptions, setMedicareTypeOptions] = useState<HuanyuChannelOption[]>([])
   const [bdSearch, setBdSearch] = useState('')
   const [bdOptions, setBdOptions] = useState<HuanyuChannelOption[]>([])
   const [bdLoading, setBdLoading] = useState(false)
@@ -1517,11 +1519,72 @@ function HuanyuOrderForm({
   const [doctorError, setDoctorError] = useState<string | null>(null)
   const [expertSearch, setExpertSearch] = useState('')
   const [expertOptions, setExpertOptions] = useState<HuanyuChannelOption[]>([])
+  const [escortOptions, setEscortOptions] = useState<HuanyuEscortOption[]>([])
+
+  useEffect(() => {
+    let active = true
+    fetchHuanyuEscorts('')
+      .then((options) => active && setEscortOptions(options))
+      .catch(() => {})
+    return () => { active = false }
+  }, [])
+
   const channelId = typeof form.channel === 'string' ? form.channel : ''
   const hospitalId = typeof form.hospital === 'string' ? form.hospital : ''
+  const departmentId = typeof form.department === 'string' ? form.department : ''
   const amountLocked = isHuanyuCancelledOrderStatus(form.orderStatus)
   const bdSelectable = form.bookingChannelType === '1' || form.bookingChannelType === '2'
   const doctorAllowsExpertSelection = typeof form.doctor === 'string' && form.doctor.endsWith('WXSYSXM')
+
+  const computedInternalTemplate = useMemo(() => {
+    const values = resolveBookingTemplateValues(form, escortRows, {
+      channelOptions,
+      serviceOptions,
+      hospitalOptions,
+      departmentOptions,
+      doctorOptions,
+      addressOptions,
+      expertOptions,
+      escortOptions
+    })
+    return buildHuanyuBookingTemplate('对内', values)
+  }, [
+    form,
+    escortRows,
+    channelOptions,
+    serviceOptions,
+    hospitalOptions,
+    departmentOptions,
+    doctorOptions,
+    addressOptions,
+    expertOptions,
+    escortOptions
+  ])
+
+  const computedExternalTemplate = useMemo(() => {
+    const values = resolveBookingTemplateValues(form, escortRows, {
+      channelOptions,
+      serviceOptions,
+      hospitalOptions,
+      departmentOptions,
+      doctorOptions,
+      addressOptions,
+      expertOptions,
+      escortOptions
+    })
+    return buildHuanyuBookingTemplate('对外', values)
+  }, [
+    form,
+    escortRows,
+    channelOptions,
+    serviceOptions,
+    hospitalOptions,
+    departmentOptions,
+    doctorOptions,
+    addressOptions,
+    expertOptions,
+    escortOptions
+  ])
 
   async function handleSave(): Promise<void> {
     setIsSaving(true)
@@ -1568,16 +1631,17 @@ function HuanyuOrderForm({
         tkProvince: String(form.tkProvince || ''),
         tkCity: String(form.tkCity || ''),
         tkDepartment: String(form.tkDepartment || ''),
-        requestTime: String(form.requestTime || ''),
-        requestDefaultDate: String(form.requestDefaultDate || ''),
-        responseTime: String(form.responseTime || ''),
-        responseDefaultDate: String(form.responseDefaultDate || ''),
-        serviceStartTime: String(form.serviceStartTime || ''),
-        serviceStartDefaultDate: String(form.serviceStartDefaultDate || ''),
-        bookingFeedbackTime: String(form.bookingFeedbackTime || ''),
-        bookingFeedbackDefaultDate: String(form.bookingFeedbackDefaultDate || ''),
-        latestTicketTime: String(form.latestTicketTime || ''),
-        latestTicketDefaultDate: String(form.latestTicketDefaultDate || ''),
+        requestTime: toHuanyuStorageFormat(form.requestTime),
+        requestDefaultDate: huanyuDatePart(form.requestTime),
+        responseTime: toHuanyuStorageFormat(form.responseTime),
+        responseDefaultDate: huanyuDatePart(form.responseTime),
+        serviceStartTime: toHuanyuStorageFormat(form.serviceStartTime),
+        serviceStartDefaultDate: huanyuDatePart(form.serviceStartTime),
+        bookingFeedbackTime: toHuanyuStorageFormat(form.bookingFeedbackTime),
+        bookingFeedbackDefaultDate: huanyuDatePart(form.bookingFeedbackTime),
+        latestTicketTime: toHuanyuStorageFormat(form.latestTicketTime),
+        lastQueuingTime: toHuanyuStorageFormat(form.latestTicketTime),
+        latestTicketDefaultDate: huanyuDatePart(form.latestTicketTime),
         registrationFee: String(form.registrationFee || ''),
         advancePayment: String(form.advancePayment || ''),
         advanceRegistrationFee: String(form.advanceRegistrationFee || ''),
@@ -1682,6 +1746,14 @@ function HuanyuOrderForm({
   }, [])
 
   useEffect(() => {
+    let active = true
+    fetchHuanyuMedicareTypes()
+      .then((options) => active && setMedicareTypeOptions(options))
+      .catch(() => active && setMedicareTypeOptions([]))
+    return () => { active = false }
+  }, [])
+
+  useEffect(() => {
     if (!bdSelectable) {
       setBdOptions([])
       setBdError(null)
@@ -1741,26 +1813,42 @@ function HuanyuOrderForm({
       setDepartmentLoading(true)
       setDepartmentError(null)
       fetchHuanyuHospitalDepartments(hospitalId, departmentSearch)
-        .then((options) => active && setDepartmentOptions(options))
+        .then((options) => {
+          if (!active) return
+          setDepartmentOptions(options)
+          if (form.department && (!form.internalHospitalLevelOne || !form.internalHospitalLevelTwo)) {
+            const matched = options.find((item) => item.id === form.department || item.name === form.department)
+            if (matched) {
+              setForm((current) => ({
+                ...current,
+                internalHospitalLevelOne: current.internalHospitalLevelOne || matched.internalLevelOne,
+                internalHospitalLevelTwo: current.internalHospitalLevelTwo || matched.internalLevelTwo
+              }))
+            }
+          }
+        })
         .catch((error: unknown) => active && setDepartmentError(error instanceof Error ? error.message : '科室加载失败'))
         .finally(() => active && setDepartmentLoading(false))
     }, 180)
     return () => { active = false; window.clearTimeout(timer) }
-  }, [hospitalId, departmentSearch])
+  }, [hospitalId, departmentSearch, form.department, form.internalHospitalLevelOne, form.internalHospitalLevelTwo])
 
   useEffect(() => {
-    if (!hospitalId) return
+    if (!hospitalId || !departmentId) {
+      setDoctorOptions([])
+      return
+    }
     let active = true
     const timer = window.setTimeout(() => {
       setDoctorLoading(true)
       setDoctorError(null)
-      fetchHuanyuHospitalDoctors(hospitalId, doctorSearch)
+      fetchHuanyuHospitalDoctors(hospitalId, departmentId, doctorSearch)
         .then((options) => active && setDoctorOptions(options))
         .catch((error: unknown) => active && setDoctorError(error instanceof Error ? error.message : '医生加载失败'))
         .finally(() => active && setDoctorLoading(false))
     }, 180)
     return () => { active = false; window.clearTimeout(timer) }
-  }, [hospitalId, doctorSearch])
+  }, [hospitalId, departmentId, doctorSearch])
 
   useEffect(() => {
     if (!doctorAllowsExpertSelection) {
@@ -1854,8 +1942,12 @@ function HuanyuOrderForm({
       ...current,
       department: department.id,
       internalHospitalLevelOne: department.internalLevelOne,
-      internalHospitalLevelTwo: department.internalLevelTwo
+      internalHospitalLevelTwo: department.internalLevelTwo,
+      doctor: '',
+      expertLevel: ''
     }))
+    setDoctorSearch('')
+    setExpertSearch('')
   }
 
   function selectHospitalDoctor(nextDoctorId: string): void {
@@ -1898,12 +1990,18 @@ function HuanyuOrderForm({
                 {isSaving ? '保存中…' : '保存'}
               </button>
             ) : (
-              ['保存', '刷新预约模板信息', '数据留痕', '复制订单', '退款', '推送泰康支付失败', '推送泰康支付成功', '确认推送寰宇订单信息'].map((label) => (
+              ['保存', '刷新预约模板信息', '数据留痕', '复制订单', '确认推送寰宇订单信息'].map((label) => (
                 <button
                   key={label}
                   type="button"
                   disabled={label === '保存' && isSaving}
-                  onClick={label === '保存' ? handleSave : undefined}
+                  onClick={() => {
+                    if (label === '保存') void handleSave()
+                    if (label === '刷新预约模板信息') {
+                      setSaveStatus({ type: 'success', message: '预约模板信息已刷新' })
+                      window.setTimeout(() => setSaveStatus(null), 2000)
+                    }
+                  }}
                   className={
                     'rounded-md px-3 py-1.5 text-body-sm font-semibold text-white shadow-sm disabled:opacity-50 transition-colors ' +
                     (label === '确认推送寰宇订单信息'
@@ -1957,7 +2055,6 @@ function HuanyuOrderForm({
           <HuanyuInput label="家属关系" value={form.familyRelation} onChange={(value) => changeField('familyRelation', value)} />
           <HuanyuInput label="家属联系电话" value={form.familyPhone} onChange={(value) => changeField('familyPhone', value)} />
           <HuanyuInput label="就诊人疾病" value={form.disease} onChange={(value) => changeField('disease', value)} />
-          <HuanyuInput label="期望预约时间" value={form.expectedBookingTime} onChange={(value) => changeField('expectedBookingTime', value)} />
         </HuanyuFormGrid>
         <div className="mt-3">
           <HuanyuTextarea label="客户就诊需求备注" value={form.patientRequest} onChange={(value) => changeField('patientRequest', value)} minHeight="min-h-16" />
@@ -1971,7 +2068,7 @@ function HuanyuOrderForm({
           <HuanyuSearchSelect label="科室" value={form.department} options={departmentOptions} loading={departmentLoading} error={departmentError} disabled={!hospitalId} disabledPlaceholder="请先选择医院" onSearch={setDepartmentSearch} onChange={selectHospitalDepartment} />
           <HuanyuInput label="内对一级" value={form.internalHospitalLevelOne} onChange={(value) => changeField('internalHospitalLevelOne', value)} disabled />
           <HuanyuInput label="内对二级" value={form.internalHospitalLevelTwo} onChange={(value) => changeField('internalHospitalLevelTwo', value)} disabled />
-          <HuanyuSearchSelect label="医生" value={form.doctor} options={doctorOptions} loading={doctorLoading} error={doctorError} disabled={!hospitalId} disabledPlaceholder="请先选择医院" onSearch={setDoctorSearch} onChange={selectHospitalDoctor} />
+          <HuanyuSearchSelect label="医生" value={form.doctor} options={doctorOptions} loading={doctorLoading} error={doctorError} disabled={!hospitalId || !departmentId} disabledPlaceholder={!hospitalId ? '请先选择医院' : '请先选择科室'} onSearch={setDoctorSearch} onChange={selectHospitalDoctor} />
           {doctorAllowsExpertSelection
             ? <HuanyuSearchSelect label="专家级别" value={form.expertLevel} options={expertOptions} loading={false} error={null} onSearch={setExpertSearch} onChange={(value) => changeField('expertLevel', value)} />
             : <HuanyuInput label="专家级别" value={form.expertLevel} onChange={(value) => changeField('expertLevel', value)} disabled />}
@@ -2012,18 +2109,20 @@ function HuanyuOrderForm({
           <HuanyuInput label="挂号费退款客户金额" value={form.registrationRefund} onChange={(value) => changeField('registrationRefund', value)} disabled />
           <HuanyuInput label="支付宝支付账号" value={form.alipayAccount} onChange={(value) => changeField('alipayAccount', value)} disabled />
           <HuanyuInput label="是否有医保" value={form.hasInsurance} onChange={(value) => changeField('hasInsurance', value)} disabled />
-          <HuanyuSelect label="医保类型" value={form.insuranceType} onChange={(value) => changeField('insuranceType', value)} />
+          <HuanyuSelect label="医保类型" value={form.insuranceType} options={medicareTypeOptions.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => changeField('insuranceType', value)} />
           <HuanyuInput label="短信链接" value={form.smsLink} onChange={(value) => changeField('smsLink', value)} disabled />
         </HuanyuFormGrid>
       </HuanyuFormSection>
 
-      <HuanyuFormSection title="预约模板信息（对内）">
-        <HuanyuTextarea label="预约模板内容" value={form.internalBookingTemplate} onChange={(value) => changeField('internalBookingTemplate', value)} disabled copyable />
-      </HuanyuFormSection>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <HuanyuFormSection title="预约模板信息（对内）">
+          <HuanyuTextarea value={computedInternalTemplate} onChange={(value) => changeField('internalBookingTemplate', value)} disabled copyable minHeight="min-h-[306px]" />
+        </HuanyuFormSection>
 
-      <HuanyuFormSection title="预约模板信息（对外）">
-        <HuanyuTextarea label="预约模板内容" value={form.externalBookingTemplate} onChange={(value) => changeField('externalBookingTemplate', value)} disabled copyable />
-      </HuanyuFormSection>
+        <HuanyuFormSection title="预约模板信息（对外）">
+          <HuanyuTextarea value={computedExternalTemplate} onChange={(value) => changeField('externalBookingTemplate', value)} disabled copyable minHeight="min-h-[306px]" />
+        </HuanyuFormSection>
+      </div>
 
       <HuanyuFormSection title="陪诊服务小结">
         <HuanyuTextarea label="服务小结" value={form.escortSummary} onChange={(value) => changeField('escortSummary', value)} placeholder="请输入陪诊服务小结" minHeight="min-h-44" />
@@ -2130,9 +2229,38 @@ function buildEmptyHuanyuForm(): Record<string, string | boolean> {
   }
 }
 
+function calculateAgeFromBirthOrId(val: string | null | undefined): string {
+  if (!val) return ''
+  const str = String(val).trim()
+  const idMatch = /^(\d{6})(\d{4})(\d{2})(\d{2})\d{3}[\dXx]$/.exec(str)
+  if (idMatch) {
+    const year = Number(idMatch[2])
+    const month = Number(idMatch[3])
+    const day = Number(idMatch[4])
+    const now = new Date()
+    let age = now.getFullYear() - year
+    const m = (now.getMonth() + 1) - month
+    if (m < 0 || (m === 0 && now.getDate() < day)) age--
+    return age >= 0 && age <= 150 ? String(age) : ''
+  }
+  const bdayMatch = /^(\d{4})[-/.]?(\d{1,2})[-/.]?(\d{1,2})/.exec(str)
+  if (bdayMatch) {
+    const year = Number(bdayMatch[1])
+    const month = Number(bdayMatch[2])
+    const day = Number(bdayMatch[3])
+    const now = new Date()
+    let age = now.getFullYear() - year
+    const m = (now.getMonth() + 1) - month
+    if (m < 0 || (m === 0 && now.getDate() < day)) age--
+    return age >= 0 && age <= 150 ? String(age) : ''
+  }
+  return ''
+}
+
 function buildHuanyuForm(order: Order): Record<string, string | boolean> {
   const raw = (order.rawJson ?? {}) as Record<string, unknown>
-  const value = (keys: string[], fallback?: unknown): string => pick({}, raw, keys, fallback)
+  const rec = (order as unknown as Record<string, unknown>) || {}
+  const value = (keys: string[], fallback?: unknown): string => pick(rec, raw, keys, fallback)
   const bookingTime = value(['bookingTime', 'serviceDate', 'appointTime'], order.intendDate)
   const patientName = value(['patientName', 'customerName', 'name'], order.customerName)
   const patientPhone = value(['patientPhone', 'customerPhone', 'phone', 'mobile'], order.customerPhone)
@@ -2140,11 +2268,15 @@ function buildHuanyuForm(order: Order): Record<string, string | boolean> {
   const department = value(['dept', 'department', 'intendDept'], order.dept)
   const doctor = value(['doctor', 'doctorName', 'intendDoc'], order.doctor)
 
-  const requestTime = toHuanyuDateTimeLocal(value(['requestTime', 'demandTime']))
-  const responseTime = toHuanyuDateTimeLocal(value(['responseTime']))
-  const serviceStartTime = toHuanyuDateTimeLocal(value(['serviceStartTime']))
-  const bookingFeedbackTime = toHuanyuDateTimeLocal(value(['bookingFeedbackTime']))
-  const latestTicketTime = toHuanyuDateTimeLocal(value(['latestTicketTime', 'ticketDeadline'], bookingTime))
+  const docNo = value(['documentNo', 'certNo', 'idNo', 'idCard', 'JZR_ZJHM', 'cardId'])
+  const bday = value(['birthday', 'birthDate', 'birth_date', 'csrq', 'CSRQ'])
+  const patientAge = value(['patientAge', 'age', 'JZR_NL', 'jzr_nl', 'patient_age']) || calculateAgeFromBirthOrId(bday) || calculateAgeFromBirthOrId(docNo)
+
+  const requestTime = toHuanyuDateTimeLocal(value(['requestTime', 'BBQ_XQ', 'DATE_XQ', 'demandTime']))
+  const responseTime = toHuanyuDateTimeLocal(value(['responseTime', 'BBQ_YD', 'DATE_YD']))
+  const serviceStartTime = toHuanyuDateTimeLocal(value(['serviceStartTime', 'BBQ_QDFW', 'DATE_QDFW']))
+  const bookingFeedbackTime = toHuanyuDateTimeLocal(value(['bookingFeedbackTime', 'BBQ_FK', 'DATE_FK']))
+  const latestTicketTime = toHuanyuDateTimeLocal(value(['lastQueuingTime', 'latestTicketTime', 'ticketDeadline'], bookingTime))
   const fallbackDefaultDate = value(['defaultDate']).replace(/\D/g, '').slice(0, 8)
   const fallbackDefaultTime = value(['defaultTime'])
 
@@ -2168,9 +2300,9 @@ function buildHuanyuForm(order: Order): Record<string, string | boolean> {
     bd: value(['bd', 'businessDevelopment']),
     patientName,
     documentType: value(['documentType', 'certType', 'idType']),
-    documentNo: value(['documentNo', 'certNo', 'idNo', 'idCard']),
-    patientGender: value(['gender', 'sex']),
-    patientAge: value(['age']),
+    documentNo: docNo,
+    patientGender: value(['gender', 'sex', 'patientGender', 'JZR_XB']),
+    patientAge,
     patientPhone,
     familyName: value(['familyName', 'contactName']),
     familyRelation: value(['familyRelation', 'relation']),
@@ -2186,10 +2318,10 @@ function buildHuanyuForm(order: Order): Record<string, string | boolean> {
     doctor,
     expertLevel: value(['expertLevel', 'doctorLevel']),
     serviceRemark: value(['serviceRemark', 'orderRemark', 'comments']),
-    tkHospital: value(['tkHospital', 'taikangHospital'], hospital),
-    tkProvince: value(['tkProvince', 'taikangProvince', 'province']),
-    tkCity: value(['tkCity', 'taikangCity', 'city']),
-    tkDepartment: value(['tkDepartment', 'taikangDept'], department),
+    tkHospital: value(['tkHospital', 'expectedHospital', 'intendHos', 'taikangHospital']),
+    tkProvince: value(['tkProvince', 'expectedProvince', 'intendProvince', 'taikangProvince', 'province']),
+    tkCity: value(['tkCity', 'expectedCity', 'intendCity', 'taikangCity', 'city']),
+    tkDepartment: value(['tkDepartment', 'expectedDepartment', 'intendDept', 'taikangDept']),
     requestTime,
     requestDefaultDate: huanyuDatePart(requestTime),
     requestDefaultTime: huanyuTimePart(requestTime),
@@ -2228,6 +2360,55 @@ function buildHuanyuForm(order: Order): Record<string, string | boolean> {
   }
 }
 
+function resolveBookingTemplateValues(
+  form: Record<string, string | boolean>,
+  escortRows: HuanyuEscortRow[],
+  options: {
+    channelOptions: HuanyuChannelOption[]
+    serviceOptions: HuanyuChannelProductOption[]
+    hospitalOptions: HuanyuChannelOption[]
+    departmentOptions: HuanyuHospitalDepartmentOption[]
+    doctorOptions: HuanyuDoctorOption[]
+    addressOptions: HuanyuChannelOption[]
+    expertOptions: HuanyuChannelOption[]
+    escortOptions: HuanyuEscortOption[]
+  }
+): Record<string, string> {
+  const channel = options.channelOptions.find((o) => o.id === form.channel)?.name || String(form.channel || '')
+  const service = options.serviceOptions.find((o) => o.id === form.channelService)?.name || String(form.channelService || '')
+  const hospital = options.hospitalOptions.find((o) => o.id === form.hospital)?.name || String(form.hospital || '')
+  const department = options.departmentOptions.find((o) => o.id === form.department)?.name || String(form.department || '')
+
+  const doctorMatch = options.doctorOptions.find((o) => o.id === form.doctor)?.name
+  const expertMatch = options.expertOptions.find((o) => o.id === form.expertLevel)?.name
+  const doctor = doctorMatch || (String(form.doctor || '').endsWith('WXSYSXM') && expertMatch ? expertMatch : expertMatch || String(form.doctor || ''))
+
+  const hospitalAddress = options.addressOptions.find((o) => o.id === form.hospitalAddress)?.name || String(form.hospitalAddress || '')
+
+  const currentEscortId = escortRows[0]?.escortName || String(form.escortName || '')
+  const escortName = options.escortOptions.find((o) => o.id === currentEscortId)?.name || currentEscortId
+  const escortPhone = escortRows[0]?.phone || String(form.escortPhone || '')
+
+  const bookingTime = String(form.expectedBookingTime || escortRows[0]?.serviceDate || form.escortServiceDate || '')
+
+  return {
+    channel,
+    orderNo: String(form.orderNo || ''),
+    channelOrderNo: String(form.channelOrderNo || ''),
+    service,
+    patientName: String(form.patientName || ''),
+    patientPhone: String(form.patientPhone || ''),
+    hospital,
+    department,
+    doctor,
+    bookingTime,
+    escortName,
+    escortPhone,
+    hospitalAddress,
+    remark: String(form.serviceRemark || '')
+  }
+}
+
 function buildHuanyuBookingTemplate(kind: '对内' | '对外', values: Record<string, string>): string {
   const lines = kind === '对内'
     ? [['渠道', values.channel], ['订单号', values.orderNo], ['渠道订单号', values.channelOrderNo], ['服务项目', values.service]]
@@ -2243,10 +2424,83 @@ function huanyuInsuranceLabel(value: string): string {
   return value
 }
 
-function toHuanyuDateTimeLocal(value: string): string {
-  const match = value.trim().match(/^(\d{4})[-/]?(\d{2})[-/]?(\d{2})[ T]?(\d{2})?:?(\d{2})?(?::?(\d{2}))?$/)
-  if (!match || !match[4] || !match[5]) return ''
-  return `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6] || '00'}`
+function toHuanyuDateTimeLocal(value: unknown): string {
+  if (!value) return ''
+  const trimmed = String(value).trim()
+  if (!trimmed) return ''
+
+  // 1. 纯8位数字日期 20260914
+  if (/^\d{8}$/.test(trimmed)) {
+    const y = trimmed.slice(0, 4)
+    const m = trimmed.slice(4, 6)
+    const d = trimmed.slice(6, 8)
+    return `${y}-${m}-${d}T00:00:00`
+  }
+
+  // 2. 纯日期 2026-09-14 或 2026/09/14
+  const dateOnlyMatch = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/.exec(trimmed)
+  if (dateOnlyMatch) {
+    const y = dateOnlyMatch[1]
+    const m = dateOnlyMatch[2].padStart(2, '0')
+    const d = dateOnlyMatch[3].padStart(2, '0')
+    return `${y}-${m}-${d}T00:00:00`
+  }
+
+  // 3. 8位紧凑日期 + 时间：20260914 14:49:41 或 20260914T14:49:41 或 20260914144941
+  const compactMatch = /^(\d{4})(\d{2})(\d{2})[T\s]?(\d{2}):?(\d{2})(?::?(\d{2}))?/.exec(trimmed)
+  if (compactMatch) {
+    const y = compactMatch[1]
+    const m = compactMatch[2]
+    const d = compactMatch[3]
+    const hh = compactMatch[4].padStart(2, '0')
+    const mm = compactMatch[5].padStart(2, '0')
+    const ss = (compactMatch[6] || '00').padStart(2, '0')
+    return `${y}-${m}-${d}T${hh}:${mm}:${ss}`
+  }
+
+  // 4. 标准日期 + 时间：2026-09-14 14:49:41 或 2026/09/14 14:49:41 或 ISO 2026-09-14T14:49:41.000Z
+  const stdMatch = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})[T\s](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/.exec(trimmed)
+  if (stdMatch) {
+    const y = stdMatch[1]
+    const m = stdMatch[2].padStart(2, '0')
+    const d = stdMatch[3].padStart(2, '0')
+    const hh = stdMatch[4].padStart(2, '0')
+    const mm = stdMatch[5].padStart(2, '0')
+    const ss = (stdMatch[6] || '00').padStart(2, '0')
+    return `${y}-${m}-${d}T${hh}:${mm}:${ss}`
+  }
+
+  // 5. Date 构造器解析兜底
+  const parsed = new Date(trimmed)
+  if (!isNaN(parsed.getTime())) {
+    const y = parsed.getFullYear()
+    const m = String(parsed.getMonth() + 1).padStart(2, '0')
+    const d = String(parsed.getDate()).padStart(2, '0')
+    const hh = String(parsed.getHours()).padStart(2, '0')
+    const mm = String(parsed.getMinutes()).padStart(2, '0')
+    const ss = String(parsed.getSeconds()).padStart(2, '0')
+    return `${y}-${m}-${d}T${hh}:${mm}:${ss}`
+  }
+
+  return ''
+}
+
+function toHuanyuStorageFormat(value: unknown): string {
+  if (!value || typeof value !== 'string') return ''
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  if (/^\d{8}\s+\d{2}:\d{2}:\d{2}$/.test(trimmed)) return trimmed
+  const match = trimmed.match(/^(\d{4})[-/.]?(\d{1,2})[-/.]?(\d{1,2})[T\s]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/)
+  if (match) {
+    const yyyy = match[1]
+    const mm = match[2].padStart(2, '0')
+    const dd = match[3].padStart(2, '0')
+    const hh = match[4].padStart(2, '0')
+    const min = match[5].padStart(2, '0')
+    const ss = (match[6] || '00').padStart(2, '0')
+    return `${yyyy}${mm}${dd} ${hh}:${min}:${ss}`
+  }
+  return trimmed
 }
 
 function escortServiceDateInputValue(value: string): string {
@@ -2254,13 +2508,17 @@ function escortServiceDateInputValue(value: string): string {
   return match ? `${match[1]}-${match[2]}-${match[3]}` : ''
 }
 
-function huanyuDatePart(value: string): string {
-  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T/)
+function huanyuDatePart(value: unknown): string {
+  if (!value || typeof value !== 'string') return ''
+  const trimmed = value.trim()
+  const match = trimmed.match(/^(\d{4})[-/.]?(\d{2})[-/.]?(\d{2})/)
   return match ? `${match[1]}${match[2]}${match[3]}` : ''
 }
 
-function huanyuTimePart(value: string): string {
-  const match = value.match(/T(\d{2}:\d{2})(?::(\d{2}))?$/)
+function huanyuTimePart(value: unknown): string {
+  if (!value || typeof value !== 'string') return ''
+  const trimmed = value.trim()
+  const match = trimmed.match(/[T\s](\d{2}:\d{2})(?::(\d{2}))?$/)
   return match ? `${match[1]}:${match[2] || '00'}` : ''
 }
 
@@ -2289,32 +2547,38 @@ function HuanyuTimeInformation({
     { label: '应答时间', timeKey: 'responseTime', dateKey: 'responseDefaultDate', defaultTimeKey: 'responseDefaultTime' },
     { label: '启动服务时间', timeKey: 'serviceStartTime', dateKey: 'serviceStartDefaultDate', defaultTimeKey: 'serviceStartDefaultTime' },
     { label: '预约反馈时间', timeKey: 'bookingFeedbackTime', dateKey: 'bookingFeedbackDefaultDate', defaultTimeKey: 'bookingFeedbackDefaultTime' },
-    { label: '最晚取号时间', timeKey: 'latestTicketTime', dateKey: 'latestTicketDefaultDate', defaultTimeKey: 'latestTicketDefaultTime' }
+    { label: '最终取号时间', timeKey: 'latestTicketTime', dateKey: 'latestTicketDefaultDate', defaultTimeKey: 'latestTicketDefaultTime' }
   ]
 
   return (
     <div className="space-y-3">
-      {rows.map(({ label, timeKey, dateKey, defaultTimeKey }) => (
-        <div key={timeKey} className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-3">
-          <label className="flex min-w-0 items-center gap-2">
-            <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
-            <input
-              type="datetime-local"
-              step="1"
-              value={typeof form[timeKey] === 'string' ? form[timeKey] : ''}
-              onChange={(event) => {
-                const nextValue = event.target.value
-                onChange(timeKey, nextValue)
-                onChange(dateKey, huanyuDatePart(nextValue))
-                onChange(defaultTimeKey, huanyuTimePart(nextValue))
-              }}
-              className="h-9 min-w-0 flex-1 rounded-md border border-border-subtle bg-white px-3 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </label>
-          <HuanyuInput label="默认日期" value={form[dateKey]} onChange={(value) => onChange(dateKey, value)} disabled />
-          <HuanyuInput label="默认时间" value={form[defaultTimeKey]} onChange={(value) => onChange(defaultTimeKey, value)} disabled />
-        </div>
-      ))}
+      {rows.map(({ label, timeKey, dateKey, defaultTimeKey }) => {
+        const timeVal = typeof form[timeKey] === 'string' ? (form[timeKey] as string) : ''
+        const dateVal = huanyuDatePart(timeVal) || (typeof form[dateKey] === 'string' ? (form[dateKey] as string) : '')
+        const parsedTimeVal = huanyuTimePart(timeVal) || (typeof form[defaultTimeKey] === 'string' ? (form[defaultTimeKey] as string) : '')
+
+        return (
+          <div key={timeKey} className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-3">
+            <label className="flex min-w-0 items-center gap-2">
+              <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
+              <input
+                type="datetime-local"
+                step="1"
+                value={timeVal}
+                onChange={(event) => {
+                  const nextValue = event.target.value
+                  onChange(timeKey, nextValue)
+                  onChange(dateKey, huanyuDatePart(nextValue))
+                  onChange(defaultTimeKey, huanyuTimePart(nextValue))
+                }}
+                className="h-9 min-w-0 flex-1 rounded-md border border-border-subtle bg-white px-3 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary"
+              />
+            </label>
+            <HuanyuInput label="默认日期" value={dateVal} onChange={(value) => onChange(dateKey, value)} disabled />
+            <HuanyuInput label="默认时间" value={parsedTimeVal} onChange={(value) => onChange(defaultTimeKey, value)} disabled />
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -2353,12 +2617,31 @@ function HuanyuEscortInformationTable({
       setEscortLoading(true)
       setEscortError(null)
       fetchHuanyuEscorts(escortSearch)
-        .then((options) => active && setEscortOptions(options))
+        .then((options) => {
+          if (!active) return
+          setEscortOptions(options)
+          if (rows.some((row) => row.escortName && (!row.phone || !row.area || !row.escortType))) {
+            const updated = rows.map((row) => {
+              if (!row.escortName || (row.phone && row.area && row.escortType)) return row
+              const matched = options.find((item) => item.id === row.escortName || item.name === row.escortName)
+              if (matched) {
+                return {
+                  ...row,
+                  escortType: row.escortType || matched.escortType,
+                  phone: row.phone || matched.phone,
+                  area: row.area || matched.area
+                }
+              }
+              return row
+            })
+            setRows(updated)
+          }
+        })
         .catch((error: unknown) => active && setEscortError(error instanceof Error ? error.message : '陪诊人员加载失败'))
         .finally(() => active && setEscortLoading(false))
     }, 180)
     return () => { active = false; window.clearTimeout(timer) }
-  }, [escortSearch])
+  }, [escortSearch, rows])
 
   function changeRow(id: number, field: Exclude<keyof HuanyuEscortRow, 'id' | 'orderNo'>, value: string): void {
     if (onChangeRows) {
@@ -2454,30 +2737,64 @@ function HuanyuEscortSelectCell({
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number }>({ top: 0, left: 0, width: 320 })
   const selected = options.find((option) => option.id === value)
   const shownValue = open ? search : selected?.name ?? value
+
+  const updatePosition = useCallback(() => {
+    if (!inputRef.current) return
+    const rect = inputRef.current.getBoundingClientRect()
+    setDropdownPos({
+      top: rect.bottom + 4,
+      left: rect.left,
+      width: Math.max(rect.width, 320)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!open) return
+    updatePosition()
+    window.addEventListener('scroll', updatePosition, true)
+    window.addEventListener('resize', updatePosition)
+    return () => {
+      window.removeEventListener('scroll', updatePosition, true)
+      window.removeEventListener('resize', updatePosition)
+    }
+  }, [open, updatePosition])
 
   return (
     <div className="relative min-w-36">
       <input
+        ref={inputRef}
         value={shownValue}
         placeholder="搜索陪诊人员"
         onFocus={() => {
           setOpen(true)
           setSearch('')
           onSearch('')
+          updatePosition()
         }}
-        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 200)}
         onChange={(event) => {
           const next = event.target.value
           setSearch(next)
           onSearch(next)
           setOpen(true)
+          updatePosition()
         }}
         className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary"
       />
       {open && (
-        <div className="absolute z-30 mt-1 max-h-48 w-72 overflow-y-auto rounded-md border border-border-subtle bg-white py-1 text-left shadow-lg">
+        <div
+          style={{
+            position: 'fixed',
+            top: `${dropdownPos.top}px`,
+            left: `${dropdownPos.left}px`,
+            width: `${dropdownPos.width}px`
+          }}
+          className="z-[9999] max-h-56 overflow-y-auto rounded-md border border-border-subtle bg-white py-1 text-left shadow-2xl"
+        >
           {loading && <div className="px-3 py-2 text-text-muted">加载中…</div>}
           {!loading && error && <div className="px-3 py-2 text-error">{error}</div>}
           {!loading && !error && options.length === 0 && <div className="px-3 py-2 text-text-muted">暂无匹配数据</div>}
@@ -2491,10 +2808,10 @@ function HuanyuEscortSelectCell({
                 setSearch('')
                 setOpen(false)
               }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-surface-bg"
+              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-surface-bg"
             >
-              <span className="min-w-0 flex-1 truncate">{option.name}</span>
-              <span className="shrink-0 font-mono-data text-[11px] text-text-muted">{option.id}</span>
+              <span className="min-w-0 font-medium text-text-main truncate">{option.name}</span>
+              <span className="shrink-0 font-mono-data text-xs text-text-muted">{option.id}</span>
             </button>
           ))}
         </div>
@@ -2677,7 +2994,7 @@ function HuanyuTextarea({
   disabled = false,
   copyable = false
 }: {
-  label: string
+  label?: string
   value: string | boolean
   onChange: (value: string) => void
   placeholder?: string
@@ -2690,7 +3007,7 @@ function HuanyuTextarea({
 
   return (
     <div className="flex min-w-0 items-start gap-2">
-      <span className="w-28 shrink-0 pt-2 text-right text-body-sm font-medium text-text-muted">{label}：</span>
+      {label && <span className="w-28 shrink-0 pt-2 text-right text-body-sm font-medium text-text-muted">{label}：</span>}
       <div className="min-w-0 flex-1">
         <textarea disabled={disabled} value={textValue} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className={'min-w-0 w-full resize-y rounded-md border border-border-subtle p-3 text-body-sm text-text-main outline-none transition-colors ' + (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary') + ' ' + minHeight} />
         {copyable && (

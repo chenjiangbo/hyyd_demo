@@ -5,8 +5,8 @@ import { syncHuanyuOrderFromTaikang } from '../huanyuOrderSync.js'
 import { ensureHuanyuTables } from '../db/ensureHuanyuTables.js'
 
 // 兼容从仓库根目录直接执行，以及由 packages/backend 的 npm script 执行两种方式。
-dotenv.config({ path: resolve(process.cwd(), '.env'), override: true })
-dotenv.config({ path: resolve(process.cwd(), '../../.env'), override: true })
+dotenv.config({ path: resolve(process.cwd(), '.env'), override: false })
+dotenv.config({ path: resolve(process.cwd(), '../../.env'), override: false })
 
 const prisma = new PrismaClient()
 
@@ -33,6 +33,11 @@ async function main() {
        AND o."source" = ${'taikang'}
        AND h."KHJL" IS NULL
        AND BTRIM(e."name") <> ''
+  `
+  await prisma.$executeRaw`
+    UPDATE "HY_FACT_DDCX_NEW"
+       SET "KHJL" = '唐晓艳'
+     WHERE "KHJL" = 'tangxy'
   `
   const requestedBatchSize = Number(process.env.HUANYU_BACKFILL_BATCH_SIZE ?? 300)
   const batchSize = Number.isInteger(requestedBatchSize)

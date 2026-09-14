@@ -12,7 +12,7 @@ import { structureMessages, type StructInput } from '../lib/messageStructure.js'
 import { refreshApplicationBrief, refreshOrderBrief } from '../jobs/orderBriefRunner.js'
 import { getRecordingPlaybackInfo } from '../audioTranscode.js'
 import { findHuanyuChannelProductById, listHuanyuBdUsers, listHuanyuChannelProducts, listHuanyuChannels, listHuanyuEscorts, listHuanyuHospitalAddresses, listHuanyuHospitalDepartments, listHuanyuHospitalDoctors, listHuanyuHospitals } from '../db/remoteDictionary.js'
-import { huanyuBookingChannelTypes, huanyuDocumentTypes, huanyuExpertLevels, huanyuOrderStatuses } from '../dictionaries/huanyuOrder.js'
+import { huanyuBookingChannelTypes, huanyuDocumentTypes, huanyuExpertLevels, huanyuMedicareTypes, huanyuOrderStatuses } from '../dictionaries/huanyuOrder.js'
 import { registerDictionaryManageRoutes } from './dictionaryManage.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
@@ -602,6 +602,12 @@ export function registerApiRoutes(
     return reply.send({ data: huanyuDocumentTypes() })
   })
 
+  // 寰宇订单医保类型为后端固定字典，id 与展示名称一致。
+  fastify.get('/api/v1/dictionaries/huanyu/medicare-types', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    return reply.send({ data: huanyuMedicareTypes() })
+  })
+
   fastify.get<{ Querystring: { q?: string } }>('/api/v1/dictionaries/huanyu/bd-users', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
     const options = await listHuanyuBdUsers(request.query.q)
@@ -623,9 +629,9 @@ export function registerApiRoutes(
     return reply.send({ data: await listHuanyuHospitalDepartments(request.query.hospitalId, request.query.q) })
   })
 
-  fastify.get<{ Querystring: { hospitalId?: string; q?: string } }>('/api/v1/dictionaries/huanyu/hospital-doctors', async (request, reply) => {
+  fastify.get<{ Querystring: { hospitalId?: string; departmentId?: string; q?: string } }>('/api/v1/dictionaries/huanyu/hospital-doctors', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-    return reply.send({ data: await listHuanyuHospitalDoctors(request.query.hospitalId, request.query.q) })
+    return reply.send({ data: await listHuanyuHospitalDoctors(request.query.hospitalId, request.query.departmentId, request.query.q) })
   })
 
   fastify.get<{ Querystring: { q?: string } }>('/api/v1/dictionaries/huanyu/expert-levels', async (request, reply) => {
@@ -814,14 +820,69 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       ORDER BY "ZJ" ASC;
     `, ddbh)
 
-    const escortList = (escortRows || []).map((r: any, idx: number) => ({
-      sequence: String(idx + 1),
-      escortName: r.PZR || '',
-      serviceDate: r.BBQ_FW || '',
-      escortType: '',
-      phone: '',
-      area: ''
+    const escortList = await Promise.all((escortRows || []).map(async (r: any, idx: number) => {
+      let escortType = ''
+      let phone = ''
+      let area = ''
+      if (r.PZR) {
+        try {
+          const escorts = await listHuanyuEscorts(String(r.PZR))
+          const matched = escorts.find((e) => e.id === String(r.PZR) || e.name === String(r.PZR))
+          if (matched) {
+            escortType = matched.escortType
+            phone = matched.phone
+            area = matched.area
+          }
+        } catch {
+          // ignore
+        }
+      }
+      return {
+        sequence: String(idx + 1),
+        escortName: r.PZR || '',
+        serviceDate: r.BBQ_FW || '',
+        escortType,
+        phone,
+        area
+      }
     }))
+
+    const calculateAgeFromBirthOrId = (val: string | null | undefined): string => {
+      if (!val) return ''
+      const str = String(val).trim()
+      const idMatch = /^(\d{6})(\d{4})(\d{2})(\d{2})\d{3}[\dXx]$/.exec(str)
+      if (idMatch) {
+        const year = Number(idMatch[2])
+        const month = Number(idMatch[3])
+        const day = Number(idMatch[4])
+        const now = new Date()
+        let age = now.getFullYear() - year
+        const m = (now.getMonth() + 1) - month
+        if (m < 0 || (m === 0 && now.getDate() < day)) age--
+        return age >= 0 && age <= 150 ? String(age) : ''
+      }
+      const bdayMatch = /^(\d{4})[-/.]?(\d{1,2})[-/.]?(\d{1,2})/.exec(str)
+      if (bdayMatch) {
+        const year = Number(bdayMatch[1])
+        const month = Number(bdayMatch[2])
+        const day = Number(bdayMatch[3])
+        const now = new Date()
+        let age = now.getFullYear() - year
+        const m = (now.getMonth() + 1) - month
+        if (m < 0 || (m === 0 && now.getDate() < day)) age--
+        return age >= 0 && age <= 150 ? String(age) : ''
+      }
+      return ''
+    }
+
+    const resolvedPatientAge = (h.JZR_NL != null && String(h.JZR_NL).trim() !== '')
+      ? String(h.JZR_NL)
+      : (
+          rawObj.patientAge ||
+          rawObj.age ||
+          calculateAgeFromBirthOrId(rawObj.birthday || rawObj.birthDate || (orderObj as any).detailJson?.recommendations?.birthday || h.JZR_ZJHM || rawObj.cardId || rawObj.certNo) ||
+          ''
+        )
 
     const raw = {
       ...rawObj,
@@ -842,7 +903,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       documentType: h.JZR_ZJLX || '',
       documentNo: h.JZR_ZJHM || '',
       patientGender: h.JZR_XB || '',
-      patientAge: h.JZR_NL != null ? String(h.JZR_NL) : '',
+      patientAge: resolvedPatientAge,
       patientPhone: h.JZR_LXDH || orderObj.customerPhone || '',
       familyName: h.JZR_JSMC || '',
       familyRelation: h.JZR_JSGX || '',
@@ -854,11 +915,12 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       department: h.H_KS || orderObj.dept || '',
       doctor: h.H_YS || orderObj.doctor || '',
       serviceRemark: h.DDFWBZ || '',
-      requestTime: h.DATE_XQ || h.BBQ_XQ || '',
-      responseTime: h.DATE_YD || h.BBQ_YD || '',
-      serviceStartTime: h.DATE_QDFW || h.BBQ_QDFW || '',
-      bookingFeedbackTime: h.DATE_FK || h.BBQ_FK || '',
-      latestTicketTime: h.DATE_FW || h.BBQ_FW || '',
+      requestTime: h.BBQ_XQ || h.DATE_XQ || '',
+      responseTime: h.BBQ_YD || h.DATE_YD || '',
+      serviceStartTime: h.BBQ_QDFW || h.DATE_QDFW || '',
+      bookingFeedbackTime: h.BBQ_FK || h.DATE_FK || '',
+      latestTicketTime: h.lastQueuingTime || '',
+      lastQueuingTime: h.lastQueuingTime || '',
       escortName: h.PZR || '',
       escortSummary: h.PZXJ || '',
       bookingChannelType: h.YYQDLX || '',
@@ -872,6 +934,10 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       insuranceType: h.medicareType || '',
       isTaiKang: h.isTaiKang || '0',
       expertLevel: h.expert_level || '',
+      tkHospital: h.expectedHospital || rawObj.intendHos || '',
+      tkProvince: h.expectedProvince || rawObj.intendProvince || rawObj.province || '',
+      tkCity: h.expectedCity || rawObj.intendCity || rawObj.city || '',
+      tkDepartment: h.expectedDepartment || rawObj.intendDept || '',
       escortList
     }
 
@@ -919,6 +985,37 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     const orderStatus = String(body.orderStatus || '待处理').trim()
     const nowStr = new Date().toISOString()
 
+    const toHuanyuStorageFormat = (val: string | null | undefined): string | null => {
+      if (!val) return null
+      const trimmed = String(val).trim()
+      if (!trimmed) return null
+      if (/^\d{8}\s+\d{2}:\d{2}:\d{2}$/.test(trimmed)) return trimmed
+      const match = trimmed.match(/^(\d{4})[-/.]?(\d{1,2})[-/.]?(\d{1,2})[T\s]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/)
+      if (match) {
+        const yyyy = match[1]
+        const mm = match[2].padStart(2, '0')
+        const dd = match[3].padStart(2, '0')
+        const hh = match[4].padStart(2, '0')
+        const min = match[5].padStart(2, '0')
+        const ss = (match[6] || '00').padStart(2, '0')
+        return `${yyyy}${mm}${dd} ${hh}:${min}:${ss}`
+      }
+      return trimmed
+    }
+
+    const extractDateOnly = (val: string | null | undefined): string | null => {
+      const dt = toHuanyuStorageFormat(val)
+      if (!dt) return null
+      const match = /^(\d{8})/.exec(dt)
+      return match ? match[1] : null
+    }
+
+    const reqTimeFormatted = toHuanyuStorageFormat(body.requestTime)
+    const respTimeFormatted = toHuanyuStorageFormat(body.responseTime || body.expectedBookingTime)
+    const srvStartTimeFormatted = toHuanyuStorageFormat(body.serviceStartTime)
+    const fkTimeFormatted = toHuanyuStorageFormat(body.bookingFeedbackTime)
+    const lastQueueFormatted = toHuanyuStorageFormat(body.lastQueuingTime || body.latestTicketTime)
+
     try {
       // 1. 保存/更新主表 HY_FACT_DDCX_NEW
       await prisma.$executeRawUnsafe(`
@@ -931,7 +1028,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           "BBQ_QDFW", "DATE_QDFW", "BBQ_FK", "DATE_FK", "BBQ_FW", "DATE_FW",
           "PZR", "PZXJ", "YYQDLX", "BDYH", "registerAmount", "isAdvancePay",
           "advanceRegisterAmount", "registerPayStatus", "refundCustAmount",
-          "medicare", "medicareType", "isTaiKang", "expert_level", "xtsj_"
+          "medicare", "medicareType", "isTaiKang", "expert_level", "lastQueuingTime", "xtsj_"
         ) VALUES (
           $1, $2, $3, $4, $5, $6,
           $7, $8, $9, $10, $11, $12,
@@ -941,7 +1038,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           $32, $33, $34, $35, $36, $37,
           $38, $39, $40, $41, $42, $43,
           $44, $45, $46,
-          $47, $48, $49, $50, $51
+          $47, $48, $49, $50, $51, $52
         )
         ON CONFLICT ("DDBH") DO UPDATE SET
           "DD_state" = EXCLUDED."DD_state",
@@ -993,6 +1090,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           "medicareType" = EXCLUDED."medicareType",
           "isTaiKang" = EXCLUDED."isTaiKang",
           "expert_level" = EXCLUDED."expert_level",
+          "lastQueuingTime" = EXCLUDED."lastQueuingTime",
           "xtsj_" = EXCLUDED."xtsj_";
       `,
         orderNo,
@@ -1022,16 +1120,16 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         body.department || null,
         body.doctor || null,
         body.serviceRemark || null,
-        body.requestDefaultDate || null,
-        body.requestTime || null,
-        body.responseDefaultDate || null,
-        body.responseTime || body.expectedBookingTime || null,
-        body.serviceStartDefaultDate || null,
-        body.serviceStartTime || null,
-        body.bookingFeedbackDefaultDate || null,
-        body.bookingFeedbackTime || null,
-        body.latestTicketDefaultDate || null,
-        body.latestTicketTime || null,
+        reqTimeFormatted,
+        extractDateOnly(body.requestTime) || body.requestDefaultDate || null,
+        respTimeFormatted,
+        extractDateOnly(body.responseTime || body.expectedBookingTime) || body.responseDefaultDate || null,
+        srvStartTimeFormatted,
+        extractDateOnly(body.serviceStartTime) || body.serviceStartDefaultDate || null,
+        fkTimeFormatted,
+        extractDateOnly(body.bookingFeedbackTime) || body.bookingFeedbackDefaultDate || null,
+        null,
+        null,
         body.escortName || null,
         body.escortSummary || null,
         body.bookingChannelType || null,
@@ -1045,6 +1143,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         body.insuranceType || null,
         body.isTaiKang || '0',
         body.expertLevel || null,
+        lastQueueFormatted,
         nowStr
       )
 

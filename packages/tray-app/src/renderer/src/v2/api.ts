@@ -286,6 +286,7 @@ export interface SaveHuanyuOrderPayload {
   bookingFeedbackTime?: string
   bookingFeedbackDefaultDate?: string
   latestTicketTime?: string
+  lastQueuingTime?: string
   latestTicketDefaultDate?: string
   registrationFee?: string
   advancePayment?: string
@@ -349,6 +350,11 @@ export function fetchHuanyuDocumentTypes(): Promise<HuanyuChannelOption[]> {
   return authedGet<HuanyuChannelOption[]>('/api/v1/dictionaries/huanyu/document-types')
 }
 
+/** 寰宇订单医保类型（后端固定，id 与展示名称一致）。 */
+export function fetchHuanyuMedicareTypes(): Promise<HuanyuChannelOption[]> {
+  return authedGet<HuanyuChannelOption[]>('/api/v1/dictionaries/huanyu/medicare-types')
+}
+
 /** 寰宇订单 BD 用户字典（后端仅执行参数化 SELECT）。 */
 export function fetchHuanyuBdUsers(search = ''): Promise<HuanyuChannelOption[]> {
   const params = new URLSearchParams()
@@ -376,8 +382,13 @@ export function fetchHuanyuHospitalDepartments(hospitalId: string, search = ''):
   return authedGet<HuanyuHospitalDepartmentOption[]>(huanyuDictionarySearchPath('/api/v1/dictionaries/huanyu/hospital-departments', search, hospitalId))
 }
 
-export function fetchHuanyuHospitalDoctors(hospitalId: string, search = ''): Promise<HuanyuDoctorOption[]> {
-  return authedGet<HuanyuDoctorOption[]>(huanyuDictionarySearchPath('/api/v1/dictionaries/huanyu/hospital-doctors', search, hospitalId))
+export function fetchHuanyuHospitalDoctors(hospitalId: string, departmentId: string, search = ''): Promise<HuanyuDoctorOption[]> {
+  if (!hospitalId || !departmentId) return Promise.resolve([])
+  const params = new URLSearchParams()
+  params.set('hospitalId', hospitalId)
+  params.set('departmentId', departmentId)
+  if (search.trim()) params.set('q', search.trim())
+  return authedGet<HuanyuDoctorOption[]>(`/api/v1/dictionaries/huanyu/hospital-doctors?${params.toString()}`)
 }
 
 export function fetchHuanyuExpertLevels(search = ''): Promise<HuanyuChannelOption[]> {

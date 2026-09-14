@@ -13,6 +13,7 @@ const BOOKING_CHANNEL_TYPES: readonly HuanyuFixedDictionaryOption[] = [
 const ORDER_STATUSES: readonly HuanyuFixedDictionaryOption[] = [
   { id: '待跟进', name: '待跟进' },
   { id: '待预约', name: '待预约' },
+  { id: '预约完成-待支付', name: '预约完成-待支付' },
   { id: '待交付', name: '待交付' },
   { id: '已完成', name: '已完成' },
   { id: '已取消', name: '已取消' },
@@ -39,6 +40,14 @@ const EXPERT_LEVELS: readonly HuanyuFixedDictionaryOption[] = [
   { id: '住院医师', name: '住院医师' }
 ]
 
+const MEDICARE_TYPES: readonly HuanyuFixedDictionaryOption[] = [
+  { id: '1', name: '北京本地医保' },
+  { id: '2', name: '外埠本地医保' },
+  { id: '3', name: '异地医保' },
+  { id: '4', name: '公费医疗' },
+  { id: '5', name: '自费' }
+]
+
 export function huanyuBookingChannelTypes(): HuanyuFixedDictionaryOption[] {
   return BOOKING_CHANNEL_TYPES.map((item) => ({ ...item }))
 }
@@ -57,4 +66,8 @@ export function huanyuExpertLevels(rawSearch: unknown): HuanyuFixedDictionaryOpt
   return EXPERT_LEVELS
     .filter((item) => !search || item.name.includes(search))
     .map((item) => ({ ...item }))
+}
+
+export function huanyuMedicareTypes(): HuanyuFixedDictionaryOption[] {
+  return MEDICARE_TYPES.map((item) => ({ ...item }))
 }

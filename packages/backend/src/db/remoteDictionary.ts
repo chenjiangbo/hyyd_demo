@@ -62,7 +62,7 @@ function readOnlyPool(): Pool {
     connectionLimit: 5,
     queueLimit: 0,
     multipleStatements: false,
-    ssl: env.remoteDictDbSsl?.toLowerCase() === 'true' ? {} : undefined
+    ssl: env.remoteDictDbSsl?.toLowerCase() === 'true' ? { rejectUnauthorized: false } : undefined
   })
   return dictionaryPool
 }
@@ -265,18 +265,20 @@ export async function listHuanyuHospitalDepartments(hospitalId: unknown, rawSear
   }))
 }
 
-export async function listHuanyuHospitalDoctors(hospitalId: unknown, rawSearch: unknown): Promise<HuanyuDoctorOption[]> {
+export async function listHuanyuHospitalDoctors(hospitalId: unknown, departmentId: unknown, rawSearch: unknown): Promise<HuanyuDoctorOption[]> {
   const hospital = searchTerm(hospitalId)
-  if (!hospital) return []
+  const department = searchTerm(departmentId)
+  if (!hospital || !department) return []
   const search = searchTerm(rawSearch)
   const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
     `SELECT CAST(ID AS CHAR) AS id, name, ZC AS expertLevel
        FROM dim_hy_ys
       WHERE CAST(YY AS CHAR) = ?
-        AND (? = '' OR name LIKE CONCAT('%', ?, '%'))
+        AND (CAST(dwks AS CHAR) = ? OR dwks LIKE CONCAT('%', ?, '%'))
+        AND (? = '' OR CAST(ID AS CHAR) LIKE CONCAT('%', ?, '%') OR name LIKE CONCAT('%', ?, '%'))
       ORDER BY ID
       LIMIT 100`,
-    [hospital, search, search]
+    [hospital, department, department, search, search, search]
   )
   return rows.map((row) => ({
     id: String(row.id),
@@ -294,8 +296,16 @@ export async function listHuanyuEscorts(rawSearch: unknown): Promise<HuanyuEscor
             pzr.sj AS phone,
             CONCAT(COALESCE(sf.S_NAME, ''), '-', COALESCE(cs.X_NAME, '')) AS area
        FROM dim_hy_pzr AS pzr
-       LEFT JOIN DIM_CSLB AS sf ON CAST(pzr.sf AS CHAR) = CAST(sf.S_ID AS CHAR)
-       LEFT JOIN DIM_CSLB AS cs ON CAST(pzr.cs AS CHAR) = CAST(cs.X_ID AS CHAR)
+       LEFT JOIN (
+         SELECT CAST(S_ID AS CHAR) AS S_ID, MAX(S_NAME) AS S_NAME
+           FROM DIM_CSLB
+          GROUP BY S_ID
+       ) AS sf ON CAST(pzr.sf AS CHAR) = sf.S_ID
+       LEFT JOIN (
+         SELECT CAST(X_ID AS CHAR) AS X_ID, MAX(X_NAME) AS X_NAME
+           FROM DIM_CSLB
+          GROUP BY X_ID
+       ) AS cs ON CAST(pzr.cs AS CHAR) = cs.X_ID
       WHERE (? = '' OR CAST(pzr.id AS CHAR) LIKE CONCAT('%', ?, '%') OR pzr.name LIKE CONCAT('%', ?, '%'))
       ORDER BY pzr.id
       LIMIT 100`,
