@@ -886,7 +886,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       rawJson: raw
     }
   } catch (err) {
-    fastify.log.error('enrichOrderWithHuanyuFact error:', err)
+    fastify.log.error({ err }, 'enrichOrderWithHuanyuFact error')
     return orderObj
   }
 }

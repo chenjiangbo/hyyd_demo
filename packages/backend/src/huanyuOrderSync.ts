@@ -28,6 +28,14 @@ export interface HuanyuOrderSyncResult {
   managerFound: boolean
 }
 
+/**
+ * 常规抓单只补齐空字段，避免覆盖寰宇页面的人工编辑。
+ * `repairPatientContactMapping` 仅供一次性历史修复脚本使用：它只替换能确认仍为旧映射的电话字段。
+ */
+export interface HuanyuOrderSyncOptions {
+  repairPatientContactMapping?: boolean
+}
+
 type JsonRecord = Record<string, unknown>
 
 const channelCache = new Map<string, HuanyuChannelOption | null>()
@@ -58,6 +66,19 @@ function field(raw: JsonRecord, ...names: string[]): string | null {
 
 function text(value: string | null, maxLength: number): string | null {
   return value ? value.slice(0, maxLength) : null
+}
+
+function phoneLike(value: string | null): boolean {
+  if (!value) return false
+  return /^[+\d][\d\s-]{5,}$/.test(value)
+}
+
+/** 泰康第二联系人电话偶有落在 secEcpName；仅在其形态明确是电话号码时才兜底采用。 */
+function secondContactPhone(raw: JsonRecord): string | null {
+  const explicitPhone = field(raw, 'secEcpPhone', 'accompanyFamilyMembersMobile')
+  if (explicitPhone) return explicitPhone
+  const legacyPhoneInName = field(raw, 'secEcpName')
+  return phoneLike(legacyPhoneInName) ? legacyPhoneInName : null
 }
 
 /** 泰康返回名称与寰宇“证件类型”固定选项统一，未知/无对应项不猜测，归入“其他”。 */
@@ -183,7 +204,8 @@ export async function syncHuanyuOrderFromTaikang(
   prisma: PrismaClient,
   order: HuanyuSourceOrder,
   taikangAccount?: string | null,
-  employeeName?: string | null
+  employeeName?: string | null,
+  options: HuanyuOrderSyncOptions = {}
 ): Promise<HuanyuOrderSyncResult> {
   const ddbh = await stableDdbh(prisma, order)
   const listRaw = asRecord(order.rawJson)
@@ -207,6 +229,15 @@ export async function syncHuanyuOrderFromTaikang(
   // 这是显示名称回填，绝不以模糊匹配猜测其他人的姓名。
   const manager = (account ? await managerByUserId(account) : null) ?? (employeeName?.trim() || null)
   const birthday = field(raw, 'birthday')
+  const patientName = field(raw, 'patientName') ?? order.customerName
+  // 泰康客户信息页中“联系人手机号”对应 ecpPhone；无该值时才回退患者手机号。
+  const patientPhone = field(raw, 'ecpPhone', 'paMobile', 'patientMobile', 'patientPhone')
+  // 家属联系电话对应第二联系人电话；历史页面偶发将号码写入第二联系人姓名字段。
+  const familyPhone = secondContactPhone(raw)
+  // 用于一次性历史修复的旧映射判断。常规抓单不会据此覆盖已有值。
+  const legacyPatientPhone = field(raw, 'paMobile', 'patientMobile', 'patientPhone')
+  const legacyFamilyPhone = field(raw, 'ecpPhone')
+  const repairPatientContactMapping = Boolean(options.repairPatientContactMapping)
   // 取消类订单的金额规则优先级最高，固定写 0；其他订单取维表 CPJG。
   const amount = isCancelledOrder(order.status) ? 0 : productPrice(product?.price)
   const targetExists = await prisma.$queryRaw<Array<{ exists: boolean }>>`
@@ -222,8 +253,8 @@ export async function syncHuanyuOrderFromTaikang(
       "expectedProvince", "expectedCity", "expectedHospital", "expectedDepartment"
     ) VALUES (
       ${ddbh}, ${'待跟进'}, ${text(channel?.id ?? null, 100)}, ${text(order.sourceOrderNo, 50)}, ${text(product?.id ?? null, 50)}, ${amount}, ${text(manager, 50)},
-      ${text(field(raw, 'patientName') ?? order.customerName, 50)}, ${huanyuDocumentType(field(raw, 'cardType'))}, ${text(field(raw, 'cardId'), 50)}, ${text(field(raw, 'sex'), 20)}, ${ageFromBirthday(birthday)}, ${text(field(raw, 'paMobile', 'patientMobile', 'patientPhone'), 18)},
-      ${text(field(raw, 'ecpName'), 50)}, ${text(field(raw, 'patEcpRelationship', 'relationship'), 50)}, ${text(field(raw, 'ecpPhone'), 18)}, ${text(field(raw, 'suspectDisease'), 100)}, ${text(field(raw, 'comments', 'comment'), 2000)},
+      ${text(patientName, 50)}, ${huanyuDocumentType(field(raw, 'cardType'))}, ${text(field(raw, 'cardId'), 50)}, ${text(field(raw, 'sex'), 20)}, ${ageFromBirthday(birthday)}, ${text(patientPhone, 18)},
+      ${text(field(raw, 'ecpName'), 50)}, ${text(field(raw, 'patEcpRelationship', 'relationship'), 50)}, ${text(familyPhone, 18)}, ${text(field(raw, 'suspectDisease'), 100)}, ${text(field(raw, 'comments', 'comment'), 2000)},
       ${text(field(raw, 'hospital', 'intendHos', 'visitingHospital'), 100)}, ${text(field(raw, 'visitingHospitalDetailAddress'), 500)}, ${text(field(raw, 'dept', 'intendDept'), 50)}, ${text(field(raw, 'doctor', 'intendDoc'), 50)}, ${text(field(raw, 'comments', 'comment'), 2000)},
       ${text(field(raw, 'intendDateAmorpm'), 20)}, ${text(field(raw, 'intendDate'), 20)}, ${'1'}, ${order.createdAt.toISOString()},
       ${text(field(raw, 'intendProvince'), 50)}, ${text(field(raw, 'intendCity'), 50)}, ${text(field(raw, 'intendHos', 'hospital'), 255)}, ${text(field(raw, 'intendDept', 'dept'), 255)}
@@ -231,15 +262,34 @@ export async function syncHuanyuOrderFromTaikang(
       SET "BDQD_DDBH" = EXCLUDED."BDQD_DDBH",
           "DDJE" = COALESCE("HY_FACT_DDCX_NEW"."DDJE", EXCLUDED."DDJE"),
           "KHJL" = COALESCE("HY_FACT_DDCX_NEW"."KHJL", EXCLUDED."KHJL"),
-          "JZR_XM" = COALESCE("HY_FACT_DDCX_NEW"."JZR_XM", EXCLUDED."JZR_XM"),
+          "JZR_XM" = CASE
+            WHEN ("HY_FACT_DDCX_NEW"."JZR_XM" IS NULL OR "HY_FACT_DDCX_NEW"."JZR_XM" LIKE ${'%*%'})
+              AND EXCLUDED."JZR_XM" IS NOT NULL
+              AND EXCLUDED."JZR_XM" NOT LIKE ${'%*%'}
+              THEN EXCLUDED."JZR_XM"
+            ELSE "HY_FACT_DDCX_NEW"."JZR_XM"
+          END,
           "JZR_ZJLX" = COALESCE("HY_FACT_DDCX_NEW"."JZR_ZJLX", EXCLUDED."JZR_ZJLX"),
           "JZR_ZJHM" = COALESCE("HY_FACT_DDCX_NEW"."JZR_ZJHM", EXCLUDED."JZR_ZJHM"),
           "JZR_XB" = COALESCE("HY_FACT_DDCX_NEW"."JZR_XB", EXCLUDED."JZR_XB"),
           "JZR_NL" = COALESCE("HY_FACT_DDCX_NEW"."JZR_NL", EXCLUDED."JZR_NL"),
-          "JZR_LXDH" = COALESCE("HY_FACT_DDCX_NEW"."JZR_LXDH", EXCLUDED."JZR_LXDH"),
+          "JZR_LXDH" = CASE
+            WHEN "HY_FACT_DDCX_NEW"."JZR_LXDH" IS NULL THEN EXCLUDED."JZR_LXDH"
+            WHEN ${repairPatientContactMapping}
+              AND EXCLUDED."JZR_LXDH" IS NOT NULL
+              AND "HY_FACT_DDCX_NEW"."JZR_LXDH" IS NOT DISTINCT FROM ${legacyPatientPhone}
+              THEN EXCLUDED."JZR_LXDH"
+            ELSE "HY_FACT_DDCX_NEW"."JZR_LXDH"
+          END,
           "JZR_JSMC" = COALESCE("HY_FACT_DDCX_NEW"."JZR_JSMC", EXCLUDED."JZR_JSMC"),
           "JZR_JSGX" = COALESCE("HY_FACT_DDCX_NEW"."JZR_JSGX", EXCLUDED."JZR_JSGX"),
-          "JZR_JSLXFS" = COALESCE("HY_FACT_DDCX_NEW"."JZR_JSLXFS", EXCLUDED."JZR_JSLXFS"),
+          "JZR_JSLXFS" = CASE
+            WHEN "HY_FACT_DDCX_NEW"."JZR_JSLXFS" IS NULL THEN EXCLUDED."JZR_JSLXFS"
+            WHEN ${repairPatientContactMapping}
+              AND "HY_FACT_DDCX_NEW"."JZR_JSLXFS" IS NOT DISTINCT FROM ${legacyFamilyPhone}
+              THEN EXCLUDED."JZR_JSLXFS"
+            ELSE "HY_FACT_DDCX_NEW"."JZR_JSLXFS"
+          END,
           "JZR_JB" = COALESCE("HY_FACT_DDCX_NEW"."JZR_JB", EXCLUDED."JZR_JB"),
           "JZR_BZ" = COALESCE("HY_FACT_DDCX_NEW"."JZR_BZ", EXCLUDED."JZR_BZ")
   `
