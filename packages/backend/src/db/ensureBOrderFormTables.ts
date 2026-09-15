@@ -159,6 +159,44 @@ const CREATE_STATEMENTS = [
     CREATE INDEX IF NOT EXISTS b_order_service_steps_status_idx
       ON b_order_service_steps (step_status, planned_at, completed_at);
   `,
+  // 兼容已创建的第一版步骤表：服务包是父节点，子步骤可独立流转；事件与证据用于 AI/表单自动推进的审计。
+  `
+    ALTER TABLE b_order_service_steps
+      ADD COLUMN IF NOT EXISTS parent_step_id BIGINT REFERENCES b_order_service_steps(id) ON DELETE SET NULL,
+      ADD COLUMN IF NOT EXISTS step_kind VARCHAR(20) NOT NULL DEFAULT 'step'
+        CHECK (step_kind IN ('step', 'package')),
+      ADD COLUMN IF NOT EXISTS source_type VARCHAR(20) NOT NULL DEFAULT 'system'
+        CHECK (source_type IN ('system', 'form', 'ai', 'manual')),
+      ADD COLUMN IF NOT EXISTS source_ref VARCHAR(160),
+      ADD COLUMN IF NOT EXISTS ai_confidence NUMERIC(5,4),
+      ADD COLUMN IF NOT EXISTS evidence_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+      ADD COLUMN IF NOT EXISTS activated_at TIMESTAMPTZ;
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS b_order_service_steps_parent_idx
+      ON b_order_service_steps (parent_step_id, sequence_no, occurrence_no);
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS b_order_workflow_events (
+      id BIGSERIAL PRIMARY KEY,
+      operation_id BIGINT NOT NULL REFERENCES b_order_operations(id) ON DELETE CASCADE,
+      event_code VARCHAR(100) NOT NULL,
+      event_key VARCHAR(180) NOT NULL,
+      source_type VARCHAR(20) NOT NULL
+        CHECK (source_type IN ('form', 'ai', 'manual', 'system')),
+      source_ref VARCHAR(160),
+      confidence NUMERIC(5,4),
+      payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+      evidence_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+      applied_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT b_order_workflow_events_operation_key UNIQUE (operation_id, event_key)
+    );
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS b_order_workflow_events_operation_created_idx
+      ON b_order_workflow_events (operation_id, created_at DESC);
+  `,
 
   // 表单实例在创建时固定模板版本和快照；可不绑定服务步骤，以兼容订单级通用 Tab。
   `

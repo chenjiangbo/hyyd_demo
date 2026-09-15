@@ -22,6 +22,28 @@ export const BRIEF_STAGES = [
 ] as const
 export type BriefStage = (typeof BRIEF_STAGES)[number]
 
+// 只描述已经发生或已经明确确认的事实；流程引擎会再按服务类型校验是否能推进/追加服务包。
+export const WORKFLOW_EVENT_CODES = [
+  'initial_contact_completed',
+  'pre_visit_plan_completed',
+  'registration_completed',
+  'escort_completed',
+  'check_confirmed',
+  'check_booking_completed',
+  'check_companion_completed',
+  'hospital_confirmed',
+  'hospital_booking_completed',
+  'hospital_companion_completed',
+  'revisit_confirmed',
+  'revisit_completed',
+  'revisit_escort_completed'
+] as const
+export type WorkflowEventCode = (typeof WORKFLOW_EVENT_CODES)[number]
+export interface WorkflowAnalysisEvent {
+  code: WorkflowEventCode
+  evidence: string
+}
+
 // 回填关键信息字段（占位，业务通用集；真实字段以后按 ABI 回填接口对齐）
 export const BRIEF_KEY_INFO_FIELDS = [
   '目标医院',
@@ -74,6 +96,7 @@ export interface OrderBrief {
   nextActions: string[]
   risks: string[]
   keyInfo: Record<string, string | null>
+  workflowEvents: WorkflowAnalysisEvent[]
 }
 
 export interface OrderBriefResult extends OrderBrief {
@@ -139,7 +162,8 @@ function buildSchema(): string {
     hasOpenIssue: 'true/false：客户是否有未解决的问题',
     nextActions: ['下一步待办'],
     risks: ['风险/需关注，无则空数组'],
-    keyInfo: Object.fromEntries(BRIEF_KEY_INFO_FIELDS.map((k) => [k, '值或null']))
+    keyInfo: Object.fromEntries(BRIEF_KEY_INFO_FIELDS.map((k) => [k, '值或null'])),
+    workflowEvents: [{ code: WORKFLOW_EVENT_CODES.join(' | '), evidence: '对应事实的简短原文依据；没有已确认事实则 []' }]
   })
 }
 
@@ -181,6 +205,8 @@ export async function buildOrderBrief(
     '- hasOpenIssue：客户有未解决的问题/异议/投诉=true，否则 false。',
     `- keyInfo 只是从沟通中明确提到的信息摘录，键固定如下，没有的填 null，绝不编造：${BRIEF_KEY_INFO_FIELDS.join(' / ')}。`,
     '- 增量更新：保留上一版里已确认的信息，只在有新证据时修正或补充；不要无依据地清空已知字段。',
+    `- workflowEvents 只列出沟通中已经完成或已明确确认的业务事实，code 只能是：${WORKFLOW_EVENT_CODES.join(' / ')}。`,
+    '- 不要因为“计划、意向、可能、待确认”输出事件；没有可靠事实就返回 []。evidence 要写支持该事件的简短原文事实（尽量带日期或具体事项），不可编造。',
     'JSON 结构如下（键固定）：',
     buildSchema()
   ].join('\n')
@@ -221,6 +247,18 @@ function normalizeBrief(parsed: Record<string, unknown> | null, prev: OrderBrief
     keyInfo[k] = cur ?? prev?.keyInfo?.[k] ?? null
   }
 
+  const workflowEvents: WorkflowAnalysisEvent[] = Array.isArray(p.workflowEvents)
+    ? p.workflowEvents.flatMap((value) => {
+      if (!value || typeof value !== 'object') return []
+      const event = value as Record<string, unknown>
+      const code = typeof event.code === 'string' ? event.code.trim() : ''
+      const evidence = typeof event.evidence === 'string' ? event.evidence.trim() : ''
+      return (WORKFLOW_EVENT_CODES as readonly string[]).includes(code) && evidence
+        ? [{ code: code as WorkflowEventCode, evidence }]
+        : []
+    })
+    : []
+
   return {
     summary: typeof p.summary === 'string' ? p.summary.trim() : (prev?.summary ?? null),
     stage,
@@ -228,7 +266,8 @@ function normalizeBrief(parsed: Record<string, unknown> | null, prev: OrderBrief
     hasOpenIssue: typeof p.hasOpenIssue === 'boolean' ? p.hasOpenIssue : !!prev?.hasOpenIssue,
     nextActions: strArr(p.nextActions),
     risks: strArr(p.risks),
-    keyInfo
+    keyInfo,
+    workflowEvents
   }
 }
 

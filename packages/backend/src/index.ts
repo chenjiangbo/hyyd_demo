@@ -16,7 +16,7 @@ import {
   setExtPresenceInstance,
   deleteExtPresenceInstance
 } from './routes/api.js'
-import { startOrderBriefScheduler } from './jobs/orderBriefScheduler.js'
+import { startOrderAiSchedule } from './jobs/orderAiSchedule.js'
 import { registerAdminRoutes, ADMIN_COOKIE, verifyAdminToken } from './routes/admin.js'
 import { addAdminSocket, removeAdminSocket } from './routes/adminBus.js'
 import { saveOrderDetailBundle } from './orderDetail.js'
@@ -537,8 +537,8 @@ async function start() {
     await server.listen({ port, host })
     server.log.info(`寰宇医道后端服务启动成功，运行在: http://${host}:${port}`)
 
-    // 订单 AI 滚动简报：后台扫描器（静默5min/攒够10条 → 自动刷新简报）
-    startOrderBriefScheduler(prisma, minioClient)
+    // 订单 AI 只在上海时区的配置时点批量分析；不再按消息静默、消息条数或转写完成自动触发。
+    startOrderAiSchedule(prisma, minioClient)
   } catch (err) {
     server.log.error({ err }, '服务启动失败')
     process.exit(1)

@@ -13,10 +13,11 @@ export interface AppEnv {
   minioSecretKey: string
   minioBucketRecordings: string
   minioBucketScreenshots: string
-  gatewayBaseUrl: string
-  gatewayAppId: string
-  gatewayApiKey: string
-  dashscopeApiKey: string
+  // 网关与百炼能力按需使用；本地只开发订单/字典时可以不配置。
+  gatewayBaseUrl?: string
+  gatewayAppId?: string
+  gatewayApiKey?: string
+  dashscopeApiKey?: string
   adminWebDist?: string
   remoteDictDbHost?: string
   remoteDictDbPort?: string
@@ -24,6 +25,8 @@ export interface AppEnv {
   remoteDictDbUser?: string
   remoteDictDbPassword?: string
   remoteDictDbSsl?: string
+  // 每日订单 AI 分析时点，上海时区，逗号分隔；例如 12:00,18:00。
+  orderAiAnalysisTimes?: string
 }
 
 let cached: AppEnv | null = null
@@ -65,10 +68,10 @@ export function getEnv(): AppEnv {
     minioSecretKey: required('MINIO_SECRET_KEY'),
     minioBucketRecordings: required('MINIO_BUCKET_RECORDINGS'),
     minioBucketScreenshots: required('MINIO_BUCKET_SCREENSHOTS'),
-    gatewayBaseUrl: required('GATEWAY_BASE_URL'),
-    gatewayAppId: required('GATEWAY_APP_ID'),
-    gatewayApiKey: required('GATEWAY_API_KEY'),
-    dashscopeApiKey: required('DASHSCOPE_API_KEY'),
+    gatewayBaseUrl: optional('GATEWAY_BASE_URL'),
+    gatewayAppId: optional('GATEWAY_APP_ID'),
+    gatewayApiKey: optional('GATEWAY_API_KEY'),
+    dashscopeApiKey: optional('DASHSCOPE_API_KEY'),
     adminWebDist: optional('ADMIN_WEB_DIST'),
     // 远端字典库只在下拉读取接口被调用时才校验，避免未配置的环境无法启动常规服务。
     remoteDictDbHost: optional('REMOTE_DICT_DB_HOST'),
@@ -76,7 +79,8 @@ export function getEnv(): AppEnv {
     remoteDictDbName: optional('REMOTE_DICT_DB_NAME'),
     remoteDictDbUser: optional('REMOTE_DICT_DB_USER'),
     remoteDictDbPassword: optional('REMOTE_DICT_DB_PASSWORD'),
-    remoteDictDbSsl: optional('REMOTE_DICT_DB_SSL')
+    remoteDictDbSsl: optional('REMOTE_DICT_DB_SSL'),
+    orderAiAnalysisTimes: optional('ORDER_AI_ANALYSIS_TIMES')
   }
   return cached
 }

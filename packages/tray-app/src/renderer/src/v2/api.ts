@@ -107,6 +107,36 @@ export interface Order {
   } | null
 }
 
+export type WorkflowStepStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'skipped'
+
+export interface OrderWorkflowStep {
+  id: number
+  parentStepId: number | null
+  code: string
+  name: string
+  occurrenceNo: number
+  sequenceNo: number
+  status: WorkflowStepStatus
+  required: boolean
+  kind: 'step' | 'package'
+  source: 'system' | 'form' | 'ai' | 'manual'
+  sourceRef: string | null
+  aiConfidence: number | null
+  evidence: unknown
+  plannedAt: string | null
+  startedAt: string | null
+  completedAt: string | null
+  activatedAt: string | null
+  note: string | null
+  children: OrderWorkflowStep[]
+}
+
+export interface OrderWorkflow {
+  operationId: number
+  serviceType: string
+  steps: OrderWorkflowStep[]
+}
+
 export interface OrderAttachment {
   id: number
   fileType: string
@@ -201,6 +231,11 @@ async function authedGet<T>(path: string): Promise<T> {
 /** 拉取当前登录员工名下的订单 */
 export function fetchOrders(): Promise<Order[]> {
   return authedGet<Order[]>('/api/v1/orders')
+}
+
+/** 订单的业务服务轨迹；首次读取时后端会按服务类型初始化必选步骤。 */
+export function fetchOrderWorkflow(orderId: number): Promise<OrderWorkflow> {
+  return authedGet<OrderWorkflow>(`/api/v1/orders/${orderId}/workflow`)
 }
 
 /** 待申领池：泰康公共池订单（任何员工可申领） */

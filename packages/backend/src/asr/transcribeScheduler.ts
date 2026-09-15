@@ -19,7 +19,6 @@ import {
   type TranscriptionDoc
 } from './funAsrClient.js'
 import { getEnv } from '../env.js'
-import { refreshOrderBrief } from '../jobs/orderBriefRunner.js'
 
 const OBJECT_READY_TIMEOUT_MS = 60_000
 const OBJECT_READY_INTERVAL_MS = 2_000
@@ -199,7 +198,7 @@ async function pollTask(callId: number, taskId: string): Promise<void> {
       }
       // 只按 speaker_id 区分说话人（说话人 0 / 1 / …），不臆测身份（谁是员工、谁是客户）
       const text = renderTranscriptText(doc)
-      const updated = await prisma.call.update({
+      await prisma.call.update({
         where: { id: callId },
         data: {
           asrStatus: 'done',
@@ -209,15 +208,7 @@ async function pollTask(callId: number, taskId: string): Promise<void> {
         }
       })
       log('info', `callId=${callId} ✅ 转写完成，文本 ${text.length} 字`)
-      // 转写完成是高价值新内容 → 立刻让 LLM 重跑一次该订单的全量总结（force）。
-      if (updated.orderId) {
-        try {
-          await refreshOrderBrief(prisma, deps.minioClient, updated.orderId, { force: true })
-          log('info', `callId=${callId} 转写完成已触发订单 ${updated.orderId} 简报重算`)
-        } catch (e) {
-          log('warn', `callId=${callId} 转写后触发简报失败: ${(e as Error).message}`)
-        }
-      }
+      // 转写只负责沉淀文本。订单 AI 分析由每日定时任务或页面手动刷新触发。
       return
     }
 

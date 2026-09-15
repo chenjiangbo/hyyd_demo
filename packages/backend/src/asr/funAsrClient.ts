@@ -61,7 +61,9 @@ export interface TranscriptionDoc {
 }
 
 function getApiKey(): string {
-  return getEnv().dashscopeApiKey
+  const apiKey = getEnv().dashscopeApiKey
+  if (!apiKey) throw new Error('语音转写功能未配置 DASHSCOPE_API_KEY')
+  return apiKey
 }
 
 /** 提交录音文件识别任务（异步） */

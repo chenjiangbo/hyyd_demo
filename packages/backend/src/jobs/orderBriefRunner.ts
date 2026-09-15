@@ -98,7 +98,8 @@ function emptyBrief(): OrderBrief {
     hasOpenIssue: false,
     nextActions: [],
     risks: [],
-    keyInfo: {}
+    keyInfo: {},
+    workflowEvents: []
   }
 }
 
@@ -217,6 +218,7 @@ export async function refreshOrderBrief(
     nextActions: res.nextActions,
     risks: res.risks,
     keyInfo: res.keyInfo,
+    workflowEvents: res.workflowEvents,
     model: res.model,
     updatedFrom: { lastMessageId: maxMsgId, lastCallId: maxCallId, lastMaterialId: maxMaterialId }
   }
@@ -224,7 +226,7 @@ export async function refreshOrderBrief(
   await prisma.order.update({
     where: { id: orderId },
     data: {
-      aiBriefJson: stored,
+      aiBriefJson: jsonInput(stored),
       briefUpdatedAt: new Date(),
       briefLastMsgId: maxMsgId,
       briefLastCallId: maxCallId,

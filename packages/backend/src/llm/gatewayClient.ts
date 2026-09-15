@@ -35,13 +35,22 @@ export interface ChatResult {
 
 // ── 配置 ────────────────────────────────────────────────────────────────────
 
+function requiredAiConfig(value: string | undefined, name: string): string {
+  if (!value) throw new Error(`AI 功能未配置 ${name}`)
+  return value
+}
+
 function getConfig() {
   const env = getEnv()
   return {
-    baseUrl: env.gatewayBaseUrl,
-    appId: env.gatewayAppId,
-    apiKey: env.gatewayApiKey
+    baseUrl: requiredAiConfig(env.gatewayBaseUrl, 'GATEWAY_BASE_URL'),
+    appId: requiredAiConfig(env.gatewayAppId, 'GATEWAY_APP_ID'),
+    apiKey: requiredAiConfig(env.gatewayApiKey, 'GATEWAY_API_KEY')
   }
+}
+
+function getDashscopeApiKey(): string {
+  return requiredAiConfig(getEnv().dashscopeApiKey, 'DASHSCOPE_API_KEY')
 }
 
 // ── 非流式聊天 ────────────────────────────────────────────────────────────────
@@ -50,7 +59,7 @@ export async function chat(
   messages: ChatMessage[],
   options: ChatOptions = {}
 ): Promise<ChatResult> {
-  const apiKey = getEnv().dashscopeApiKey
+  const apiKey = getDashscopeApiKey()
   // 默认 qwen-plus（当前 DASHSCOPE key 已开通、可用）。
   // ⚠️ qwen-max-latest 这个 key 暂无权限(403)。想用旗舰/推理模型：先在百炼控制台「模型广场」开通，
   //    再设环境变量 HYYD_LLM_MODEL=<型号>（如 qwen-max-latest / qwen3-235b-a22b / qwq-plus），无需改代码。
@@ -99,7 +108,7 @@ export async function visionChat(
   imageDataUrl: string,
   options: ChatOptions = {}
 ): Promise<ChatResult> {
-  const apiKey = getEnv().dashscopeApiKey
+  const apiKey = getDashscopeApiKey()
   const model = options.model ?? process.env.HYYD_VLM_MODEL ?? 'qwen-vl-max'
 
   const body: Record<string, unknown> = {

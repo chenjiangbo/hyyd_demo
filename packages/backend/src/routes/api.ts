@@ -14,6 +14,7 @@ import { getRecordingPlaybackInfo } from '../audioTranscode.js'
 import { findHuanyuChannelProductById, listHuanyuBdUsers, listHuanyuChannelProducts, listHuanyuChannels, listHuanyuEscorts, listHuanyuHospitalAddresses, listHuanyuHospitalDepartments, listHuanyuHospitalDoctors, listHuanyuHospitals } from '../db/remoteDictionary.js'
 import { huanyuBookingChannelTypes, huanyuDocumentTypes, huanyuExpertLevels, huanyuMedicareTypes, huanyuOrderStatuses } from '../dictionaries/huanyuOrder.js'
 import { registerDictionaryManageRoutes } from './dictionaryManage.js'
+import { applyOrderWorkflowEvent, getOrderWorkflow, type WorkflowEventInput } from '../workflow/serviceWorkflow.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   CreateOrderPayload,
@@ -573,6 +574,49 @@ export function registerApiRoutes(
         displayName: request.employee.name
       }
     })
+  })
+
+  // 订单业务轨迹：页面只读取订单实例，首次读取会依据服务类型初始化必选步骤。
+  fastify.get<{ Params: { id: string } }>('/api/v1/orders/:id/workflow', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const orderId = Number(request.params.id)
+    if (!Number.isInteger(orderId) || orderId <= 0) return reply.status(400).send({ error: '订单 ID 无效' })
+    const workflow = await getOrderWorkflow(prisma, orderId)
+    if (!workflow) return reply.status(404).send({ error: '订单不存在' })
+    return reply.send({ data: workflow })
+  })
+
+  // 仅接收已被表单、AI 或人工确认的事实事件；不允许客户端直接创建任意服务包。
+  fastify.post<{ Params: { id: string } }>('/api/v1/orders/:id/workflow/events', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const orderId = Number(request.params.id)
+    if (!Number.isInteger(orderId) || orderId <= 0) return reply.status(400).send({ error: '订单 ID 无效' })
+    const body = (request.body ?? {}) as Partial<WorkflowEventInput>
+    if (typeof body.code !== 'string' || !body.code.trim()) return reply.status(400).send({ error: '缺少业务事件 code' })
+    if (!['form', 'ai', 'manual'].includes(String(body.source))) return reply.status(400).send({ error: '业务事件 source 无效' })
+    const source = body.source as WorkflowEventInput['source']
+    if (body.confidence != null && (typeof body.confidence !== 'number' || body.confidence < 0 || body.confidence > 1)) {
+      return reply.status(400).send({ error: '置信度必须在 0 到 1 之间' })
+    }
+    if (body.occurrenceNo != null && (!Number.isInteger(body.occurrenceNo) || body.occurrenceNo < 1)) {
+      return reply.status(400).send({ error: '服务包序号无效' })
+    }
+    try {
+      const workflow = await applyOrderWorkflowEvent(prisma, orderId, {
+        code: body.code.trim(),
+        source,
+        sourceRef: typeof body.sourceRef === 'string' ? body.sourceRef : null,
+        confidence: body.confidence ?? null,
+        evidence: body.evidence,
+        note: typeof body.note === 'string' ? body.note : null,
+        occurrenceNo: body.occurrenceNo
+      })
+      if (!workflow) return reply.status(404).send({ error: '订单不存在' })
+      return reply.send({ data: workflow })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '业务步骤更新失败'
+      return reply.status(400).send({ error: message })
+    }
   })
 
   // 寰宇订单下拉字典：仅调用 remoteDictionary 中固定的参数化 SELECT。

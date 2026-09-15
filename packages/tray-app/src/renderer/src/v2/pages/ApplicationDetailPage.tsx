@@ -9,6 +9,7 @@ import {
   fetchOrderAggregate,
   fetchOrderBrief,
   fetchOrderDetail,
+  fetchOrderWorkflow,
   fetchHuanyuChannelProducts,
   fetchHuanyuChannels,
   fetchHuanyuBookingChannelTypes,
@@ -40,8 +41,10 @@ import {
   type HuanyuEscortOption,
   type OrderDetailResponse,
   type OrderMessage,
+  type OrderWorkflow,
+  type OrderWorkflowStep,
 } from '../api'
-import { bizChipClass, bizType, LIFECYCLE_STAGES, sourceStyle, stageIndexOf } from '../lib/orderMapping'
+import { bizChipClass, bizType, sourceStyle } from '../lib/orderMapping'
 import { clearOrdersCache, type ApplicationGroup } from './WorkbenchKanban'
 
 type RightTab = 'taikang-detail' | 'huanyu-detail' | 'entry' | 'ai'
@@ -3032,48 +3035,74 @@ function HuanyuTextarea({
   )
 }
 
+function workflowStatusStyle(status: OrderWorkflowStep['status']): { circle: string; text: string; icon: string } {
+  if (status === 'completed') return { circle: 'border-action-green bg-action-green text-white', text: 'text-action-green', icon: 'check' }
+  if (status === 'in_progress') return { circle: 'border-primary bg-primary text-white shadow-[0_5px_12px_rgba(37,99,235,0.28)]', text: 'text-primary', icon: 'play_arrow' }
+  if (status === 'skipped' || status === 'cancelled') return { circle: 'border-border-subtle bg-surface-container-high text-text-muted', text: 'text-text-muted', icon: 'remove' }
+  return { circle: 'border-border-subtle bg-white text-text-muted', text: 'text-text-muted', icon: 'radio_button_unchecked' }
+}
+
 function CompactLifecycleTimeline({ order }: { order: Order }): React.JSX.Element {
-  const stage = stageIndexOf(order)
-  const shortLabels = ['申领', '需求', '交付', '回填', '结束']
+  const [workflow, setWorkflow] = useState<OrderWorkflow | null>(null)
+  const [loadError, setLoadError] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setWorkflow(null)
+    setLoadError(false)
+    void fetchOrderWorkflow(order.id)
+      .then((value) => { if (!cancelled) setWorkflow(value) })
+      .catch(() => { if (!cancelled) setLoadError(true) })
+    return () => { cancelled = true }
+  }, [order.id])
+
+  if (!workflow && !loadError) {
+    return <div className="mt-2 h-[58px] animate-pulse rounded-md bg-surface-container-high" />
+  }
+  if (loadError || !workflow) {
+    return <div className="mt-2 rounded-md bg-surface-container-high px-3 py-2 text-[11px] text-text-muted">业务服务步骤暂未加载</div>
+  }
 
   return (
-    <div className="relative mt-2 w-full px-1" title={`${bizType(order)} 生命周期 · ${order.status || LIFECYCLE_STAGES[stage]}`}>
-      <div className="absolute left-5 right-5 top-4 h-0.5 rounded-full bg-border-subtle" />
-      <div
-        className="absolute left-5 top-4 h-0.5 rounded-full bg-action-green/55"
-        style={{ width: `calc((100% - 2rem) * ${Math.max(0, stage) / (LIFECYCLE_STAGES.length - 1)})` }}
-      />
-      <div className="relative z-10 grid w-full grid-cols-5">
-      {LIFECYCLE_STAGES.map((name, index) => {
-        const done = index < stage
-        const active = index === stage
-        return (
-          <div key={name} className="flex min-w-0 justify-center">
-            <div className="flex min-w-0 flex-col items-center gap-0.5">
-              <span
-                className={
-                  'flex h-8 w-8 items-center justify-center rounded-full text-[11px] font-black ring-2 transition-all duration-200 ' +
-                  (active
-                    ? 'bg-primary text-white ring-primary/20 shadow-[0_8px_18px_rgba(37,99,235,0.28)] -translate-y-0.5'
-                    : done
-                      ? 'bg-action-green text-white ring-action-green/15 shadow-[0_5px_12px_rgba(34,197,94,0.18)]'
-                      : 'bg-white text-text-muted ring-border-subtle border border-border-subtle')
-                }
-              >
-                {index + 1}
-              </span>
-              <span
-                className={
-                  'max-w-9 truncate text-[10px] font-bold leading-none ' +
-                  (active ? 'text-primary' : done ? 'text-action-green' : 'text-text-muted')
-                }
-              >
-                {shortLabels[index]}
-              </span>
-            </div>
-          </div>
-        )
-      })}
+    <div className="mt-2 rounded-md border border-border-subtle bg-[#fcfdff] px-3 py-2" title={`${workflow.serviceType} · 业务服务步骤`}>
+      <div className="mb-1.5 flex items-center gap-2">
+        <span className="text-[11px] font-bold text-text-main">业务服务步骤</span>
+        <span className="rounded bg-primary/8 px-1.5 py-0.5 text-[10px] font-semibold text-primary">{workflow.serviceType}</span>
+        <span className="text-[10px] text-text-muted">由表单与 AI 识别自动推进</span>
+      </div>
+      <div className="overflow-x-auto pb-1">
+        <div className="flex min-w-max items-start gap-0">
+          {workflow.steps.map((step, index) => {
+            const style = workflowStatusStyle(step.status)
+            const isPackage = step.kind === 'package'
+            return (
+              <div key={step.id} className="flex items-start">
+                <div className="w-[126px] text-center">
+                  <div className="flex justify-center">
+                    <span className={'flex h-7 w-7 items-center justify-center rounded-full border text-[15px] font-bold ' + style.circle}>
+                      <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>{style.icon}</span>
+                    </span>
+                  </div>
+                  <div className={'mt-0.5 truncate text-[11px] font-bold ' + style.text}>
+                    {step.name}{step.occurrenceNo > 1 ? ` #${step.occurrenceNo}` : ''}
+                    {!step.required && <span className="ml-1 text-[9px] font-normal text-text-muted">可选</span>}
+                  </div>
+                  {isPackage && step.children.length > 0 && (
+                    <div className="mt-1 flex flex-wrap justify-center gap-1">
+                      {step.children.map((child) => {
+                        const childStyle = workflowStatusStyle(child.status)
+                        return <span key={child.id} className={'rounded border px-1 py-px text-[9px] ' + (child.status === 'in_progress' ? 'border-primary/35 bg-primary/8 text-primary' : child.status === 'completed' ? 'border-action-green/35 bg-action-green/8 text-action-green' : 'border-border-subtle bg-white text-text-muted')} title={`${child.name}：${child.status}`}>{childStyle.icon === 'check' ? '✓ ' : ''}{child.name}</span>
+                      })}
+                    </div>
+                  )}
+                </div>
+                {index < workflow.steps.length - 1 && (
+                  <div className={'mt-[13px] h-0.5 w-6 ' + (step.status === 'completed' ? 'bg-action-green/55' : 'bg-border-subtle')} />
+                )}
+              </div>
+            )
+          })}
+        </div>
       </div>
     </div>
   )
