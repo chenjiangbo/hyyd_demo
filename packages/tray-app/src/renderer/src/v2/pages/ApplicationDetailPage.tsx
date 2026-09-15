@@ -23,6 +23,8 @@ import {
   fetchHuanyuHospitalDepartments,
   fetchHuanyuHospitalDoctors,
   fetchHuanyuHospitals,
+  fetchOrderAiFieldCandidates,
+  pushHuanyuOrder,
   saveHuanyuOrder,
   getSession,
   refreshApplicationBrief,
@@ -39,6 +41,7 @@ import {
   type HuanyuHospitalDepartmentOption,
   type HuanyuDoctorOption,
   type HuanyuEscortOption,
+  type OrderAiFieldCandidate,
   type OrderDetailResponse,
   type OrderMessage,
   type OrderWorkflow,
@@ -1328,6 +1331,7 @@ function OrderDetailPanel({
       {/* 两个同级组件必须使用不同的 key。订单详情首屏会在多个请求回填后重渲染，
           相同 key 会让 React 的节点协调失去确定性，从而可能重复保留沟通记录区域。 */}
       <CommunicationRecordPanel key={`communication-${order.id}`} />
+      <OrderAiFieldCandidatePanel key={`ai-field-candidates-${order.id}`} orderId={order.id} />
       <ServiceInformationFlow key={`service-flow-${order.id}`} order={order} onEscortEntryActiveChange={setEscortEntryActive} />
       {hasEscortEntryTab && (
         <div hidden={!escortEntryActive}>
@@ -1335,6 +1339,31 @@ function OrderDetailPanel({
         </div>
       )}
     </div>
+  )
+}
+
+/** B 端服务表单还未接入正式回写前，先在表单区域上方集中展示对应订单的 AI 候选与证据入口。 */
+function OrderAiFieldCandidatePanel({ orderId }: { orderId: number }): React.JSX.Element | null {
+  const [candidates, setCandidates] = useState<OrderAiFieldCandidate[]>([])
+  useEffect(() => {
+    let active = true
+    fetchOrderAiFieldCandidates(orderId).then((rows) => active && setCandidates(rows)).catch(() => active && setCandidates([]))
+    return () => { active = false }
+  }, [orderId])
+  if (candidates.length === 0) return null
+  return (
+    <section className="rounded-lg border border-[#b9d4ff] bg-[#f6f9ff] p-4">
+      <div className="flex items-center gap-2 text-[15px] font-bold text-primary"><span className="material-symbols-outlined text-[18px]">auto_awesome</span>AI 识别的待填写业务信息</div>
+      <p className="mt-1 text-body-sm text-text-muted">来源为该申请号下的企微、微信和通话转写；仅保留与当前订单服务类型匹配的候选，需人工核对。</p>
+      <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+        {candidates.map((candidate) => (
+          <div key={candidate.id} className="rounded border border-[#d9e7ff] bg-white px-3 py-2 text-body-sm" title={candidate.evidence?.[0]?.quote || ''}>
+            <div className="text-text-muted">{candidate.fieldLabel}{candidate.requiresConfirmation ? ' · 需确认' : ''}</div>
+            <div className="mt-0.5 font-medium text-text-main">{candidate.value}</div>
+          </div>
+        ))}
+      </div>
+    </section>
   )
 }
 
@@ -1384,6 +1413,7 @@ function HuanyuOrderDetailPanel({
   return (
     <HuanyuOrderForm
       key={formKey}
+      orderId={currentOrder.id}
       initialForm={buildHuanyuForm(currentOrder)}
       initialEscorts={initialEscorts}
       onSaveSuccess={(savedOrder) => {
@@ -1436,11 +1466,13 @@ export function HuanyuOrderCreatePage({ onBack, onCreated }: { onBack: () => voi
 function HuanyuOrderForm({
   initialForm,
   initialEscorts,
+  orderId,
   mode = 'detail',
   onSaveSuccess
 }: {
   initialForm: Record<string, string | boolean>
   initialEscorts?: HuanyuEscortRow[]
+  orderId?: number
   mode?: 'detail' | 'create'
   onSaveSuccess?: (order: Order) => void
 }): React.JSX.Element {
@@ -1483,7 +1515,9 @@ function HuanyuOrderForm({
     ]
   })
   const [isSaving, setIsSaving] = useState(false)
+  const [isPushing, setIsPushing] = useState(false)
   const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const [aiCandidates, setAiCandidates] = useState<OrderAiFieldCandidate[]>([])
   const isCreate = mode === 'create'
   const initialChannelServiceId = useRef(typeof initialForm.channelService === 'string' ? initialForm.channelService : '')
   const initialOrderAmount = useRef(typeof initialForm.orderAmount === 'string' ? initialForm.orderAmount : '')
@@ -1531,6 +1565,51 @@ function HuanyuOrderForm({
       .catch(() => {})
     return () => { active = false }
   }, [])
+
+  // 正式寰宇字段有值时绝不覆盖；只有为空的字段才用 AI 候选做页面补位。
+  // 变更候选和歧义候选仅展示给人工，不自动放进输入框。
+  useEffect(() => {
+    if (!orderId || isCreate) {
+      setAiCandidates([])
+      return
+    }
+    let active = true
+    const formKeyByCandidate: Record<string, string> = {
+      hospital: 'hospital',
+      hospital_address: 'hospitalAddress',
+      department: 'department',
+      doctor: 'doctor',
+      expert_level: 'expertLevel',
+      service_remark: 'serviceRemark',
+      appointment_time: 'responseTime',
+      appointment_success_time: 'bookingFeedbackTime',
+      service_start_time: 'serviceStartTime',
+      latest_ticket_time: 'latestTicketTime',
+      registration_fee_amount: 'registrationFee',
+      escort_service_summary: 'escortSummary'
+    }
+    fetchOrderAiFieldCandidates(orderId)
+      .then((candidates) => {
+        if (!active) return
+        setAiCandidates(candidates)
+        setForm((current) => {
+          const next = { ...current }
+          for (const candidate of candidates) {
+            const key = formKeyByCandidate[candidate.fieldCode]
+            const currentValue = key ? current[key] : undefined
+            if (key && candidate.candidateType === 'new_or_confirmed' &&
+              (typeof currentValue !== 'string' || !currentValue.trim())) {
+              next[key] = ['responseTime', 'bookingFeedbackTime', 'serviceStartTime', 'latestTicketTime'].includes(key)
+                ? (toHuanyuDateTimeLocal(candidate.value) || candidate.value)
+                : candidate.value
+            }
+          }
+          return next
+        })
+      })
+      .catch(() => active && setAiCandidates([]))
+    return () => { active = false }
+  }, [orderId, isCreate])
 
   const channelId = typeof form.channel === 'string' ? form.channel : ''
   const hospitalId = typeof form.hospital === 'string' ? form.hospital : ''
@@ -1589,7 +1668,7 @@ function HuanyuOrderForm({
     escortOptions
   ])
 
-  async function handleSave(): Promise<void> {
+  async function handleSave(): Promise<boolean> {
     setIsSaving(true)
     setSaveStatus(null)
     try {
@@ -1677,13 +1756,35 @@ function HuanyuOrderForm({
         if (onSaveSuccess) {
           onSaveSuccess(res.order)
         }
+        if (orderId) {
+          void fetchOrderAiFieldCandidates(orderId).then(setAiCandidates).catch(() => undefined)
+        }
+        return true
       } else {
         setSaveStatus({ type: 'error', message: res.message || '保存失败' })
+        return false
       }
     } catch (err) {
       setSaveStatus({ type: 'error', message: err instanceof Error ? err.message : '保存失败' })
+      return false
     } finally {
       setIsSaving(false)
+    }
+  }
+
+  async function handlePush(): Promise<void> {
+    if (!orderId) return
+    if (!window.confirm('将当前已保存的寰宇订单信息推送到目标 MySQL，是否继续？')) return
+    const saved = await handleSave()
+    if (!saved) return
+    setIsPushing(true)
+    try {
+      const result = await pushHuanyuOrder(orderId)
+      setSaveStatus({ type: 'success', message: `已推送寰宇订单 ${result.ddbh}（${result.escortCount} 条陪诊明细）` })
+    } catch (error) {
+      setSaveStatus({ type: 'error', message: error instanceof Error ? error.message : '推送寰宇订单失败' })
+    } finally {
+      setIsPushing(false)
     }
   }
 
@@ -1999,9 +2100,10 @@ function HuanyuOrderForm({
                 <button
                   key={label}
                   type="button"
-                  disabled={label === '保存' && isSaving}
+                  disabled={(label === '保存' && isSaving) || (label === '确认推送寰宇订单信息' && (isSaving || isPushing))}
                   onClick={() => {
                     if (label === '保存') void handleSave()
+                    if (label === '确认推送寰宇订单信息') void handlePush()
                     if (label === '刷新预约模板信息') {
                       setSaveStatus({ type: 'success', message: '预约模板信息已刷新' })
                       window.setTimeout(() => setSaveStatus(null), 2000)
@@ -2016,7 +2118,7 @@ function HuanyuOrderForm({
                         : 'bg-action-green/90 hover:bg-action-green')
                   }
                 >
-                  {label === '保存' && isSaving ? '保存中…' : label}
+                  {label === '保存' && isSaving ? '保存中…' : label === '确认推送寰宇订单信息' && isPushing ? '推送中…' : label}
                 </button>
               ))
             )}
@@ -2026,6 +2128,24 @@ function HuanyuOrderForm({
 
       {/* 表单内容滚动区 */}
       <div className="p-4 space-y-4">
+        {aiCandidates.length > 0 && (
+          <section className="rounded-lg border border-[#72a7ff] bg-[#f4f8ff] px-4 py-3 text-body-sm text-text-main">
+            <div className="flex items-center gap-2 font-semibold text-primary">
+              <span className="material-symbols-outlined text-[18px]">auto_awesome</span>
+              AI 已识别 {aiCandidates.length} 个业务字段候选
+            </div>
+            <p className="mt-1 text-text-muted">仅在本地寰宇正式字段为空时已补充展示；请核对后点击“保存”写入本地 PostgreSQL，再手动确认推送 MySQL。</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {aiCandidates.map((candidate) => (
+                <span key={candidate.id} className="rounded bg-white px-2 py-1 text-[12px] border border-[#cfe0ff]" title={candidate.evidence?.[0]?.quote || ''}>
+                  {candidate.fieldLabel}：{candidate.value}
+                  {candidate.requiresConfirmation ? '（需确认）' : ''}
+                  {candidate.candidateType === 'ambiguous' ? '（归属待确认）' : ''}
+                </span>
+              ))}
+            </div>
+          </section>
+        )}
         <HuanyuFormSection title="订单基本信息">
         <HuanyuFormGrid>
           <HuanyuInput label="订单号" value={f.orderNo} onChange={(value) => changeField('orderNo', value)} disabled />

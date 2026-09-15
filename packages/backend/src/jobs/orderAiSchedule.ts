@@ -56,15 +56,21 @@ async function run(prisma: PrismaClient, minio: Minio.Client, slot: string): Pro
   if (running) return
   running = true
   try {
-    // 与订单的三条 AI 水位逐单比较。只要本轮新增的是有效企微/微信消息或有文本的
-    // 通话录音转写，才进入模型调用；手工素材不会单独触发本定时任务。
+    // 申请号是沟通数据范围，订单是分析结果范围：同一申请号下只要新增有效沟通，
+    // 每张关联订单都会按各自服务类型分别分析。手工素材不会单独触发本定时任务。
     const orders = await prisma.$queryRaw<Array<{ id: number }>>`
       SELECT o.id
       FROM orders o
       WHERE EXISTS (
         SELECT 1
         FROM messages m
-        WHERE m.order_id = o.id
+        WHERE (
+            m.order_id = o.id
+            OR (
+              o.raw_json->>'crmApplyNo' IS NOT NULL
+              AND m.application_no = o.raw_json->>'crmApplyNo'
+            )
+          )
           AND m.id > COALESCE(o.brief_last_msg_id, 0)
           AND m.channel IN ('wechat', 'wxwork')
           AND btrim(COALESCE(m.content_text, '')) <> ''
@@ -72,7 +78,13 @@ async function run(prisma: PrismaClient, minio: Minio.Client, slot: string): Pro
       OR EXISTS (
         SELECT 1
         FROM calls c
-        WHERE c.order_id = o.id
+        WHERE (
+            c.order_id = o.id
+            OR (
+              o.raw_json->>'crmApplyNo' IS NOT NULL
+              AND c.application_no = o.raw_json->>'crmApplyNo'
+            )
+          )
           AND c.id > COALESCE(o.brief_last_call_id, 0)
           AND btrim(COALESCE(c.asr_text, '')) <> ''
       )

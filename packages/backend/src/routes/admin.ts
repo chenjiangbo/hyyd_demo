@@ -5,7 +5,7 @@
  * - 全部挂在 /api/v1/admin/* 下，与员工端 API 完全隔离。
  * - 独立鉴权：POST /login 用 ADMIN_PASSWORD 校验 → 签 JWT(HS256, 12h) → httpOnly cookie。
  *   后续所有 /api/v1/admin/* 都要这个 cookie，缺失/失效一律 401。
- * - 只读后台：除登录/登出外没有任何写库接口。
+ * - 管理后台默认只读；服务步骤配置是经校验后允许维护的业务配置。
  * - 大列表一律 keyset 游标分页（按 (createdAt, id) 倒序），不用 offset。
  *
  * 注意：员工端的全局鉴权 hook（routes/api.ts）已放行 /api/v1/admin 前缀，
@@ -18,6 +18,13 @@ import jwt from 'jsonwebtoken'
 import { activeConnections, mobileSeenMap, presenceMap, trayRestSeenMap } from './api.js'
 import { getEnv } from '../env.js'
 import { getRecordingPlaybackInfo } from '../audioTranscode.js'
+import {
+  ORDER_AI_FIELD_DEFINITIONS,
+  ORDER_AI_FIELD_PROMPT_VERSION,
+  ORDER_AI_OUTPUT_DESCRIPTION,
+  ORDER_AI_PROMPT_INPUTS,
+  ORDER_AI_PROMPT_RULES
+} from '../llm/orderAiExtraction.js'
 
 export const ADMIN_COOKIE = 'hyyd_admin'
 const JWT_EXPIRES_IN = '12h'
@@ -241,6 +248,137 @@ export function registerAdminRoutes(
     fastify.get('/api/v1/admin/me', async (_request, reply) => {
       // 能走到这里说明 preHandler 已验证通过
       return reply.send({ data: { role: 'admin' } })
+    })
+
+    // 订单 AI 分析配置说明：内容直接由实际提取器导出，避免后台说明与运行规则不一致。
+    fastify.get('/api/v1/admin/order-ai-config', async (_request, reply) => {
+      const rawTimes = getEnv().orderAiAnalysisTimes ?? '12:00,18:00'
+      const times = rawTimes.split(',').map((item) => item.trim()).filter(Boolean)
+      return reply.send({
+        data: {
+          schedule: {
+            timeZone: 'Asia/Shanghai（上海时区）',
+            times: times.length > 0 ? times : ['12:00', '18:00'],
+            setting: 'ORDER_AI_ANALYSIS_TIMES',
+            condition: '仅在时点到达且订单自上次分析后存在新的企微消息、微信消息或已完成转写的通话录音时调用；不会因静默、消息条数或转写完成即时自动调用。',
+            scope: '沟通记录按申请号聚合；每张订单按自己的服务类型与字段白名单独立分析。页面手动调用入口保留。'
+          },
+          prompt: {
+            version: ORDER_AI_FIELD_PROMPT_VERSION,
+            rules: ORDER_AI_PROMPT_RULES,
+            inputs: ORDER_AI_PROMPT_INPUTS,
+            output: ORDER_AI_OUTPUT_DESCRIPTION
+          },
+          fields: ORDER_AI_FIELD_DEFINITIONS.map((field) => ({
+            code: field.code,
+            label: field.label,
+            serviceTypes: field.services ?? ['全部服务类型'],
+            requiresConfirmation: field.requiresConfirmation === true
+          })),
+          readRules: [
+            'B 端订单与寰宇订单页面均优先展示对应本地 PostgreSQL 正式字段值。',
+            '正式字段为空时，页面才可展示本订单最新、待处理的 AI 字段候选值；正式字段已有值时不再用 AI 值覆盖展示。',
+            '人工保存后写回本地 PostgreSQL 正式字段，并把对应候选标记为 adopted；之后只展示正式字段值。',
+            'change_candidate 与 ambiguous 仅提示人工复核，不自动覆盖正式字段，也不自动推进步骤。',
+            '仅字段提取器返回且有明确证据的 workflow_events 可以尝试推进服务步骤；金额、诊断、ICD10 始终需要人工确认。'
+          ],
+          storage: [
+            {
+              table: 'b_order_ai_analysis_runs',
+              purpose: '一轮订单 AI 分析的批次与可追溯原始结果。',
+              fields: 'order_id、application_no、model、prompt_version、status、三类来源水位、raw_result_json、error_message、created_at、completed_at'
+            },
+            {
+              table: 'b_order_ai_field_candidates',
+              purpose: 'AI 从该订单沟通中提取的待采纳字段候选值，不直接写正式业务字段。',
+              fields: 'run_id、order_id、field_code、field_label、value_text、normalized_value_json、candidate_type、confidence、requires_confirmation、evidence_json、status、adopted_at、adopted_by_employee_id'
+            },
+            {
+              table: 'b_order_huanyu_push_logs',
+              purpose: '每次人工确认推送寰宇 MySQL 的成功/失败审计记录。',
+              fields: 'order_id、huanyu_order_no、status、message、pushed_by_employee_id、created_at'
+            }
+          ],
+          huanyuPush: {
+            action: '寰宇订单页点击“确认推送寰宇订单信息”后才执行，绝不由 AI 分析或保存表单自动触发。',
+            target: '远端 MySQL：HY_FACT_DDCX_NEW、fact_hy_pzrxx、hy_d_tp 三张同名寰宇订单表；以本地 PostgreSQL 当前正式快照为来源。',
+            notices: [
+              '推送前请先核对并保存页面上的正式字段；AI 候选仅供补全和人工确认。',
+              'MySQL 写库须配置 HUANYU_PUSH_DB_HOST、HUANYU_PUSH_DB_PORT、HUANYU_PUSH_DB_NAME、HUANYU_PUSH_DB_USER、HUANYU_PUSH_DB_PASSWORD；未单独配置时兼容回退 REMOTE_DICT_DB_*。',
+              '生产环境应使用仅允许写入这三张表的最小权限 MySQL 账号；失败后可在页面再次确认重试，结果会写入推送审计表。'
+            ]
+          }
+        }
+      })
+    })
+
+    // 服务步骤配置：订单新建时从已发布配置生成实例，配置的后续编辑不会改写历史订单实例。
+    fastify.get('/api/v1/admin/workflow-templates', async (_request, reply) => {
+      const templates = await prisma.$queryRaw<Array<{ id: bigint; code: string; version: number; name: string; service_type: string; description: string | null; status: string }>>`
+        SELECT id, code, version, name, service_type, description, status
+        FROM b_order_workflow_templates
+        ORDER BY service_type ASC, version DESC
+      `
+      const steps = await prisma.$queryRaw<Array<{ id: bigint; template_id: bigint; code: string; name: string; parent_code: string | null; step_kind: string; sort_order: number; is_required: boolean; is_repeatable: boolean; activation_mode: string; trigger_event_code: string | null; status: string }>>`
+        SELECT id, template_id, code, name, parent_code, step_kind, sort_order, is_required,
+               is_repeatable, activation_mode, trigger_event_code, status
+        FROM b_order_workflow_step_configs
+        ORDER BY template_id, sort_order, id
+      `
+      return reply.send({ data: templates.map((template) => ({
+        id: Number(template.id), code: template.code, version: template.version, name: template.name,
+        serviceType: template.service_type, description: template.description, status: template.status,
+        steps: steps.filter((step) => step.template_id === template.id).map((step) => ({
+          id: Number(step.id), code: step.code, name: step.name, parentCode: step.parent_code,
+          kind: step.step_kind, sortOrder: step.sort_order, required: step.is_required,
+          repeatable: step.is_repeatable, activationMode: step.activation_mode,
+          triggerEventCode: step.trigger_event_code, status: step.status
+        }))
+      })) })
+    })
+
+    fastify.put<{ Params: { id: string } }>('/api/v1/admin/workflow-templates/:id', async (request, reply) => {
+      const templateId = Number(request.params.id)
+      if (!Number.isInteger(templateId) || templateId <= 0) return reply.status(400).send({ error: '配置 ID 无效' })
+      const body = (request.body ?? {}) as { name?: unknown; description?: unknown; steps?: unknown }
+      const name = typeof body.name === 'string' ? body.name.trim() : ''
+      const rawSteps = Array.isArray(body.steps) ? body.steps : null
+      if (!name || !rawSteps?.length) return reply.status(400).send({ error: '配置名称和至少一个步骤不能为空' })
+      const steps = rawSteps.map((raw, index) => {
+        const step = (raw ?? {}) as Record<string, unknown>
+        return {
+          code: typeof step.code === 'string' ? step.code.trim() : '', name: typeof step.name === 'string' ? step.name.trim() : '',
+          parentCode: typeof step.parentCode === 'string' && step.parentCode.trim() ? step.parentCode.trim() : null,
+          kind: step.kind === 'package' ? 'package' : 'step', sortOrder: Number.isInteger(step.sortOrder) ? Number(step.sortOrder) : (index + 1) * 10,
+          required: step.required !== false, repeatable: step.repeatable === true,
+          activationMode: step.activationMode === 'event' ? 'event' : 'initial',
+          triggerEventCode: typeof step.triggerEventCode === 'string' && step.triggerEventCode.trim() ? step.triggerEventCode.trim() : null,
+          status: step.status === 'hidden' || step.status === 'retired' ? step.status : 'active'
+        }
+      })
+      const codes = new Set<string>()
+      for (const step of steps) {
+        if (!/^[a-z][a-z0-9_]{1,79}$/.test(step.code) || !step.name) return reply.status(400).send({ error: '步骤编码须为小写英文、数字或下划线，且名称不能为空' })
+        if (codes.has(step.code)) return reply.status(400).send({ error: `步骤编码重复：${step.code}` })
+        if (step.activationMode === 'event' && !step.triggerEventCode) return reply.status(400).send({ error: `事件触发步骤“${step.name}”缺少触发事件` })
+        codes.add(step.code)
+      }
+      for (const step of steps) if (step.parentCode && !codes.has(step.parentCode)) return reply.status(400).send({ error: `步骤“${step.name}”的父步骤不存在` })
+      const description = typeof body.description === 'string' ? body.description.trim() || null : null
+      try {
+        await prisma.$transaction(async (tx) => {
+          const changed = await tx.$executeRaw`UPDATE b_order_workflow_templates SET name = ${name}, description = ${description}, updated_at = now() WHERE id = ${templateId} AND status = 'active'`
+          if (changed === 0) throw new Error('未找到已发布的步骤配置')
+          await tx.$executeRaw`DELETE FROM b_order_workflow_step_configs WHERE template_id = ${templateId}`
+          for (const step of steps) await tx.$executeRaw`
+            INSERT INTO b_order_workflow_step_configs (template_id, code, name, parent_code, step_kind, sort_order, is_required, is_repeatable, activation_mode, trigger_event_code, status)
+            VALUES (${templateId}, ${step.code}, ${step.name}, ${step.parentCode}, ${step.kind}, ${step.sortOrder}, ${step.required}, ${step.repeatable}, ${step.activationMode}, ${step.triggerEventCode}, ${step.status})
+          `
+        })
+        return reply.send({ data: { ok: true } })
+      } catch (error) {
+        return reply.status(400).send({ error: error instanceof Error ? error.message : '保存步骤配置失败' })
+      }
     })
 
     // ───── 2. 仪表盘 ─────

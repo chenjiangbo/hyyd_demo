@@ -30,6 +30,7 @@ import { ensureHuanyuTables } from './db/ensureHuanyuTables.js'
 import { ensureBOrderFormTables } from './db/ensureBOrderFormTables.js'
 import { ensureReminderTables } from './db/ensureReminderTables.js'
 import { syncHuanyuOrderFromTaikang } from './huanyuOrderSync.js'
+import { initializeOrderWorkflow } from './workflow/serviceWorkflow.js'
 
 if (process.env.NODE_ENV !== 'production') {
   // 开发期允许从 .env 启动；生产由 Docker/宿主机显式注入环境变量。
@@ -282,6 +283,9 @@ async function start() {
                       rawJson
                     }
                   })
+
+                  // 新抓取订单落库即初始化运营主记录和必选步骤，不依赖员工打开详情页。
+                  await initializeOrderWorkflow(prisma, saved.id)
 
                   // 首次出现（existing 为空）或状态码变化 → 记一条历史
                   const oldState = existing?.orderState ?? null

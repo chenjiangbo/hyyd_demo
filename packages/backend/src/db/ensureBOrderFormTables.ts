@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client'
+import { DEFAULT_WORKFLOW_TEMPLATES } from '../workflow/defaultWorkflowConfig.js'
 
 /**
  * B 端订单运营表单的第一版存储结构。
@@ -198,6 +199,55 @@ const CREATE_STATEMENTS = [
       ON b_order_workflow_events (operation_id, created_at DESC);
   `,
 
+  // 已发布的服务类型—步骤规则。订单实例只能从这里读取，不再依赖页面的静态步骤定义。
+  `
+    CREATE TABLE IF NOT EXISTS b_order_workflow_templates (
+      id BIGSERIAL PRIMARY KEY,
+      code VARCHAR(80) NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+      name VARCHAR(150) NOT NULL,
+      service_type VARCHAR(100) NOT NULL,
+      description TEXT,
+      status VARCHAR(20) NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft', 'active', 'retired')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT b_order_workflow_templates_code_version_key UNIQUE (code, version),
+      CONSTRAINT b_order_workflow_templates_service_version_key UNIQUE (service_type, version)
+    );
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS b_order_workflow_templates_active_idx
+      ON b_order_workflow_templates (service_type, status, version DESC);
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS b_order_workflow_step_configs (
+      id BIGSERIAL PRIMARY KEY,
+      template_id BIGINT NOT NULL REFERENCES b_order_workflow_templates(id) ON DELETE CASCADE,
+      code VARCHAR(80) NOT NULL,
+      name VARCHAR(150) NOT NULL,
+      parent_code VARCHAR(80),
+      step_kind VARCHAR(20) NOT NULL DEFAULT 'step'
+        CHECK (step_kind IN ('step', 'package')),
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_required BOOLEAN NOT NULL DEFAULT true,
+      is_repeatable BOOLEAN NOT NULL DEFAULT false,
+      activation_mode VARCHAR(20) NOT NULL DEFAULT 'initial'
+        CHECK (activation_mode IN ('initial', 'event')),
+      trigger_event_code VARCHAR(100),
+      config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+      status VARCHAR(20) NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'hidden', 'retired')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT b_order_workflow_step_configs_template_code_key UNIQUE (template_id, code)
+    );
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS b_order_workflow_step_configs_template_sort_idx
+      ON b_order_workflow_step_configs (template_id, activation_mode, sort_order, id);
+  `,
+
   // 表单实例在创建时固定模板版本和快照；可不绑定服务步骤，以兼容订单级通用 Tab。
   `
     CREATE TABLE IF NOT EXISTS b_order_form_instances (
@@ -318,10 +368,100 @@ const CREATE_STATEMENTS = [
   `
     CREATE INDEX IF NOT EXISTS b_order_form_revisions_instance_created_idx
       ON b_order_form_revisions (form_instance_id, created_at DESC);
+  `,
+
+  // AI 按订单产出的分析批次与字段候选值。沟通记录仍然以申请号采集；本组表把
+  // “同一申请号上下文、不同订单分别分析”的结果隔离保存，绝不直接写正式订单字段。
+  `
+    CREATE TABLE IF NOT EXISTS b_order_ai_analysis_runs (
+      id BIGSERIAL PRIMARY KEY,
+      order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      application_no VARCHAR(100),
+      model VARCHAR(100) NOT NULL,
+      prompt_version VARCHAR(40) NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'succeeded'
+        CHECK (status IN ('running', 'succeeded', 'failed')),
+      source_message_max_id INTEGER,
+      source_call_max_id INTEGER,
+      source_material_max_id INTEGER,
+      raw_result_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+      error_message TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      completed_at TIMESTAMPTZ
+    );
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS b_order_ai_analysis_runs_order_created_idx
+      ON b_order_ai_analysis_runs (order_id, created_at DESC);
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS b_order_ai_field_candidates (
+      id BIGSERIAL PRIMARY KEY,
+      run_id BIGINT NOT NULL REFERENCES b_order_ai_analysis_runs(id) ON DELETE CASCADE,
+      order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      field_code VARCHAR(100) NOT NULL,
+      field_label VARCHAR(150) NOT NULL,
+      value_text TEXT NOT NULL,
+      normalized_value_json JSONB,
+      candidate_type VARCHAR(30) NOT NULL DEFAULT 'new_or_confirmed'
+        CHECK (candidate_type IN ('new_or_confirmed', 'change_candidate', 'ambiguous')),
+      confidence NUMERIC(5,4) NOT NULL DEFAULT 0,
+      requires_confirmation BOOLEAN NOT NULL DEFAULT false,
+      evidence_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+      status VARCHAR(20) NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'adopted', 'dismissed', 'superseded')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      adopted_at TIMESTAMPTZ,
+      adopted_by_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL
+    );
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS b_order_ai_field_candidates_order_field_idx
+      ON b_order_ai_field_candidates (order_id, field_code, status, created_at DESC);
+  `,
+
+  // 人工确认推送远端 MySQL 时的不可变审计记录；失败可在页面再次点击重试。
+  `
+    CREATE TABLE IF NOT EXISTS b_order_huanyu_push_logs (
+      id BIGSERIAL PRIMARY KEY,
+      order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      huanyu_order_no VARCHAR(50) NOT NULL,
+      status VARCHAR(20) NOT NULL CHECK (status IN ('succeeded', 'failed')),
+      message TEXT,
+      pushed_by_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS b_order_huanyu_push_logs_order_created_idx
+      ON b_order_huanyu_push_logs (order_id, created_at DESC);
   `
 ]
 
 /** 在后端启动时幂等创建运营表单存储表；数据库异常必须上抛，避免服务带着半初始化结构运行。 */
 export async function ensureBOrderFormTables(prisma: PrismaClient): Promise<void> {
   await prisma.$transaction(CREATE_STATEMENTS.map((statement) => prisma.$executeRawUnsafe(statement)))
+  // 默认配置只在首次缺失时写入；管理员后续在后台维护的配置不会被启动过程覆盖。
+  for (const template of DEFAULT_WORKFLOW_TEMPLATES) {
+    const rows = await prisma.$queryRaw<Array<{ id: bigint }>>`
+      INSERT INTO b_order_workflow_templates (code, version, name, service_type, status)
+      VALUES (${template.code}, 1, ${template.name}, ${template.serviceType}, 'active')
+      ON CONFLICT (service_type, version) DO UPDATE
+        SET code = b_order_workflow_templates.code
+      RETURNING id
+    `
+    const templateId = rows[0]!.id
+    for (const step of template.steps) {
+      await prisma.$executeRaw`
+        INSERT INTO b_order_workflow_step_configs (
+          template_id, code, name, parent_code, step_kind, sort_order, is_required,
+          is_repeatable, activation_mode, trigger_event_code, status
+        ) VALUES (
+          ${templateId}, ${step.code}, ${step.name}, ${step.parentCode ?? null}, ${step.kind ?? 'step'},
+          ${step.sortOrder}, ${step.isRequired ?? true}, ${step.isRepeatable ?? false},
+          ${step.activationMode ?? 'initial'}, ${step.triggerEventCode ?? null}, 'active'
+        ) ON CONFLICT (template_id, code) DO NOTHING
+      `
+    }
+  }
 }

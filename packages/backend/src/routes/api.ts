@@ -15,7 +15,8 @@ import { findHuanyuChannelProductById, listHuanyuBdUsers, listHuanyuChannelProdu
 import { huanyuBookingChannelTypes, huanyuDocumentTypes, huanyuExpertLevels, huanyuMedicareTypes, huanyuOrderStatuses } from '../dictionaries/huanyuOrder.js'
 import { registerDictionaryManageRoutes } from './dictionaryManage.js'
 import { registerEscortFeedbackRoutes } from './escortFeedbackRoutes.js'
-import { applyOrderWorkflowEvent, getOrderWorkflow, type WorkflowEventInput } from '../workflow/serviceWorkflow.js'
+import { applyOrderWorkflowEvent, getOrderWorkflow, initializeOrderWorkflow, type WorkflowEventInput } from '../workflow/serviceWorkflow.js'
+import { pushHuanyuOrderToMysql } from '../huanyuMysqlPush.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   CreateOrderPayload,
@@ -814,6 +815,7 @@ export function registerApiRoutes(
           rawJson: (rawJson as any) ?? null
         }
       })
+      await initializeOrderWorkflow(prisma, order.id)
 
       return reply.send({ data: order })
     } catch (err: any) {
@@ -1270,10 +1272,78 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         })
       }
 
+      await initializeOrderWorkflow(prisma, syncedOrder.id)
+
+      // 用户保存时，只有实际采纳且值一致的 AI 候选才标为 adopted；手工改成其他值时不误标。
+      const candidateValueByCode: Record<string, unknown> = {
+        hospital: body.hospital,
+        hospital_address: body.hospitalAddress,
+        department: body.department,
+        doctor: body.doctor,
+        expert_level: body.expertLevel,
+        service_remark: body.serviceRemark,
+        appointment_time: body.responseTime,
+        appointment_success_time: body.bookingFeedbackTime,
+        service_start_time: body.serviceStartTime,
+        latest_ticket_time: body.latestTicketTime || body.lastQueuingTime,
+        registration_fee_amount: body.registrationFee,
+        escort_service_summary: body.escortSummary
+      }
+      const pendingCandidates = await prisma.$queryRaw<Array<{ id: bigint; field_code: string; value_text: string }>>`
+        SELECT id, field_code, value_text FROM b_order_ai_field_candidates
+        WHERE order_id = ${syncedOrder.id} AND status = 'pending'
+      `
+      for (const candidate of pendingCandidates) {
+        const saved = candidateValueByCode[candidate.field_code]
+        if (typeof saved === 'string' && saved.trim() && saved.trim() === candidate.value_text.trim()) {
+          await prisma.$executeRaw`
+            UPDATE b_order_ai_field_candidates
+            SET status = 'adopted', adopted_at = now(), adopted_by_employee_id = ${request.employee.id}
+            WHERE id = ${candidate.id}
+          `
+        }
+      }
+
       return reply.send({ ok: true, order: syncedOrder, message: '寰宇订单保存成功' })
     } catch (err: any) {
       fastify.log.error('保存寰宇订单失败:', err)
       return reply.status(500).send({ ok: false, error: '保存寰宇订单失败: ' + err.message })
+    }
+  })
+
+  // 3.2 人工确认推送寰宇订单。只把本地 PostgreSQL 三张寰宇表的已保存快照写入 MySQL，
+  // 不会由抓单、AI 分析或定时任务自动调用。
+  fastify.post<{ Params: { id: string } }>('/api/v1/orders/:id/huanyu/push', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const orderId = parseInt(request.params.id, 10)
+    if (!Number.isFinite(orderId)) return reply.status(400).send({ error: '订单ID非法' })
+    const order = await prisma.order.findUnique({ where: { id: orderId }, select: { id: true, sourceOrderNo: true, huanyuOrderNo: true } })
+    if (!order) return reply.status(404).send({ error: '订单不存在' })
+    let ddbh = order.huanyuOrderNo
+    if (!ddbh) {
+      const rows = await prisma.$queryRaw<Array<{ DDBH: string }>>`
+        SELECT "DDBH" FROM "HY_FACT_DDCX_NEW"
+        WHERE "BDQD_DDBH" = ${order.sourceOrderNo} OR "DDBH" = ${order.sourceOrderNo}
+        ORDER BY "xtsj_" DESC NULLS LAST LIMIT 1
+      `
+      ddbh = rows[0]?.DDBH ?? null
+    }
+    if (!ddbh) return reply.status(400).send({ error: '请先保存并创建本地寰宇订单后再推送' })
+    try {
+      const result = await pushHuanyuOrderToMysql(prisma, ddbh)
+      await prisma.$executeRaw`
+        INSERT INTO b_order_huanyu_push_logs (order_id, huanyu_order_no, status, message, pushed_by_employee_id)
+        VALUES (${orderId}, ${ddbh}, 'succeeded', ${`已推送主订单、${result.escortCount} 条陪诊明细及附件快照`}, ${request.employee.id})
+      `
+      return reply.send({ data: { ok: true, ddbh, escortCount: result.escortCount } })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'MySQL 推送失败'
+      await prisma.$executeRaw`
+        INSERT INTO b_order_huanyu_push_logs (order_id, huanyu_order_no, status, message, pushed_by_employee_id)
+        VALUES (${orderId}, ${ddbh}, 'failed', ${message.slice(0, 4000)}, ${request.employee.id})
+      `.catch(() => undefined)
+      fastify.log.error({ err: error, orderId, ddbh }, '推送寰宇订单到 MySQL 失败')
+      return reply.status(500).send({ error: `推送寰宇订单失败：${message}` })
     }
   })
 
@@ -2465,6 +2535,40 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     })
     if (!order) return reply.status(404).send({ error: '订单不存在' })
     return reply.send({ data: { brief: order.aiBriefJson ?? null, updatedAt: order.briefUpdatedAt } })
+  })
+
+  // 8.46a 读取本订单最新、尚未采用的 AI 字段候选。正式寰宇字段始终优先，前端仅在
+  // 正式字段为空时用这些候选值展示；点击保存才会写入 HY_FACT_DDCX_NEW。
+  fastify.get<{ Params: { id: string } }>('/api/v1/orders/:id/ai-field-candidates', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const orderId = parseInt(request.params.id, 10)
+    if (!Number.isFinite(orderId)) return reply.status(400).send({ error: '订单ID非法' })
+    const order = await prisma.order.findUnique({ where: { id: orderId }, select: { id: true } })
+    if (!order) return reply.status(404).send({ error: '订单不存在' })
+    const rows = await prisma.$queryRaw<Array<{
+      id: bigint
+      field_code: string
+      field_label: string
+      value_text: string
+      candidate_type: string
+      confidence: number
+      requires_confirmation: boolean
+      evidence_json: unknown
+      created_at: Date
+    }>>`
+      SELECT DISTINCT ON (field_code)
+        id, field_code, field_label, value_text, candidate_type, confidence,
+        requires_confirmation, evidence_json, created_at
+      FROM b_order_ai_field_candidates
+      WHERE order_id = ${orderId} AND status = 'pending'
+      ORDER BY field_code, created_at DESC, id DESC
+    `
+    return reply.send({ data: rows.map((row) => ({
+      id: Number(row.id), fieldCode: row.field_code, fieldLabel: row.field_label,
+      value: row.value_text, candidateType: row.candidate_type,
+      confidence: Number(row.confidence), requiresConfirmation: row.requires_confirmation,
+      evidence: row.evidence_json, createdAt: row.created_at.toISOString()
+    })) })
   })
 
   // 8.47 申请级 AI 沟通总结 —— 综合同一申请号下微信/企微消息 + 通话录音转写。
