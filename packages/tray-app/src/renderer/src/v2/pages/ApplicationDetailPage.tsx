@@ -1445,14 +1445,14 @@ function HuanyuOrderForm({
   onSaveSuccess?: (order: Order) => void
 }): React.JSX.Element {
   const currentAccountManager = getSession()?.displayName || getSession()?.employeeCode || ''
-  const defaultedInitialForm = {
+  const defaultedInitialForm: Record<string, any> = {
     ...initialForm,
     accountManager: mode === 'create'
-      ? (currentAccountManager || initialForm.accountManager)
-      : (initialForm.accountManager || ''),
-    ...(initialForm.bookingChannelType === '3' ? { bd: '无' } : {})
+      ? (currentAccountManager || (initialForm as any)?.accountManager)
+      : ((initialForm as any)?.accountManager || ''),
+    ...((initialForm as any)?.bookingChannelType === '3' ? { bd: '无' } : {})
   }
-  const [form, setForm] = useState(() => (
+  const [form, setForm] = useState<Record<string, any>>(() => (
     isHuanyuCancelledOrderStatus(defaultedInitialForm.orderStatus)
       ? { ...defaultedInitialForm, orderAmount: '0', amountChanged: false }
       : defaultedInitialForm
@@ -1964,6 +1964,8 @@ function HuanyuOrderForm({
     setExpertSearch('')
   }
 
+  const f = form as Record<string, any>
+
   return (
     <div className="flex-1 min-h-0 overflow-y-auto relative flex flex-col">
       {/* 顶部吸顶固定操作栏 */}
@@ -1971,7 +1973,7 @@ function HuanyuOrderForm({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <span className="text-[13px] font-bold text-text-main">
-              {isCreate ? '新建寰宇订单' : `寰宇订单：${form.orderNo || '待生成'}`}
+              {isCreate ? '新建寰宇订单' : `寰宇订单：${f.orderNo || '待生成'}`}
             </span>
             {saveStatus && (
               <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${
@@ -2026,120 +2028,128 @@ function HuanyuOrderForm({
       <div className="p-4 space-y-4">
         <HuanyuFormSection title="订单基本信息">
         <HuanyuFormGrid>
-          <HuanyuInput label="订单号" value={form.orderNo} onChange={(value) => changeField('orderNo', value)} disabled />
-          <HuanyuSelect label="订单状态" value={form.orderStatus} options={orderStatusOptions.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => changeField('orderStatus', value)} />
-          <HuanyuSearchSelect label="B端渠道" value={form.channel} options={channelOptions} loading={channelLoading} error={channelError} onSearch={setChannelSearch} onChange={selectChannel} />
-          <HuanyuInput label="B端渠道订单号" value={form.channelOrderNo} onChange={(value) => changeField('channelOrderNo', value)} disabled />
-          <HuanyuInput label="备用订单号" value={form.backupOrderNo} onChange={(value) => changeField('backupOrderNo', value)} />
-          <HuanyuInput label="B端细分渠道" value={form.channelDetail} onChange={(value) => changeField('channelDetail', value)} />
-          <HuanyuInput label="B端对接人" value={form.channelContact} onChange={(value) => changeField('channelContact', value)} />
-          <HuanyuInput label="B端对接人（备用）" value={form.channelBackupContact} onChange={(value) => changeField('channelBackupContact', value)} />
-          <HuanyuSearchSelect label="B端渠道服务项目" value={form.channelService} options={serviceOptions} loading={serviceLoading} error={serviceError} disabled={!channelId} disabledPlaceholder="请先选择 B端渠道" onSearch={setServiceSearch} onChange={selectChannelService} />
-          <HuanyuInput label="内部一级" value={form.internalLevelOne} onChange={(value) => changeField('internalLevelOne', value)} disabled />
-          <HuanyuInput label="内部二级" value={form.internalLevelTwo} onChange={(value) => changeField('internalLevelTwo', value)} disabled />
-          <HuanyuAmountField value={amountLocked ? '0' : form.orderAmount} editable={Boolean(form.amountChanged)} locked={amountLocked} onChange={(value) => changeField('orderAmount', value)} onEditableChange={(value) => changeField('amountChanged', value)} />
-          <HuanyuInput label="客户经理" value={form.accountManager} onChange={(value) => changeField('accountManager', value)} disabled />
-          <HuanyuSelect label="预约渠道类型" value={form.bookingChannelType} options={bookingChannelTypeOptions.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => changeField('bookingChannelType', value)} />
-          {form.bookingChannelType === '3'
+          <HuanyuInput label="订单号" value={f.orderNo} onChange={(value) => changeField('orderNo', value)} disabled />
+          <HuanyuSelect label="订单状态" value={f.orderStatus} options={orderStatusOptions.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => changeField('orderStatus', value)} />
+          <HuanyuSearchSelect label="B端渠道" value={f.channel} options={channelOptions} loading={channelLoading} error={channelError} onSearch={setChannelSearch} onChange={selectChannel} />
+          <HuanyuInput label="B端渠道订单号" value={f.channelOrderNo} onChange={(value) => changeField('channelOrderNo', value)} disabled />
+          <HuanyuInput label="备用订单号" value={f.backupOrderNo} onChange={(value) => changeField('backupOrderNo', value)} />
+          <HuanyuInput label="B端细分渠道" value={f.channelDetail} onChange={(value) => changeField('channelDetail', value)} />
+          <HuanyuInput label="B端对接人" value={f.channelContact} onChange={(value) => changeField('channelContact', value)} />
+          <HuanyuInput label="B端对接人（备用）" value={f.channelBackupContact} onChange={(value) => changeField('channelBackupContact', value)} />
+          <HuanyuSearchSelect label="B端渠道服务项目" value={f.channelService} options={serviceOptions} loading={serviceLoading} error={serviceError} disabled={!channelId} disabledPlaceholder="请先选择 B端渠道" onSearch={setServiceSearch} onChange={selectChannelService} />
+          <HuanyuInput label="内部一级" value={f.internalLevelOne} onChange={(value) => changeField('internalLevelOne', value)} disabled />
+          <HuanyuInput label="内部二级" value={f.internalLevelTwo} onChange={(value) => changeField('internalLevelTwo', value)} disabled />
+          <HuanyuAmountField value={amountLocked ? '0' : f.orderAmount} editable={Boolean(f.amountChanged)} locked={amountLocked} onChange={(value) => changeField('orderAmount', value)} onEditableChange={(value) => changeField('amountChanged', value)} />
+          <HuanyuInput label="客户经理" value={f.accountManager} onChange={(value) => changeField('accountManager', value)} disabled />
+          <HuanyuSelect label="预约渠道类型" value={f.bookingChannelType} options={bookingChannelTypeOptions.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => changeField('bookingChannelType', value)} />
+          {f.bookingChannelType === '3'
             ? <HuanyuInput label="BD" value="无" onChange={(value) => changeField('bd', value)} disabled />
-            : <HuanyuSearchSelect label="BD" value={form.bd} options={bdOptions} loading={bdLoading} error={bdError} disabled={!bdSelectable} disabledPlaceholder="请先选择预约渠道类型为 BD 或公共" onSearch={setBdSearch} onChange={(value) => changeField('bd', value)} />}
+            : <HuanyuSearchSelect label="BD" value={f.bd} options={bdOptions} loading={bdLoading} error={bdError} disabled={!bdSelectable} disabledPlaceholder="请先选择预约渠道类型为 BD 或公共" onSearch={setBdSearch} onChange={(value) => changeField('bd', value)} />}
         </HuanyuFormGrid>
       </HuanyuFormSection>
 
       <HuanyuFormSection title="就诊人信息">
         <HuanyuFormGrid>
-          <HuanyuInput label="就诊人姓名" value={form.patientName} onChange={(value) => changeField('patientName', value)} disabled={!isCreate} />
-          <HuanyuSelect label="证件类型" value={form.documentType} options={documentTypeOptions.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => changeField('documentType', value)} />
-          <HuanyuInput label="证件号码" value={form.documentNo} onChange={(value) => changeField('documentNo', value)} />
-          <HuanyuSelect label="就诊人性别" value={form.patientGender} options={['男', '女']} onChange={(value) => changeField('patientGender', value)} />
-          <HuanyuInput label="就诊人年龄" value={form.patientAge} onChange={(value) => changeField('patientAge', value)} />
-          <HuanyuInput label="就诊人联系电话" value={form.patientPhone} onChange={(value) => changeField('patientPhone', value)} />
-          <HuanyuInput label="家属姓名" value={form.familyName} onChange={(value) => changeField('familyName', value)} />
-          <HuanyuInput label="家属关系" value={form.familyRelation} onChange={(value) => changeField('familyRelation', value)} />
-          <HuanyuInput label="家属联系电话" value={form.familyPhone} onChange={(value) => changeField('familyPhone', value)} />
-          <HuanyuInput label="就诊人疾病" value={form.disease} onChange={(value) => changeField('disease', value)} />
+          <HuanyuInput label="就诊人姓名" value={f.patientName} onChange={(value) => changeField('patientName', value)} disabled={!isCreate} />
+          <HuanyuSelect label="证件类型" value={f.documentType} options={documentTypeOptions.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => changeField('documentType', value)} />
+          <HuanyuInput label="证件号码" value={f.documentNo} onChange={(value) => changeField('documentNo', value)} />
+          <HuanyuSelect label="就诊人性别" value={f.patientGender} options={['男', '女']} onChange={(value) => changeField('patientGender', value)} />
+          <HuanyuInput label="就诊人年龄" value={f.patientAge} onChange={(value) => changeField('patientAge', value)} />
+          <HuanyuInput label="就诊人联系电话" value={f.patientPhone} onChange={(value) => changeField('patientPhone', value)} />
+          <HuanyuInput label="家属姓名" value={f.familyName} onChange={(value) => changeField('familyName', value)} />
+          <HuanyuInput label="家属关系" value={f.familyRelation} onChange={(value) => changeField('familyRelation', value)} />
+          <HuanyuInput label="家属联系电话" value={f.familyPhone} onChange={(value) => changeField('familyPhone', value)} />
+          <HuanyuInput label="就诊人疾病" value={f.disease} onChange={(value) => changeField('disease', value)} />
         </HuanyuFormGrid>
         <div className="mt-3">
-          <HuanyuTextarea label="客户就诊需求备注" value={form.patientRequest} onChange={(value) => changeField('patientRequest', value)} minHeight="min-h-16" />
+          <HuanyuTextarea label="客户就诊需求备注" value={f.patientRequest} onChange={(value) => changeField('patientRequest', value)} minHeight="min-h-16" />
         </div>
       </HuanyuFormSection>
 
       <HuanyuFormSection title="医院信息">
         <HuanyuFormGrid>
-          <HuanyuSearchSelect label="医院" value={form.hospital} options={hospitalOptions} loading={hospitalLoading} error={hospitalError} onSearch={setHospitalSearch} onChange={selectHospital} />
-          <HuanyuSearchSelect label="医院地址" value={form.hospitalAddress} options={addressOptions} loading={addressLoading} error={addressError} disabled={!hospitalId} disabledPlaceholder="请先选择医院" onSearch={setAddressSearch} onChange={(value) => changeField('hospitalAddress', value)} />
-          <HuanyuSearchSelect label="科室" value={form.department} options={departmentOptions} loading={departmentLoading} error={departmentError} disabled={!hospitalId} disabledPlaceholder="请先选择医院" onSearch={setDepartmentSearch} onChange={selectHospitalDepartment} />
-          <HuanyuInput label="内对一级" value={form.internalHospitalLevelOne} onChange={(value) => changeField('internalHospitalLevelOne', value)} disabled />
-          <HuanyuInput label="内对二级" value={form.internalHospitalLevelTwo} onChange={(value) => changeField('internalHospitalLevelTwo', value)} disabled />
-          <HuanyuSearchSelect label="医生" value={form.doctor} options={doctorOptions} loading={doctorLoading} error={doctorError} disabled={!hospitalId || !departmentId} disabledPlaceholder={!hospitalId ? '请先选择医院' : '请先选择科室'} onSearch={setDoctorSearch} onChange={selectHospitalDoctor} />
+          <HuanyuSearchSelect label="医院" value={f.hospital} options={hospitalOptions} loading={hospitalLoading} error={hospitalError} onSearch={setHospitalSearch} onChange={selectHospital} />
+          <HuanyuSearchSelect label="医院地址" value={f.hospitalAddress} options={addressOptions} loading={addressLoading} error={addressError} disabled={!hospitalId} disabledPlaceholder="请先选择医院" onSearch={setAddressSearch} onChange={(value) => changeField('hospitalAddress', value)} />
+          <HuanyuSearchSelect label="科室" value={f.department} options={departmentOptions} loading={departmentLoading} error={departmentError} disabled={!hospitalId} disabledPlaceholder="请先选择医院" onSearch={setDepartmentSearch} onChange={selectHospitalDepartment} />
+          <HuanyuInput label="内对一级" value={f.internalHospitalLevelOne} onChange={(value) => changeField('internalHospitalLevelOne', value)} disabled />
+          <HuanyuInput label="内对二级" value={f.internalHospitalLevelTwo} onChange={(value) => changeField('internalHospitalLevelTwo', value)} disabled />
+          <HuanyuSearchSelect label="医生" value={f.doctor} options={doctorOptions} loading={doctorLoading} error={doctorError} disabled={!hospitalId || !departmentId} disabledPlaceholder={!hospitalId ? '请先选择医院' : '请先选择科室'} onSearch={setDoctorSearch} onChange={selectHospitalDoctor} />
           {doctorAllowsExpertSelection
-            ? <HuanyuSearchSelect label="专家级别" value={form.expertLevel} options={expertOptions} loading={false} error={null} onSearch={setExpertSearch} onChange={(value) => changeField('expertLevel', value)} />
-            : <HuanyuInput label="专家级别" value={form.expertLevel} onChange={(value) => changeField('expertLevel', value)} disabled />}
-          <HuanyuInput label="订单服务备注" value={form.serviceRemark} onChange={(value) => changeField('serviceRemark', value)} wide />
-          <HuanyuInput label="泰康医院" value={form.tkHospital} onChange={(value) => changeField('tkHospital', value)} disabled />
-          <HuanyuInput label="泰康省份" value={form.tkProvince} onChange={(value) => changeField('tkProvince', value)} disabled />
-          <HuanyuInput label="泰康城市" value={form.tkCity} onChange={(value) => changeField('tkCity', value)} disabled />
-          <HuanyuInput label="泰康科室" value={form.tkDepartment} onChange={(value) => changeField('tkDepartment', value)} disabled />
+            ? <HuanyuSearchSelect label="专家级别" value={f.expertLevel} options={expertOptions} loading={false} error={null} onSearch={setExpertSearch} onChange={(value) => changeField('expertLevel', value)} />
+            : <HuanyuInput label="专家级别" value={f.expertLevel} onChange={(value) => changeField('expertLevel', value)} disabled />}
+          <HuanyuInput label="订单服务备注" value={f.serviceRemark} onChange={(value) => changeField('serviceRemark', value)} wide />
+          <HuanyuInput label="泰康医院" value={f.tkHospital} onChange={(value) => changeField('tkHospital', value)} disabled />
+          <HuanyuInput label="泰康省份" value={f.tkProvince} onChange={(value) => changeField('tkProvince', value)} disabled />
+          <HuanyuInput label="泰康城市" value={f.tkCity} onChange={(value) => changeField('tkCity', value)} disabled />
+          <HuanyuInput label="泰康科室" value={f.tkDepartment} onChange={(value) => changeField('tkDepartment', value)} disabled />
         </HuanyuFormGrid>
       </HuanyuFormSection>
 
       <HuanyuFormSection title="时间信息">
-        <HuanyuTimeInformation form={form} onChange={changeField} />
+        <HuanyuTimeInformation form={f} onChange={changeField} />
       </HuanyuFormSection>
 
-      <HuanyuFormSection title="陪诊信息">
-        <HuanyuEscortInformationTable
-          initialRow={{
-            orderNo: typeof form.orderNo === 'string' ? form.orderNo : '',
-            serviceDate: escortServiceDateInputValue(typeof form.escortServiceDate === 'string' ? form.escortServiceDate : ''),
-            escortName: typeof form.escortName === 'string' ? form.escortName : '',
-            escortType: typeof form.escortType === 'string' ? form.escortType : '',
-            phone: typeof form.escortPhone === 'string' ? form.escortPhone : '',
-            area: typeof form.escortArea === 'string' ? form.escortArea : '',
-            sequence: typeof form.escortSequence === 'string' ? form.escortSequence : '1'
-          }}
-          rows={escortRows}
-          onChangeRows={setEscortRows}
-        />
-      </HuanyuFormSection>
+      {/* 陪诊信息 */}
+      {(() => {
+        const f = form as Record<string, any>
+        return (
+          <>
+            <HuanyuFormSection title="陪诊信息">
+              <HuanyuEscortInformationTable
+                initialRow={{
+                  orderNo: typeof f.orderNo === 'string' ? f.orderNo : '',
+                  serviceDate: escortServiceDateInputValue(typeof f.escortServiceDate === 'string' ? f.escortServiceDate : ''),
+                  escortName: typeof f.escortName === 'string' ? f.escortName : '',
+                  escortType: typeof f.escortType === 'string' ? f.escortType : '',
+                  phone: typeof f.escortPhone === 'string' ? f.escortPhone : '',
+                  area: typeof f.escortArea === 'string' ? f.escortArea : '',
+                  sequence: typeof f.escortSequence === 'string' ? f.escortSequence : '1'
+                }}
+                rows={escortRows}
+                onChangeRows={setEscortRows}
+              />
+            </HuanyuFormSection>
 
-      <HuanyuFormSection title="挂号费及医保信息">
-        <HuanyuFormGrid>
-          <HuanyuInput label="挂号费金额" value={form.registrationFee} onChange={(value) => changeField('registrationFee', value)} type="number" />
-          <HuanyuSelect label="是否垫付" value={form.advancePayment} options={[{ value: '0', label: '否' }, { value: '1', label: '是' }]} onChange={(value) => changeField('advancePayment', value)} />
-          <HuanyuInput label="垫付挂号费金额" value={form.advanceRegistrationFee} onChange={(value) => changeField('advanceRegistrationFee', value)} disabled />
-          <HuanyuInput label="垫付是否收回" value={form.advanceRecovered} onChange={(value) => changeField('advanceRecovered', value)} disabled />
-          <HuanyuInput label="挂号费退款客户金额" value={form.registrationRefund} onChange={(value) => changeField('registrationRefund', value)} disabled />
-          <HuanyuInput label="支付宝支付账号" value={form.alipayAccount} onChange={(value) => changeField('alipayAccount', value)} disabled />
-          <HuanyuInput label="是否有医保" value={form.hasInsurance} onChange={(value) => changeField('hasInsurance', value)} disabled />
-          <HuanyuSelect label="医保类型" value={form.insuranceType} options={medicareTypeOptions.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => changeField('insuranceType', value)} />
-          <HuanyuInput label="短信链接" value={form.smsLink} onChange={(value) => changeField('smsLink', value)} disabled />
-        </HuanyuFormGrid>
-      </HuanyuFormSection>
+            <HuanyuFormSection title="挂号费及医保信息">
+              <HuanyuFormGrid>
+                <HuanyuInput label="挂号费金额" value={f.registrationFee} onChange={(value) => changeField('registrationFee', value)} type="number" />
+                <HuanyuSelect label="是否垫付" value={f.advancePayment} options={[{ value: '0', label: '否' }, { value: '1', label: '是' }]} onChange={(value) => changeField('advancePayment', value)} />
+                <HuanyuInput label="垫付挂号费金额" value={f.advanceRegistrationFee} onChange={(value) => changeField('advanceRegistrationFee', value)} disabled />
+                <HuanyuInput label="垫付是否收回" value={f.advanceRecovered} onChange={(value) => changeField('advanceRecovered', value)} disabled />
+                <HuanyuInput label="挂号费退款客户金额" value={f.registrationRefund} onChange={(value) => changeField('registrationRefund', value)} disabled />
+                <HuanyuInput label="支付宝支付账号" value={f.alipayAccount} onChange={(value) => changeField('alipayAccount', value)} disabled />
+                <HuanyuInput label="是否有医保" value={f.hasInsurance} onChange={(value) => changeField('hasInsurance', value)} disabled />
+                <HuanyuSelect label="医保类型" value={f.insuranceType} options={medicareTypeOptions.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => changeField('insuranceType', value)} />
+                <HuanyuInput label="短信链接" value={f.smsLink} onChange={(value) => changeField('smsLink', value)} disabled />
+              </HuanyuFormGrid>
+            </HuanyuFormSection>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <HuanyuFormSection title="预约模板信息（对内）">
-          <HuanyuTextarea value={computedInternalTemplate} onChange={(value) => changeField('internalBookingTemplate', value)} disabled copyable minHeight="min-h-[306px]" />
-        </HuanyuFormSection>
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+              <HuanyuFormSection title="预约模板信息（对内）">
+                <HuanyuTextarea value={computedInternalTemplate} onChange={(value) => changeField('internalBookingTemplate', value)} disabled copyable minHeight="min-h-[306px]" />
+              </HuanyuFormSection>
 
-        <HuanyuFormSection title="预约模板信息（对外）">
-          <HuanyuTextarea value={computedExternalTemplate} onChange={(value) => changeField('externalBookingTemplate', value)} disabled copyable minHeight="min-h-[306px]" />
-        </HuanyuFormSection>
-      </div>
+              <HuanyuFormSection title="预约模板信息（对外）">
+                <HuanyuTextarea value={computedExternalTemplate} onChange={(value) => changeField('externalBookingTemplate', value)} disabled copyable minHeight="min-h-[306px]" />
+              </HuanyuFormSection>
+            </div>
 
-      <HuanyuFormSection title="陪诊服务小结">
-        <HuanyuTextarea label="服务小结" value={form.escortSummary} onChange={(value) => changeField('escortSummary', value)} placeholder="请输入陪诊服务小结" minHeight="min-h-44" />
-        <div className="mt-4 border-t border-border-subtle pt-4">
-          <div className="mb-3 text-body-sm font-semibold text-text-main">陪诊相关附件上传</div>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-            {Array.from({ length: 10 }, (_, index) => (
-              <button key={index} type="button" className="flex h-16 items-center justify-center rounded-md border border-dashed border-border-subtle text-text-muted hover:border-primary hover:text-primary" title="附件上传功能后续接入">
-                <span className="material-symbols-outlined">attach_file</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      </HuanyuFormSection>
+            <HuanyuFormSection title="陪诊服务小结">
+              <HuanyuTextarea label="服务小结" value={f.escortSummary} onChange={(value) => changeField('escortSummary', value)} placeholder="请输入陪诊服务小结" minHeight="min-h-44" />
+              <div className="mt-4 border-t border-border-subtle pt-4">
+                <div className="mb-3 text-body-sm font-semibold text-text-main">陪诊相关附件上传</div>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                  {Array.from({ length: 10 }, (_, index) => (
+                    <button key={index} type="button" className="flex h-16 items-center justify-center rounded-md border border-dashed border-border-subtle text-text-muted hover:border-primary hover:text-primary" title="附件上传功能后续接入">
+                      <span className="material-symbols-outlined">attach_file</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </HuanyuFormSection>
+          </>
+        )
+      })()}
       </div>
     </div>
   )

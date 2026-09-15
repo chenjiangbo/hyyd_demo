@@ -20,6 +20,7 @@ import {
   type OrderBrief
 } from '../api'
 import { bizType, sourceStyle, stageIndexOf, LIFECYCLE_STAGES } from '../lib/orderMapping'
+import OrderReminderModal from '../components/OrderReminderModal'
 
 type LifecycleStageKey = 'claimed' | 'communication' | 'delivery' | 'settlement' | 'ending'
 type LifecycleEventKind = 'status' | 'manual_note' | 'image' | 'message' | 'call' | 'ai_summary'
@@ -75,6 +76,7 @@ export default function OrderDetailPage({
   const [detailResp, setDetailResp] = useState<OrderDetailResponse | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
+  const [showReminderModal, setShowReminderModal] = useState(false)
   const stage = stageIndexOf(order)
   const src = sourceStyle(order)
   const lifecycleEvents = useMemo(
@@ -202,6 +204,15 @@ export default function OrderDetailPage({
           <span className="ml-2 px-3 py-1.5 bg-primary-container/15 text-primary rounded-full text-body-sm font-semibold whitespace-nowrap">
             {order.status}
           </span>
+          <button
+            type="button"
+            onClick={() => setShowReminderModal(true)}
+            className="ml-2 inline-flex items-center gap-1.5 px-3 py-1.5 bg-surface-bg hover:bg-primary-fixed/40 text-text-main hover:text-primary rounded-lg border border-border-subtle hover:border-primary/40 text-body-sm font-semibold transition-colors shadow-2xs"
+            title="设置/查看此订单的跟进提醒"
+          >
+            <span className="material-symbols-outlined text-alert-orange" style={{ fontSize: '18px' }}>notification_add</span>
+            跟进提醒
+          </button>
         </div>
       </header>
 
@@ -240,6 +251,13 @@ export default function OrderDetailPage({
           onReload={reload}
         />
       </main>
+
+      {showReminderModal && (
+        <OrderReminderModal
+          order={order}
+          onClose={() => setShowReminderModal(false)}
+        />
+      )}
     </div>
   )
 }

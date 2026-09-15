@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { fetchOrderDetail, fetchOrders, type Order } from '../api'
+import OrderReminderModal from '../components/OrderReminderModal'
 import {
   LANES,
   LANE_ACCENT,
@@ -223,6 +224,7 @@ export default function WorkbenchKanban({
   const [view, setView] = useState<View>('list')
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [detailRegions, setDetailRegions] = useState<Record<string, string | null>>({})
+  const [reminderModalOrder, setReminderModalOrder] = useState<Order | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -394,9 +396,26 @@ export default function WorkbenchKanban({
           {error}
         </div>
       ) : view === 'board' ? (
-        <BoardView groups={boardGroups} detailRegions={detailRegions} onOpen={onOpenApplication} />
+        <BoardView
+          groups={boardGroups}
+          detailRegions={detailRegions}
+          onOpen={onOpenApplication}
+          onOpenReminder={setReminderModalOrder}
+        />
       ) : (
-        <ListView groups={filteredGroups} onOpen={onOpenApplication} onCreateHuanyuOrder={onCreateHuanyuOrder} />
+        <ListView
+          groups={filteredGroups}
+          onOpen={onOpenApplication}
+          onCreateHuanyuOrder={onCreateHuanyuOrder}
+          onOpenReminder={setReminderModalOrder}
+        />
+      )}
+
+      {reminderModalOrder && (
+        <OrderReminderModal
+          order={reminderModalOrder}
+          onClose={() => setReminderModalOrder(null)}
+        />
       )}
     </div>
   )
@@ -494,11 +513,13 @@ function MoreFilters({
 function BoardView({
   groups,
   detailRegions,
-  onOpen
+  onOpen,
+  onOpenReminder
 }: {
   groups: ApplicationGroup[]
   detailRegions: Record<string, string | null>
   onOpen: (group: ApplicationGroup) => void
+  onOpenReminder: (order: Order) => void
 }): React.JSX.Element {
   const grouped = useMemo(() => {
     const g: Record<LaneKey, ApplicationGroup[]> = { todo: [], doing: [], await_backfill: [], done: [] }
@@ -548,6 +569,7 @@ function BoardView({
                     lane={lane.key}
                     detailRegion={detailRegions[group.key] ?? null}
                     onOpen={onOpen}
+                    onOpenReminder={onOpenReminder}
                   />
                 ))
               )}
@@ -740,12 +762,14 @@ function ApplicationCard({
   group,
   lane,
   detailRegion,
-  onOpen
+  onOpen,
+  onOpenReminder
 }: {
   group: ApplicationGroup
   lane: LaneKey
   detailRegion: string | null
   onOpen: (group: ApplicationGroup) => void
+  onOpenReminder: (order: Order) => void
 }): React.JSX.Element {
   const primary = group.primary
   const displayName = group.customerName
@@ -768,7 +792,7 @@ function ApplicationCard({
         (isDoing ? 'border-2 border-primary' : 'border border-border-subtle border-l-2 hover:border-outline-variant ' + LANE_ACCENT[lane])
       }
     >
-      {/* 申请号 + 来源 */}
+      {/* 申请号 + 来源 + 提醒 */}
       <div className="flex items-center gap-2 mb-2 rounded-md bg-surface-bg border border-border-subtle px-2 py-1">
         <ApplicationCopyButtons
           applicationNo={group.applicationNo}
@@ -778,6 +802,17 @@ function ApplicationCard({
         <span className={'shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium ' + origin.bg + ' ' + origin.text}>
           {origin.label}
         </span>
+        <button
+          type="button"
+          title="设置跟进提醒"
+          onClick={(e) => {
+            e.stopPropagation()
+            onOpenReminder(primary)
+          }}
+          className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded hover:bg-white text-text-muted hover:text-alert-orange transition-colors"
+        >
+          <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>notification_add</span>
+        </button>
       </div>
 
       {/* 客户名 + 性别 + 多订单标识 */}
@@ -850,11 +885,13 @@ type SortKey = 'customerName' | 'hospital' | 'status' | 'poolEnteredAt'
 function ListView({
   groups,
   onOpen,
-  onCreateHuanyuOrder
+  onCreateHuanyuOrder,
+  onOpenReminder
 }: {
   groups: ApplicationGroup[]
   onOpen: (group: ApplicationGroup, selectedOrderId?: number) => void
   onCreateHuanyuOrder: () => void
+  onOpenReminder: (order: Order) => void
 }): React.JSX.Element {
   const [laneFilter, setLaneFilter] = useState<LaneKey | 'all'>('all')
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'poolEnteredAt', dir: 'desc' })
@@ -942,15 +979,16 @@ function ListView({
         <div className="overflow-hidden rounded-lg border border-border-subtle bg-white shadow-sm">
           <table className="w-full table-fixed border-collapse text-body-sm">
             <colgroup>
-              <col className="w-[220px]" />
               <col className="w-[210px]" />
-              <col className="w-[190px]" />
-              <col className="w-[215px]" />
-              <col className="w-[165px]" />
-              <col className="w-[120px]" />
-              <col className="w-[112px]" />
+              <col className="w-[200px]" />
+              <col className="w-[180px]" />
+              <col className="w-[200px]" />
+              <col className="w-[155px]" />
+              <col className="w-[110px]" />
+              <col className="w-[100px]" />
               <col className="w-[68px]" />
-              <col className="w-[104px]" />
+              <col className="w-[95px]" />
+              <col className="w-[84px]" />
             </colgroup>
             <thead className="sticky top-0 bg-white z-10">
               <tr className="text-left text-[#454a5a] border-b border-border-subtle">
@@ -963,24 +1001,25 @@ function ListView({
                 <th className="py-3.5 px-4 font-bold">数据量</th>
                 <th className="py-3.5 px-3 font-bold">来源</th>
                 <SortHead label="入池" k="poolEnteredAt" sort={sort} onSort={toggleSort} />
+                <th className="py-3.5 px-3 font-bold text-center">操作</th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={9} className="py-12 text-center text-text-muted">
+                <td colSpan={10} className="py-12 text-center text-text-muted">
                   暂无{activeFilter.label}申请
                 </td>
               </tr>
             ) : (
               rows.flatMap((group) => {
                 if (group.orders.length === 1) {
-                  return [<OrderTreeRow key={group.key} group={group} order={group.primary} onOpen={onOpen} />]
+                  return [<OrderTreeRow key={group.key} group={group} order={group.primary} onOpen={onOpen} onOpenReminder={onOpenReminder} />]
                 }
                 return [
-                  <ApplicationTreeRow key={`${group.key}:application`} group={group} onOpen={onOpen} />,
+                  <ApplicationTreeRow key={`${group.key}:application`} group={group} onOpen={onOpen} onOpenReminder={onOpenReminder} />,
                   ...group.orders.map((order) => (
-                    <OrderTreeRow key={`${group.key}:order:${order.id}`} group={group} order={order} child onOpen={onOpen} />
+                    <OrderTreeRow key={`${group.key}:order:${order.id}`} group={group} order={order} child onOpen={onOpen} onOpenReminder={onOpenReminder} />
                   ))
                 ]
               })
@@ -1007,10 +1046,12 @@ function rowAccentOf(lane: LaneKey | null): string {
 
 function ApplicationTreeRow({
   group,
-  onOpen
+  onOpen,
+  onOpenReminder
 }: {
   group: ApplicationGroup
   onOpen: (group: ApplicationGroup, selectedOrderId?: number) => void
+  onOpenReminder: (order: Order) => void
 }): React.JSX.Element {
   const order = group.primary
   const services = dedupeServices(group.orders)
@@ -1042,6 +1083,20 @@ function ApplicationTreeRow({
       <td className="py-3 px-4"><DataCounts order={order} /></td>
       <td className="py-3 px-3"><SourceBadge order={order} /></td>
       <td className="py-3 px-4 text-[#454a5a] whitespace-nowrap" title={group.poolEnteredAt}>{relativeTime(group.poolEnteredAt)}</td>
+      <td className="py-3 px-3 text-center">
+        <button
+          type="button"
+          title="设置跟进提醒"
+          onClick={(e) => {
+            e.stopPropagation()
+            onOpenReminder(order)
+          }}
+          className="inline-flex items-center gap-1 rounded px-2 py-1 text-[12px] font-medium text-text-muted hover:text-primary hover:bg-white transition-colors border border-border-subtle hover:border-primary/40 bg-surface-bg shadow-2xs"
+        >
+          <span className="material-symbols-outlined text-[14px] text-alert-orange">notification_add</span>
+          提醒
+        </button>
+      </td>
     </tr>
   )
 }
@@ -1050,12 +1105,14 @@ function OrderTreeRow({
   group,
   order,
   child = false,
-  onOpen
+  onOpen,
+  onOpenReminder
 }: {
   group: ApplicationGroup
   order: Order
   child?: boolean
   onOpen: (group: ApplicationGroup, selectedOrderId?: number) => void
+  onOpenReminder: (order: Order) => void
 }): React.JSX.Element {
   const lane = laneOf(order)
   return (
@@ -1087,6 +1144,20 @@ function OrderTreeRow({
       <td className="py-3 px-4"><DataCounts order={order} /></td>
       <td className="py-3 px-3"><SourceBadge order={order} /></td>
       <td className="py-3 px-4 text-[#454a5a] whitespace-nowrap" title={poolEnteredAtOf(order)}>{relativeTime(poolEnteredAtOf(order))}</td>
+      <td className="py-3 px-3 text-center">
+        <button
+          type="button"
+          title="设置跟进提醒"
+          onClick={(e) => {
+            e.stopPropagation()
+            onOpenReminder(order)
+          }}
+          className="inline-flex items-center gap-1 rounded px-2 py-1 text-[12px] font-medium text-text-muted hover:text-primary hover:bg-white transition-colors border border-border-subtle hover:border-primary/40 bg-surface-bg shadow-2xs"
+        >
+          <span className="material-symbols-outlined text-[14px] text-alert-orange">notification_add</span>
+          提醒
+        </button>
+      </td>
     </tr>
   )
 }

@@ -30,6 +30,8 @@ export default function DoctorView(): React.JSX.Element {
 
   const [loading, setLoading] = useState<boolean>(true)
   const [saving, setSaving] = useState<boolean>(false)
+  void deptList
+  void loading
 
   const [alertModal, setAlertModal] = useState<AlertModalConfig>({
     isOpen: false,

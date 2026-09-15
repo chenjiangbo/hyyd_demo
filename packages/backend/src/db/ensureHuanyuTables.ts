@@ -278,6 +278,23 @@ const CREATE_STATEMENTS = [
       "FIELD20_" VARCHAR(100),
       CONSTRAINT "hy_d_tp_DDBH_key" UNIQUE ("DDBH")
     );
+  `,
+  // 17. 陪诊人员出工反馈表 fact_hy_pzfk
+  `
+    CREATE TABLE IF NOT EXISTS "fact_hy_pzfk" (
+      "id" SERIAL PRIMARY KEY,
+      "ddbh" VARCHAR(100) NOT NULL,
+      "pzr_id" VARCHAR(100),
+      "pzr_name" VARCHAR(100),
+      "feedback_type" VARCHAR(50) NOT NULL,
+      "will_attend" BOOLEAN NOT NULL DEFAULT TRUE,
+      "screenshot_url" TEXT,
+      "remark" VARCHAR(500),
+      "created_at" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS "idx_fact_hy_pzfk_ddbh" ON "fact_hy_pzfk" ("ddbh");
   `
 ]
 

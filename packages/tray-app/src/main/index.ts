@@ -7,6 +7,7 @@ import { CaptureSidecarClient } from './capture-sidecar-client'
 import { loadRootEnv } from './runtime-env'
 import { MaterialStore } from './material-store'
 import { MaterialSyncWorker } from './material-sync'
+import { setupReminderIPC } from './reminder-window'
 
 loadRootEnv()
 
@@ -379,6 +380,9 @@ if (!gotLock) {
     ensureAutoLaunchEnabled()
     createTray()
     createWindow()
+    setupReminderIPC(showMainWindow, (orderNo) => {
+      mainWindow?.webContents.send('app:navigate-order', orderNo)
+    })
     // sidecar 是订单生命周期沟通数据的核心来源；Windows 桌面端默认随应用启动。
     // 如需排障关闭，启动 app 前设环境变量 HYYD_ENABLE_SIDECAR=0。
     if (process.env.HYYD_ENABLE_SIDECAR !== '0') {

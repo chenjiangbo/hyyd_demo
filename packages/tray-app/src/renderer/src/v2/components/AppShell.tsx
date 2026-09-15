@@ -5,9 +5,14 @@ import {
   fetchUnmatchedOrderRefs,
   dismissUnmatchedOrderRef,
   confirmUnmatchedOrderRef,
-  type UnmatchedOrderRef
+  fetchOrderReminders,
+  doneOrderReminder,
+  snoozeOrderReminder,
+  type UnmatchedOrderRef,
+  type OrderReminder
 } from '../api'
 import StatusBar from './StatusBar'
+import { DesktopReminderPopup } from './DesktopReminderPopup'
 import type { Session } from '../api'
 
 export type NavKey = 'claim' | 'workbench' | 'customers' | 'dictionary' | 'knowledge' | 'dashboard' | 'debug' | 'settings'
@@ -48,7 +53,7 @@ export default function AppShell({
   children: ReactNode
 }): React.JSX.Element {
   return (
-    <div className="h-full flex flex-col bg-surface-bg text-text-main overflow-hidden">
+    <div className="h-full flex flex-col bg-surface-bg text-text-main overflow-hidden relative">
       {/* 顶部导航（对齐原型） */}
       <header className="h-16 shrink-0 bg-white border-b border-border-subtle flex items-center px-6 gap-8 z-50">
         {/* 品牌 */}
@@ -99,7 +104,8 @@ export default function AppShell({
         {/* 右侧操作 */}
         <div className="flex items-center gap-1 shrink-0">
           <ThemeToggle />
-          <NotificationBell />
+          <UnmatchedRefsBell />
+          <ReminderTodoBell />
           <IconBtn icon="help" title="帮助" />
           <button
             onClick={() => onNavigate('settings')}
@@ -115,11 +121,14 @@ export default function AppShell({
         </div>
       </header>
 
-      {/* 业务内容区 */}
-      <div className="flex-1 min-h-0 flex flex-col">{children}</div>
+      {/* 主体页面 */}
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">{children}</div>
 
-      {/* 底部状态栏：后端 / Chrome 插件 / 移动端 App */}
+      {/* 底部状态栏 */}
       <StatusBar session={session} />
+
+      {/* 桌面右下角到期提醒浮窗 */}
+      <DesktopReminderPopup />
     </div>
   )
 }
@@ -182,10 +191,9 @@ function UserMenu({ session, onLogout, onChangePassword }: { session: Session; o
 }
 
 /**
- * 右上角通知铃铛：展示"识别到订单号/短尾号却没关联到订单"的异常（后端 UnmatchedOrderRef，只看 pending）。
- * 角标显示待处理条数；下拉列表里每条可「标记已处理」(后端 reject)。每 60s 轮询一次。
+ * 待确认订单号：展示"识别到订单号/短尾号却没关联到订单"的异常。
  */
-function NotificationBell(): React.JSX.Element {
+function UnmatchedRefsBell(): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<UnmatchedOrderRef[]>([])
   const [loading, setLoading] = useState(false)
@@ -236,11 +244,11 @@ function NotificationBell(): React.JSX.Element {
           if (next) load()
         }}
         className="relative w-9 h-9 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low transition-colors"
-        title="通知"
+        title="待确认订单号"
       >
-        <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>notifications</span>
+        <span className="material-symbols-outlined text-amber-600" style={{ fontSize: '20px' }}>report_problem</span>
         {count > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-red-500 text-white text-[10px] leading-4 text-center font-semibold">
+          <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-amber-500 text-white text-[10px] leading-4 text-center font-semibold">
             {count > 99 ? '99+' : count}
           </span>
         )}
@@ -250,12 +258,15 @@ function NotificationBell(): React.JSX.Element {
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div className="absolute right-0 top-10 w-96 max-h-[28rem] overflow-auto bg-white border border-border-subtle rounded-lg shadow-lg z-50">
             <div className="px-4 py-2.5 border-b border-border-subtle flex items-center justify-between sticky top-0 bg-white">
-              <span className="text-body-lg font-semibold text-text-main">待确认订单号</span>
-              <span className="text-body-sm text-text-muted">{count} 条</span>
+              <div className="flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-amber-600 text-[18px]">report_problem</span>
+                <span className="text-body-lg font-semibold text-text-main">待确认订单号</span>
+              </div>
+              <span className="text-body-sm text-text-muted">{count} 条异常</span>
             </div>
             {count === 0 ? (
               <div className="px-4 py-8 text-center text-body-sm text-text-muted">
-                {loading ? '加载中…' : '没有待处理的异常'}
+                {loading ? '加载中…' : '没有待处理的异常单号'}
               </div>
             ) : (
               <ul className="divide-y divide-border-subtle">
@@ -319,6 +330,160 @@ function NotificationBell(): React.JSX.Element {
                     </div>
                   </li>
                 ))}
+              </ul>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 右上角订单跟进提醒铃铛：展示当前员工未处理的待办备忘与系统提醒。
+ */
+function ReminderTodoBell(): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [items, setItems] = useState<OrderReminder[]>([])
+  const [loading, setLoading] = useState(false)
+
+  const load = async (): Promise<void> => {
+    try {
+      setLoading(true)
+      const res = await fetchOrderReminders({ status: 'pending' })
+      setItems(res)
+    } catch {
+      // 未登录/网络异常时静默
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    load()
+    const t = setInterval(load, 20_000)
+    const handleUpdate = (): void => {
+      load()
+    }
+    window.addEventListener('huanyu-reminders-updated', handleUpdate)
+    return () => {
+      clearInterval(t)
+      window.removeEventListener('huanyu-reminders-updated', handleUpdate)
+    }
+  }, [])
+
+  const count = items.length
+
+  const handleDone = async (id: number): Promise<void> => {
+    try {
+      await doneOrderReminder(id)
+      setItems((prev) => prev.filter((x) => x.id !== id))
+      window.dispatchEvent(new CustomEvent('huanyu-reminders-updated'))
+    } catch (err) {
+      console.error('[ReminderTodoBell] handleDone failed:', err)
+    }
+  }
+
+  const handleSnooze = async (id: number): Promise<void> => {
+    try {
+      await snoozeOrderReminder(id, 10)
+      setItems((prev) => prev.filter((x) => x.id !== id))
+      window.dispatchEvent(new CustomEvent('huanyu-reminders-updated'))
+    } catch (err) {
+      console.error('[ReminderTodoBell] handleSnooze failed:', err)
+    }
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => {
+          const next = !open
+          setOpen(next)
+          if (next) load()
+        }}
+        className="relative w-9 h-9 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low transition-colors"
+        title="待办提醒"
+      >
+        <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>notifications</span>
+        {count > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-primary text-white text-[10px] leading-4 text-center font-semibold animate-pulse">
+            {count > 99 ? '99+' : count}
+          </span>
+        )}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-10 w-96 max-h-[28rem] overflow-auto bg-white border border-border-subtle rounded-lg shadow-lg z-50">
+            <div className="px-4 py-2.5 border-b border-border-subtle flex items-center justify-between sticky top-0 bg-white">
+              <div className="flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-primary text-[18px]">alarm</span>
+                <span className="text-body-lg font-semibold text-text-main">待办提醒</span>
+              </div>
+              <span className="text-body-sm text-text-muted">{count} 条待办</span>
+            </div>
+            {count === 0 ? (
+              <div className="px-4 py-8 text-center text-body-sm text-text-muted">
+                {loading ? '加载中…' : '暂无待处理提醒'}
+              </div>
+            ) : (
+              <ul className="divide-y divide-border-subtle">
+                {items.map((it) => {
+                  const tag = it.type === 'manual' ? '手工备忘' : '系统提醒'
+                  const timeStr = it.remind_time || it.remindTime
+                  const isDue = Boolean(timeStr && new Date(timeStr) <= new Date())
+
+                  return (
+                    <li key={it.id} className="px-4 py-3 hover:bg-surface-bg/50 transition-colors">
+                      <div className="flex items-start justify-between gap-2.5">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <span
+                              className={`inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-medium ${
+                                tag === '手工备忘'
+                                  ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                                  : 'bg-amber-50 text-amber-700 border border-amber-300'
+                              }`}
+                            >
+                              {tag}
+                            </span>
+                            <span className="font-mono-data text-[11px] text-text-muted">
+                              {timeStr ? new Date(timeStr).toLocaleString('zh-CN', { hour12: false }) : ''}
+                            </span>
+                            {isDue && (
+                              <span className="text-[10px] text-error font-semibold">· 已到期</span>
+                            )}
+                          </div>
+                          <p className="text-body-sm text-text-main font-medium break-words">
+                            {it.content}
+                          </p>
+                          <p className="text-[11px] text-text-muted mt-0.5">
+                            订单号：<span className="font-mono-data font-semibold">{it.order_no || it.orderNo}</span>
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0 pt-0.5">
+                          <button
+                            type="button"
+                            onClick={() => handleSnooze(it.id)}
+                            className="p-1 rounded text-text-muted hover:text-primary hover:bg-surface-container"
+                            title="延后 10 分钟"
+                          >
+                            <span className="material-symbols-outlined text-[17px]">snooze</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDone(it.id)}
+                            className="p-1 rounded text-text-muted hover:text-action-green hover:bg-green-50"
+                            title="标记已完成"
+                          >
+                            <span className="material-symbols-outlined text-[17px]">check_circle</span>
+                          </button>
+                        </div>
+                      </div>
+                    </li>
+                  )
+                })}
               </ul>
             )}
           </div>

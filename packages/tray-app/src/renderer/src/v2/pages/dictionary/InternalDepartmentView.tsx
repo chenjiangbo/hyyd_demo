@@ -243,7 +243,7 @@ export default function InternalDepartmentView(): React.JSX.Element {
 
     if (hasChildren) {
       showAlert(
-        `科室【${deptName || deptId}】下存在 ${target?.subDepartments.length} 个细分科室，不允许直接删除！\n\n请先点击「细分科室」进入并删除所有下属细分科室后再删除该大类。`,
+        `科室【${deptName || deptId}】下存在 ${target?.subDepartments?.length || 0} 个细分科室，不允许直接删除！\n\n请先点击「细分科室」进入并删除所有下属细分科室后再删除该大类。`,
         '禁止删除',
         'warning'
       )
@@ -326,7 +326,7 @@ export default function InternalDepartmentView(): React.JSX.Element {
 
     const nextDeptList = [...deptList]
     const targetDept = { ...nextDeptList[deptIdx] }
-    const nextSubList = [...targetDept.subDepartments]
+    const nextSubList = [...(targetDept.subDepartments || [])]
     const subItem = { ...nextSubList[subIndex], [field]: value, updatedAt: today }
 
     // 细分科室序号 (xh) 修改时，自动重构物理主键 id = parentDeptId + xh
@@ -531,7 +531,7 @@ export default function InternalDepartmentView(): React.JSX.Element {
     const matchKeyword =
       !appliedSearchQuery.trim() ||
       d.name.toLowerCase().includes(appliedSearchQuery.trim().toLowerCase()) ||
-      d.desc.toLowerCase().includes(appliedSearchQuery.trim().toLowerCase()) ||
+      (d.desc || d.ms || '').toLowerCase().includes(appliedSearchQuery.trim().toLowerCase()) ||
       d.id.toLowerCase().includes(appliedSearchQuery.trim().toLowerCase())
     const matchStatus =
       appliedSearchStatus === 'all' || d.status === appliedSearchStatus

@@ -17,6 +17,7 @@ import {
   deleteExtPresenceInstance
 } from './routes/api.js'
 import { startOrderAiSchedule } from './jobs/orderAiSchedule.js'
+import { startOrderReminderSchedule } from './jobs/orderReminderSchedule.js'
 import { registerAdminRoutes, ADMIN_COOKIE, verifyAdminToken } from './routes/admin.js'
 import { addAdminSocket, removeAdminSocket } from './routes/adminBus.js'
 import { saveOrderDetailBundle } from './orderDetail.js'
@@ -27,6 +28,7 @@ import { join } from 'node:path'
 import { getEnv } from './env.js'
 import { ensureHuanyuTables } from './db/ensureHuanyuTables.js'
 import { ensureBOrderFormTables } from './db/ensureBOrderFormTables.js'
+import { ensureReminderTables } from './db/ensureReminderTables.js'
 import { syncHuanyuOrderFromTaikang } from './huanyuOrderSync.js'
 
 if (process.env.NODE_ENV !== 'production') {
@@ -92,6 +94,7 @@ async function start() {
     // 该检查幂等，已有表不会被修改。
     await ensureHuanyuTables(prisma)
     await ensureBOrderFormTables(prisma)
+    await ensureReminderTables(prisma, server.log)
     await ensureBuckets()
 
     // 1. 注册 CORS 跨域插件
@@ -539,6 +542,13 @@ async function start() {
 
     // 订单 AI 只在上海时区的配置时点批量分析；不再按消息静默、消息条数或转写完成自动触发。
     startOrderAiSchedule(prisma, minioClient)
+
+    // 订单业务自动提醒后台定时扫描（约住院排队、陪诊超时/防迟到、护工时间与出院前）
+    startOrderReminderSchedule(prisma, {
+      info: (m) => server.log.info(m),
+      warn: (m) => server.log.warn(m),
+      error: (m, err) => server.log.error({ err }, m)
+    })
   } catch (err) {
     server.log.error({ err }, '服务启动失败')
     process.exit(1)

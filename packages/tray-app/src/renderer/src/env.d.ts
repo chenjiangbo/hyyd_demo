@@ -189,5 +189,12 @@ interface Window {
     captureSetConfig: (cfg: { backendUrl: string; employeeCode: string }) => Promise<{ ok: boolean }>
     setCaptureSaveDebug: (value: boolean) => Promise<{ saveDebug: boolean }>
     clipboardRead: () => Promise<{ text: string | null; imageDataUrl: string | null }>
+    // 桌面右下角到期提醒原生浮窗
+    showDesktopReminder: (data: unknown) => Promise<{ ok: boolean }>
+    hideDesktopReminder: () => Promise<{ ok: boolean }>
+    getCurrentReminder: () => Promise<unknown>
+    openOrderFromReminder: (orderNo: string) => Promise<{ ok: boolean }>
+    onReminderData: (cb: (data: unknown) => void) => () => void
+    onNavigateOrder: (cb: (orderNo: string) => void) => () => void
   }
 }

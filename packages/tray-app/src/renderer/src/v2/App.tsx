@@ -1,7 +1,7 @@
 import ChangePasswordModal from './components/ChangePasswordModal'
 import { useEffect, useState } from 'react'
 import LoginPage from './pages/LoginPage'
-import WorkbenchKanban from './pages/WorkbenchKanban'
+import WorkbenchKanban, { clearOrdersCache, type ApplicationGroup } from './pages/WorkbenchKanban'
 import ApplicationDetailPage, { HuanyuOrderCreatePage } from './pages/ApplicationDetailPage'
 import OrderDetailPage from './pages/OrderDetailPage'
 import SidecarDebugPage from './pages/SidecarDebugPage'
@@ -20,7 +20,6 @@ import {
   type Order,
   type Session
 } from './api'
-import type { ApplicationGroup } from './pages/WorkbenchKanban'
 
 /**
  * v2 应用根。顶部为自绘标题栏（无 Windows 原生边框），下方是页面内容。
@@ -64,6 +63,20 @@ export default function App(): React.JSX.Element {
     window.addEventListener(BACKEND_CONFIG_CHANGED, pushConfig)
     return () => window.removeEventListener(BACKEND_CONFIG_CHANGED, pushConfig)
   }, [session])
+
+  // 监听来自桌面右下角提醒浮窗的"打开订单"点击
+  useEffect(() => {
+    const cleanup = window.api?.onNavigateOrder?.((orderNo) => {
+      setOpenOrder(null)
+      setOpenApplication(null)
+      setOpenHuanyuCreate(false)
+      setNav('workbench')
+      setSearch(orderNo)
+    })
+    return () => {
+      cleanup?.()
+    }
+  }, [])
 
   let content: React.JSX.Element
   if (!session) {

@@ -542,10 +542,14 @@ export function fetchMaterials(orderId: number): Promise<Material[]> {
 async function authedSend<T>(path: string, method: string, body?: unknown): Promise<T> {
   const code = getSession()?.employeeCode
   if (!code) throw new Error('未登录')
+  const headers: Record<string, string> = { 'X-Employee-Code': code }
+  if (body !== undefined) {
+    headers['Content-Type'] = 'application/json'
+  }
   const res = await fetch(`${requireBackendUrl()}${path}`, {
     method,
-    headers: { 'X-Employee-Code': code, 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined
   })
   if (!res.ok) {
     const t = (await res.json().catch(() => ({}))) as { error?: string }
@@ -622,6 +626,65 @@ export function confirmUnmatchedOrderRef(
   orderId: number
 ): Promise<{ ok: boolean; backfilledMessages: number }> {
   return authedSend(`/api/v1/unmatched-order-refs/${id}/confirm`, 'POST', { orderId })
+}
+
+// ─── 订单跟进提醒与通知 ──────────────────────────
+export interface OrderReminder {
+  id: number
+  orderNo: string
+  order_no?: string
+  employeeId?: number
+  employee_id?: number
+  type: string
+  content: string
+  remindTime?: string
+  remind_time?: string
+  status: 'pending' | 'notified' | 'done' | 'ignored'
+  extraData?: Record<string, any> | null
+  extra_data?: Record<string, any> | null
+  createdAt?: string
+  created_at?: string
+  updatedAt?: string
+  updated_at?: string
+}
+
+export interface NotificationSummary {
+  remindersCount: number
+  unmatchedRefsCount: number
+}
+
+export function fetchOrderReminders(params?: { status?: string; orderNo?: string }): Promise<OrderReminder[]> {
+  const q = new URLSearchParams()
+  if (params?.status) q.set('status', params.status)
+  if (params?.orderNo) q.set('orderNo', params.orderNo)
+  const qs = q.toString() ? `?${q.toString()}` : ''
+  return authedGet<OrderReminder[]>(`/api/v1/order-reminders${qs}`)
+}
+
+export function createOrderReminder(body: {
+  orderNo: string
+  remindTime: string
+  content: string
+  type?: string
+  extraData?: any
+}): Promise<OrderReminder> {
+  return authedSend<OrderReminder>('/api/v1/order-reminders', 'POST', body)
+}
+
+export function snoozeOrderReminder(id: number, minutes = 10): Promise<OrderReminder> {
+  return authedSend<OrderReminder>(`/api/v1/order-reminders/${id}/snooze`, 'POST', { minutes })
+}
+
+export function doneOrderReminder(id: number): Promise<OrderReminder> {
+  return authedSend<OrderReminder>(`/api/v1/order-reminders/${id}/done`, 'POST')
+}
+
+export function deleteOrderReminder(id: number): Promise<{ ok: boolean }> {
+  return authedSend<{ ok: boolean }>(`/api/v1/order-reminders/${id}`, 'DELETE')
+}
+
+export function fetchNotificationSummary(): Promise<NotificationSummary> {
+  return authedGet<NotificationSummary>('/api/v1/notifications/summary')
 }
 
 /**
@@ -710,20 +773,27 @@ export function getToday8(): string {
 // ─── 科室管理字典 (f_hy_kswh + f_hy_xfks) ───────────────────
 export interface SubDepartmentItem {
   id: string // 数据库物理主键 (如 00010002)
-  xh: string // 序号ID (如 0002)
-  name_yjks: string // 所属上级科室ID (如 0001)
+  xh?: string // 序号ID (如 0002)
+  name_yjks?: string // 所属上级科室ID (如 0001)
+  parentDeptId?: string
   name: string // 科室细分名称
-  state: string // '启用' | '停用'
-  u_date: string // 8位紧凑日期 (如 20231209)
+  state?: string // '启用' | '停用'
+  status?: string
+  u_date?: string // 8位紧凑日期 (如 20231209)
+  updatedAt?: string
 }
 
 export interface DepartmentItem {
   id: string // 一级科室ID (如 0001)
   name: string // 科室大类名称
-  ms: string // 描述说明
-  state: string // '启用' | '停用'
-  c_date: string // 8位紧凑日期 (如 20231209)
-  u_date: string // 8位紧凑日期 (如 20231209)
+  ms?: string // 描述说明
+  desc?: string
+  state?: string // '启用' | '停用'
+  status?: string
+  c_date?: string // 8位紧凑日期 (如 20231209)
+  createdAt?: string
+  u_date?: string // 8位紧凑日期 (如 20231209)
+  updatedAt?: string
   subDepartments?: SubDepartmentItem[]
 }
 

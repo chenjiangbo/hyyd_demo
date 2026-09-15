@@ -14,6 +14,7 @@ import { getRecordingPlaybackInfo } from '../audioTranscode.js'
 import { findHuanyuChannelProductById, listHuanyuBdUsers, listHuanyuChannelProducts, listHuanyuChannels, listHuanyuEscorts, listHuanyuHospitalAddresses, listHuanyuHospitalDepartments, listHuanyuHospitalDoctors, listHuanyuHospitals } from '../db/remoteDictionary.js'
 import { huanyuBookingChannelTypes, huanyuDocumentTypes, huanyuExpertLevels, huanyuMedicareTypes, huanyuOrderStatuses } from '../dictionaries/huanyuOrder.js'
 import { registerDictionaryManageRoutes } from './dictionaryManage.js'
+import { registerEscortFeedbackRoutes } from './escortFeedbackRoutes.js'
 import { applyOrderWorkflowEvent, getOrderWorkflow, type WorkflowEventInput } from '../workflow/serviceWorkflow.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
@@ -440,7 +441,9 @@ export function registerApiRoutes(
       request.url.startsWith('/api/v1/payment-channels') ||
       request.url.startsWith('/api/v1/escorts') ||
       request.url.startsWith('/api/v1/regions') ||
-      request.url.startsWith('/api/v1/dim_cslb')
+      request.url.startsWith('/api/v1/dim_cslb') ||
+      request.url.startsWith('/m/') ||
+      request.url.startsWith('/api/v1/escort-feedback')
     ) {
       return
     }
@@ -2033,6 +2036,188 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     }
   )
 
+  // ──────────────── 8.3 订单跟进提醒与桌面通知 ────────────────
+  // 列表（当前员工，支持按 orderNo 或 status 过滤）
+  fastify.get<{ Querystring: { status?: string; orderNo?: string } }>('/api/v1/order-reminders', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const { status, orderNo } = request.query
+    const employeeId = request.employee.id
+
+    const conditions: string[] = ['employee_id = $1']
+    const params: any[] = [employeeId]
+
+    if (status && status !== 'all') {
+      if (status === 'pending') {
+        conditions.push(`status IN ('pending', 'unread')`)
+      } else {
+        params.push(status)
+        conditions.push(`status = $${params.length}`)
+      }
+    }
+    if (orderNo) {
+      params.push(orderNo)
+      conditions.push(`order_no = $${params.length}`)
+    }
+
+    const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const sql = `SELECT * FROM order_reminders ${whereClause} ORDER BY remind_time ASC, id DESC`
+    
+    try {
+      const rows = await (prisma as any).$queryRawUnsafe(sql, ...params)
+      return reply.send({ data: rows })
+    } catch (err: any) {
+      fastify.log.error('查询提醒失败:', err)
+      return reply.status(500).send({ error: '查询提醒列表失败: ' + err.message })
+    }
+  })
+
+  // 新建手工提醒
+  fastify.post<{ Body: { orderNo: string; remindTime: string; content: string; type?: string; extraData?: any } }>(
+    '/api/v1/order-reminders',
+    async (request, reply) => {
+      if (!request.employee) return reply.status(401).send({ error: '未登录' })
+      const employeeId = request.employee.id
+      const { orderNo, remindTime, content, type = 'manual', extraData = null } = request.body || {}
+
+      if (!orderNo || !remindTime || !content) {
+        return reply.status(400).send({ error: 'orderNo、remindTime 和 content 均为必填项' })
+      }
+
+      const parsedRemindTime = new Date(remindTime)
+      if (isNaN(parsedRemindTime.getTime())) {
+        return reply.status(400).send({ error: 'remindTime 格式非法' })
+      }
+
+      try {
+        const insertSql = `
+          INSERT INTO order_reminders (order_no, employee_id, type, content, remind_time, status, extra_data, created_at, updated_at)
+          VALUES ($1, $2, $3, $4, $5, 'pending', $6, NOW(), NOW())
+          RETURNING *;
+        `
+        const rows = await (prisma as any).$queryRawUnsafe(
+          insertSql,
+          orderNo,
+          employeeId,
+          type,
+          content,
+          parsedRemindTime,
+          extraData ? JSON.stringify(extraData) : null
+        )
+        return reply.send({ data: rows[0] })
+      } catch (err: any) {
+        fastify.log.error('创建提醒失败:', err)
+        return reply.status(500).send({ error: '创建提醒失败: ' + err.message })
+      }
+    }
+  )
+
+  // 延后提醒（默认延后 10 分钟）
+  fastify.post<{ Params: { id: string }; Body?: { minutes?: number } }>(
+    '/api/v1/order-reminders/:id/snooze',
+    async (request, reply) => {
+      if (!request.employee) return reply.status(401).send({ error: '未登录' })
+      const id = parseInt(request.params.id, 10)
+      const minutes = Number(request.body?.minutes) || 10
+      const employeeId = request.employee.id
+
+      try {
+        const updateSql = `
+          UPDATE order_reminders 
+          SET remind_time = NOW() + ($1 || ' minutes')::INTERVAL, 
+              status = 'pending', 
+              updated_at = NOW()
+          WHERE id = $2 AND employee_id = $3
+          RETURNING *;
+        `
+        const rows = await (prisma as any).$queryRawUnsafe(updateSql, String(minutes), id, employeeId)
+        if (!rows || rows.length === 0) {
+          return reply.status(404).send({ error: '提醒不存在或无权操作' })
+        }
+        return reply.send({ data: rows[0] })
+      } catch (err: any) {
+        fastify.log.error('延后提醒失败:', err)
+        return reply.status(500).send({ error: '延后提醒失败: ' + err.message })
+      }
+    }
+  )
+
+  // 标记提醒已完成
+  fastify.post<{ Params: { id: string } }>(
+    '/api/v1/order-reminders/:id/done',
+    async (request, reply) => {
+      if (!request.employee) return reply.status(401).send({ error: '未登录' })
+      const id = parseInt(request.params.id, 10)
+      const employeeId = request.employee.id
+
+      try {
+        const updateSql = `
+          UPDATE order_reminders 
+          SET status = 'done', updated_at = NOW()
+          WHERE id = $1 AND employee_id = $2
+          RETURNING *;
+        `
+        const rows = await (prisma as any).$queryRawUnsafe(updateSql, id, employeeId)
+        if (!rows || rows.length === 0) {
+          return reply.status(404).send({ error: '提醒不存在或无权操作' })
+        }
+        return reply.send({ data: rows[0] })
+      } catch (err: any) {
+        fastify.log.error('完成提醒失败:', err)
+        return reply.status(500).send({ error: '完成提醒失败: ' + err.message })
+      }
+    }
+  )
+
+  // 删除手工提醒
+  fastify.delete<{ Params: { id: string } }>(
+    '/api/v1/order-reminders/:id',
+    async (request, reply) => {
+      if (!request.employee) return reply.status(401).send({ error: '未登录' })
+      const id = parseInt(request.params.id, 10)
+      const employeeId = request.employee.id
+
+      try {
+        await (prisma as any).$queryRawUnsafe(
+          'DELETE FROM order_reminders WHERE id = $1 AND employee_id = $2;',
+          id,
+          employeeId
+        )
+        return reply.send({ data: { ok: true } })
+      } catch (err: any) {
+        fastify.log.error('删除提醒失败:', err)
+        return reply.status(500).send({ error: '删除提醒失败: ' + err.message })
+      }
+    }
+  )
+
+  // 顶部通知统计（获取待办提醒数、待确认单号数）
+  fastify.get('/api/v1/notifications/summary', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const employeeId = request.employee.id
+
+    try {
+      const reminderCountRes: any = await (prisma as any).$queryRawUnsafe(
+        "SELECT COUNT(*)::int AS count FROM order_reminders WHERE employee_id = $1 AND status = 'pending';",
+        employeeId
+      )
+      const remindersCount = Number(reminderCountRes?.[0]?.count || 0)
+
+      const unmatchedCount = await prisma.unmatchedOrderRef.count({
+        where: { employeeId, status: 'pending' }
+      })
+
+      return reply.send({
+        data: {
+          remindersCount,
+          unmatchedRefsCount: unmatchedCount
+        }
+      })
+    } catch (err: any) {
+      fastify.log.error('查询通知统计失败:', err)
+      return reply.status(500).send({ error: '查询通知统计失败: ' + err.message })
+    }
+  })
+
   // 8.4 整帧上报（新链路）——sidecar 出结构化、tray 逐帧转发全部 messages（含 system），
   //     后端做跨帧单消息去重 + 订单关联（+ 时间链 chatTime 在后续步骤填）。
   //     去重键 = 员工+会话名+说话人+内容哈希；命中只累加 seenCount，不重复入库/进时间线。
@@ -3263,4 +3448,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
 
   // 13. 字典配置管理 CRUD 路由 (科室、医院、医生、渠道、产品、支付渠道、陪诊人、地区)
   registerDictionaryManageRoutes(fastify, prisma)
+
+  // 14. 陪诊人员出工短信反馈 H5 与 API 路由
+  registerEscortFeedbackRoutes(fastify, prisma, minioClient, minioPublicClient)
 }
