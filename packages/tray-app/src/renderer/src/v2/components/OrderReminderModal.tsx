@@ -57,6 +57,19 @@ export function OrderReminderModal({ order, onClose, onUpdated }: OrderReminderM
     void loadReminders()
   }, [orderNo])
 
+  function formatStandardDateTime(val?: string | Date | null): string {
+    if (!val) return ''
+    const d = typeof val === 'string' ? new Date(val) : val
+    if (isNaN(d.getTime())) return String(val)
+    const year = d.getFullYear()
+    const month = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    const hours = String(d.getHours()).padStart(2, '0')
+    const mins = String(d.getMinutes()).padStart(2, '0')
+    const secs = String(d.getSeconds()).padStart(2, '0')
+    return `${year}-${month}-${day} ${hours}:${mins}:${secs}`
+  }
+
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault()
     if (!content.trim()) {
@@ -71,11 +84,17 @@ export function OrderReminderModal({ order, onClose, onUpdated }: OrderReminderM
     setSubmitting(true)
     setError(null)
     try {
+      const rawData = order.rawJson as Record<string, any> | undefined
+      const orderCreatedTime = order.createdAt || rawData?.applyTime || rawData?.sqsj || rawData?.created_at || ''
+      const formattedApplyTime = formatStandardDateTime(orderCreatedTime)
+      const finalContent = `订单号: ${orderNo}${formattedApplyTime ? `\n申请时间: ${formattedApplyTime}` : ''}\n备忘内容: ${content.trim()}`
+
       await createOrderReminder({
         orderNo,
         remindTime: new Date(remindTime).toISOString(),
-        content: content.trim(),
-        type: 'manual'
+        content: finalContent,
+        type: 'manual',
+        extraData: { applyTime: formattedApplyTime, rawContent: content.trim() }
       })
       setContent('')
       await loadReminders()
@@ -254,14 +273,14 @@ export function OrderReminderModal({ order, onClose, onUpdated }: OrderReminderM
                           >
                             {tag}
                           </span>
-                          <span className="text-[11px] font-mono-data text-text-muted">
-                            {rTime ? new Date(rTime).toLocaleString('zh-CN', { hour12: false }) : ''}
+                          <span className="text-[11px] text-text-muted">
+                            {formatStandardDateTime(rTime)}
                           </span>
                           {isDone && (
                             <span className="text-[10px] text-action-green font-medium">· 已完成</span>
                           )}
                         </div>
-                        <p className={'text-body-sm text-text-main break-words ' + (isDone ? 'line-through text-text-muted' : '')}>
+                        <p className={'text-body-sm text-text-main break-words whitespace-pre-line ' + (isDone ? 'line-through text-text-muted' : '')}>
                           {r.content}
                         </p>
                       </div>

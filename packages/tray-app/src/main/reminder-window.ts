@@ -2,8 +2,8 @@ import { BrowserWindow, screen, ipcMain } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 
-const POPUP_WIDTH = 380
-const POPUP_HEIGHT = 200
+const POPUP_WIDTH = 400
+const POPUP_HEIGHT = 260
 const MARGIN = 16
 
 let reminderWindow: BrowserWindow | null = null

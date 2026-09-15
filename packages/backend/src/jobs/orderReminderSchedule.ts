@@ -48,7 +48,18 @@ function formatDateDisplay(date: Date | string | null | undefined): string {
   if (!date) return ''
   const d = typeof date === 'string' ? new Date(date) : date
   if (isNaN(d.getTime())) return String(date)
-  return formatYmd(d)
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(d)
+  const part = (type: string) => parts.find((p) => p.type === type)?.value ?? '00'
+  return `${part('year')}-${part('month')}-${part('day')} ${part('hour')}:${part('minute')}:${part('second')}`
 }
 
 /**

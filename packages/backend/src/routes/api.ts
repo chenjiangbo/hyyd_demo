@@ -2091,7 +2091,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       try {
         const insertSql = `
           INSERT INTO order_reminders (order_no, employee_id, type, content, remind_time, status, extra_data, created_at, updated_at)
-          VALUES ($1, $2, $3, $4, $5, 'pending', $6, NOW(), NOW())
+          VALUES ($1, $2, $3, $4, $5, 'pending', $6::jsonb, NOW(), NOW())
           RETURNING *;
         `
         const rows = await (prisma as any).$queryRawUnsafe(

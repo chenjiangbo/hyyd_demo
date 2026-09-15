@@ -125,9 +125,38 @@ export function DesktopReminderPopup() {
     }
   }
 
+  const renderFormattedContent = (rawContent: string) => {
+    if (!rawContent) return null
+    const normalized = rawContent.replace(/\\n/g, '\n')
+    const lines = normalized.split('\n').filter(Boolean)
+
+    return (
+      <div className="space-y-1.5 text-[13px] leading-relaxed text-text-main font-normal">
+        {lines.map((line, idx) => {
+          const colonIdx = line.indexOf(':') > -1 ? line.indexOf(':') : line.indexOf('：')
+          if (colonIdx > -1) {
+            const label = line.slice(0, colonIdx).trim()
+            const val = line.slice(colonIdx + 1).trim()
+            return (
+              <div key={idx} className="flex items-start text-[13px]">
+                <span className="w-[72px] shrink-0 whitespace-nowrap text-text-muted">{label}：</span>
+                <span className="flex-1 break-words text-text-main leading-relaxed">{val}</span>
+              </div>
+            )
+          }
+          return (
+            <div key={idx} className="text-text-main break-words text-[13px]">
+              {line}
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
+
   return (
     <div
-      className="fixed bottom-5 right-5 z-[99999] w-96 rounded-xl border border-border-subtle bg-white p-4 shadow-2xl transition-all duration-300 animate-in slide-in-from-bottom-5"
+      className="fixed bottom-5 right-5 z-[99999] w-96 rounded-xl border border-border-subtle bg-white p-4 shadow-2xl transition-all duration-300 animate-in slide-in-from-bottom-5 overflow-hidden"
       style={{
         boxShadow: '0 20px 30px -10px rgba(0, 0, 0, 0.2), 0 0 15px rgba(0,0,0,0.05)'
       }}
@@ -159,17 +188,17 @@ export function DesktopReminderPopup() {
               {safeIndex + 1} / {activeReminders.length}
             </span>
           )}
-          <span className="font-mono-data text-[12px] font-medium text-text-muted">
+          <span className="text-[12px] font-medium text-text-muted">
             {formattedTime}
           </span>
         </div>
       </div>
 
-      {/* 提醒主要内容（输入什么提示什么） */}
-      <div className="py-3">
-        <p className="text-[14px] font-bold text-text-main leading-relaxed break-words">
-          {currentItem.content}
-        </p>
+      {/* 提醒主要内容：展示多行结构化提醒/备忘内容 */}
+      <div className="py-2.5">
+        <div className="bg-surface-bg/70 p-2.5 rounded-lg border border-border-subtle/70">
+          {renderFormattedContent(currentItem.content)}
+        </div>
       </div>
 
       {/* 底部按钮：仅保留 延后10分钟 和 已完成 */}

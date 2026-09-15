@@ -433,34 +433,69 @@ function ReminderTodoBell(): React.JSX.Element {
                   const tag = it.type === 'manual' ? '手工备忘' : '系统提醒'
                   const timeStr = it.remind_time || it.remindTime
                   const isDue = Boolean(timeStr && new Date(timeStr) <= new Date())
+                  const hasOrderInContent = it.content?.includes('订单号:') || it.content?.includes('订单号：')
 
                   return (
                     <li key={it.id} className="px-4 py-3 hover:bg-surface-bg/50 transition-colors">
                       <div className="flex items-start justify-between gap-2.5">
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5 mb-1">
+                          <div className="flex items-center gap-1.5 mb-1.5">
                             <span
-                              className={`inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-medium ${
+                              className={`inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-semibold ${
                                 tag === '手工备忘'
-                                  ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                                  : 'bg-amber-50 text-amber-700 border border-amber-300'
+                                  ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                                  : 'bg-red-50 text-error border border-red-200'
                               }`}
                             >
                               {tag}
                             </span>
-                            <span className="font-mono-data text-[11px] text-text-muted">
-                              {timeStr ? new Date(timeStr).toLocaleString('zh-CN', { hour12: false }) : ''}
+                            <span className="text-[11px] text-text-muted">
+                              {(() => {
+                                if (!timeStr) return ''
+                                const d = new Date(timeStr)
+                                if (isNaN(d.getTime())) return String(timeStr)
+                                const y = d.getFullYear()
+                                const m = String(d.getMonth() + 1).padStart(2, '0')
+                                const day = String(d.getDate()).padStart(2, '0')
+                                const hh = String(d.getHours()).padStart(2, '0')
+                                const mm = String(d.getMinutes()).padStart(2, '0')
+                                const ss = String(d.getSeconds()).padStart(2, '0')
+                                return `${y}-${m}-${day} ${hh}:${mm}:${ss}`
+                              })()}
                             </span>
                             {isDue && (
-                              <span className="text-[10px] text-error font-semibold">· 已到期</span>
+                              <span className="text-[10px] text-error font-semibold animate-pulse">· 已到期</span>
                             )}
                           </div>
-                          <p className="text-body-sm text-text-main font-medium break-words">
-                            {it.content}
-                          </p>
-                          <p className="text-[11px] text-text-muted mt-0.5">
-                            订单号：<span className="font-mono-data font-semibold">{it.order_no || it.orderNo}</span>
-                          </p>
+                          <div className="space-y-1 text-[13px] leading-relaxed text-text-main font-normal">
+                            {(() => {
+                              const normalized = (it.content || '').replace(/\\n/g, '\n')
+                              const lines = normalized.split('\n').filter(Boolean)
+                              return lines.map((line, idx) => {
+                                const colonIdx = line.indexOf(':') > -1 ? line.indexOf(':') : line.indexOf('：')
+                                if (colonIdx > -1) {
+                                  const label = line.slice(0, colonIdx).trim()
+                                  const val = line.slice(colonIdx + 1).trim()
+                                  return (
+                                    <div key={idx} className="flex items-start text-[13px]">
+                                      <span className="w-[72px] shrink-0 whitespace-nowrap text-text-muted">{label}：</span>
+                                      <span className="flex-1 break-words text-text-main leading-relaxed">{val}</span>
+                                    </div>
+                                  )
+                                }
+                                return (
+                                  <div key={idx} className="text-text-main break-words text-[13px]">
+                                    {line}
+                                  </div>
+                                )
+                              })
+                            })()}
+                          </div>
+                          {!hasOrderInContent && (it.order_no || it.orderNo) && (
+                            <p className="text-[12px] text-text-muted mt-1">
+                              订单号：<span className="text-text-main">{it.order_no || it.orderNo}</span>
+                            </p>
+                          )}
                         </div>
                         <div className="flex items-center gap-1 shrink-0 pt-0.5">
                           <button
