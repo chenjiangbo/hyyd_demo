@@ -9,6 +9,7 @@ type StepDefinition = {
   code: string
   name: string
   kind?: 'step' | 'package'
+  required?: boolean
   repeatable?: boolean
   children?: StepDefinition[]
 }
@@ -36,6 +37,18 @@ type StoredStep = {
 }
 
 type OperationRow = { id: bigint; service_type: string | null }
+
+type WorkflowConfigRow = {
+  code: string
+  name: string
+  parent_code: string | null
+  step_kind: 'step' | 'package'
+  sort_order: number
+  is_required: boolean
+  is_repeatable: boolean
+  activation_mode: 'initial' | 'event'
+  trigger_event_code: string | null
+}
 
 export type WorkflowStep = {
   id: number
@@ -65,72 +78,55 @@ export type OrderWorkflow = {
   steps: WorkflowStep[]
 }
 
-const STEP = (code: string, name: string): StepDefinition => ({ code, name })
-const PACKAGE = (code: string, name: string, children: StepDefinition[], repeatable = false): StepDefinition => ({
-  code,
-  name,
-  kind: 'package',
-  repeatable,
-  children
-})
-
-const CLAIM = STEP('claim', '申领')
-const INITIAL_CONTACT = STEP('initial_contact', '初次沟通')
-const PRE_VISIT_PLAN = STEP('pre_visit_plan', '诊前方案')
-const END = STEP('end', '结束')
-const REGISTRATION_SERVICE = PACKAGE('registration_service', '挂号就诊服务', [
-  STEP('registration', '挂号'),
-  STEP('escort', '陪诊')
-])
-const REGISTRATION_ONLY = STEP('registration', '挂号')
-const CHECK_SERVICE = PACKAGE('check_service', '检查服务', [
-  STEP('check_booking', '约检查'),
-  STEP('check_companion', '检查陪同')
-], true)
-const HOSPITAL_SERVICE = PACKAGE('hospital_service', '住院服务', [
-  STEP('hospital_booking', '约住院'),
-  STEP('hospital_companion', '住院陪同')
-], true)
-const REVISIT_SERVICE = PACKAGE('revisit_service', '复诊服务', [
-  STEP('revisit', '复诊'),
-  STEP('revisit_escort', '免费陪诊')
-], true)
-const TRANSPORT = STEP('medical_transport', '就医接送')
-const HOSPITAL_CARE = STEP('hospital_care', '住院护工')
-const HOME_CARE = STEP('home_care', '上门照护')
-
-/** 订单创建时应实际生成的轨迹；动态服务包不在这里预置。 */
-export function initialStepsFor(serviceType: string): StepDefinition[] {
-  switch (serviceType) {
-    case '全程门诊':
-    case '单次门诊':
-    case '电话问诊':
-    case 'MDT服务':
-      return [CLAIM, INITIAL_CONTACT, PRE_VISIT_PLAN, REGISTRATION_SERVICE, END]
-    case '全流程':
-      return [CLAIM, INITIAL_CONTACT, PRE_VISIT_PLAN, REGISTRATION_SERVICE, END]
-    case '挂号协助':
-      return [CLAIM, INITIAL_CONTACT, PRE_VISIT_PLAN, REGISTRATION_ONLY, END]
-    case '检查加急':
-      return [CLAIM, INITIAL_CONTACT, CHECK_SERVICE, END]
-    case '住院':
-      return [CLAIM, INITIAL_CONTACT, HOSPITAL_SERVICE, END]
-    case '住院护工协助':
-      return [CLAIM, INITIAL_CONTACT, HOSPITAL_CARE, END]
-    case '就医接送':
-      return [CLAIM, INITIAL_CONTACT, TRANSPORT, END]
-    case '共享流程':
-      return [CLAIM, INITIAL_CONTACT, HOME_CARE, END]
-    default:
-      return [CLAIM, INITIAL_CONTACT, END]
+async function loadWorkflowDefinitions(
+  db: DbClient,
+  serviceType: string,
+  activationMode: 'initial' | 'event',
+  triggerEventCode?: string
+): Promise<StepDefinition[]> {
+  const rows = await db.$queryRaw<WorkflowConfigRow[]>`
+    SELECT c.code, c.name, c.parent_code, c.step_kind, c.sort_order, c.is_required,
+           c.is_repeatable, c.activation_mode, c.trigger_event_code
+    FROM b_order_workflow_templates t
+    JOIN b_order_workflow_step_configs c ON c.template_id = t.id
+    WHERE t.service_type = ${serviceType}
+      AND t.status = 'active'
+      AND t.version = (
+        SELECT MAX(version) FROM b_order_workflow_templates
+        WHERE service_type = ${serviceType} AND status = 'active'
+      )
+      AND c.status = 'active'
+      AND c.activation_mode = ${activationMode}
+      ${triggerEventCode ? Prisma.sql`AND c.trigger_event_code = ${triggerEventCode}` : Prisma.empty}
+    ORDER BY c.sort_order ASC, c.id ASC
+  `
+  const definitions = new Map<string, StepDefinition>()
+  const roots: StepDefinition[] = []
+  for (const row of rows) {
+    definitions.set(row.code, {
+      code: row.code,
+      name: row.name,
+      kind: row.step_kind,
+      required: row.is_required,
+      repeatable: row.is_repeatable,
+      children: []
+    })
   }
+  for (const row of rows) {
+    const definition = definitions.get(row.code)!
+    if (row.parent_code) definitions.get(row.parent_code)?.children?.push(definition)
+    else roots.push(definition)
+  }
+  return roots
 }
 
-/** 当前服务类型可由事件自动追加的服务包。 */
-export function flexiblePackageFor(serviceType: string, code: string): StepDefinition | null {
-  if (code === 'revisit_service' && ['全程门诊', '全流程'].includes(serviceType)) return REVISIT_SERVICE
-  if (code === 'hospital_service' && serviceType === '全流程') return HOSPITAL_SERVICE
-  return null
+async function initialStepsFor(db: DbClient, serviceType: string): Promise<StepDefinition[]> {
+  return loadWorkflowDefinitions(db, serviceType, 'initial')
+}
+
+async function flexiblePackageFor(db: DbClient, serviceType: string, code: string): Promise<StepDefinition | null> {
+  const definitions = await loadWorkflowDefinitions(db, serviceType, 'event', code === 'hospital_service' ? 'hospital_confirmed' : 'revisit_confirmed')
+  return definitions.find((definition) => definition.code === code) ?? null
 }
 
 function serviceTypeOf(rawJson: unknown): string {
@@ -200,7 +196,7 @@ async function insertDefinition(
       evidence_json, activated_at, started_at
     ) VALUES (
       ${operationId}, ${parentStepId}, ${definition.code}, ${definition.name}, ${occurrenceNo}, ${sequenceNo},
-      ${status}, ${parentStepId == null}, ${kind}, ${source}, ${sourceRef}, ${confidence},
+      ${status}, ${definition.required ?? true}, ${kind}, ${source}, ${sourceRef}, ${confidence},
       ${JSON.stringify(evidence)}::jsonb,
       ${status === 'in_progress' ? new Date() : null}, ${status === 'in_progress' ? new Date() : null}
     )
@@ -220,7 +216,10 @@ async function seedInitialWorkflow(db: DbClient, operationId: bigint, serviceTyp
       AND step_code = 'end'
       AND sequence_no < 1000000
   `
-  const definitions = initialStepsFor(serviceType)
+  const definitions = await initialStepsFor(db, serviceType)
+  if (definitions.length === 0) {
+    throw new Error(`未找到服务类型“${serviceType}”的已发布步骤配置`)
+  }
   for (const [index, definition] of definitions.entries()) {
     const status: WorkflowStepStatus = definition.code === 'claim'
       ? 'completed'
@@ -278,6 +277,11 @@ export async function getOrderWorkflow(prisma: PrismaClient, orderId: number): P
     await seedInitialWorkflow(tx, operation.id, serviceType)
     return workflowForOperation(tx, operation, serviceType)
   })
+}
+
+/** 新订单写入 orders 后立即调用；幂等，不会重置已有步骤状态。 */
+export async function initializeOrderWorkflow(prisma: PrismaClient, orderId: number): Promise<void> {
+  await getOrderWorkflow(prisma, orderId)
 }
 
 export type WorkflowEventInput = {
@@ -418,7 +422,13 @@ export async function applyOrderWorkflowEvent(
     switch (input.code) {
       case 'initial_contact_completed':
         await setStepStatus(tx, operation.id, 'initial_contact', 1, 'completed', input)
-        await setStepStatus(tx, operation.id, initialStepsFor(serviceType).some((x) => x.code === 'pre_visit_plan') ? 'pre_visit_plan' : initialStepsFor(serviceType).find((x) => x.code !== 'claim' && x.code !== 'initial_contact' && x.code !== 'end')?.code ?? 'end', 1, 'in_progress', input)
+        {
+          const initialSteps = await initialStepsFor(tx, serviceType)
+          const nextStepCode = initialSteps.some((x) => x.code === 'pre_visit_plan')
+            ? 'pre_visit_plan'
+            : initialSteps.find((x) => x.code !== 'claim' && x.code !== 'initial_contact' && x.code !== 'end')?.code ?? 'end'
+          await setStepStatus(tx, operation.id, nextStepCode, 1, 'in_progress', input)
+        }
         break
       case 'pre_visit_plan_completed':
         await setStepStatus(tx, operation.id, 'pre_visit_plan', 1, 'completed', input)
@@ -500,7 +510,7 @@ export async function applyOrderWorkflowEvent(
         throw new Error(`不支持的业务流程事件: ${input.code}`)
     }
     if (packageCode && ['hospital_confirmed', 'revisit_confirmed'].includes(input.code)) {
-      const definition = flexiblePackageFor(serviceType, packageCode)
+      const definition = await flexiblePackageFor(tx, serviceType, packageCode)
       if (!definition) throw new Error(`服务类型“${serviceType}”不支持服务包“${packageCode}”`)
       await appendPackage(tx, operation.id, definition, input)
     }

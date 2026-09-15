@@ -25,6 +25,14 @@ export interface AppEnv {
   remoteDictDbUser?: string
   remoteDictDbPassword?: string
   remoteDictDbSsl?: string
+  // 人工确认后推送寰宇订单的 MySQL 写库。未单独配置时兼容复用 REMOTE_DICT_DB_*；
+  // 生产建议使用独立、最小写权限账号。
+  huanyuPushDbHost?: string
+  huanyuPushDbPort?: string
+  huanyuPushDbName?: string
+  huanyuPushDbUser?: string
+  huanyuPushDbPassword?: string
+  huanyuPushDbSsl?: string
   // 每日订单 AI 分析时点，上海时区，逗号分隔；例如 12:00,18:00。
   orderAiAnalysisTimes?: string
 }
@@ -80,6 +88,12 @@ export function getEnv(): AppEnv {
     remoteDictDbUser: optional('REMOTE_DICT_DB_USER'),
     remoteDictDbPassword: optional('REMOTE_DICT_DB_PASSWORD'),
     remoteDictDbSsl: optional('REMOTE_DICT_DB_SSL'),
+    huanyuPushDbHost: optional('HUANYU_PUSH_DB_HOST'),
+    huanyuPushDbPort: optional('HUANYU_PUSH_DB_PORT'),
+    huanyuPushDbName: optional('HUANYU_PUSH_DB_NAME'),
+    huanyuPushDbUser: optional('HUANYU_PUSH_DB_USER'),
+    huanyuPushDbPassword: optional('HUANYU_PUSH_DB_PASSWORD'),
+    huanyuPushDbSsl: optional('HUANYU_PUSH_DB_SSL'),
     orderAiAnalysisTimes: optional('ORDER_AI_ANALYSIS_TIMES')
   }
   return cached

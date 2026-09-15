@@ -13,6 +13,7 @@ import {
   type BriefCallInput,
   type BriefMaterialInput
 } from '../llm/orderBriefService.js'
+import { extractOrderServiceFields, ORDER_AI_FIELD_PROMPT_VERSION } from '../llm/orderAiExtraction.js'
 import { understandImage } from '../llm/imageUnderstandService.js'
 
 async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
@@ -107,6 +108,60 @@ function jsonInput(value: unknown): Prisma.InputJsonValue | typeof Prisma.JsonNu
   return value == null ? Prisma.JsonNull : value as Prisma.InputJsonValue
 }
 
+function applicationNoOf(rawJson: unknown): string | null {
+  const raw = (rawJson ?? {}) as Record<string, unknown>
+  const value = raw.crmApplyNo
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+async function persistFieldCandidates(
+  prisma: PrismaClient,
+  input: {
+    orderId: number
+    applicationNo: string | null
+    model: string
+    maxMessageId: number
+    maxCallId: number
+    maxMaterialId: number
+    raw: string
+    candidates: Awaited<ReturnType<typeof extractOrderServiceFields>>['candidates']
+  }
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    const runs = await tx.$queryRaw<Array<{ id: bigint }>>`
+      INSERT INTO b_order_ai_analysis_runs (
+        order_id, application_no, model, prompt_version, status,
+        source_message_max_id, source_call_max_id, source_material_max_id, raw_result_json, completed_at
+      ) VALUES (
+        ${input.orderId}, ${input.applicationNo}, ${input.model}, ${ORDER_AI_FIELD_PROMPT_VERSION}, 'succeeded',
+        ${input.maxMessageId}, ${input.maxCallId}, ${input.maxMaterialId},
+        ${JSON.stringify({ raw: input.raw })}::jsonb, now()
+      ) RETURNING id
+    `
+    const runId = runs[0]!.id
+    for (const candidate of input.candidates) {
+      // 同字段新一轮候选到来时，只淘汰尚未采用的旧候选；已被人工采用的记录保留审计。
+      await tx.$executeRaw`
+        UPDATE b_order_ai_field_candidates
+        SET status = 'superseded'
+        WHERE order_id = ${input.orderId}
+          AND field_code = ${candidate.fieldCode}
+          AND status = 'pending'
+      `
+      await tx.$executeRaw`
+        INSERT INTO b_order_ai_field_candidates (
+          run_id, order_id, field_code, field_label, value_text, normalized_value_json,
+          candidate_type, confidence, requires_confirmation, evidence_json
+        ) VALUES (
+          ${runId}, ${input.orderId}, ${candidate.fieldCode}, ${candidate.fieldLabel}, ${candidate.value},
+          ${JSON.stringify(candidate.normalizedValue)}::jsonb, ${candidate.candidateType},
+          ${candidate.confidence}, ${candidate.requiresConfirmation}, ${JSON.stringify(candidate.evidence)}::jsonb
+        )
+      `
+    }
+  })
+}
+
 /**
  * 刷新某订单简报。
  *
@@ -131,13 +186,20 @@ export async function refreshOrderBrief(
   const lastCallId = order.briefLastCallId ?? 0
   const lastMaterialId = order.briefLastMaterialId ?? 0
 
-  // 全量取：该订单名下所有消息/通话/手工补录
+  // 沟通记录以申请号采集，AI 仍以订单为粒度产出：同一申请号下的每张订单都会
+  // 带着自己的服务类型和字段白名单分别分析，不能把记录强行归给某一张订单。
+  const applicationNo = applicationNoOf(order.rawJson)
+  const captureWhere = applicationNo
+    ? { OR: [{ applicationNo }, { orderId }] }
+    : { orderId }
+
+  // 全量取：该申请号（或无申请号时该订单）名下所有消息/通话；手工补录仍只属于订单。
   const msgs = await prisma.message.findMany({
-    where: { orderId },
+    where: captureWhere,
     orderBy: { id: 'asc' }
   })
   const calls = await prisma.call.findMany({
-    where: { orderId },
+    where: captureWhere,
     orderBy: { id: 'asc' }
   })
   // 手工补录素材（专员主动记录，补无感采集之漏）
@@ -209,6 +271,46 @@ export async function refreshOrderBrief(
   void prevBrief
   const res = await buildOrderBrief(ctx, null, briefMsgs, briefCalls, briefMats)
 
+  // 第二个、严格限定字段白名单的结构化调用：给表单候选值与步骤流转使用。
+  // 简报失败之外的候选提取失败不会丢掉已有简报；下一次有新沟通时会重试。
+  // 步骤流转仅相信字段白名单提取器的结果；它失败时宁可不自动推进，也不能回退到
+  // 面向展示的普通简报事件。
+  let extractionEvents: typeof res.workflowEvents = []
+  try {
+    const extraction = await extractOrderServiceFields({
+      orderId,
+      applicationNo,
+      serviceType: String(raw.serviceType ?? raw.itemName ?? '').trim() || '未识别服务',
+      currentValues: {
+        hospital: order.hospital,
+        department: order.dept,
+        doctor: order.doctor,
+        serviceRemark: raw.comments ?? raw.comment ?? null
+      },
+      messages: msgs.map((m) => ({
+        id: m.id,
+        channel: m.channel,
+        senderName: m.senderName,
+        contentText: m.contentText,
+        occurredAt: m.sortTime ?? m.chatTime ?? m.capturedAt
+      })),
+      calls: calls.map((c) => ({ id: c.id, direction: c.direction, asrText: c.asrText, startedAt: c.startedAt }))
+    })
+    extractionEvents = extraction.workflowEvents
+    await persistFieldCandidates(prisma, {
+      orderId,
+      applicationNo,
+      model: extraction.model,
+      maxMessageId: maxMsgId,
+      maxCallId,
+      maxMaterialId,
+      raw: extraction.raw,
+      candidates: extraction.candidates
+    })
+  } catch (error) {
+    console.warn(`[order-ai] 订单 ${orderId} 字段提取失败，保留简报并等待下次重试:`, (error as Error).message)
+  }
+
   // 存储：简报字段 + 记号(本次跑到的最新 id) + 模型，便于前端展示与追溯
   const stored = {
     summary: res.summary,
@@ -218,7 +320,7 @@ export async function refreshOrderBrief(
     nextActions: res.nextActions,
     risks: res.risks,
     keyInfo: res.keyInfo,
-    workflowEvents: res.workflowEvents,
+    workflowEvents: extractionEvents,
     model: res.model,
     updatedFrom: { lastMessageId: maxMsgId, lastCallId: maxCallId, lastMaterialId: maxMaterialId }
   }
@@ -234,7 +336,7 @@ export async function refreshOrderBrief(
     }
   })
 
-  return { brief: res, skipped: false, model: res.model }
+  return { brief: { ...res, workflowEvents: extractionEvents }, skipped: false, model: res.model }
 }
 
 export async function refreshApplicationBrief(

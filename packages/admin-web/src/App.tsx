@@ -16,6 +16,8 @@ import UnmatchedRefsPage from './pages/UnmatchedRefsPage'
 import HealthPage from './pages/HealthPage'
 import SettingsPage from './pages/SettingsPage'
 import CaptureDiagnosticImagesPage from './pages/CaptureDiagnosticImagesPage'
+import WorkflowConfigPage from './pages/WorkflowConfigPage'
+import OrderAiConfigPage from './pages/OrderAiConfigPage'
 
 export default function App(): React.JSX.Element {
   const { status } = useAuth()
@@ -48,6 +50,8 @@ export default function App(): React.JSX.Element {
         <Route path="unmatched-refs" element={<UnmatchedRefsPage />} />
         <Route path="health" element={<HealthPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="workflow-config" element={<WorkflowConfigPage />} />
+        <Route path="order-ai-config" element={<OrderAiConfigPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

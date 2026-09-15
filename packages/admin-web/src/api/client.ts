@@ -39,6 +39,56 @@ function qs(params: Record<string, string | number | null | undefined>): string 
 
 export const UNAUTHORIZED_EVENT = 'admin-unauthorized'
 
+export interface WorkflowStepConfig {
+  id?: number
+  code: string
+  name: string
+  parentCode: string | null
+  kind: 'step' | 'package'
+  sortOrder: number
+  required: boolean
+  repeatable: boolean
+  activationMode: 'initial' | 'event'
+  triggerEventCode: string | null
+  status: 'active' | 'hidden' | 'retired'
+}
+
+export interface WorkflowTemplateConfig {
+  id: number
+  code: string
+  version: number
+  name: string
+  serviceType: string
+  description: string | null
+  status: string
+  steps: WorkflowStepConfig[]
+}
+
+export interface OrderAiConfig {
+  schedule: {
+    timeZone: string
+    times: string[]
+    setting: string
+    condition: string
+    scope: string
+  }
+  prompt: {
+    version: string
+    rules: string[]
+    inputs: string[]
+    output: { candidate: string; event: string }
+  }
+  fields: Array<{
+    code: string
+    label: string
+    serviceTypes: string[]
+    requiresConfirmation: boolean
+  }>
+  readRules: string[]
+  storage: Array<{ table: string; purpose: string; fields: string }>
+  huanyuPush: { action: string; target: string; notices: string[] }
+}
+
 interface ApiEnvelope<T> {
   data?: T
   error?: string
@@ -93,6 +143,21 @@ export const adminApi = {
   },
   me() {
     return request<{ role: string }>('/api/v1/admin/me')
+  },
+
+  // ───── 服务步骤配置 ─────
+  workflowTemplates() {
+    return request<WorkflowTemplateConfig[]>('/api/v1/admin/workflow-templates')
+  },
+  saveWorkflowTemplate(id: number, data: Pick<WorkflowTemplateConfig, 'name' | 'description' | 'steps'>) {
+    return request<{ ok: boolean }>(`/api/v1/admin/workflow-templates/${id}`, {
+      method: 'PUT', body: JSON.stringify(data)
+    })
+  },
+
+  // ───── 订单 AI 分析配置说明 ─────
+  orderAiConfig() {
+    return request<OrderAiConfig>('/api/v1/admin/order-ai-config')
   },
 
   // ───── 仪表盘 ─────

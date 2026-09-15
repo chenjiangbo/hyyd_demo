@@ -217,6 +217,18 @@ export interface HuanyuEscortOption extends HuanyuChannelOption {
   area: string
 }
 
+export interface OrderAiFieldCandidate {
+  id: number
+  fieldCode: string
+  fieldLabel: string
+  value: string
+  candidateType: 'new_or_confirmed' | 'change_candidate' | 'ambiguous' | string
+  confidence: number
+  requiresConfirmation: boolean
+  evidence: Array<{ sourceId: string; quote: string }>
+  createdAt: string
+}
+
 async function authedGet<T>(path: string): Promise<T> {
   const code = getSession()?.employeeCode
   if (!code) throw new Error('未登录')
@@ -346,6 +358,16 @@ export interface SaveHuanyuOrderPayload {
 
 export function saveHuanyuOrder(payload: SaveHuanyuOrderPayload): Promise<{ ok: boolean; order: Order; message?: string }> {
   return authedSend<{ ok: boolean; order: Order; message?: string }>('/api/v1/orders/huanyu/save', 'POST', payload)
+}
+
+/** 未采用的 AI 字段候选；页面只在正式寰宇字段为空时使用它们作展示补位。 */
+export function fetchOrderAiFieldCandidates(orderId: number): Promise<OrderAiFieldCandidate[]> {
+  return authedGet<OrderAiFieldCandidate[]>(`/api/v1/orders/${orderId}/ai-field-candidates`)
+}
+
+/** 人工确认后，将本地 PostgreSQL 的寰宇三张表快照推送到目标 MySQL。 */
+export function pushHuanyuOrder(orderId: number): Promise<{ ok: boolean; ddbh: string; escortCount: number }> {
+  return authedSend<{ ok: boolean; ddbh: string; escortCount: number }>(`/api/v1/orders/${orderId}/huanyu/push`, 'POST', {})
 }
 
 export function fetchOrderDetail(orderId: number): Promise<OrderDetailResponse> {
