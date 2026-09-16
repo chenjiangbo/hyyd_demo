@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
-import { fetchOrderDetail, fetchOrders, type Order } from '../api'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { fetchOrderDetail, fetchOrders, fetchOrdersPaginated, type Order } from '../api'
 import OrderReminderModal from '../components/OrderReminderModal'
+import { StandardPaginationBar } from './dictionary/dictComponents'
 import {
   LANES,
   LANE_ACCENT,
@@ -227,6 +228,8 @@ export default function WorkbenchKanban({
   const [reminderModalOrder, setReminderModalOrder] = useState<Order | null>(null)
 
   useEffect(() => {
+    if (view !== 'board') return
+
     let alive = true
 
     function refresh(showLoading: boolean, force = false): void {
@@ -252,7 +255,7 @@ export default function WorkbenchKanban({
       window.removeEventListener('huanyu-orders-updated', handleOrdersUpdated)
       window.removeEventListener('focus', handleOrdersUpdated)
     }
-  }, [employeeCode])
+  }, [employeeCode, view])
 
   // 订单类型标签（按当前订单实际出现的业务类型动态生成，带计数）
   const typeTags = useMemo(() => {
@@ -286,10 +289,10 @@ export default function WorkbenchKanban({
 
   const boardOrders = useMemo(() => filtered.filter(isBoardVisibleOrder), [filtered])
   const boardGroups = useMemo(() => groupOrdersByApplication(boardOrders), [boardOrders])
-  const filteredGroups = useMemo(() => groupOrdersByApplication(filtered), [filtered])
   const boardGroupKeys = useMemo(() => boardGroups.map((group) => group.key).join('|'), [boardGroups])
 
   useEffect(() => {
+    if (view !== 'board') return
     const missing = boardGroups.filter((group) => {
       if (group.orders.some((order) => patientRegionOf(order))) return false
       return detailRegions[group.key] === undefined
@@ -322,7 +325,7 @@ export default function WorkbenchKanban({
     return () => {
       alive = false
     }
-  }, [boardGroupKeys, boardGroups, detailRegions])
+  }, [boardGroupKeys, boardGroups, detailRegions, view])
 
   // 类型筛选只平铺前 4 个，其余收进「更多」；当前选中的若在溢出里，提到可见区，保证激活态可见
   const { visibleTypes, overflowTypes } = useMemo(() => {
@@ -346,22 +349,24 @@ export default function WorkbenchKanban({
       <div className="shrink-0 bg-white border-b border-border-subtle px-6 py-4 flex items-center justify-between gap-4">
         <h2 className="text-h2-header text-text-main shrink-0">工作台</h2>
         <div className="flex items-center gap-4 min-w-0">
-          {/* 类型筛选：全部 + 前 4 个类型 + 更多 */}
-          <div className="flex items-center gap-2 min-w-0">
-            <TypeTag label="全部" count={orders.length} on={typeFilter === 'all'} onClick={() => setTypeFilter('all')} />
-            {visibleTypes.map((t) => (
-              <TypeTag
-                key={t.label}
-                label={t.label}
-                count={t.count}
-                on={typeFilter === t.label}
-                onClick={() => setTypeFilter(t.label)}
-              />
-            ))}
-            {overflowTypes.length > 0 && (
-              <MoreFilters items={overflowTypes} active={typeFilter} onPick={setTypeFilter} />
-            )}
-          </div>
+          {/* 看板模式下的类型筛选 */}
+          {view === 'board' && (
+            <div className="flex items-center gap-2 min-w-0">
+              <TypeTag label="全部" count={orders.length} on={typeFilter === 'all'} onClick={() => setTypeFilter('all')} />
+              {visibleTypes.map((t) => (
+                <TypeTag
+                  key={t.label}
+                  label={t.label}
+                  count={t.count}
+                  on={typeFilter === t.label}
+                  onClick={() => setTypeFilter(t.label)}
+                />
+              ))}
+              {overflowTypes.length > 0 && (
+                <MoreFilters items={overflowTypes} active={typeFilter} onPick={setTypeFilter} />
+              )}
+            </div>
+          )}
           {/* 视图切换：列表 / 看板 */}
           <div className="flex bg-surface-container-low rounded-lg p-1 shrink-0">
             {(['list', 'board'] as View[]).map((v) => (
@@ -385,26 +390,29 @@ export default function WorkbenchKanban({
         </div>
       </div>
 
-      {loading ? (
-        <div className="flex-1 flex items-center justify-center text-text-muted gap-2">
-          <span className="material-symbols-outlined animate-spin">progress_activity</span>
-          加载订单中…
-        </div>
-      ) : error ? (
-        <div className="flex-1 flex items-center justify-center text-error gap-2">
-          <span className="material-symbols-outlined">error</span>
-          {error}
-        </div>
-      ) : view === 'board' ? (
-        <BoardView
-          groups={boardGroups}
-          detailRegions={detailRegions}
-          onOpen={onOpenApplication}
-          onOpenReminder={setReminderModalOrder}
-        />
+      {view === 'board' ? (
+        loading ? (
+          <div className="flex-1 flex items-center justify-center text-text-muted gap-2">
+            <span className="material-symbols-outlined animate-spin">progress_activity</span>
+            加载看板订单中…
+          </div>
+        ) : error ? (
+          <div className="flex-1 flex items-center justify-center text-error gap-2">
+            <span className="material-symbols-outlined">error</span>
+            <span>{error}</span>
+          </div>
+        ) : (
+          <BoardView
+            groups={boardGroups}
+            detailRegions={detailRegions}
+            onOpen={onOpenApplication}
+            onOpenReminder={setReminderModalOrder}
+          />
+        )
       ) : (
         <ListView
-          groups={filteredGroups}
+          employeeCode={employeeCode}
+          query={query}
           onOpen={onOpenApplication}
           onCreateHuanyuOrder={onCreateHuanyuOrder}
           onOpenReminder={setReminderModalOrder}
@@ -881,56 +889,80 @@ function ApplicationCard({
   )
 }
 
-// ─── 列表视图（密集、可排序、可按泳道筛选）──────────────
+// ─── 列表视图（密集、可排序、可按泳道筛选、服务端真分页）──────────────
 type SortKey = 'customerName' | 'hospital' | 'status' | 'poolEnteredAt'
 
 function ListView({
-  groups,
+  employeeCode,
+  query,
   onOpen,
   onCreateHuanyuOrder,
   onOpenReminder
 }: {
-  groups: ApplicationGroup[]
+  employeeCode: string
+  query: string
   onOpen: (group: ApplicationGroup, selectedOrderId?: number) => void
   onCreateHuanyuOrder: () => void
   onOpenReminder: (order: Order) => void
 }): React.JSX.Element {
   const [laneFilter, setLaneFilter] = useState<LaneKey | 'all'>('all')
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'poolEnteredAt', dir: 'desc' })
+  const [page, setPage] = useState<number>(1)
+  const [pageSize, setPageSize] = useState<number>(20)
+  const [orders, setOrders] = useState<Order[]>([])
+  const [totalCount, setTotalCount] = useState<number>(0)
+  const [loading, setLoading] = useState<boolean>(true)
+  const [error, setError] = useState<string | null>(null)
 
-  // 各泳道计数（用于筛选条徽标）
-  const laneCounts = useMemo(() => {
-    const c: Record<LaneKey, number> = { todo: 0, doing: 0, await_backfill: 0, done: 0 }
-    for (const group of groups) {
-      const lane = groupLaneOf(group)
-      if (lane) c[lane]++
-    }
-    return c
-  }, [groups])
+  // 当筛选、排序或全局搜索变化时重置回第 1 页
+  useEffect(() => {
+    setPage(1)
+  }, [laneFilter, sort, query])
 
-  const rows = useMemo(() => {
-    let r = laneFilter === 'all' ? groups : groups.filter((group) => groupLaneOf(group) === laneFilter)
-    const dir = sort.dir === 'asc' ? 1 : -1
-    r = [...r].sort((a, b) => {
-      if (sort.key === 'poolEnteredAt') {
-        return (timeValue(a.poolEnteredAt) - timeValue(b.poolEnteredAt)) * dir
-      }
-      const av = a.primary[sort.key] ?? ''
-      const bv = b.primary[sort.key] ?? ''
-      const va = String(av)
-      const vb = String(bv)
-      return va < vb ? -dir : va > vb ? dir : 0
+  const loadData = useCallback(() => {
+    setLoading(true)
+    fetchOrdersPaginated({
+      page,
+      pageSize,
+      query: query.trim() || undefined,
+      lane: laneFilter !== 'all' ? laneFilter : undefined,
+      sortKey: sort.key,
+      sortDir: sort.dir
     })
-    return r
-  }, [groups, laneFilter, sort])
+      .then((res) => {
+        setOrders(res.data)
+        setTotalCount(res.total)
+        setError(null)
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : '加载列表失败'))
+      .finally(() => setLoading(false))
+  }, [page, pageSize, query, laneFilter, sort, employeeCode])
+
+  useEffect(() => {
+    loadData()
+  }, [loadData])
+
+  useEffect(() => {
+    const handleOrdersUpdated = (): void => {
+      loadData()
+    }
+    window.addEventListener('huanyu-orders-updated', handleOrdersUpdated)
+    window.addEventListener('focus', handleOrdersUpdated)
+    return () => {
+      window.removeEventListener('huanyu-orders-updated', handleOrdersUpdated)
+      window.removeEventListener('focus', handleOrdersUpdated)
+    }
+  }, [loadData])
+
+  const groups = useMemo(() => groupOrdersByApplication(orders), [orders])
 
   function toggleSort(key: SortKey): void {
     setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }))
   }
 
-  const FILTERS: { key: LaneKey | 'all'; label: string; count: number }[] = [
-    { key: 'all', label: '全部', count: groups.length },
-    ...LANES.map((l) => ({ key: l.key, label: l.label, count: laneCounts[l.key] }))
+  const FILTERS: { key: LaneKey | 'all'; label: string }[] = [
+    { key: 'all', label: '全部' },
+    ...LANES.map((l) => ({ key: l.key, label: l.label }))
   ]
   const activeFilter = FILTERS.find((f) => f.key === laneFilter) ?? FILTERS[0]
 
@@ -939,7 +971,7 @@ function ListView({
       <div className="shrink-0 px-6 py-4 flex items-center justify-between gap-4">
         <div>
           <h3 className="text-h3-title text-text-main">申请列表</h3>
-          <p className="mt-0.5 text-body-sm text-text-muted">按申请号查看全部工作台记录</p>
+          <p className="mt-0.5 text-body-sm text-text-muted">按申请号查看全部工作台记录（共 {totalCount} 条）</p>
         </div>
         <div className="flex items-center gap-3">
           <button
@@ -957,7 +989,7 @@ function ListView({
             title="阶段筛选"
           >
             {FILTERS.map((f) => (
-              <option key={f.key} value={f.key}>{f.label}（{f.count}）</option>
+              <option key={f.key} value={f.key}>{f.label}</option>
             ))}
           </select>
           <select
@@ -977,57 +1009,84 @@ function ListView({
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-auto px-6 pb-5">
-        <div className="overflow-hidden rounded-lg border border-border-subtle bg-white shadow-sm">
-          <table className="w-full table-fixed border-collapse text-body-sm">
-            <colgroup>
-              <col className="w-[210px]" />
-              <col className="w-[200px]" />
-              <col className="w-[180px]" />
-              <col className="w-[200px]" />
-              <col className="w-[155px]" />
-              <col className="w-[110px]" />
-              <col className="w-[100px]" />
-              <col className="w-[68px]" />
-              <col className="w-[95px]" />
-              <col className="w-[84px]" />
-            </colgroup>
-            <thead className="sticky top-0 bg-white z-10">
-              <tr className="text-left text-[#454a5a] border-b border-border-subtle">
-                <th className="py-3.5 px-5 font-bold">申请号</th>
-                <th className="py-3.5 px-4 font-bold">订单号</th>
-                <SortHead label="客户" k="customerName" sort={sort} onSort={toggleSort} />
-                <SortHead label="医院 / 科室" k="hospital" sort={sort} onSort={toggleSort} />
-                <th className="py-3.5 px-4 font-bold">业务类型</th>
-                <SortHead label="订单状态" k="status" sort={sort} onSort={toggleSort} />
-                <th className="py-3.5 px-4 font-bold">数据量</th>
-                <th className="py-3.5 px-3 font-bold">来源</th>
-                <SortHead label="入池" k="poolEnteredAt" sort={sort} onSort={toggleSort} />
-                <th className="py-3.5 px-3 font-bold text-center">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 ? (
-              <tr>
-                <td colSpan={10} className="py-12 text-center text-text-muted">
-                  暂无{activeFilter.label}申请
-                </td>
-              </tr>
-            ) : (
-              rows.flatMap((group) => {
-                if (group.orders.length === 1) {
-                  return [<OrderTreeRow key={group.key} group={group} order={group.primary} onOpen={onOpen} onOpenReminder={onOpenReminder} />]
-                }
-                return [
-                  <ApplicationTreeRow key={`${group.key}:application`} group={group} onOpen={onOpen} />,
-                  ...group.orders.map((order) => (
-                    <OrderTreeRow key={`${group.key}:order:${order.id}`} group={group} order={order} child onOpen={onOpen} onOpenReminder={onOpenReminder} />
-                  ))
-                ]
-              })
-            )}
-          </tbody>
-        </table>
+      <div className="flex-1 min-h-0 px-6 pb-5 flex flex-col">
+        <div className="flex-1 min-h-0 rounded-lg border border-border-subtle bg-white shadow-sm flex flex-col overflow-hidden">
+          <div className="flex-1 min-h-0 overflow-auto">
+            <table className="w-full table-fixed border-collapse text-body-sm">
+              <colgroup>
+                <col className="w-[210px]" />
+                <col className="w-[200px]" />
+                <col className="w-[180px]" />
+                <col className="w-[200px]" />
+                <col className="w-[155px]" />
+                <col className="w-[110px]" />
+                <col className="w-[100px]" />
+                <col className="w-[68px]" />
+                <col className="w-[95px]" />
+                <col className="w-[84px]" />
+              </colgroup>
+              <thead className="sticky top-0 bg-white z-10 shadow-[0_1px_0_0_#f1f5f9]">
+                <tr className="text-left text-[#454a5a] border-b border-border-subtle">
+                  <th className="py-3.5 px-5 font-bold">申请号</th>
+                  <th className="py-3.5 px-4 font-bold">订单号</th>
+                  <SortHead label="客户" k="customerName" sort={sort} onSort={toggleSort} />
+                  <SortHead label="医院 / 科室" k="hospital" sort={sort} onSort={toggleSort} />
+                  <th className="py-3.5 px-4 font-bold">业务类型</th>
+                  <SortHead label="订单状态" k="status" sort={sort} onSort={toggleSort} />
+                  <th className="py-3.5 px-4 font-bold">数据量</th>
+                  <th className="py-3.5 px-3 font-bold">来源</th>
+                  <SortHead label="入池" k="poolEnteredAt" sort={sort} onSort={toggleSort} />
+                  <th className="py-3.5 px-3 font-bold text-center">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr>
+                    <td colSpan={10} className="py-12 text-center text-text-muted">
+                      <div className="flex items-center justify-center gap-2">
+                        <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
+                        加载中…
+                      </div>
+                    </td>
+                  </tr>
+                ) : error ? (
+                  <tr>
+                    <td colSpan={10} className="py-12 text-center text-error">
+                      {error}
+                    </td>
+                  </tr>
+                ) : groups.length === 0 ? (
+                  <tr>
+                    <td colSpan={10} className="py-12 text-center text-text-muted">
+                      暂无{activeFilter.label}申请
+                    </td>
+                  </tr>
+                ) : (
+                  groups.flatMap((group) => {
+                    if (group.orders.length === 1) {
+                      return [<OrderTreeRow key={group.key} group={group} order={group.primary} onOpen={onOpen} onOpenReminder={onOpenReminder} />]
+                    }
+                    return [
+                      <ApplicationTreeRow key={`${group.key}:application`} group={group} onOpen={onOpen} />,
+                      ...group.orders.map((order) => (
+                        <OrderTreeRow key={`${group.key}:order:${order.id}`} group={group} order={order} child onOpen={onOpen} onOpenReminder={onOpenReminder} />
+                      ))
+                    ]
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="shrink-0 border-t border-border-subtle bg-white">
+            <StandardPaginationBar
+              totalCount={totalCount}
+              currentPage={page}
+              pageSize={pageSize}
+              onPageChange={setPage}
+              onPageSizeChange={setPageSize}
+              pageSizeOptions={[10, 20, 50, 100]}
+            />
+          </div>
         </div>
       </div>
     </div>

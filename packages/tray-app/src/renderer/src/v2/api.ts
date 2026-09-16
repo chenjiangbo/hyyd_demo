@@ -245,6 +245,43 @@ export function fetchOrders(): Promise<Order[]> {
   return authedGet<Order[]>('/api/v1/orders')
 }
 
+export interface FetchOrdersParams {
+  page?: number
+  pageSize?: number
+  query?: string
+  lane?: string
+  sortKey?: string
+  sortDir?: 'asc' | 'desc'
+  pool?: string
+}
+
+export interface PaginatedOrdersResult {
+  data: Order[]
+  total: number
+  page: number
+  pageSize: number
+  totalPages: number
+}
+
+export async function fetchOrdersPaginated(params: FetchOrdersParams): Promise<PaginatedOrdersResult> {
+  const q = new URLSearchParams()
+  if (params.page !== undefined) q.set('page', String(params.page))
+  if (params.pageSize !== undefined) q.set('pageSize', String(params.pageSize))
+  if (params.query) q.set('query', params.query)
+  if (params.lane && params.lane !== 'all') q.set('lane', params.lane)
+  if (params.sortKey) q.set('sortKey', params.sortKey)
+  if (params.sortDir) q.set('sortDir', params.sortDir)
+  if (params.pool) q.set('pool', params.pool)
+
+  const code = getSession()?.employeeCode
+  if (!code) throw new Error('未登录')
+  const res = await fetch(`${requireBackendUrl()}/api/v1/orders?${q.toString()}`, {
+    headers: { 'X-Employee-Code': code }
+  })
+  if (!res.ok) throw new Error(`请求失败（${res.status}）`)
+  return (await res.json()) as PaginatedOrdersResult
+}
+
 /** 订单的业务服务轨迹；首次读取时后端会按服务类型初始化必选步骤。 */
 export function fetchOrderWorkflow(orderId: number): Promise<OrderWorkflow> {
   return authedGet<OrderWorkflow>(`/api/v1/orders/${orderId}/workflow`)

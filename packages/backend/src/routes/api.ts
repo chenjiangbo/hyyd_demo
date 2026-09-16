@@ -1348,10 +1348,23 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
   })
 
   // 4. 查询订单 GET /api/v1/orders
-  fastify.get<{ Querystring: { source?: string; status?: string; pool?: string; assignedEmployeeId?: string; assignedEmployeeCode?: string } }>(
+  fastify.get<{
+    Querystring: {
+      source?: string
+      status?: string
+      pool?: string
+      assignedEmployeeId?: string
+      assignedEmployeeCode?: string
+      page?: string | number
+      pageSize?: string | number
+      query?: string
+      sortKey?: string
+      sortDir?: 'asc' | 'desc'
+    }
+  }>(
     '/api/v1/orders',
     async (request, reply) => {
-      const { source, status, pool, assignedEmployeeId, assignedEmployeeCode } = request.query
+      const { source, status, pool, assignedEmployeeId, assignedEmployeeCode, page, pageSize, query, sortKey, sortDir } = request.query
 
       const where: any = {}
       let captureEmployeeId: number | null = null
@@ -1371,20 +1384,60 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         where.assignedEmployeeId = request.employee.id
       }
 
+      if (query && typeof query === 'string' && query.trim()) {
+        const q = query.trim()
+        where.OR = [
+          { customerName: { contains: q, mode: 'insensitive' } },
+          { customerPhone: { contains: q } },
+          { hospital: { contains: q, mode: 'insensitive' } },
+          { dept: { contains: q, mode: 'insensitive' } },
+          { doctor: { contains: q, mode: 'insensitive' } },
+          { sourceOrderNo: { contains: q, mode: 'insensitive' } },
+          { huanyuOrderNo: { contains: q, mode: 'insensitive' } }
+        ]
+      }
+
+      const isPaginated = page !== undefined || pageSize !== undefined
+      const pageNum = Math.max(1, parseInt(String(page || 1), 10) || 1)
+      const sizeNum = Math.max(1, Math.min(100, parseInt(String(pageSize || 20), 10) || 20))
+
+      let orderBy: any = { createdAt: 'desc' }
+      if (sortKey) {
+        const dir = sortDir === 'asc' ? 'asc' : 'desc'
+        if (sortKey === 'poolEnteredAt' || sortKey === 'createdAt') orderBy = { createdAt: dir }
+        else if (sortKey === 'hospital') orderBy = { hospital: dir }
+        else if (sortKey === 'customerName') orderBy = { customerName: dir }
+        else if (sortKey === 'updatedAt') orderBy = { updatedAt: dir }
+      }
+
       try {
+        const totalCount = isPaginated ? await prisma.order.count({ where }) : undefined
         const orders = await prisma.order.findMany({
           where,
-          orderBy: { createdAt: 'desc' },
-          include: {
-            // 录音条数 + 最新录音时间
+          orderBy,
+          ...(isPaginated ? { skip: (pageNum - 1) * sizeNum, take: sizeNum } : {}),
+          select: {
+            id: true,
+            source: true,
+            sourceOrderNo: true,
+            customerName: true,
+            customerPhone: true,
+            hospital: true,
+            dept: true,
+            doctor: true,
+            status: true,
+            orderState: true,
+            huanyuOrderNo: true,
+            rawJson: true,
+            detailJson: true,
+            createdAt: true,
+            updatedAt: true,
             _count: { select: { calls: true, materials: true } },
             calls: {
               select: { startedAt: true },
               orderBy: { startedAt: 'desc' },
               take: 1
             },
-            // 拉每单一条最近的素材 + 全量类型计数（一次查询，
-            // 顺手在 map 里分桶；素材体量小不会爆查询）
             materials: {
               select: { type: true, createdAt: true },
               orderBy: { createdAt: 'desc' }
@@ -1566,11 +1619,12 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           const lastTs = Math.max(lastCallAt, lastMatAt)
           const lastMaterialAt = lastTs > 0 ? new Date(lastTs).toISOString() : null
 
-          // 删掉 include 出来的辅助字段，给前端返回扁平结构
-          const { _count, calls, materials, ...rest } = o
+          // 删掉 include 出来的辅助字段与 detailJson，给前端返回轻量扁平结构
+          const { _count, calls, materials, detailJson, ...rest } = o
           void _count
           void calls
           void materials
+          void detailJson
           return {
             ...rest,
             // status 为列表展示字段；不回退 B 端状态，确保页面只展示寰宇订单状态。
@@ -1598,6 +1652,16 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
             lastMaterialAt
           }
         })
+
+        if (isPaginated) {
+          return reply.send({
+            data,
+            total: totalCount ?? data.length,
+            page: pageNum,
+            pageSize: sizeNum,
+            totalPages: Math.ceil((totalCount ?? data.length) / sizeNum)
+          })
+        }
         return reply.send({ data })
       } catch (err: any) {
         return reply.status(500).send({ error: '查询订单失败: ' + err.message })

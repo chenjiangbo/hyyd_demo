@@ -4,7 +4,6 @@ import {
   addTextMaterial,
   deleteMaterial,
   fetchCallRecordingUrl,
-  fetchApplicationBrief,
   fetchMaterials,
   fetchOrderAggregate,
   fetchOrderBrief,
@@ -27,7 +26,6 @@ import {
   pushHuanyuOrder,
   saveHuanyuOrder,
   getSession,
-  refreshApplicationBrief,
   refreshOrderBrief,
   type Material,
   type Order,
@@ -160,53 +158,30 @@ export default function ApplicationDetailPage({
     return initialOrder?.id ?? group.orders[0]?.id ?? 0
   })
   const [communicationOpen, setCommunicationOpen] = useState(false)
-  const [headerDetailResp, setHeaderDetailResp] = useState<OrderDetailResponse | null>(null)
   const selectedOrder = group.orders.find((order) => order.id === selectedId) ?? group.orders[0]
   const applicationNo = group.applicationNo ?? group.primary.sourceOrderNo
   const services = useMemo(() => dedupeServices(group.orders), [group.orders])
-  const headerFacts = useMemo(() => selectedOrder ? buildHeaderFacts(selectedOrder, headerDetailResp) : [], [selectedOrder, headerDetailResp])
   const hospital = group.orders.find((order) => order.hospital)?.hospital ?? null
   const phone = group.orders.find((order) => order.customerPhone)?.customerPhone ?? null
   const src = sourceStyle(group.primary)
   const dept = group.orders.find((order) => order.dept)?.dept ?? null
   const displayName = group.customerName
 
-  useEffect(() => {
-    if (!selectedOrder) {
-      setHeaderDetailResp(null)
-      return
-    }
-    let alive = true
-    setHeaderDetailResp(null)
-    fetchOrderDetail(selectedOrder.id)
-      .then((resp) => {
-        if (!alive) return
-        setHeaderDetailResp(resp)
-      })
-      .catch(() => {
-        if (!alive) return
-        setHeaderDetailResp(null)
-      })
-    return () => {
-      alive = false
-    }
-  }, [selectedOrder?.id])
-
   return (
     <div className="h-full flex flex-col bg-surface-bg text-text-main overflow-hidden">
-      <header className="shrink-0 bg-white border-b border-border-subtle px-5 py-1.5 z-20">
+      <header className="shrink-0 bg-white border-b border-border-subtle px-5 py-2 z-20">
         <div className="flex min-w-0 items-center gap-4">
           <button
             onClick={onBack}
             className="shrink-0 p-2 rounded-full hover:bg-surface-container-low text-text-muted hover:text-primary transition-colors"
-            title="返回"
+            title="返回工作台"
           >
             <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>arrow_back</span>
           </button>
 
           <nav className="flex min-w-[320px] max-w-[500px] flex-[1_1_460px] items-center text-body-sm text-text-muted gap-1.5">
-            <button onClick={onBack} className="shrink-0 whitespace-nowrap hover:text-primary transition-colors">工作台</button>
-            <span className="material-symbols-outlined shrink-0" style={{ fontSize: '16px' }}>chevron_right</span>
+            <button onClick={onBack} className="shrink-0 whitespace-nowrap hover:text-primary transition-colors font-medium">工作台</button>
+            <span className="material-symbols-outlined shrink-0 text-text-muted" style={{ fontSize: '16px' }}>chevron_right</span>
             <ApplicationNoCopyButtons
               applicationNo={applicationNo}
               customerName={displayName}
@@ -245,44 +220,61 @@ export default function ApplicationDetailPage({
             </div>
           </div>
 
-          <div className="ml-auto grid w-[330px] shrink-0 grid-cols-2 items-center gap-1">
-            {headerFacts.length > 0 && (
-              <>
-                {headerFacts.map((fact) => (
-                  <HeaderFactPill key={`${fact.icon}-${fact.value}`} fact={fact} />
-                ))}
-              </>
-            )}
+          <div className="ml-auto shrink-0 flex items-center gap-3">
             <button
               type="button"
               aria-pressed={communicationOpen}
               onClick={() => setCommunicationOpen((open) => !open)}
               className={
-                'col-start-2 inline-flex h-7 items-center justify-center gap-1.5 rounded-full border px-3 text-[11px] font-bold transition-colors ' +
+                'inline-flex h-8 items-center justify-center gap-1.5 rounded-full border px-3.5 text-body-sm font-bold shadow-xs transition-colors ' +
                 (communicationOpen
-                  ? 'border-primary bg-primary text-white'
+                  ? 'border-primary bg-primary text-white shadow-sm'
                   : 'border-border-subtle bg-white text-text-main hover:border-primary hover:text-primary')
               }
             >
-              <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>forum</span>
+              <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>forum</span>
               沟通信息
             </button>
           </div>
         </div>
       </header>
 
-      <main className="flex-1 min-h-0 flex overflow-hidden">
-        {communicationOpen && <ApplicationIntake order={group.primary} applicationNo={applicationNo} />}
+      <main className="relative flex-1 min-h-0 flex overflow-hidden">
         {selectedOrder ? (
           <OrderExecutionPanel
             orders={group.orders}
             selectedOrder={selectedOrder}
             onSelect={setSelectedId}
-            communicationOpen={communicationOpen}
-            onOrderAreaClick={() => setCommunicationOpen(false)}
           />
         ) : (
           <div className="bg-white border-l border-border-subtle p-6 text-text-muted">没有可展示的订单</div>
+        )}
+
+        {/* 右侧滑出抽屉：沟通信息（占 50% 宽度，无深色遮罩，左侧内容清晰可读） */}
+        {communicationOpen && (
+          <div
+            className="absolute top-0 right-0 bottom-0 z-30 w-1/2 min-w-[480px] bg-white shadow-[-8px_0_24px_rgba(0,0,0,0.12)] border-l border-border-subtle flex flex-col animate-in slide-in-from-right duration-200"
+          >
+            <div className="shrink-0 flex items-center justify-between px-4 py-2.5 border-b border-border-subtle bg-surface-container-low">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-primary" style={{ fontSize: '18px' }}>forum</span>
+                <span className="font-bold text-[13px] text-text-main">沟通信息记录</span>
+                <span className="text-[11px] text-text-muted">（企微 / 微信 / 通话录音）</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCommunicationOpen(false)}
+                className="p-1 rounded-full hover:bg-surface-container-high text-text-muted hover:text-text-main transition-colors"
+                title="关闭抽屉"
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>close</span>
+              </button>
+            </div>
+
+            <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+              <ApplicationIntake order={selectedOrder ?? group.primary} />
+            </div>
+          </div>
         )}
       </main>
     </div>
@@ -290,11 +282,9 @@ export default function ApplicationDetailPage({
 }
 
 function ApplicationIntake({
-  order,
-  applicationNo
+  order
 }: {
   order: Order
-  applicationNo: string
 }): React.JSX.Element {
   const [aggregate, setAggregate] = useState<OrderAggregateResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -321,106 +311,19 @@ function ApplicationIntake({
   const calls = aggregate?.calls ?? []
 
   return (
-    <section className="w-[60%] min-h-0 flex flex-col border-r border-border-subtle bg-white">
+    <section className="w-full flex-1 min-h-0 flex flex-col bg-white overflow-hidden">
       {error && <div className="m-3 rounded border border-error/25 bg-error/10 px-3 py-2 text-body-sm text-error">{error}</div>}
       <ApplicationCapturePanel messages={messages} calls={calls} />
       <div className="shrink-0">
-        <ApplicationAiSummaryCard applicationNo={applicationNo} messageCount={messages.length} callCount={calls.length} />
-        <div className="px-4 pb-4 flex gap-2 bg-white">
-          <div className="flex-1 bg-surface-container-low border border-border-subtle rounded flex items-center px-3 py-2">
-            <span className="material-symbols-outlined text-text-muted mr-2" style={{ fontSize: '18px' }}>add_circle</span>
-            <input
-              disabled
-              className="bg-transparent border-none outline-none text-body-sm w-full p-0 text-text-muted placeholder:text-outline"
-              placeholder="后续接入患者消息发送..."
-            />
-          </div>
-          <button disabled className="bg-primary text-white px-5 rounded text-body-sm font-bold opacity-60">
-            Send
-          </button>
-        </div>
+        <ApplicationAiSummaryCard
+          orderId={order.id}
+        />
       </div>
     </section>
   )
 }
 
-interface HeaderFact {
-  label: string
-  value: string
-  icon: string
-  tone: 'blue' | 'purple' | 'green' | 'amber' | 'cyan'
-  copy?: boolean
-  copyValue?: string
-  iconText?: string
-}
 
-function buildHeaderFacts(order: Order, detailResp: OrderDetailResponse | null): HeaderFact[] {
-  const raw = ((detailResp?.order.rawJson ?? order.rawJson) ?? {}) as Record<string, unknown>
-  const rec = (detailResp?.detail?.recommendations ?? {}) as Record<string, unknown>
-  const cardId = pickPreferUnmasked(rec, raw, ['cardId'])
-  const socSecNo = pickPreferUnmasked(rec, raw, SOCIAL_SECURITY_KEYS)
-  const identityValue = socSecNo || cardId
-  const secondContactName = pick(rec, raw, ['secEcpName'])
-  const secondContactPhone = pick(rec, raw, ['secEcpPhone'])
-  const facts: HeaderFact[] = [
-    {
-      label: '',
-      value: identityValue,
-      icon: 'badge',
-      tone: 'blue',
-      copy: true,
-      iconText: socSecNo && socSecNo !== cardId ? '社' : '证'
-    },
-    {
-      label: '',
-      value: secondContactName && secondContactPhone ? `${secondContactName} ${secondContactPhone}` : secondContactName || secondContactPhone,
-      icon: 'person',
-      tone: 'green',
-      copy: !!secondContactPhone,
-      copyValue: secondContactPhone
-    },
-    {
-      label: '',
-      value: pick(rec, raw, ['stageName'], order.status),
-      icon: 'flag',
-      tone: 'cyan'
-    },
-    {
-      label: '',
-      value: pick(rec, raw, ['mmgrApplyDate']),
-      icon: 'event_available',
-      tone: 'amber',
-      iconText: '受'
-    }
-  ]
-  return facts.filter((item) => item.value)
-}
-
-function HeaderFactPill({ fact }: { fact: HeaderFact }): React.JSX.Element {
-  const toneClass: Record<HeaderFact['tone'], string> = {
-    blue: 'text-[#1d4ed8] bg-[#eff6ff] border-[#bfdbfe]',
-    purple: 'text-[#6d28d9] bg-[#f5f3ff] border-[#ddd6fe]',
-    green: 'text-[#15803d] bg-[#f0fdf4] border-[#bbf7d0]',
-    amber: 'text-[#b45309] bg-[#fffbeb] border-[#fde68a]',
-    cyan: 'text-[#0e7490] bg-[#ecfeff] border-[#bae6fd]'
-  }
-  const valueNode = (
-    <span className="min-w-0 truncate text-[11px] font-semibold text-text-main">{fact.value}</span>
-  )
-  return (
-    <div className="inline-flex h-6 min-w-0 items-center gap-1 rounded-full border border-border-subtle bg-surface-container-low px-1.5">
-      <span className={'inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border text-[10px] font-black ' + toneClass[fact.tone]}>
-        {fact.iconText ? fact.iconText : <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>{fact.icon}</span>}
-      </span>
-      {fact.label && <span className="shrink-0 text-[10px] font-bold text-text-muted">{fact.label}</span>}
-      {fact.copy ? (
-        <CopyText value={fact.copyValue ?? fact.value} className="min-w-0 text-[11px] font-semibold text-text-main">
-          {valueNode}
-        </CopyText>
-      ) : valueNode}
-    </div>
-  )
-}
 
 function ApplicationCapturePanel({
   messages,
@@ -877,80 +780,76 @@ function CallAudioPlayer({
 }
 
 function ApplicationAiSummaryCard({
-  applicationNo,
-  messageCount,
-  callCount
+  orderId
 }: {
-  applicationNo: string
-  messageCount: number
-  callCount: number
+  orderId?: number
 }): React.JSX.Element {
-  const [brief, setBrief] = useState<OrderBrief | null>(null)
-  const [updatedAt, setUpdatedAt] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
+  const [candidates, setCandidates] = useState<OrderAiFieldCandidate[]>([])
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!applicationNo) return
+    if (!orderId) {
+      setCandidates([])
+      return
+    }
     let alive = true
-    fetchApplicationBrief(applicationNo)
-      .then((resp) => {
-        if (!alive) return
-        setBrief(resp.brief)
-        setUpdatedAt(resp.updatedAt)
-        setError(null)
+    fetchOrderAiFieldCandidates(orderId)
+      .then((rows) => {
+        if (alive) setCandidates(rows)
       })
       .catch((e) => {
-        if (!alive) return
-        setError(e instanceof Error ? e.message : '加载申请级 AI 总结失败')
+        if (alive) {
+          setCandidates([])
+          setError(e instanceof Error ? e.message : '加载 AI 识别字段失败')
+        }
       })
     return () => {
       alive = false
     }
-  }, [applicationNo])
-
-  function refresh(): void {
-    if (!applicationNo || busy) return
-    setBusy(true)
-    setError(null)
-    refreshApplicationBrief(applicationNo)
-      .then((next) => {
-        setBrief(next)
-        setUpdatedAt(new Date().toISOString())
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : '刷新申请级 AI 总结失败'))
-      .finally(() => setBusy(false))
-  }
+  }, [orderId])
 
   return (
-    <section className="relative border-t border-ai-accent/20 bg-surface px-4 pt-4 pb-3 shadow-[0_-4px_12px_rgba(76,29,149,0.06)]">
-      <div className="absolute left-0 top-0 h-px w-full bg-gradient-to-r from-transparent via-ai-accent to-transparent opacity-45" />
-      <div className="mb-3 flex items-center gap-2">
-        <span className="material-symbols-outlined text-ai-accent" style={{ fontSize: '18px' }}>auto_awesome</span>
-        <h3 className="text-body-md font-bold text-ai-accent-strong">AI 简报</h3>
-        <span className="text-[11px] font-medium text-ai-accent-muted">消息 {messageCount} 条 · 通话 {callCount} 条</span>
-        <button
-          type="button"
-          onClick={refresh}
-          disabled={busy}
-          className="ml-auto inline-flex items-center gap-1 text-ai-accent hover:text-ai-accent-strong text-[11px] font-bold disabled:opacity-50"
-        >
-          <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>refresh</span>
-          {busy ? '生成中' : '重新生成'}
-        </button>
+    <section className="relative border-t border-[#b9d4ff] bg-[#f6f9ff] px-4 pt-3 pb-3.5 shadow-[0_-4px_12px_rgba(76,29,149,0.06)] min-h-[160px] max-h-[45vh] flex flex-col">
+      <div className="mb-2.5 flex items-center gap-2 shrink-0">
+        <span className="material-symbols-outlined text-primary text-[18px]">auto_awesome</span>
+        <h3 className="text-body-md font-bold text-primary">
+          AI 识别业务字段 {candidates.length > 0 ? `(${candidates.length})` : ''}
+        </h3>
+        <span className="text-[11px] text-text-muted">来源：企微/微信/通话</span>
       </div>
 
-      {error && <div className="mb-3 rounded border border-error/25 bg-error/10 px-3 py-2 text-body-sm text-error">{error}</div>}
-      <div className="rounded-md border border-ai-accent/20 bg-ai-surface px-3 py-2.5">
-        {brief?.summary ? (
-          <p className="whitespace-pre-wrap text-body-sm font-semibold leading-relaxed text-ai-accent-strong">{brief.summary}</p>
+      {error && <div className="mb-2 rounded border border-error/25 bg-error/10 px-3 py-1.5 text-body-sm text-error shrink-0">{error}</div>}
+
+      <div className="flex-1 min-h-0 overflow-y-auto pr-1">
+        {candidates.length > 0 ? (
+          <div className="flex flex-wrap gap-2">
+            {candidates.map((candidate) => (
+              <div
+                key={candidate.id}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#cfe0ff] bg-white px-2.5 py-1.5 text-[12px] text-text-main shadow-2xs hover:border-primary transition-colors"
+                title={candidate.evidence?.[0]?.quote ? `证据来源: ${candidate.evidence[0].quote}` : undefined}
+              >
+                <span className="text-text-muted">{candidate.fieldLabel}:</span>
+                <span className="font-semibold text-text-main">{candidate.value}</span>
+                {candidate.requiresConfirmation && (
+                  <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 border border-amber-200">
+                    需确认
+                  </span>
+                )}
+                {candidate.candidateType === 'ambiguous' && (
+                  <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 border border-amber-200">
+                    归属待确认
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
         ) : (
-          <p className="text-body-sm text-ai-accent-muted">
-            暂无 AI 简报。收到通话转写后会自动生成；微信和企微消息会按既有规则累积后生成。
-          </p>
+          <div className="rounded-md border border-[#d9e7ff] bg-white px-3 py-4 text-center text-body-sm text-text-muted">
+            暂无 AI 识别到的业务字段信息。
+          </div>
         )}
       </div>
-      {updatedAt && <div className="mt-2 text-[11px] text-text-muted">更新于 {formatDateTime(updatedAt)}{brief?.model ? ` · ${brief.model}` : ''}</div>}
     </section>
   )
 }
@@ -1148,15 +1047,11 @@ function BriefKv({ name, value }: { name: string; value: string | null }): React
 function OrderExecutionPanel({
   orders,
   selectedOrder,
-  onSelect,
-  communicationOpen,
-  onOrderAreaClick
+  onSelect
 }: {
   orders: Order[]
   selectedOrder: Order
   onSelect: (id: number) => void
-  communicationOpen: boolean
-  onOrderAreaClick: () => void
 }): React.JSX.Element {
   const [tab, setTab] = useState<RightTab>('taikang-detail')
   const [detailResp, setDetailResp] = useState<OrderDetailResponse | null>(null)
@@ -1196,13 +1091,7 @@ function OrderExecutionPanel({
   }, [selectedOrder.id, reloadMaterials])
 
   return (
-    <aside
-      onClick={onOrderAreaClick}
-      className={
-        (communicationOpen ? 'w-[40%] border-l ' : 'w-full ') +
-        'min-h-0 bg-white border-border-subtle flex flex-col transition-[width] duration-200'
-      }
-    >
+    <aside className="w-full min-h-0 bg-white border-border-subtle flex flex-col">
       <div className="shrink-0 border-b border-border-subtle bg-[#fafafa] px-3 py-2">
         <div className="mb-1 flex items-center gap-2">
           <span className="inline-flex items-center gap-1.5 rounded border border-border-subtle bg-white px-2 py-0.5 text-[11px] font-bold text-text-main">
@@ -1241,59 +1130,60 @@ function OrderExecutionPanel({
             </CopyText>
             <span className="shrink-0 text-[10px] text-text-muted">第 {selectedIndex + 1}/{orders.length} 个</span>
           </div>
-          <CompactLifecycleTimeline order={selectedOrder} />
         </div>
       </div>
 
-      <div className="flex border-b border-border-subtle bg-[#fafafa]">
-        <PanelTab label="B端订单详情" active={tab === 'taikang-detail'} onClick={() => setTab('taikang-detail')} />
-        <PanelTab label="寰宇订单详情" active={tab === 'huanyu-detail'} onClick={() => setTab('huanyu-detail')} />
-        <PanelTab label="数据补录" active={tab === 'entry'} onClick={() => setTab('entry')} />
-        <PanelTab label="AI 任务" active={tab === 'ai'} onClick={() => setTab('ai')} />
+      {/* 主工作区（左主表单区 + 右侧独立垂直步骤栏） */}
+      <div className="flex-1 min-h-0 flex overflow-hidden">
+        {/* 左侧主表单区 */}
+        <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+          {/* Tab 栏只位于左侧表单顶部 */}
+          <div className="shrink-0 flex border-b border-border-subtle bg-[#fafafa]">
+            <PanelTab label="B端订单详情" active={tab === 'taikang-detail'} onClick={() => setTab('taikang-detail')} />
+            <PanelTab label="寰宇订单详情" active={tab === 'huanyu-detail'} onClick={() => setTab('huanyu-detail')} />
+            <PanelTab label="数据补录" active={tab === 'entry'} onClick={() => setTab('entry')} />
+            <PanelTab label="AI 任务" active={tab === 'ai'} onClick={() => setTab('ai')} />
+          </div>
+
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+            {detailLoading ? (
+              <div className="flex-1 min-h-0 flex flex-col items-center justify-center p-12 text-text-muted gap-3">
+                <div className="w-8 h-8 border-3 border-primary/25 border-t-primary rounded-full animate-spin" />
+                <span className="text-body-sm font-medium">正在拉取最新订单数据…</span>
+              </div>
+            ) : detailError ? (
+              <div className="p-6 m-4 rounded-lg bg-red-50 border border-error/25 text-error text-body-sm flex items-center gap-2">
+                <span className="material-symbols-outlined text-error">error</span>
+                <span>{detailError}</span>
+              </div>
+            ) : (
+              <>
+                {tab === 'taikang-detail' && (
+                  <OrderDetailPanel order={selectedOrder} detailResp={detailResp} error={detailError} />
+                )}
+                {tab === 'huanyu-detail' && (
+                  <HuanyuOrderDetailPanel
+                    key={selectedOrder.id}
+                    order={selectedOrder}
+                    detailResp={detailResp}
+                  />
+                )}
+                {tab === 'entry' && (
+                  <OrderDataEntryPanel order={selectedOrder} materials={materials} onReload={reloadMaterials} />
+                )}
+                {tab === 'ai' && (
+                  <OrderAiTaskPanel order={selectedOrder} aggregate={aggregate} />
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* 右侧独立垂直步骤栏（230px） */}
+        <aside className="w-[230px] shrink-0 border-l border-border-subtle bg-[#fafafa]/80 flex flex-col overflow-y-auto">
+          <VerticalWorkflowTimeline order={selectedOrder} />
+        </aside>
       </div>
-
-      {detailLoading ? (
-        <div className="flex-1 min-h-0 flex flex-col items-center justify-center p-12 text-text-muted gap-3">
-          <div className="w-8 h-8 border-3 border-primary/25 border-t-primary rounded-full animate-spin" />
-          <span className="text-body-sm font-medium">正在拉取最新订单数据…</span>
-        </div>
-      ) : detailError ? (
-        <div className="p-6 m-4 rounded-lg bg-red-50 border border-error/25 text-error text-body-sm flex items-center gap-2">
-          <span className="material-symbols-outlined text-error">error</span>
-          <span>{detailError}</span>
-        </div>
-      ) : (
-        <>
-          {tab === 'taikang-detail' && (
-            <OrderDetailPanel order={selectedOrder} detailResp={detailResp} error={detailError} />
-          )}
-          {tab === 'huanyu-detail' && (
-            <HuanyuOrderDetailPanel
-              key={selectedOrder.id}
-              order={selectedOrder}
-              detailResp={detailResp}
-            />
-          )}
-          {tab === 'entry' && (
-            <OrderDataEntryPanel order={selectedOrder} materials={materials} onReload={reloadMaterials} />
-          )}
-          {tab === 'ai' && (
-            <OrderAiTaskPanel order={selectedOrder} aggregate={aggregate} />
-          )}
-        </>
-      )}
-
-      {!detailLoading && tab !== 'huanyu-detail' && (
-        <div className="shrink-0 border-t border-border-subtle bg-white p-4 flex justify-end gap-3 shadow-[0_-4px_12px_rgba(0,0,0,0.02)]">
-          <button disabled className="px-4 py-2 bg-surface-container border border-border-subtle text-text-main text-body-sm font-bold rounded opacity-70">
-            Hold Order
-          </button>
-          <button disabled className="px-4 py-2 bg-primary text-white text-body-sm font-bold rounded inline-flex items-center gap-2 opacity-70">
-            <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>check_circle</span>
-            Complete & Next
-          </button>
-        </div>
-      )}
     </aside>
   )
 }
@@ -1331,7 +1221,6 @@ function OrderDetailPanel({
       {/* 两个同级组件必须使用不同的 key。订单详情首屏会在多个请求回填后重渲染，
           相同 key 会让 React 的节点协调失去确定性，从而可能重复保留沟通记录区域。 */}
       <CommunicationRecordPanel key={`communication-${order.id}`} />
-      <OrderAiFieldCandidatePanel key={`ai-field-candidates-${order.id}`} orderId={order.id} />
       <ServiceInformationFlow key={`service-flow-${order.id}`} order={order} onEscortEntryActiveChange={setEscortEntryActive} />
       {hasEscortEntryTab && (
         <div hidden={!escortEntryActive}>
@@ -1339,31 +1228,6 @@ function OrderDetailPanel({
         </div>
       )}
     </div>
-  )
-}
-
-/** B 端服务表单还未接入正式回写前，先在表单区域上方集中展示对应订单的 AI 候选与证据入口。 */
-function OrderAiFieldCandidatePanel({ orderId }: { orderId: number }): React.JSX.Element | null {
-  const [candidates, setCandidates] = useState<OrderAiFieldCandidate[]>([])
-  useEffect(() => {
-    let active = true
-    fetchOrderAiFieldCandidates(orderId).then((rows) => active && setCandidates(rows)).catch(() => active && setCandidates([]))
-    return () => { active = false }
-  }, [orderId])
-  if (candidates.length === 0) return null
-  return (
-    <section className="rounded-lg border border-[#b9d4ff] bg-[#f6f9ff] p-4">
-      <div className="flex items-center gap-2 text-[15px] font-bold text-primary"><span className="material-symbols-outlined text-[18px]">auto_awesome</span>AI 识别的待填写业务信息</div>
-      <p className="mt-1 text-body-sm text-text-muted">来源为该申请号下的企微、微信和通话转写；仅保留与当前订单服务类型匹配的候选，需人工核对。</p>
-      <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-        {candidates.map((candidate) => (
-          <div key={candidate.id} className="rounded border border-[#d9e7ff] bg-white px-3 py-2 text-body-sm" title={candidate.evidence?.[0]?.quote || ''}>
-            <div className="text-text-muted">{candidate.fieldLabel}{candidate.requiresConfirmation ? ' · 需确认' : ''}</div>
-            <div className="mt-0.5 font-medium text-text-main">{candidate.value}</div>
-          </div>
-        ))}
-      </div>
-    </section>
   )
 }
 
@@ -1484,6 +1348,70 @@ function HuanyuOrderForm({
       : ((initialForm as any)?.accountManager || ''),
     ...((initialForm as any)?.bookingChannelType === '3' ? { bd: '无' } : {})
   }
+
+  const aiCandidatesRef = useRef<OrderAiFieldCandidate[]>([])
+  const hospitalOptionRef = useRef<HuanyuChannelOption | null>(null)
+
+  function mergeCandidatesIntoForm(
+    currentForm: Record<string, any>,
+    candidates: OrderAiFieldCandidate[],
+    matchedHospital?: HuanyuChannelOption | null
+  ): Record<string, any> {
+    const formKeyByCandidate: Record<string, string> = {
+      hospital: 'hospital',
+      hospital_address: 'hospitalAddress',
+      department: 'department',
+      doctor: 'doctor',
+      expert_level: 'expertLevel',
+      service_remark: 'serviceRemark',
+      appointment_time: 'responseTime',
+      appointment_success_time: 'bookingFeedbackTime',
+      service_start_time: 'serviceStartTime',
+      latest_ticket_time: 'latestTicketTime',
+      registration_fee_amount: 'registrationFee',
+      escort_name: 'escortName',
+      escort_phone: 'escortPhone',
+      escort_service_date: 'escortServiceDate',
+      escort_service_summary: 'escortSummary',
+      hospitalization_appointment_time: 'responseTime',
+      caregiver_start_time: 'serviceStartTime'
+    }
+
+    const next = { ...currentForm }
+    let extractedEscortName = candidates.find((c) => c.fieldCode === 'escort_name' && c.candidateType === 'new_or_confirmed')?.value
+    let extractedEscortPhone = candidates.find((c) => c.fieldCode === 'escort_phone' && c.candidateType === 'new_or_confirmed')?.value
+
+    const summaryCand = candidates.find((c) => c.fieldCode === 'escort_service_summary' && c.candidateType === 'new_or_confirmed')?.value
+    if (!extractedEscortName && summaryCand) {
+      const nameMatch = summaryCand.match(/陪诊人[：:\s]+([^\s;,；，]+)/)
+      const phoneMatch = summaryCand.match(/陪诊(?:人)?(?:联系)?电话[：:\s]+(\d{11})/i)
+      if (nameMatch) extractedEscortName = nameMatch[1].trim()
+      if (phoneMatch) extractedEscortPhone = phoneMatch[1].trim()
+    }
+
+    for (const candidate of candidates) {
+      const key = formKeyByCandidate[candidate.fieldCode]
+      const currentValue = key ? next[key] : undefined
+      if (key && candidate.candidateType === 'new_or_confirmed' &&
+        (typeof currentValue !== 'string' || !currentValue.trim())) {
+        if (key === 'hospital' && matchedHospital) {
+          next.hospital = matchedHospital.id
+        } else {
+          next[key] = ['responseTime', 'bookingFeedbackTime', 'serviceStartTime', 'latestTicketTime', 'escortServiceDate'].includes(key)
+            ? (toHuanyuDateTimeLocal(candidate.value) || candidate.value)
+            : candidate.value
+        }
+      }
+    }
+    if (extractedEscortName && (!next.escortName || !String(next.escortName).trim())) {
+      next.escortName = extractedEscortName
+    }
+    if (extractedEscortPhone && (!next.escortPhone || !String(next.escortPhone).trim())) {
+      next.escortPhone = extractedEscortPhone
+    }
+    return next
+  }
+
   const [form, setForm] = useState<Record<string, any>>(() => (
     isHuanyuCancelledOrderStatus(defaultedInitialForm.orderStatus)
       ? { ...defaultedInitialForm, orderAmount: '0', amountChanged: false }
@@ -1491,12 +1419,16 @@ function HuanyuOrderForm({
   ))
 
   useEffect(() => {
-    setForm(
-      isHuanyuCancelledOrderStatus(defaultedInitialForm.orderStatus)
-        ? { ...defaultedInitialForm, orderAmount: '0', amountChanged: false }
-        : defaultedInitialForm
-    )
+    const base = isHuanyuCancelledOrderStatus(defaultedInitialForm.orderStatus)
+      ? { ...defaultedInitialForm, orderAmount: '0', amountChanged: false }
+      : defaultedInitialForm
+
+    const merged = aiCandidatesRef.current.length > 0
+      ? mergeCandidatesIntoForm(base, aiCandidatesRef.current, hospitalOptionRef.current)
+      : base
+    setForm(merged)
   }, [initialForm])
+
   const [escortRows, setEscortRows] = useState<HuanyuEscortRow[]>(() => {
     if (initialEscorts && initialEscorts.length > 0) {
       return initialEscorts
@@ -1517,7 +1449,6 @@ function HuanyuOrderForm({
   const [isSaving, setIsSaving] = useState(false)
   const [isPushing, setIsPushing] = useState(false)
   const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
-  const [aiCandidates, setAiCandidates] = useState<OrderAiFieldCandidate[]>([])
   const isCreate = mode === 'create'
   const initialChannelServiceId = useRef(typeof initialForm.channelService === 'string' ? initialForm.channelService : '')
   const initialOrderAmount = useRef(typeof initialForm.orderAmount === 'string' ? initialForm.orderAmount : '')
@@ -1570,44 +1501,61 @@ function HuanyuOrderForm({
   // 变更候选和歧义候选仅展示给人工，不自动放进输入框。
   useEffect(() => {
     if (!orderId || isCreate) {
-      setAiCandidates([])
       return
     }
     let active = true
-    const formKeyByCandidate: Record<string, string> = {
-      hospital: 'hospital',
-      hospital_address: 'hospitalAddress',
-      department: 'department',
-      doctor: 'doctor',
-      expert_level: 'expertLevel',
-      service_remark: 'serviceRemark',
-      appointment_time: 'responseTime',
-      appointment_success_time: 'bookingFeedbackTime',
-      service_start_time: 'serviceStartTime',
-      latest_ticket_time: 'latestTicketTime',
-      registration_fee_amount: 'registrationFee',
-      escort_service_summary: 'escortSummary'
-    }
     fetchOrderAiFieldCandidates(orderId)
-      .then((candidates) => {
+      .then(async (candidates) => {
         if (!active) return
-        setAiCandidates(candidates)
-        setForm((current) => {
-          const next = { ...current }
-          for (const candidate of candidates) {
-            const key = formKeyByCandidate[candidate.fieldCode]
-            const currentValue = key ? current[key] : undefined
-            if (key && candidate.candidateType === 'new_or_confirmed' &&
-              (typeof currentValue !== 'string' || !currentValue.trim())) {
-              next[key] = ['responseTime', 'bookingFeedbackTime', 'serviceStartTime', 'latestTicketTime'].includes(key)
-                ? (toHuanyuDateTimeLocal(candidate.value) || candidate.value)
-                : candidate.value
+        aiCandidatesRef.current = candidates
+
+        let matchedHospital: HuanyuChannelOption | null = null
+        const hospCandidate = candidates.find((c) => c.fieldCode === 'hospital' && c.candidateType === 'new_or_confirmed')?.value
+        if (hospCandidate && typeof hospCandidate === 'string' && hospCandidate.trim()) {
+          try {
+            const list = await fetchHuanyuHospitals(hospCandidate.trim())
+            const exact = list.find((h) => h.name === hospCandidate.trim() || h.id === hospCandidate.trim()) || list[0]
+            if (exact) {
+              matchedHospital = exact
+              hospitalOptionRef.current = exact
+              setHospitalOptions((prev) => prev.some((h) => h.id === exact.id) ? prev : [exact, ...prev])
             }
+          } catch {
+            // ignore
           }
-          return next
-        })
+        }
+
+        setForm((current) => mergeCandidatesIntoForm(current, candidates, matchedHospital))
+
+        let extractedEscortName = candidates.find((c) => c.fieldCode === 'escort_name' && c.candidateType === 'new_or_confirmed')?.value
+        let extractedEscortPhone = candidates.find((c) => c.fieldCode === 'escort_phone' && c.candidateType === 'new_or_confirmed')?.value
+        const extractedEscortDate = candidates.find((c) => c.fieldCode === 'escort_service_date' && c.candidateType === 'new_or_confirmed')?.value
+
+        const summaryCand = candidates.find((c) => c.fieldCode === 'escort_service_summary' && c.candidateType === 'new_or_confirmed')?.value
+        if (!extractedEscortName && summaryCand) {
+          const nameMatch = summaryCand.match(/陪诊人[：:\s]+([^\s;,；，]+)/)
+          const phoneMatch = summaryCand.match(/陪诊(?:人)?(?:联系)?电话[：:\s]+(\d{11})/i)
+          if (nameMatch) extractedEscortName = nameMatch[1].trim()
+          if (phoneMatch) extractedEscortPhone = phoneMatch[1].trim()
+        }
+
+        if (extractedEscortName || extractedEscortPhone || extractedEscortDate) {
+          setEscortRows((current) => {
+            if (current.length === 0) return current
+            const first = current[0]
+            if (!first.escortName && extractedEscortName) {
+              return current.map((r, i) => i === 0 ? {
+                ...r,
+                escortName: extractedEscortName || r.escortName,
+                phone: extractedEscortPhone || r.phone,
+                serviceDate: escortServiceDateInputValue(extractedEscortDate || '') || r.serviceDate
+              } : r)
+            }
+            return current
+          })
+        }
       })
-      .catch(() => active && setAiCandidates([]))
+      .catch(() => undefined)
     return () => { active = false }
   }, [orderId, isCreate])
 
@@ -1755,9 +1703,6 @@ function HuanyuOrderForm({
         setSaveStatus({ type: 'success', message: '保存成功！' })
         if (onSaveSuccess) {
           onSaveSuccess(res.order)
-        }
-        if (orderId) {
-          void fetchOrderAiFieldCandidates(orderId).then(setAiCandidates).catch(() => undefined)
         }
         return true
       } else {
@@ -2127,25 +2072,7 @@ function HuanyuOrderForm({
       </div>
 
       {/* 表单内容滚动区 */}
-      <div className="p-4 space-y-4">
-        {aiCandidates.length > 0 && (
-          <section className="rounded-lg border border-[#72a7ff] bg-[#f4f8ff] px-4 py-3 text-body-sm text-text-main">
-            <div className="flex items-center gap-2 font-semibold text-primary">
-              <span className="material-symbols-outlined text-[18px]">auto_awesome</span>
-              AI 已识别 {aiCandidates.length} 个业务字段候选
-            </div>
-            <p className="mt-1 text-text-muted">仅在本地寰宇正式字段为空时已补充展示；请核对后点击“保存”写入本地 PostgreSQL，再手动确认推送 MySQL。</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {aiCandidates.map((candidate) => (
-                <span key={candidate.id} className="rounded bg-white px-2 py-1 text-[12px] border border-[#cfe0ff]" title={candidate.evidence?.[0]?.quote || ''}>
-                  {candidate.fieldLabel}：{candidate.value}
-                  {candidate.requiresConfirmation ? '（需确认）' : ''}
-                  {candidate.candidateType === 'ambiguous' ? '（归属待确认）' : ''}
-                </span>
-              ))}
-            </div>
-          </section>
-        )}
+      <div className="p-3 space-y-3">
         <HuanyuFormSection title="订单基本信息">
         <HuanyuFormGrid>
           <HuanyuInput label="订单号" value={f.orderNo} onChange={(value) => changeField('orderNo', value)} disabled />
@@ -2397,9 +2324,9 @@ function buildHuanyuForm(order: Order): Record<string, string | boolean> {
   const bookingTime = value(['bookingTime', 'serviceDate', 'appointTime'], order.intendDate)
   const patientName = value(['patientName', 'customerName', 'name'], order.customerName)
   const patientPhone = value(['patientPhone', 'customerPhone', 'phone', 'mobile'], order.customerPhone)
-  const hospital = value(['hospital', 'hospitalName', 'intendHos'], order.hospital)
-  const department = value(['dept', 'department', 'intendDept'], order.dept)
-  const doctor = value(['doctor', 'doctorName', 'intendDoc'], order.doctor)
+  const hospital = value(['hospital', 'hospitalName', 'H_NAME'], order.hospital)
+  const department = value(['dept', 'department', 'H_KS'], order.dept)
+  const doctor = value(['doctor', 'doctorName', 'H_YS'], order.doctor)
 
   const docNo = value(['documentNo', 'certNo', 'idNo', 'idCard', 'JZR_ZJHM', 'cardId'])
   const bday = value(['birthday', 'birthDate', 'birth_date', 'csrq', 'CSRQ'])
@@ -2657,15 +2584,18 @@ function huanyuTimePart(value: unknown): string {
 
 function HuanyuFormSection({ title, children }: { title: string; children: React.ReactNode }): React.JSX.Element {
   return (
-    <section className="rounded-lg border border-border-subtle bg-white p-4">
-      <h3 className="mb-4 text-[17px] font-bold text-primary">{title}</h3>
+    <section className="rounded-lg border border-border-subtle bg-white p-3 shadow-2xs">
+      <h3 className="mb-2 flex items-center gap-1.5 text-[15px] font-bold text-primary">
+        <span className="h-3.5 w-1 rounded-full bg-primary" />
+        {title}
+      </h3>
       {children}
     </section>
   )
 }
 
 function HuanyuFormGrid({ children }: { children: React.ReactNode }): React.JSX.Element {
-  return <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-4">{children}</div>
+  return <div className="grid grid-cols-1 gap-x-3 gap-y-1.5 md:grid-cols-2 xl:grid-cols-4">{children}</div>
 }
 
 function HuanyuTimeInformation({
@@ -2684,15 +2614,15 @@ function HuanyuTimeInformation({
   ]
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-1.5">
       {rows.map(({ label, timeKey, dateKey, defaultTimeKey }) => {
         const timeVal = typeof form[timeKey] === 'string' ? (form[timeKey] as string) : ''
         const dateVal = huanyuDatePart(timeVal) || (typeof form[dateKey] === 'string' ? (form[dateKey] as string) : '')
         const parsedTimeVal = huanyuTimePart(timeVal) || (typeof form[defaultTimeKey] === 'string' ? (form[defaultTimeKey] as string) : '')
 
         return (
-          <div key={timeKey} className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-3">
-            <label className="flex min-w-0 items-center gap-2">
+          <div key={timeKey} className="grid grid-cols-1 gap-x-3 gap-y-1.5 md:grid-cols-3">
+            <label className="flex min-w-0 items-center gap-1.5">
               <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
               <input
                 type="datetime-local"
@@ -2704,7 +2634,7 @@ function HuanyuTimeInformation({
                   onChange(dateKey, huanyuDatePart(nextValue))
                   onChange(defaultTimeKey, huanyuTimePart(nextValue))
                 }}
-                className="h-9 min-w-0 flex-1 rounded-md border border-border-subtle bg-white px-3 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary"
+                className="h-8 min-w-0 flex-1 rounded border border-border-subtle bg-white px-2.5 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary"
               />
             </label>
             <HuanyuInput label="默认日期" value={dateVal} onChange={(value) => onChange(dateKey, value)} disabled />
@@ -2738,7 +2668,9 @@ function HuanyuEscortInformationTable({
 }): React.JSX.Element {
   const [internalRows, setInternalRows] = useState<HuanyuEscortRow[]>(() => [{ id: 1, ...initialRow }])
   const rows = externalRows ?? internalRows
-  const setRows = onChangeRows ?? setInternalRows
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+
   const [escortSearch, setEscortSearch] = useState('')
   const [escortOptions, setEscortOptions] = useState<HuanyuEscortOption[]>([])
   const [escortLoading, setEscortLoading] = useState(false)
@@ -2746,35 +2678,93 @@ function HuanyuEscortInformationTable({
 
   useEffect(() => {
     let active = true
-    const timer = window.setTimeout(() => {
+    const timer = window.setTimeout(async () => {
       setEscortLoading(true)
       setEscortError(null)
-      fetchHuanyuEscorts(escortSearch)
-        .then((options) => {
+      try {
+        let options = await fetchHuanyuEscorts(escortSearch)
+        if (!active) return
+
+        // 如果现有行中有陪诊人员名字/ID不在当前 options 中，定向查询补充
+        const currentRows = rowsRef.current
+        const missingNames = currentRows
+          .map((r) => r.escortName?.trim())
+          .filter((name): name is string => Boolean(name && !options.some((o) => o.id === name || o.name === name)))
+
+        if (missingNames.length > 0) {
+          const extraResults = await Promise.all(missingNames.map((name) => fetchHuanyuEscorts(name).catch(() => [])))
           if (!active) return
-          setEscortOptions(options)
-          if (rows.some((row) => row.escortName && (!row.phone || !row.area || !row.escortType))) {
-            const updated = rows.map((row) => {
-              if (!row.escortName || (row.phone && row.area && row.escortType)) return row
-              const matched = options.find((item) => item.id === row.escortName || item.name === row.escortName)
-              if (matched) {
+          const extraMap = new Map<string, HuanyuEscortOption>()
+          options.forEach((o) => extraMap.set(o.id, o))
+          extraResults.flat().forEach((o) => extraMap.set(o.id, o))
+          options = Array.from(extraMap.values())
+        }
+
+        setEscortOptions(options)
+
+        // 仅对缺少 phone/area/escortType 或名字需映射为 ID 的行进行补齐
+        if (onChangeRows) {
+          const current = rowsRef.current
+          let hasChanges = false
+          const next = current.map((row) => {
+            if (!row.escortName) return row
+            const matched = options.find((item) => item.id === row.escortName || item.name === row.escortName)
+            if (matched) {
+              const newName = matched.id
+              const newType = row.escortType || matched.escortType
+              const newPhone = row.phone || matched.phone
+              const newArea = row.area || matched.area
+              if (row.escortName !== newName || row.escortType !== newType || row.phone !== newPhone || row.area !== newArea) {
+                hasChanges = true
                 return {
                   ...row,
-                  escortType: row.escortType || matched.escortType,
-                  phone: row.phone || matched.phone,
-                  area: row.area || matched.area
+                  escortName: newName,
+                  escortType: newType,
+                  phone: newPhone,
+                  area: newArea
+                }
+              }
+            }
+            return row
+          })
+          if (hasChanges) {
+            onChangeRows(next)
+          }
+        } else {
+          setInternalRows((current) => {
+            let hasChanges = false
+            const next = current.map((row) => {
+              if (!row.escortName) return row
+              const matched = options.find((item) => item.id === row.escortName || item.name === row.escortName)
+              if (matched) {
+                const newName = matched.id
+                const newType = row.escortType || matched.escortType
+                const newPhone = row.phone || matched.phone
+                const newArea = row.area || matched.area
+                if (row.escortName !== newName || row.escortType !== newType || row.phone !== newPhone || row.area !== newArea) {
+                  hasChanges = true
+                  return {
+                    ...row,
+                    escortName: newName,
+                    escortType: newType,
+                    phone: newPhone,
+                    area: newArea
+                  }
                 }
               }
               return row
             })
-            setRows(updated)
-          }
-        })
-        .catch((error: unknown) => active && setEscortError(error instanceof Error ? error.message : '陪诊人员加载失败'))
-        .finally(() => active && setEscortLoading(false))
+            return hasChanges ? next : current
+          })
+        }
+      } catch (error: unknown) {
+        if (active) setEscortError(error instanceof Error ? error.message : '陪诊人员加载失败')
+      } finally {
+        if (active) setEscortLoading(false)
+      }
     }, 180)
     return () => { active = false; window.clearTimeout(timer) }
-  }, [escortSearch, rows])
+  }, [escortSearch])
 
   function changeRow(id: number, field: Exclude<keyof HuanyuEscortRow, 'id' | 'orderNo'>, value: string): void {
     if (onChangeRows) {
@@ -2803,7 +2793,7 @@ function HuanyuEscortInformationTable({
   }
 
   function selectEscort(rowId: number, escortId: string): void {
-    const escort = escortOptions.find((item) => item.id === escortId)
+    const escort = escortOptions.find((item) => item.id === escortId || item.name === escortId)
     if (!escort) return
     const updated = rows.map((row) => row.id === rowId ? {
       ...row,
@@ -2872,7 +2862,7 @@ function HuanyuEscortSelectCell({
   const [search, setSearch] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number }>({ top: 0, left: 0, width: 320 })
-  const selected = options.find((option) => option.id === value)
+  const selected = options.find((option) => option.id === value || option.name === value)
   const shownValue = open ? search : selected?.name ?? value
 
   const updatePosition = useCallback(() => {
@@ -2969,9 +2959,18 @@ function HuanyuInput({
   type?: React.HTMLInputTypeAttribute
 }): React.JSX.Element {
   return (
-    <label className={'flex min-w-0 items-center gap-2 ' + (wide ? 'md:col-span-2 xl:col-span-4' : '')}>
+    <label className={'flex min-w-0 items-center gap-1.5 ' + (wide ? 'md:col-span-2 xl:col-span-4' : '')}>
       <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
-      <input type={type} disabled={disabled} value={typeof value === 'string' ? value : ''} onChange={(event) => onChange(event.target.value)} className={'h-9 min-w-0 flex-1 rounded-md border border-border-subtle px-3 text-body-sm text-text-main outline-none transition-colors ' + (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary')} />
+      <input
+        type={type}
+        disabled={disabled}
+        value={typeof value === 'string' ? value : ''}
+        onChange={(event) => onChange(event.target.value)}
+        className={
+          'h-8 min-w-0 flex-1 rounded border border-border-subtle px-2.5 text-body-sm text-text-main outline-none transition-colors ' +
+          (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary')
+        }
+      />
     </label>
   )
 }
@@ -3018,13 +3017,13 @@ function HuanyuSearchSelect({
   }
 
   return (
-    <label className="relative flex min-w-0 items-center gap-2">
+    <label className="relative flex min-w-0 items-center gap-1.5">
       <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
       <div className="relative min-w-0 flex-1">
         <input
           value={shownValue}
           disabled={disabled}
-          placeholder={disabled ? disabledPlaceholder : '输入名称或码值搜索'}
+          placeholder={disabled ? disabledPlaceholder : '输入搜索'}
           onFocus={() => {
             setOpen(true)
             setSearch('')
@@ -3037,13 +3036,16 @@ function HuanyuSearchSelect({
             onSearch(next)
             setOpen(true)
           }}
-          className={'h-9 min-w-0 w-full rounded-md border border-border-subtle px-3 text-body-sm text-text-main outline-none transition-colors ' + (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary')}
+          className={
+            'h-8 min-w-0 w-full rounded border border-border-subtle px-2.5 text-body-sm text-text-main outline-none transition-colors ' +
+            (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary')
+          }
         />
         {open && !disabled && (
           <div className="absolute z-20 mt-1 max-h-52 w-full overflow-y-auto rounded-md border border-border-subtle bg-white py-1 shadow-lg">
-            {loading && <div className="px-3 py-2 text-body-sm text-text-muted">加载中…</div>}
-            {!loading && error && <div className="px-3 py-2 text-body-sm text-error">{error}</div>}
-            {!loading && !error && options.length === 0 && <div className="px-3 py-2 text-body-sm text-text-muted">暂无匹配数据</div>}
+            {loading && <div className="px-3 py-1.5 text-body-sm text-text-muted">加载中…</div>}
+            {!loading && error && <div className="px-3 py-1.5 text-body-sm text-error">{error}</div>}
+            {!loading && !error && options.length === 0 && <div className="px-3 py-1.5 text-body-sm text-text-muted">暂无匹配数据</div>}
             {!loading && !error && options.map((option) => (
               <button
                 key={option.id}
@@ -3054,10 +3056,10 @@ function HuanyuSearchSelect({
                   setSearch('')
                   setOpen(false)
                 }}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-body-sm text-text-main hover:bg-surface-bg"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm text-text-main hover:bg-surface-bg"
               >
                 <span className="min-w-0 flex-1 truncate">{option.name}</span>
-                <span className="shrink-0 font-mono-data text-[11px] text-text-muted">{option.id}</span>
+                <span className="shrink-0 font-mono-data text-xs text-text-muted">{option.id}</span>
               </button>
             ))}
           </div>
@@ -3084,9 +3086,13 @@ function HuanyuSelect({
     ? [{ value: currentValue, label: currentValue }, ...normalizedOptions]
     : normalizedOptions
   return (
-    <label className="flex min-w-0 items-center gap-2">
+    <label className="flex min-w-0 items-center gap-1.5">
       <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
-      <select value={currentValue} onChange={(event) => onChange(event.target.value)} className="h-9 min-w-0 flex-1 rounded-md border border-border-subtle bg-white px-3 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary">
+      <select
+        value={currentValue}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-8 min-w-0 flex-1 rounded border border-border-subtle bg-white px-2.5 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary"
+      >
         {visibleOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
     </label>
@@ -3107,9 +3113,20 @@ function HuanyuAmountField({
   onEditableChange: (value: boolean) => void
 }): React.JSX.Element {
   return (
-    <div className="flex min-w-0 items-center gap-2">
+    <div className="flex min-w-0 items-center gap-1.5">
       <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">订单金额：</span>
-      <input type="number" inputMode="decimal" step="0.01" disabled={locked || !editable} value={typeof value === 'string' ? value : ''} onChange={(event) => onChange(event.target.value)} className={'h-9 w-24 shrink-0 rounded-md border border-border-subtle px-3 text-body-sm text-text-main outline-none transition-colors ' + (!locked && editable ? 'bg-white focus:border-primary focus:ring-1 focus:ring-primary' : 'cursor-not-allowed bg-surface-container text-text-muted')} />
+      <input
+        type="number"
+        inputMode="decimal"
+        step="0.01"
+        disabled={locked || !editable}
+        value={typeof value === 'string' ? value : ''}
+        onChange={(event) => onChange(event.target.value)}
+        className={
+          'h-8 w-24 shrink-0 rounded border border-border-subtle px-2.5 text-body-sm text-text-main outline-none transition-colors ' +
+          (!locked && editable ? 'bg-white focus:border-primary focus:ring-1 focus:ring-primary' : 'cursor-not-allowed bg-surface-container text-text-muted')
+        }
+      />
       <label className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-body-sm text-text-main">
         <input type="checkbox" checked={editable} disabled={locked} onChange={(event) => onEditableChange(event.target.checked)} className="h-4 w-4 accent-primary disabled:cursor-not-allowed" />
         金额修改
@@ -3123,7 +3140,7 @@ function HuanyuTextarea({
   value,
   onChange,
   placeholder = '请输入内容',
-  minHeight = 'min-h-36',
+  minHeight = 'min-h-24',
   disabled = false,
   copyable = false
 }: {
@@ -3139,10 +3156,21 @@ function HuanyuTextarea({
   const [copied, setCopied] = useState(false)
 
   return (
-    <div className="flex min-w-0 items-start gap-2">
-      {label && <span className="w-28 shrink-0 pt-2 text-right text-body-sm font-medium text-text-muted">{label}：</span>}
+    <div className="flex min-w-0 items-start gap-1.5">
+      {label && <span className="w-28 shrink-0 pt-1.5 text-right text-body-sm font-medium text-text-muted">{label}：</span>}
       <div className="min-w-0 flex-1">
-        <textarea disabled={disabled} value={textValue} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className={'min-w-0 w-full resize-y rounded-md border border-border-subtle p-3 text-body-sm text-text-main outline-none transition-colors ' + (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary') + ' ' + minHeight} />
+        <textarea
+          disabled={disabled}
+          value={textValue}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+          className={
+            'min-w-0 w-full resize-y rounded border border-border-subtle p-2.5 text-body-sm text-text-main outline-none transition-colors ' +
+            (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary') +
+            ' ' +
+            minHeight
+          }
+        />
         {copyable && (
           <div className="mt-1 flex justify-end">
             <button
@@ -3153,7 +3181,7 @@ function HuanyuTextarea({
                 setCopied(true)
                 setTimeout(() => setCopied(false), 1200)
               }}
-              className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline disabled:cursor-not-allowed disabled:text-text-muted"
+              className="inline-flex items-center gap-1 text-xs text-primary hover:underline disabled:cursor-not-allowed disabled:text-text-muted"
             >
               <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>{copied ? 'check' : 'content_copy'}</span>
               {copied ? '已复制' : '复制内容'}
@@ -3172,7 +3200,7 @@ function workflowStatusStyle(status: OrderWorkflowStep['status']): { circle: str
   return { circle: 'border-border-subtle bg-white text-text-muted', text: 'text-text-muted', icon: 'radio_button_unchecked' }
 }
 
-function CompactLifecycleTimeline({ order }: { order: Order }): React.JSX.Element {
+function VerticalWorkflowTimeline({ order }: { order: Order }): React.JSX.Element {
   const [workflow, setWorkflow] = useState<OrderWorkflow | null>(null)
   const [loadError, setLoadError] = useState(false)
 
@@ -3187,52 +3215,119 @@ function CompactLifecycleTimeline({ order }: { order: Order }): React.JSX.Elemen
   }, [order.id])
 
   if (!workflow && !loadError) {
-    return <div className="mt-2 h-[58px] animate-pulse rounded-md bg-surface-container-high" />
+    return (
+      <div className="p-3 space-y-3">
+        <div className="h-4 w-20 rounded bg-surface-container-high animate-pulse" />
+        <div className="space-y-4">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="h-8 rounded bg-surface-container-high animate-pulse" />
+          ))}
+        </div>
+      </div>
+    )
   }
+
   if (loadError || !workflow) {
-    return <div className="mt-2 rounded-md bg-surface-container-high px-3 py-2 text-[11px] text-text-muted">业务服务步骤暂未加载</div>
+    return (
+      <div className="p-3 text-[11px] text-text-muted">
+        业务服务步骤暂未加载
+      </div>
+    )
   }
 
   return (
-    <div className="mt-2 rounded-md border border-border-subtle bg-[#fcfdff] px-3 py-2" title={`${workflow.serviceType} · 业务服务步骤`}>
-      <div className="mb-1.5 flex items-center gap-2">
-        <span className="text-[11px] font-bold text-text-main">业务服务步骤</span>
-        <span className="rounded bg-primary/8 px-1.5 py-0.5 text-[10px] font-semibold text-primary">{workflow.serviceType}</span>
-        <span className="text-[10px] text-text-muted">由表单与 AI 识别自动推进</span>
+    <div className="p-4 flex flex-col h-full">
+      <div className="mb-4 pb-2.5 border-b border-border-subtle flex items-center justify-between">
+        <span className="text-[13px] font-bold text-text-main flex items-center gap-1.5">
+          <span className="material-symbols-outlined text-primary text-[16px]">timeline</span>
+          服务步骤
+        </span>
+        <span className="rounded bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary truncate max-w-[90px]" title={workflow.serviceType}>
+          {workflow.serviceType}
+        </span>
       </div>
-      <div className="overflow-x-auto pb-1">
-        <div className="flex min-w-max items-start gap-0">
-          {workflow.steps.map((step, index) => {
-            const style = workflowStatusStyle(step.status)
-            const isPackage = step.kind === 'package'
-            return (
-              <div key={step.id} className="flex items-start">
-                <div className="w-[126px] text-center">
-                  <div className="flex justify-center">
-                    <span className={'flex h-7 w-7 items-center justify-center rounded-full border text-[15px] font-bold ' + style.circle}>
-                      <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>{style.icon}</span>
+
+      <div className="flex-1 relative pt-1">
+        {workflow.steps.map((step, index) => {
+          const style = workflowStatusStyle(step.status)
+          const isPackage = step.kind === 'package'
+          const isLast = index === workflow.steps.length - 1
+
+          return (
+            <div key={step.id} className={'relative flex items-start gap-3 group ' + (isLast ? 'pb-2' : 'pb-7')}>
+              {/* 垂直连接线 */}
+              {!isLast && (
+                <div
+                  className={
+                    'absolute left-[12px] top-6 bottom-0 w-0.5 ' +
+                    (step.status === 'completed' ? 'bg-action-green/50' : 'bg-border-subtle')
+                  }
+                />
+              )}
+
+              {/* 节点圆形图标 */}
+              <span
+                className={
+                  'relative z-10 flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full border text-[13px] font-bold shadow-2xs ' +
+                  style.circle
+                }
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>
+                  {style.icon}
+                </span>
+              </span>
+
+              {/* 步骤文本与状态 */}
+              <div className="min-w-0 flex-1 pt-0.5">
+                <div className="flex items-center justify-between gap-1.5">
+                  <span className={'text-[13px] font-bold truncate ' + style.text} title={step.name}>
+                    {step.name}
+                  </span>
+                  {step.status === 'in_progress' && (
+                    <span className="shrink-0 rounded bg-primary text-white text-[10px] px-1.5 py-0.2 font-medium">
+                      进行中
                     </span>
-                  </div>
-                  <div className={'mt-0.5 truncate text-[11px] font-bold ' + style.text}>
-                    {step.name}{step.occurrenceNo > 1 ? ` #${step.occurrenceNo}` : ''}
-                    {!step.required && <span className="ml-1 text-[9px] font-normal text-text-muted">可选</span>}
-                  </div>
-                  {isPackage && step.children.length > 0 && (
-                    <div className="mt-1 flex flex-wrap justify-center gap-1">
-                      {step.children.map((child) => {
-                        const childStyle = workflowStatusStyle(child.status)
-                        return <span key={child.id} className={'rounded border px-1 py-px text-[9px] ' + (child.status === 'in_progress' ? 'border-primary/35 bg-primary/8 text-primary' : child.status === 'completed' ? 'border-action-green/35 bg-action-green/8 text-action-green' : 'border-border-subtle bg-white text-text-muted')} title={`${child.name}：${child.status}`}>{childStyle.icon === 'check' ? '✓ ' : ''}{child.name}</span>
-                      })}
-                    </div>
+                  )}
+                  {step.status === 'completed' && (
+                    <span className="shrink-0 text-action-green text-[11px] font-bold">
+                      完成
+                    </span>
                   )}
                 </div>
-                {index < workflow.steps.length - 1 && (
-                  <div className={'mt-[13px] h-0.5 w-6 ' + (step.status === 'completed' ? 'bg-action-green/55' : 'bg-border-subtle')} />
+
+                {!step.required && (
+                  <span className="text-[10px] text-text-muted">可选</span>
+                )}
+
+                {/* 子清单 */}
+                {isPackage && step.children.length > 0 && (
+                  <div className="mt-2 flex flex-col gap-1.5">
+                    {step.children.map((child) => {
+                      const childStyle = workflowStatusStyle(child.status)
+                      return (
+                        <div
+                          key={child.id}
+                          className={
+                            'flex items-center gap-1.5 rounded border px-2 py-1 text-[11px] ' +
+                            (child.status === 'in_progress'
+                              ? 'border-primary/35 bg-primary/8 text-primary font-medium'
+                              : child.status === 'completed'
+                                ? 'border-action-green/35 bg-action-green/8 text-action-green font-medium'
+                                : 'border-border-subtle bg-white text-text-muted')
+                          }
+                          title={`${child.name}：${child.status}`}
+                        >
+                          <span className="material-symbols-outlined text-[13px]">{childStyle.icon}</span>
+                          <span className="truncate">{child.name}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
                 )}
               </div>
-            )
-          })}
-        </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
