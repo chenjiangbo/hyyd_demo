@@ -59,7 +59,20 @@ type MysqlParam = string | number | boolean | Date | Buffer | null
 function values(row: Record<string, unknown>, columns: readonly string[]): MysqlParam[] {
   return columns.map((column) => {
     const value = row[column]
-    if (value == null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value instanceof Date || Buffer.isBuffer(value)) return value ?? null
+    if (value == null) return null
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value instanceof Date || Buffer.isBuffer(value)) {
+      return value
+    }
+    if (typeof value === 'bigint') {
+      return value.toString()
+    }
+    // 处理 Prisma.Decimal 等数值对象，提取为纯净字符串而不是 JSON 双引号字符串
+    if (typeof value === 'object' && typeof (value as any).toString === 'function') {
+      const str = (value as any).toString()
+      if (str !== '[object Object]') {
+        return str
+      }
+    }
     // 当前三张表只应出现标量/bytea；出现意外 JSON 时保留可审计的文本而不是让参数化写入失败。
     return JSON.stringify(value)
   })

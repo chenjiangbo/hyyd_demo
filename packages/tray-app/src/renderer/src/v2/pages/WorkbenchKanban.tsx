@@ -802,17 +802,19 @@ function ApplicationCard({
         <span className={'shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium ' + origin.bg + ' ' + origin.text}>
           {origin.label}
         </span>
-        <button
-          type="button"
-          title="设置跟进提醒"
-          onClick={(e) => {
-            e.stopPropagation()
-            onOpenReminder(primary)
-          }}
-          className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded hover:bg-white text-text-muted hover:text-alert-orange transition-colors"
-        >
-          <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>notification_add</span>
-        </button>
+        {group.orders.length === 1 && (
+          <button
+            type="button"
+            title="设置跟进提醒"
+            onClick={(e) => {
+              e.stopPropagation()
+              onOpenReminder(primary)
+            }}
+            className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded hover:bg-white text-text-muted hover:text-alert-orange transition-colors"
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>notification_add</span>
+          </button>
+        )}
       </div>
 
       {/* 客户名 + 性别 + 多订单标识 */}
@@ -1017,7 +1019,7 @@ function ListView({
                   return [<OrderTreeRow key={group.key} group={group} order={group.primary} onOpen={onOpen} onOpenReminder={onOpenReminder} />]
                 }
                 return [
-                  <ApplicationTreeRow key={`${group.key}:application`} group={group} onOpen={onOpen} onOpenReminder={onOpenReminder} />,
+                  <ApplicationTreeRow key={`${group.key}:application`} group={group} onOpen={onOpen} />,
                   ...group.orders.map((order) => (
                     <OrderTreeRow key={`${group.key}:order:${order.id}`} group={group} order={order} child onOpen={onOpen} onOpenReminder={onOpenReminder} />
                   ))
@@ -1046,12 +1048,10 @@ function rowAccentOf(lane: LaneKey | null): string {
 
 function ApplicationTreeRow({
   group,
-  onOpen,
-  onOpenReminder
+  onOpen
 }: {
   group: ApplicationGroup
   onOpen: (group: ApplicationGroup, selectedOrderId?: number) => void
-  onOpenReminder: (order: Order) => void
 }): React.JSX.Element {
   const order = group.primary
   const services = dedupeServices(group.orders)
@@ -1083,20 +1083,7 @@ function ApplicationTreeRow({
       <td className="py-3 px-4"><DataCounts order={order} /></td>
       <td className="py-3 px-3"><SourceBadge order={order} /></td>
       <td className="py-3 px-4 text-[#454a5a] whitespace-nowrap" title={group.poolEnteredAt}>{relativeTime(group.poolEnteredAt)}</td>
-      <td className="py-3 px-3 text-center">
-        <button
-          type="button"
-          title="设置跟进提醒"
-          onClick={(e) => {
-            e.stopPropagation()
-            onOpenReminder(order)
-          }}
-          className="inline-flex items-center gap-1 rounded px-2 py-1 text-[12px] font-medium text-text-muted hover:text-primary hover:bg-white transition-colors border border-border-subtle hover:border-primary/40 bg-surface-bg shadow-2xs"
-        >
-          <span className="material-symbols-outlined text-[14px] text-alert-orange">notification_add</span>
-          提醒
-        </button>
-      </td>
+      <td className="py-3 px-3 text-center text-text-muted text-[12px]">—</td>
     </tr>
   )
 }
