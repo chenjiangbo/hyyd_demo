@@ -312,6 +312,158 @@ export function registerAdminRoutes(
       })
     })
 
+    // 系统提醒规则与说明：集中汇总定时任务、业务触发条件、客户端通知与防重机制。
+    fastify.get('/api/v1/admin/system-reminder-config', async (_request, reply) => {
+      return reply.send({
+        data: {
+          schedule: {
+            timeZone: '上海时区（中国标准时间）',
+            scanInterval: '系统后台常驻实时扫描（每 30 秒轮询）',
+            table: 'order_reminders',
+            dailyUploadTimes: ['11:30', '17:30'],
+            dailyUploadDescription: '每天上午 11:30 与下午 17:30，系统自动向所有在岗服务人员推送提醒，督促在上下班前后及时在手机端 App 上传通话录音与通话记录。'
+          },
+          rules: [
+            {
+              category: '日常提醒',
+              name: '通话录音与通话记录上传提醒',
+              trigger: '每天 11:30、17:30 两次固定时点到达时自动扫描触发',
+              target: '所有在岗服务人员',
+              content: '提醒内容: 请打开手机app上传通话录音和通话记录',
+              technicalConditions: [
+                '匹配当前上海时间处于 11:30~12:00（上午批次 1130）或 17:30~18:00（下午批次 1730）',
+                '扫描员工表 employee 中所有启用状态（enabled = 1）的服务人员',
+                '为每位在岗员工批量写入 order_no 为 "SYSTEM" 的广播型提醒记录'
+              ],
+              dedupeRule: '基于 auto:call_upload_reminder:{employeeId}:{YYYY-MM-DD}:{slot} 去重，每位员工在当天同一批次时段内仅推送 1 次。'
+            },
+            {
+              category: '约住院服务',
+              name: '约住院排队跟进提醒',
+              trigger: '约住院服务进行中，自步骤激活起每满 3 天上午 09:00',
+              target: '订单责任客户经理',
+              content: '订单号: COD202609150012\n申请时间: 2026-09-14 09:30:00\n提醒内容: 客户意向的住院时间前还没有预约成功，请关注！',
+              technicalConditions: [
+                '步骤表 b_order_service_steps 中匹配步骤编码 step_code = "hospital_booking"',
+                '步骤状态处于待处理 pending 或进行中 in_progress',
+                '订单未被取消（status NOT LIKE "%取消%"）且未完结（status != "已完成"）',
+                '计算步骤激活时间差 (当前时间 - 激活时间) >= 3 天，且天数满足 3 的倍数（每满 3 天）',
+                '当前时间达到上午 09:00 后触发'
+              ],
+              dedupeRule: '基于 auto:hospital_booking:{sourceOrderNo}:{YYYY-MM-DD} 去重，同一订单在满足周期的当天仅生成 1 次提醒。'
+            },
+            {
+              category: '陪诊服务',
+              name: '陪诊未指派人员超时预警',
+              trigger: '前置步骤完成满 1 小时仍未指派陪诊员',
+              target: '订单责任客户经理',
+              content: '订单号: COD202609170038\n申请时间: 2026-09-17 10:15:00\n提醒内容: 陪诊人员没有落实，请关注！',
+              technicalConditions: [
+                '前置步骤（挂号 registration / 检查预约 check_booking / 约住院 hospital_booking）状态为已完成 completed',
+                '前置步骤完成时间 completed_at 满足已满 1 小时（completed_at <= now - 1 hour）且在 3 天内',
+                '检查寰宇订单表 HY_FACT_DDCX_NEW.PZR 为空，且陪诊人员关联表 fact_hy_pzrxx 无对应派单记录',
+                '订单关联的责任客户经理 assigned_employee_id 存在且订单未取消/未完结'
+              ],
+              dedupeRule: '基于 auto:escort_unassigned:{sourceOrderNo} 去重，同一订单在未指派状态下全局仅告警 1 次。'
+            },
+            {
+              category: '陪诊服务',
+              name: '陪诊前一天出工未反馈预警',
+              trigger: '次日就诊的陪诊订单，前一天 11:00 发出通知，截至 13:00 仍未收到出工反馈',
+              target: '订单责任客户经理',
+              content: '订单号: COD202609170056\n申请时间: 2026-09-16 14:20:00\n提醒内容: 陪诊人员没有第一次反馈信息，请关注！',
+              technicalConditions: [
+                '订单服务日期（BBQ_FW 或 DATE_FW）等于次日（tomorrow）',
+                '陪诊人员（PZR）已指派落实，前一天 11:00 系统已发送确认短信',
+                '当前时间到达 13:00（hours >= 13）',
+                '在陪诊反馈表 fact_hy_pzfk（feedback_type = "pre_day"）与原系统反馈表中均未查询到反馈确认记录'
+              ],
+              dedupeRule: '基于 auto:escort_prev_day_unack:{sourceOrderNo}:{YYYY-MM-DD} 去重，同一订单在就诊前一天 13:00 仅触发 1 次。'
+            },
+            {
+              category: '陪诊服务',
+              name: '陪诊前一天拒绝出工报警',
+              trigger: '次日就诊的陪诊订单，陪诊员在反馈中明确回复【无法出工】',
+              target: '订单责任客户经理',
+              content: '订单号: COD202609170072\n申请时间: 2026-09-16 16:40:00\n提醒内容: 陪诊人员反馈【无法出工】（原因：家中有急事无法出工），请立即处理！',
+              technicalConditions: [
+                '订单服务日期为次日（tomorrow）',
+                '陪诊反馈表 fact_hy_pzfk 收到前一天反馈（feedback_type = "pre_day"）且出工意向为否（will_attend = false）',
+                '提取反馈记录中的具体原因备注 remark，动态拼入告警文案'
+              ],
+              dedupeRule: '基于 auto:escort_pre_day_reject:{sourceOrderNo}:{YYYY-MM-DD} 去重，收到拒单反馈时立即生成报警。'
+            },
+            {
+              category: '陪诊服务',
+              name: '陪诊当天出工未反馈报警',
+              trigger: '今日就诊的陪诊订单，当天 07:00 发出通知，截至 07:20 仍未收到出工打卡反馈',
+              target: '订单责任客户经理',
+              content: '订单号: COD202609170089\n申请时间: 2026-09-16 11:05:00\n提醒内容: 陪诊人员没有第一次反馈信息，请关注！',
+              technicalConditions: [
+                '订单服务日期等于当日（today）',
+                '陪诊人员已指派落实，当天 07:00 系统已发送晨间确认通知',
+                '当前时间到达 07:20（hours === 7 && minutes >= 20 或 hours > 7）',
+                '在陪诊反馈表 fact_hy_pzfk（feedback_type = "same_day"）与原系统中均无出工反馈记录'
+              ],
+              dedupeRule: '基于 auto:escort_same_day_unack:{sourceOrderNo}:{YYYY-MM-DD} 去重，同一订单在就诊当天 07:20 仅触发 1 次。'
+            },
+            {
+              category: '陪诊服务',
+              name: '陪诊当天拒绝出工紧急报警',
+              trigger: '今日就诊的陪诊订单，陪诊员当天反馈【无法出工】',
+              target: '订单责任客户经理',
+              content: '订单号: COD202609170095\n申请时间: 2026-09-16 18:30:00\n提醒内容: 陪诊人员当天反馈【无法出工】（原因：突发身体不适），请紧急处理！',
+              technicalConditions: [
+                '订单服务日期为当日（today）',
+                '当天反馈表 fact_hy_pzfk 中收到当日打卡拒单（feedback_type = "same_day" 且 will_attend = false）',
+                '最高优先级极速报警订单责任客户经理与现场督导'
+              ],
+              dedupeRule: '基于 auto:escort_same_day_reject:{sourceOrderNo}:{YYYY-MM-DD} 去重，收到当天拒单时即刻触发。'
+            },
+            {
+              category: '住院陪护',
+              name: '确认护工开始时间提醒',
+              trigger: '客户入院后尚未确定护工进场时间，自激活起每满 2 天上午 09:00',
+              target: '订单责任客户经理',
+              content: '订单号: COD202609150041\n申请时间: 2026-09-15 08:50:00\n提醒内容: 客户处于住院期间，请定期关注客户满意度情况！',
+              technicalConditions: [
+                '服务类型为住院护工协助，订单处于未完结状态',
+                '护工实际开始时间 care_start_time 仍为空（尚未确定）',
+                '自服务步骤激活起天数差 >= 2 天且满足 2 的倍数（每满 2 天）',
+                '当前时间达到上午 09:00 后触发'
+              ],
+              dedupeRule: '基于 auto:care_start_unassigned:{sourceOrderNo}:{YYYY-MM-DD} 去重，同一订单每 2 天在上午 09:00 仅提醒 1 次。'
+            },
+            {
+              category: '住院陪护',
+              name: '住院陪护结束前 2 工作日提醒',
+              trigger: '护工服务结束日前 2 个工作日（自动扣除法定节假日与周末）上午 09:00',
+              target: '订单责任客户经理',
+              content: '订单号: COD202609100019\n申请时间: 2026-09-10 15:20:00\n提醒内容: 客户出院时间到了，请关注客户后续行程！',
+              technicalConditions: [
+                '获取订单护工服务结束日期 care_end_date',
+                '调用中国工作日日历算法 subtractWorkdays(care_end_date, 2)，精准扣除法定节假日与调休周末',
+                '当前日期达到该目标工作日且时间达到上午 09:00'
+              ],
+              dedupeRule: '基于 auto:care_end_notify:{sourceOrderNo} 去重，同一订单在结束前 2 工作日全局仅触发 1 次。'
+            }
+          ],
+          clientNotification: {
+            display: '电脑桌面右下角独立置顶悬浮弹窗（伴随清脆提示音，不被其他软件遮挡）',
+            actions: [
+              { name: '点击单号 / 一键复制', detail: '点击单号可直接在后台工作台定位到该订单；点击复制图标可快速复制单号。' },
+              { name: '延迟 10 分钟', detail: '若员工正在通话或忙碌中，点击后系统将在 10 分钟后再次提醒。' },
+              { name: '标记已完成', detail: '员工核实并处理完毕后点击，该提醒归档并自动关闭弹窗。' }
+            ]
+          },
+          storage: {
+            table: 'order_reminders',
+            fields: 'id, order_no, employee_id, type, content, remind_time, status, extra_data, created_at, updated_at'
+          }
+        }
+      })
+    })
+
     // 服务步骤配置：订单新建时从已发布配置生成实例，配置的后续编辑不会改写历史订单实例。
     fastify.get('/api/v1/admin/workflow-templates', async (_request, reply) => {
       const templates = await prisma.$queryRaw<Array<{ id: bigint; code: string; version: number; name: string; service_type: string; description: string | null; status: string }>>`

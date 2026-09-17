@@ -89,8 +89,15 @@ export async function listHuanyuChannels(rawSearch: unknown): Promise<HuanyuChan
 }
 
 export async function listHuanyuChannelProducts(channelId: unknown, rawSearch: unknown): Promise<HuanyuChannelProductOption[]> {
-  const channel = searchTerm(channelId).slice(0, 4)
+  let channel = searchTerm(channelId).slice(0, 4)
   if (!channel) return []
+  if (!/^\d{4}$/.test(channel)) {
+    const [cRows] = await readOnlyPool().execute<RowDataPacket[]>(
+      `SELECT CAST(id AS CHAR) AS id FROM dim_hy_qd WHERE name = ? OR id = ? LIMIT 1`,
+      [channel, channel]
+    )
+    if (cRows[0]?.id) channel = String(cRows[0].id)
+  }
   const search = searchTerm(rawSearch)
   const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
     `SELECT CAST(id AS CHAR) AS id, name, nbyjcp, nbejcp, CPJG AS price
@@ -204,7 +211,7 @@ export async function listHuanyuBdUsers(rawSearch: unknown): Promise<HuanyuChann
        FROM dim_bdyh
       WHERE (? = '' OR CAST(userid_ AS CHAR) LIKE CONCAT('%', ?, '%') OR CAPTION_ LIKE CONCAT('%', ?, '%'))
       ORDER BY userid_
-      LIMIT 100`,
+      LIMIT 500`,
     [search, search, search]
   )
   return rows.map((row) => ({ id: String(row.id), name: String(row.name ?? '') }))
@@ -217,15 +224,22 @@ export async function listHuanyuHospitals(rawSearch: unknown): Promise<HuanyuCha
        FROM dim_hy_yywh
       WHERE (? = '' OR CAST(id AS CHAR) LIKE CONCAT('%', ?, '%') OR name LIKE CONCAT('%', ?, '%'))
       ORDER BY id
-      LIMIT 100`,
+      LIMIT 1000`,
     [search, search, search]
   )
   return rows.map((row) => ({ id: String(row.id), name: String(row.name ?? '') }))
 }
 
 export async function listHuanyuHospitalAddresses(hospitalId: unknown, rawSearch: unknown): Promise<HuanyuChannelOption[]> {
-  const hospital = searchTerm(hospitalId)
+  let hospital = searchTerm(hospitalId)
   if (!hospital) return []
+  if (!/^\d{4}$/.test(hospital)) {
+    const [hRows] = await readOnlyPool().execute<RowDataPacket[]>(
+      `SELECT CAST(id AS CHAR) AS id FROM dim_hy_yywh WHERE name = ? OR id = ? LIMIT 1`,
+      [hospital, hospital]
+    )
+    if (hRows[0]?.id) hospital = String(hRows[0].id)
+  }
   const search = searchTerm(rawSearch)
   const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
     `SELECT CAST(DZ_ID AS CHAR) AS id, ADDRESS AS name
@@ -233,15 +247,22 @@ export async function listHuanyuHospitalAddresses(hospitalId: unknown, rawSearch
       WHERE LEFT(CAST(DZ_ID AS CHAR), 4) = ?
         AND (? = '' OR ADDRESS LIKE CONCAT('%', ?, '%'))
       ORDER BY DZ_ID
-      LIMIT 100`,
+      LIMIT 500`,
     [hospital, search, search]
   )
   return rows.map((row) => ({ id: String(row.id), name: String(row.name ?? '') }))
 }
 
 export async function listHuanyuHospitalDepartments(hospitalId: unknown, rawSearch: unknown): Promise<HuanyuHospitalDepartmentOption[]> {
-  const hospital = searchTerm(hospitalId)
+  let hospital = searchTerm(hospitalId)
   if (!hospital) return []
+  if (!/^\d{4}$/.test(hospital)) {
+    const [hRows] = await readOnlyPool().execute<RowDataPacket[]>(
+      `SELECT CAST(id AS CHAR) AS id FROM dim_hy_yywh WHERE name = ? OR id = ? LIMIT 1`,
+      [hospital, hospital]
+    )
+    if (hRows[0]?.id) hospital = String(hRows[0].id)
+  }
   const search = searchTerm(rawSearch)
   const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
     `SELECT CAST(ks.ID AS CHAR) AS id,
@@ -254,7 +275,7 @@ export async function listHuanyuHospitalDepartments(hospitalId: unknown, rawSear
       WHERE CAST(ks.id_yy AS CHAR) = ?
         AND (? = '' OR ks.name LIKE CONCAT('%', ?, '%'))
       ORDER BY ks.ID
-      LIMIT 100`,
+      LIMIT 500`,
     [hospital, search, search]
   )
   return rows.map((row) => ({
@@ -266,9 +287,16 @@ export async function listHuanyuHospitalDepartments(hospitalId: unknown, rawSear
 }
 
 export async function listHuanyuHospitalDoctors(hospitalId: unknown, departmentId: unknown, rawSearch: unknown): Promise<HuanyuDoctorOption[]> {
-  const hospital = searchTerm(hospitalId)
-  const department = searchTerm(departmentId)
+  let hospital = searchTerm(hospitalId)
+  let department = searchTerm(departmentId)
   if (!hospital || !department) return []
+  if (!/^\d{4}$/.test(hospital)) {
+    const [hRows] = await readOnlyPool().execute<RowDataPacket[]>(
+      `SELECT CAST(id AS CHAR) AS id FROM dim_hy_yywh WHERE name = ? OR id = ? LIMIT 1`,
+      [hospital, hospital]
+    )
+    if (hRows[0]?.id) hospital = String(hRows[0].id)
+  }
   const search = searchTerm(rawSearch)
   const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
     `SELECT CAST(ID AS CHAR) AS id, name, ZC AS expertLevel
@@ -318,4 +346,60 @@ export async function listHuanyuEscorts(rawSearch: unknown): Promise<HuanyuEscor
     phone: String(row.phone ?? ''),
     area: String(row.area ?? '')
   }))
+}
+
+export async function findHuanyuHospitalById(id: string): Promise<HuanyuChannelOption | null> {
+  const target = searchTerm(id)
+  if (!target) return null
+  const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
+    `SELECT CAST(id AS CHAR) AS id, name
+       FROM dim_hy_yywh
+      WHERE CAST(id AS CHAR) = ?
+      LIMIT 1`,
+    [target]
+  )
+  const row = rows[0]
+  return row ? { id: String(row.id), name: String(row.name ?? '') } : null
+}
+
+export async function findHuanyuDepartmentById(id: string): Promise<HuanyuHospitalDepartmentOption | null> {
+  const target = searchTerm(id)
+  if (!target) return null
+  const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
+    `SELECT CAST(ks.ID AS CHAR) AS id,
+            ks.name,
+            COALESCE(kswh.name, '') AS internalLevelOne,
+            COALESCE(xfks.name, '') AS internalLevelTwo
+       FROM dim_hy_yy_ks AS ks
+       LEFT JOIN dim_hy_kswh AS kswh ON CAST(kswh.id AS CHAR) = CAST(ks.ksdl AS CHAR)
+       LEFT JOIN dim_hy_xfks AS xfks ON CAST(xfks.id AS CHAR) = CAST(ks.ksxf AS CHAR)
+      WHERE CAST(ks.ID AS CHAR) = ?
+      LIMIT 1`,
+    [target]
+  )
+  const row = rows[0]
+  return row ? {
+    id: String(row.id),
+    name: String(row.name ?? ''),
+    internalLevelOne: String(row.internalLevelOne ?? ''),
+    internalLevelTwo: String(row.internalLevelTwo ?? '')
+  } : null
+}
+
+export async function findHuanyuDoctorById(id: string): Promise<HuanyuDoctorOption | null> {
+  const target = searchTerm(id)
+  if (!target) return null
+  const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
+    `SELECT CAST(ID AS CHAR) AS id, name, ZC AS expertLevel
+       FROM dim_hy_ys
+      WHERE CAST(ID AS CHAR) = ?
+      LIMIT 1`,
+    [target]
+  )
+  const row = rows[0]
+  return row ? {
+    id: String(row.id),
+    name: String(row.name ?? ''),
+    expertLevel: String(row.expertLevel ?? '')
+  } : null
 }

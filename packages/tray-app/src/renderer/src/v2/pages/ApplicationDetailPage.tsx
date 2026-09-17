@@ -1364,16 +1364,19 @@ function HuanyuOrderForm({
       doctor: 'doctor',
       expert_level: 'expertLevel',
       service_remark: 'serviceRemark',
-      appointment_time: 'responseTime',
-      appointment_success_time: 'bookingFeedbackTime',
+      request_time: 'requestTime',
+      response_time: 'responseTime',
       service_start_time: 'serviceStartTime',
+      appointment_success_time: 'bookingFeedbackTime',
       latest_ticket_time: 'latestTicketTime',
+      escort_service_date: 'escortServiceDate',
       registration_fee_amount: 'registrationFee',
       escort_name: 'escortName',
       escort_phone: 'escortPhone',
-      escort_service_date: 'escortServiceDate',
       escort_service_summary: 'escortSummary',
-      hospitalization_appointment_time: 'responseTime',
+      inspection_booking_time: 'latestTicketTime',
+      inspection_actual_time: 'latestTicketTime',
+      hospitalization_appointment_time: 'bookingFeedbackTime',
       caregiver_start_time: 'serviceStartTime'
     }
 
@@ -1397,12 +1400,20 @@ function HuanyuOrderForm({
         if (key === 'hospital' && matchedHospital) {
           next.hospital = matchedHospital.id
         } else {
-          next[key] = ['responseTime', 'bookingFeedbackTime', 'serviceStartTime', 'latestTicketTime', 'escortServiceDate'].includes(key)
+          next[key] = ['requestTime', 'responseTime', 'bookingFeedbackTime', 'serviceStartTime', 'latestTicketTime', 'escortServiceDate'].includes(key)
             ? (toHuanyuDateTimeLocal(candidate.value) || candidate.value)
             : candidate.value
         }
       }
     }
+
+    // 需求时间与应答时间联动：保持两者一致
+    if (next.requestTime && (!next.responseTime || !String(next.responseTime).trim())) {
+      next.responseTime = next.requestTime
+    } else if (next.responseTime && (!next.requestTime || !String(next.requestTime).trim())) {
+      next.requestTime = next.responseTime
+    }
+
     if (extractedEscortName && (!next.escortName || !String(next.escortName).trim())) {
       next.escortName = extractedEscortName
     }
@@ -1488,12 +1499,20 @@ function HuanyuOrderForm({
   const [expertSearch, setExpertSearch] = useState('')
   const [expertOptions, setExpertOptions] = useState<HuanyuChannelOption[]>([])
   const [escortOptions, setEscortOptions] = useState<HuanyuEscortOption[]>([])
+  const [loadedMap, setLoadedMap] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     let active = true
     fetchHuanyuEscorts('')
-      .then((options) => active && setEscortOptions(options))
-      .catch(() => {})
+      .then((options) => {
+        if (!active) return
+        setEscortOptions(options)
+        setLoadedMap((prev) => ({ ...prev, escort: true }))
+      })
+      .catch(() => {
+        if (!active) return
+        setLoadedMap((prev) => ({ ...prev, escort: true }))
+      })
     return () => { active = false }
   }, [])
 
@@ -1540,14 +1559,30 @@ function HuanyuOrderForm({
         }
 
         if (extractedEscortName || extractedEscortPhone || extractedEscortDate) {
+          let matchedEscort: HuanyuEscortOption | null = null
+          if (extractedEscortName) {
+            try {
+              const escorts = await fetchHuanyuEscorts(extractedEscortName)
+              matchedEscort = escorts.find((e) => e.name === extractedEscortName || e.id === extractedEscortName) || escorts[0] || null
+              if (matchedEscort) {
+                setEscortOptions((prev) => prev.some((e) => e.id === matchedEscort!.id) ? prev : [matchedEscort!, ...prev])
+              }
+            } catch {
+              // ignore
+            }
+          }
+
           setEscortRows((current) => {
             if (current.length === 0) return current
             const first = current[0]
             if (!first.escortName && extractedEscortName) {
               return current.map((r, i) => i === 0 ? {
                 ...r,
-                escortName: extractedEscortName || r.escortName,
-                phone: extractedEscortPhone || r.phone,
+                escortName: matchedEscort ? matchedEscort.id : (extractedEscortName || r.escortName),
+                escortType: matchedEscort ? matchedEscort.escortType : r.escortType,
+                phone: matchedEscort?.phone || extractedEscortPhone || r.phone,
+                area: matchedEscort ? matchedEscort.area : r.area,
+                sequence: r.sequence && r.sequence.trim() ? r.sequence : '1',
                 serviceDate: escortServiceDateInputValue(extractedEscortDate || '') || r.serviceDate
               } : r)
             }
@@ -1559,9 +1594,15 @@ function HuanyuOrderForm({
     return () => { active = false }
   }, [orderId, isCreate])
 
-  const channelId = typeof form.channel === 'string' ? form.channel : ''
-  const hospitalId = typeof form.hospital === 'string' ? form.hospital : ''
-  const departmentId = typeof form.department === 'string' ? form.department : ''
+  const channelId = typeof form.channel === 'string'
+    ? (channelOptions.find((c) => c.id === form.channel || c.name === form.channel)?.id || form.channel)
+    : ''
+  const hospitalId = typeof form.hospital === 'string'
+    ? (hospitalOptions.find((h) => h.id === form.hospital || h.name === form.hospital)?.id || form.hospital)
+    : ''
+  const departmentId = typeof form.department === 'string'
+    ? (departmentOptions.find((d) => d.id === form.department || d.name === form.department)?.id || form.department)
+    : ''
   const amountLocked = isHuanyuCancelledOrderStatus(form.orderStatus)
   const bdSelectable = form.bookingChannelType === '1' || form.bookingChannelType === '2'
   const doctorAllowsExpertSelection = typeof form.doctor === 'string' && form.doctor.endsWith('WXSYSXM')
@@ -1735,19 +1776,42 @@ function HuanyuOrderForm({
 
   useEffect(() => {
     let active = true
-    const timer = window.setTimeout(() => {
+    const timer = window.setTimeout(async () => {
       setChannelLoading(true)
       setChannelError(null)
-      fetchHuanyuChannels(channelSearch)
-        .then((options) => active && setChannelOptions(options))
-        .catch((error: unknown) => active && setChannelError(error instanceof Error ? error.message : 'B端渠道加载失败'))
-        .finally(() => active && setChannelLoading(false))
+      try {
+        let options = await fetchHuanyuChannels(channelSearch)
+        if (!active) return
+        if (form.channel && !options.some((item) => item.id === form.channel || item.name === form.channel)) {
+          const specific = await fetchHuanyuChannels(form.channel).catch(() => [])
+          if (specific.length > 0) {
+            const map = new Map<string, HuanyuChannelOption>()
+            specific.forEach((item) => map.set(item.id, item))
+            options.forEach((item) => map.set(item.id, item))
+            options = Array.from(map.values())
+          }
+        }
+        setChannelOptions(options)
+        setLoadedMap((prev) => ({ ...prev, channel: true }))
+        if (form.channel) {
+          const matched = options.find((item) => item.id === form.channel || item.name === form.channel)
+          if (matched && form.channel !== matched.id) {
+            setForm((current) => ({ ...current, channel: matched.id }))
+          }
+        }
+      } catch (error: unknown) {
+        if (!active) return
+        setChannelError(error instanceof Error ? error.message : 'B端渠道加载失败')
+        setLoadedMap((prev) => ({ ...prev, channel: true }))
+      } finally {
+        if (active) setChannelLoading(false)
+      }
     }, 180)
     return () => {
       active = false
       window.clearTimeout(timer)
     }
-  }, [channelSearch])
+  }, [channelSearch, form.channel])
 
   useEffect(() => {
     if (!channelId) {
@@ -1756,49 +1820,137 @@ function HuanyuOrderForm({
       return
     }
     let active = true
-    const timer = window.setTimeout(() => {
+    const timer = window.setTimeout(async () => {
       setServiceLoading(true)
       setServiceError(null)
-      fetchHuanyuChannelProducts(channelId, serviceSearch)
-        .then((options) => active && setServiceOptions(options))
-        .catch((error: unknown) => active && setServiceError(error instanceof Error ? error.message : 'B端渠道服务项目加载失败'))
-        .finally(() => active && setServiceLoading(false))
+      try {
+        let options = await fetchHuanyuChannelProducts(channelId, serviceSearch)
+        if (!active) return
+        if (form.channelService && !options.some((item) => item.id === form.channelService || item.name === form.channelService)) {
+          const specific = await fetchHuanyuChannelProducts(channelId, form.channelService).catch(() => [])
+          if (specific.length > 0) {
+            const map = new Map<string, HuanyuChannelProductOption>()
+            specific.forEach((item) => map.set(item.id, item))
+            options.forEach((item) => map.set(item.id, item))
+            options = Array.from(map.values())
+          }
+        }
+        setServiceOptions(options)
+        setLoadedMap((prev) => ({ ...prev, service: true }))
+        if (form.channelService) {
+          const matched = options.find((item) => item.id === form.channelService || item.name === form.channelService)
+          if (matched && form.channelService !== matched.id) {
+            setForm((current) => ({
+              ...current,
+              channelService: matched.id,
+              internalLevelOne: current.internalLevelOne || matched.internalLevelOne,
+              internalLevelTwo: current.internalLevelTwo || matched.internalLevelTwo
+            }))
+          }
+        }
+      } catch (error: unknown) {
+        if (!active) return
+        setServiceError(error instanceof Error ? error.message : 'B端渠道服务项目加载失败')
+        setLoadedMap((prev) => ({ ...prev, service: true }))
+      } finally {
+        if (active) setServiceLoading(false)
+      }
     }, 180)
     return () => {
       active = false
       window.clearTimeout(timer)
     }
-  }, [channelId, serviceSearch])
+  }, [channelId, serviceSearch, form.channelService])
 
   useEffect(() => {
     let active = true
     fetchHuanyuOrderStatuses()
-      .then((options) => active && setOrderStatusOptions(options))
-      .catch(() => active && setOrderStatusOptions([]))
+      .then((options) => {
+        if (!active) return
+        setOrderStatusOptions(options)
+        setLoadedMap((prev) => ({ ...prev, orderStatus: true }))
+        const current = form.orderStatus
+        if (typeof current === 'string' && current.trim()) {
+          const matched = options.find((item) => item.id === current || item.name === current)
+          if (matched && current !== matched.id) {
+            setForm((prev) => ({ ...prev, orderStatus: matched.id }))
+          }
+        }
+      })
+      .catch(() => {
+        if (!active) return
+        setOrderStatusOptions([])
+        setLoadedMap((prev) => ({ ...prev, orderStatus: true }))
+      })
     return () => { active = false }
   }, [])
 
   useEffect(() => {
     let active = true
     fetchHuanyuBookingChannelTypes()
-      .then((options) => active && setBookingChannelTypeOptions(options))
-      .catch(() => active && setBookingChannelTypeOptions([]))
+      .then((options) => {
+        if (!active) return
+        setBookingChannelTypeOptions(options)
+        setLoadedMap((prev) => ({ ...prev, bookingChannelType: true }))
+        const current = form.bookingChannelType
+        if (typeof current === 'string' && current.trim()) {
+          const matched = options.find((item) => item.id === current || item.name === current)
+          if (matched && current !== matched.id) {
+            setForm((prev) => ({ ...prev, bookingChannelType: matched.id }))
+          }
+        }
+      })
+      .catch(() => {
+        if (!active) return
+        setBookingChannelTypeOptions([])
+        setLoadedMap((prev) => ({ ...prev, bookingChannelType: true }))
+      })
     return () => { active = false }
   }, [])
 
   useEffect(() => {
     let active = true
     fetchHuanyuDocumentTypes()
-      .then((options) => active && setDocumentTypeOptions(options))
-      .catch(() => active && setDocumentTypeOptions([]))
+      .then((options) => {
+        if (!active) return
+        setDocumentTypeOptions(options)
+        setLoadedMap((prev) => ({ ...prev, documentType: true }))
+        const current = form.documentType
+        if (typeof current === 'string' && current.trim()) {
+          const matched = options.find((item) => item.id === current || item.name === current)
+          if (matched && current !== matched.id) {
+            setForm((prev) => ({ ...prev, documentType: matched.id }))
+          }
+        }
+      })
+      .catch(() => {
+        if (!active) return
+        setDocumentTypeOptions([])
+        setLoadedMap((prev) => ({ ...prev, documentType: true }))
+      })
     return () => { active = false }
   }, [])
 
   useEffect(() => {
     let active = true
     fetchHuanyuMedicareTypes()
-      .then((options) => active && setMedicareTypeOptions(options))
-      .catch(() => active && setMedicareTypeOptions([]))
+      .then((options) => {
+        if (!active) return
+        setMedicareTypeOptions(options)
+        setLoadedMap((prev) => ({ ...prev, medicareType: true }))
+        const current = form.insuranceType
+        if (typeof current === 'string' && current.trim()) {
+          const matched = options.find((item) => item.id === current || item.name === current)
+          if (matched && current !== matched.id) {
+            setForm((prev) => ({ ...prev, insuranceType: matched.id }))
+          }
+        }
+      })
+      .catch(() => {
+        if (!active) return
+        setMedicareTypeOptions([])
+        setLoadedMap((prev) => ({ ...prev, medicareType: true }))
+      })
     return () => { active = false }
   }, [])
 
@@ -1809,32 +1961,78 @@ function HuanyuOrderForm({
       return
     }
     let active = true
-    const timer = window.setTimeout(() => {
+    const timer = window.setTimeout(async () => {
       setBdLoading(true)
       setBdError(null)
-      fetchHuanyuBdUsers(bdSearch)
-        .then((options) => active && setBdOptions(options))
-        .catch((error: unknown) => active && setBdError(error instanceof Error ? error.message : 'BD加载失败'))
-        .finally(() => active && setBdLoading(false))
+      try {
+        let options = await fetchHuanyuBdUsers(bdSearch)
+        if (!active) return
+        if (form.bd && form.bd !== '无' && !options.some((item) => item.id === form.bd || item.name === form.bd)) {
+          const specific = await fetchHuanyuBdUsers(form.bd).catch(() => [])
+          if (specific.length > 0) {
+            const map = new Map<string, HuanyuChannelOption>()
+            specific.forEach((item) => map.set(item.id, item))
+            options.forEach((item) => map.set(item.id, item))
+            options = Array.from(map.values())
+          }
+        }
+        setBdOptions(options)
+        setLoadedMap((prev) => ({ ...prev, bd: true }))
+        if (form.bd && form.bd !== '无') {
+          const matched = options.find((item) => item.id === form.bd || item.name === form.bd)
+          if (matched && form.bd !== matched.id) {
+            setForm((current) => ({ ...current, bd: matched.id }))
+          }
+        }
+      } catch (error: unknown) {
+        if (!active) return
+        setBdError(error instanceof Error ? error.message : 'BD加载失败')
+        setLoadedMap((prev) => ({ ...prev, bd: true }))
+      } finally {
+        if (active) setBdLoading(false)
+      }
     }, 180)
     return () => {
       active = false
       window.clearTimeout(timer)
     }
-  }, [bdSelectable, bdSearch])
+  }, [bdSelectable, bdSearch, form.bd])
 
   useEffect(() => {
     let active = true
-    const timer = window.setTimeout(() => {
+    const timer = window.setTimeout(async () => {
       setHospitalLoading(true)
       setHospitalError(null)
-      fetchHuanyuHospitals(hospitalSearch)
-        .then((options) => active && setHospitalOptions(options))
-        .catch((error: unknown) => active && setHospitalError(error instanceof Error ? error.message : '医院加载失败'))
-        .finally(() => active && setHospitalLoading(false))
+      try {
+        let options = await fetchHuanyuHospitals(hospitalSearch)
+        if (!active) return
+        if (form.hospital && !options.some((item) => item.id === form.hospital || item.name === form.hospital)) {
+          const specific = await fetchHuanyuHospitals(form.hospital).catch(() => [])
+          if (specific.length > 0) {
+            const map = new Map<string, HuanyuChannelOption>()
+            specific.forEach((item) => map.set(item.id, item))
+            options.forEach((item) => map.set(item.id, item))
+            options = Array.from(map.values())
+          }
+        }
+        setHospitalOptions(options)
+        setLoadedMap((prev) => ({ ...prev, hospital: true }))
+        if (form.hospital) {
+          const matched = options.find((item) => item.id === form.hospital || item.name === form.hospital)
+          if (matched && form.hospital !== matched.id) {
+            setForm((current) => ({ ...current, hospital: matched.id }))
+          }
+        }
+      } catch (error: unknown) {
+        if (!active) return
+        setHospitalError(error instanceof Error ? error.message : '医院加载失败')
+        setLoadedMap((prev) => ({ ...prev, hospital: true }))
+      } finally {
+        if (active) setHospitalLoading(false)
+      }
     }, 180)
     return () => { active = false; window.clearTimeout(timer) }
-  }, [hospitalSearch])
+  }, [hospitalSearch, form.hospital])
 
   useEffect(() => {
     if (!hospitalId) {
@@ -1844,43 +2042,81 @@ function HuanyuOrderForm({
       return
     }
     let active = true
-    const timer = window.setTimeout(() => {
+    const timer = window.setTimeout(async () => {
       setAddressLoading(true)
       setAddressError(null)
-      fetchHuanyuHospitalAddresses(hospitalId, addressSearch)
-        .then((options) => active && setAddressOptions(options))
-        .catch((error: unknown) => active && setAddressError(error instanceof Error ? error.message : '医院地址加载失败'))
-        .finally(() => active && setAddressLoading(false))
+      try {
+        let options = await fetchHuanyuHospitalAddresses(hospitalId, addressSearch)
+        if (!active) return
+        if (form.hospitalAddress && !options.some((item) => item.id === form.hospitalAddress || item.name === form.hospitalAddress)) {
+          const specific = await fetchHuanyuHospitalAddresses(hospitalId, form.hospitalAddress).catch(() => [])
+          if (specific.length > 0) {
+            const map = new Map<string, HuanyuChannelOption>()
+            specific.forEach((item) => map.set(item.id, item))
+            options.forEach((item) => map.set(item.id, item))
+            options = Array.from(map.values())
+          }
+        }
+        setAddressOptions(options)
+        setLoadedMap((prev) => ({ ...prev, address: true }))
+        if (form.hospitalAddress) {
+          const matched = options.find((item) => item.id === form.hospitalAddress || item.name === form.hospitalAddress || form.hospitalAddress.includes(item.name) || item.name.includes(form.hospitalAddress))
+          if (matched && form.hospitalAddress !== matched.id) {
+            setForm((current) => ({ ...current, hospitalAddress: matched.id }))
+          }
+        }
+      } catch (error: unknown) {
+        if (!active) return
+        setAddressError(error instanceof Error ? error.message : '医院地址加载失败')
+        setLoadedMap((prev) => ({ ...prev, address: true }))
+      } finally {
+        if (active) setAddressLoading(false)
+      }
     }, 180)
     return () => { active = false; window.clearTimeout(timer) }
-  }, [hospitalId, addressSearch])
+  }, [hospitalId, addressSearch, form.hospitalAddress])
 
   useEffect(() => {
     if (!hospitalId) return
     let active = true
-    const timer = window.setTimeout(() => {
+    const timer = window.setTimeout(async () => {
       setDepartmentLoading(true)
       setDepartmentError(null)
-      fetchHuanyuHospitalDepartments(hospitalId, departmentSearch)
-        .then((options) => {
-          if (!active) return
-          setDepartmentOptions(options)
-          if (form.department && (!form.internalHospitalLevelOne || !form.internalHospitalLevelTwo)) {
-            const matched = options.find((item) => item.id === form.department || item.name === form.department)
-            if (matched) {
-              setForm((current) => ({
-                ...current,
-                internalHospitalLevelOne: current.internalHospitalLevelOne || matched.internalLevelOne,
-                internalHospitalLevelTwo: current.internalHospitalLevelTwo || matched.internalLevelTwo
-              }))
-            }
+      try {
+        let options = await fetchHuanyuHospitalDepartments(hospitalId, departmentSearch)
+        if (!active) return
+        if (form.department && !options.some((item) => item.id === form.department || item.name === form.department)) {
+          const specific = await fetchHuanyuHospitalDepartments(hospitalId, form.department).catch(() => [])
+          if (specific.length > 0) {
+            const map = new Map<string, HuanyuHospitalDepartmentOption>()
+            specific.forEach((item) => map.set(item.id, item))
+            options.forEach((item) => map.set(item.id, item))
+            options = Array.from(map.values())
           }
-        })
-        .catch((error: unknown) => active && setDepartmentError(error instanceof Error ? error.message : '科室加载失败'))
-        .finally(() => active && setDepartmentLoading(false))
+        }
+        setDepartmentOptions(options)
+        setLoadedMap((prev) => ({ ...prev, department: true }))
+        if (form.department) {
+          const matched = options.find((item) => item.id === form.department || item.name === form.department)
+          if (matched) {
+            setForm((current) => ({
+              ...current,
+              department: matched.id,
+              internalHospitalLevelOne: current.internalHospitalLevelOne || matched.internalLevelOne,
+              internalHospitalLevelTwo: current.internalHospitalLevelTwo || matched.internalLevelTwo
+            }))
+          }
+        }
+      } catch (error: unknown) {
+        if (!active) return
+        setDepartmentError(error instanceof Error ? error.message : '科室加载失败')
+        setLoadedMap((prev) => ({ ...prev, department: true }))
+      } finally {
+        if (active) setDepartmentLoading(false)
+      }
     }, 180)
     return () => { active = false; window.clearTimeout(timer) }
-  }, [hospitalId, departmentSearch, form.department, form.internalHospitalLevelOne, form.internalHospitalLevelTwo])
+  }, [hospitalId, departmentSearch, form.department])
 
   useEffect(() => {
     if (!hospitalId || !departmentId) {
@@ -1888,16 +2124,39 @@ function HuanyuOrderForm({
       return
     }
     let active = true
-    const timer = window.setTimeout(() => {
+    const timer = window.setTimeout(async () => {
       setDoctorLoading(true)
       setDoctorError(null)
-      fetchHuanyuHospitalDoctors(hospitalId, departmentId, doctorSearch)
-        .then((options) => active && setDoctorOptions(options))
-        .catch((error: unknown) => active && setDoctorError(error instanceof Error ? error.message : '医生加载失败'))
-        .finally(() => active && setDoctorLoading(false))
+      try {
+        let options = await fetchHuanyuHospitalDoctors(hospitalId, departmentId, doctorSearch)
+        if (!active) return
+        if (form.doctor && !options.some((item) => item.id === form.doctor || item.name === form.doctor)) {
+          const specific = await fetchHuanyuHospitalDoctors(hospitalId, departmentId, form.doctor).catch(() => [])
+          if (specific.length > 0) {
+            const map = new Map<string, HuanyuDoctorOption>()
+            specific.forEach((item) => map.set(item.id, item))
+            options.forEach((item) => map.set(item.id, item))
+            options = Array.from(map.values())
+          }
+        }
+        setDoctorOptions(options)
+        setLoadedMap((prev) => ({ ...prev, doctor: true }))
+        if (form.doctor) {
+          const matched = options.find((item) => item.id === form.doctor || item.name === form.doctor)
+          if (matched && form.doctor !== matched.id) {
+            setForm((current) => ({ ...current, doctor: matched.id }))
+          }
+        }
+      } catch (error: unknown) {
+        if (!active) return
+        setDoctorError(error instanceof Error ? error.message : '医生加载失败')
+        setLoadedMap((prev) => ({ ...prev, doctor: true }))
+      } finally {
+        if (active) setDoctorLoading(false)
+      }
     }, 180)
     return () => { active = false; window.clearTimeout(timer) }
-  }, [hospitalId, departmentId, doctorSearch])
+  }, [hospitalId, departmentId, doctorSearch, form.doctor])
 
   useEffect(() => {
     if (!doctorAllowsExpertSelection) {
@@ -1906,10 +2165,132 @@ function HuanyuOrderForm({
     }
     let active = true
     fetchHuanyuExpertLevels(expertSearch)
-      .then((options) => active && setExpertOptions(options))
-      .catch(() => active && setExpertOptions([]))
+      .then((options) => {
+        if (!active) return
+        setExpertOptions(options)
+        setLoadedMap((prev) => ({ ...prev, expert: true }))
+        if (form.expertLevel) {
+          const matched = options.find((item) => item.id === form.expertLevel || item.name === form.expertLevel)
+          if (matched && form.expertLevel !== matched.id) {
+            setForm((current) => ({ ...current, expertLevel: matched.id }))
+          }
+        }
+      })
+      .catch(() => {
+        if (!active) return
+        setExpertOptions([])
+        setLoadedMap((prev) => ({ ...prev, expert: true }))
+      })
     return () => { active = false }
   }, [doctorAllowsExpertSelection, expertSearch])
+
+  const unmatchedFields = useMemo(() => {
+    const list: Array<{ label: string; value: string }> = []
+
+    // 1. 医院
+    const hospVal = typeof form.hospital === 'string' ? form.hospital.trim() : ''
+    if (hospVal && loadedMap.hospital && !hospitalLoading) {
+      const matched = hospitalOptions.find((o) => o.id === hospVal || o.name === hospVal)
+      if (!matched) list.push({ label: '医院', value: hospVal })
+    }
+
+    // 2. 医院地址
+    const addrVal = typeof form.hospitalAddress === 'string' ? form.hospitalAddress.trim() : ''
+    if (addrVal && hospitalId && loadedMap.address && !addressLoading) {
+      const matched = addressOptions.find((o) => o.id === addrVal || o.name === addrVal || addrVal.includes(o.name) || o.name.includes(addrVal))
+      if (!matched) list.push({ label: '医院地址', value: addrVal })
+    }
+
+    // 3. 科室
+    const deptVal = typeof form.department === 'string' ? form.department.trim() : ''
+    if (deptVal && hospitalId && loadedMap.department && !departmentLoading) {
+      const matched = departmentOptions.find((o) => o.id === deptVal || o.name === deptVal)
+      if (!matched) list.push({ label: '科室', value: deptVal })
+    }
+
+    // 4. 医生
+    const docVal = typeof form.doctor === 'string' ? form.doctor.trim() : ''
+    if (docVal && hospitalId && departmentId && loadedMap.doctor && !doctorLoading) {
+      const matched = doctorOptions.find((o) => o.id === docVal || o.name === docVal)
+      if (!matched) list.push({ label: '医生', value: docVal })
+    }
+
+    // 5. 专家级别
+    const expertVal = typeof form.expertLevel === 'string' ? form.expertLevel.trim() : ''
+    if (expertVal && doctorAllowsExpertSelection && loadedMap.expert) {
+      const matched = expertOptions.find((o) => o.id === expertVal || o.name === expertVal)
+      if (!matched) list.push({ label: '专家级别', value: expertVal })
+    }
+
+    // 6. B端渠道
+    const chanVal = typeof form.channel === 'string' ? form.channel.trim() : ''
+    if (chanVal && loadedMap.channel && !channelLoading) {
+      const matched = channelOptions.find((o) => o.id === chanVal || o.name === chanVal)
+      if (!matched) list.push({ label: 'B端渠道', value: chanVal })
+    }
+
+    // 7. B端渠道服务项目
+    const servVal = typeof form.channelService === 'string' ? form.channelService.trim() : ''
+    if (servVal && channelId && loadedMap.service && !serviceLoading) {
+      const matched = serviceOptions.find((o) => o.id === servVal || o.name === servVal)
+      if (!matched) list.push({ label: 'B端渠道服务项目', value: servVal })
+    }
+
+    // 8. BD
+    const bdVal = typeof form.bd === 'string' ? form.bd.trim() : ''
+    if (bdVal && bdVal !== '无' && bdSelectable && loadedMap.bd && !bdLoading) {
+      const matched = bdOptions.find((o) => o.id === bdVal || o.name === bdVal)
+      if (!matched) list.push({ label: 'BD', value: bdVal })
+    }
+
+    // 9. 陪诊人员
+    if (loadedMap.escort) {
+      escortRows.forEach((row, index) => {
+        const escortVal = row.escortName?.trim()
+        if (escortVal) {
+          const matched = escortOptions.find((o) => o.id === escortVal || o.name === escortVal)
+          if (!matched) {
+            const prefix = escortRows.length > 1 ? `陪诊人员(第${index + 1}行)` : '陪诊人员'
+            list.push({ label: prefix, value: escortVal })
+          }
+        }
+      })
+    }
+
+    return list
+  }, [
+    form.hospital,
+    form.hospitalAddress,
+    form.department,
+    form.doctor,
+    form.expertLevel,
+    form.channel,
+    form.channelService,
+    form.bd,
+    escortRows,
+    hospitalOptions,
+    addressOptions,
+    departmentOptions,
+    doctorOptions,
+    expertOptions,
+    channelOptions,
+    serviceOptions,
+    bdOptions,
+    escortOptions,
+    hospitalLoading,
+    addressLoading,
+    departmentLoading,
+    doctorLoading,
+    channelLoading,
+    serviceLoading,
+    bdLoading,
+    loadedMap,
+    hospitalId,
+    departmentId,
+    channelId,
+    bdSelectable,
+    doctorAllowsExpertSelection
+  ])
 
   function changeField(key: string, value: string | boolean): void {
     setForm((current) => {
@@ -2070,6 +2451,25 @@ function HuanyuOrderForm({
           </div>
         </div>
       </div>
+
+      {/* 未匹配系统维表提示栏 */}
+      {unmatchedFields.length > 0 && (
+        <div className="mx-3 mt-2 rounded border border-amber-300/80 bg-amber-50/90 px-2.5 py-1.5 text-xs text-amber-900 shadow-2xs flex flex-wrap items-center gap-x-2 gap-y-1">
+          <div className="inline-flex items-center gap-1 font-semibold text-amber-900 shrink-0">
+            <span className="material-symbols-outlined text-amber-600 text-[15px]">warning</span>
+            <span>检测到 {unmatchedFields.length} 个业务项未在系统维表中匹配到，请检查或者补充维表：</span>
+          </div>
+          <div className="inline-flex flex-wrap items-center gap-1.5">
+            {unmatchedFields.map((item) => (
+              <span key={item.label} className="inline-flex items-center gap-1 rounded bg-white px-2 py-0.5 border border-amber-300 text-[11px] font-medium text-amber-950 shadow-2xs">
+                <span className="font-semibold text-text-main">{item.label}：</span>
+                <span className="text-amber-900">{item.value}</span>
+                <span className="text-amber-700 font-normal">(未匹配)</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 表单内容滚动区 */}
       <div className="p-3 space-y-3">
@@ -2633,6 +3033,11 @@ function HuanyuTimeInformation({
                   onChange(timeKey, nextValue)
                   onChange(dateKey, huanyuDatePart(nextValue))
                   onChange(defaultTimeKey, huanyuTimePart(nextValue))
+                  if (timeKey === 'requestTime' && (!form.responseTime || form.responseTime === timeVal)) {
+                    onChange('responseTime', nextValue)
+                    onChange('responseDefaultDate', huanyuDatePart(nextValue))
+                    onChange('responseDefaultTime', huanyuTimePart(nextValue))
+                  }
                 }}
                 className="h-8 min-w-0 flex-1 rounded border border-border-subtle bg-white px-2.5 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary"
               />
@@ -2676,6 +3081,10 @@ function HuanyuEscortInformationTable({
   const [escortLoading, setEscortLoading] = useState(false)
   const [escortError, setEscortError] = useState<string | null>(null)
 
+  const rowsEscortLookupKey = useMemo(() => {
+    return rows.map((r) => `${r.escortName?.trim() || ''}#${r.escortType?.trim() || ''}#${r.area?.trim() || ''}#${r.phone?.trim() || ''}#${r.sequence?.trim() || ''}`).join(';')
+  }, [rows])
+
   useEffect(() => {
     let active = true
     const timer = window.setTimeout(async () => {
@@ -2702,27 +3111,42 @@ function HuanyuEscortInformationTable({
 
         setEscortOptions(options)
 
-        // 仅对缺少 phone/area/escortType 或名字需映射为 ID 的行进行补齐
+        // 对缺少 phone/area/escortType/sequence 或名字需映射为 ID 的行进行补齐
         if (onChangeRows) {
           const current = rowsRef.current
           let hasChanges = false
-          const next = current.map((row) => {
-            if (!row.escortName) return row
+          const next = current.map((row, index) => {
+            if (!row.escortName) {
+              const defaultSeq = row.sequence && row.sequence.trim() ? row.sequence : String(index + 1)
+              if (row.sequence !== defaultSeq) {
+                hasChanges = true
+                return { ...row, sequence: defaultSeq }
+              }
+              return row
+            }
             const matched = options.find((item) => item.id === row.escortName || item.name === row.escortName)
             if (matched) {
               const newName = matched.id
               const newType = row.escortType || matched.escortType
               const newPhone = row.phone || matched.phone
               const newArea = row.area || matched.area
-              if (row.escortName !== newName || row.escortType !== newType || row.phone !== newPhone || row.area !== newArea) {
+              const newSeq = row.sequence && row.sequence.trim() ? row.sequence : String(index + 1)
+              if (row.escortName !== newName || row.escortType !== newType || row.phone !== newPhone || row.area !== newArea || row.sequence !== newSeq) {
                 hasChanges = true
                 return {
                   ...row,
                   escortName: newName,
                   escortType: newType,
                   phone: newPhone,
-                  area: newArea
+                  area: newArea,
+                  sequence: newSeq
                 }
+              }
+            } else {
+              const newSeq = row.sequence && row.sequence.trim() ? row.sequence : String(index + 1)
+              if (row.sequence !== newSeq) {
+                hasChanges = true
+                return { ...row, sequence: newSeq }
               }
             }
             return row
@@ -2733,23 +3157,38 @@ function HuanyuEscortInformationTable({
         } else {
           setInternalRows((current) => {
             let hasChanges = false
-            const next = current.map((row) => {
-              if (!row.escortName) return row
+            const next = current.map((row, index) => {
+              if (!row.escortName) {
+                const defaultSeq = row.sequence && row.sequence.trim() ? row.sequence : String(index + 1)
+                if (row.sequence !== defaultSeq) {
+                  hasChanges = true
+                  return { ...row, sequence: defaultSeq }
+                }
+                return row
+              }
               const matched = options.find((item) => item.id === row.escortName || item.name === row.escortName)
               if (matched) {
                 const newName = matched.id
                 const newType = row.escortType || matched.escortType
                 const newPhone = row.phone || matched.phone
                 const newArea = row.area || matched.area
-                if (row.escortName !== newName || row.escortType !== newType || row.phone !== newPhone || row.area !== newArea) {
+                const newSeq = row.sequence && row.sequence.trim() ? row.sequence : String(index + 1)
+                if (row.escortName !== newName || row.escortType !== newType || row.phone !== newPhone || row.area !== newArea || row.sequence !== newSeq) {
                   hasChanges = true
                   return {
                     ...row,
                     escortName: newName,
                     escortType: newType,
                     phone: newPhone,
-                    area: newArea
+                    area: newArea,
+                    sequence: newSeq
                   }
+                }
+              } else {
+                const newSeq = row.sequence && row.sequence.trim() ? row.sequence : String(index + 1)
+                if (row.sequence !== newSeq) {
+                  hasChanges = true
+                  return { ...row, sequence: newSeq }
                 }
               }
               return row
@@ -2764,7 +3203,7 @@ function HuanyuEscortInformationTable({
       }
     }, 180)
     return () => { active = false; window.clearTimeout(timer) }
-  }, [escortSearch])
+  }, [escortSearch, rowsEscortLookupKey])
 
   function changeRow(id: number, field: Exclude<keyof HuanyuEscortRow, 'id' | 'orderNo'>, value: string): void {
     if (onChangeRows) {
@@ -2795,12 +3234,13 @@ function HuanyuEscortInformationTable({
   function selectEscort(rowId: number, escortId: string): void {
     const escort = escortOptions.find((item) => item.id === escortId || item.name === escortId)
     if (!escort) return
-    const updated = rows.map((row) => row.id === rowId ? {
+    const updated = rows.map((row, index) => row.id === rowId ? {
       ...row,
       escortName: escort.id,
       escortType: escort.escortType,
-      phone: escort.phone,
-      area: escort.area
+      phone: escort.phone || row.phone,
+      area: escort.area,
+      sequence: row.sequence && row.sequence.trim() ? row.sequence : String(index + 1)
     } : row)
     if (onChangeRows) {
       onChangeRows(updated)
@@ -2860,10 +3300,12 @@ function HuanyuEscortSelectCell({
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
+  const [isTyping, setIsTyping] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number }>({ top: 0, left: 0, width: 320 })
   const selected = options.find((option) => option.id === value || option.name === value)
-  const shownValue = open ? search : selected?.name ?? value
+  const currentName = selected?.name ?? value
+  const shownValue = open && isTyping ? search : currentName
 
   const updatePosition = useCallback(() => {
     if (!inputRef.current) return
@@ -2894,13 +3336,19 @@ function HuanyuEscortSelectCell({
         placeholder="搜索陪诊人员"
         onFocus={() => {
           setOpen(true)
+          setIsTyping(false)
           setSearch('')
           onSearch('')
           updatePosition()
+          inputRef.current?.select()
         }}
-        onBlur={() => window.setTimeout(() => setOpen(false), 200)}
+        onBlur={() => window.setTimeout(() => {
+          setOpen(false)
+          setIsTyping(false)
+        }, 200)}
         onChange={(event) => {
           const next = event.target.value
+          setIsTyping(true)
           setSearch(next)
           onSearch(next)
           setOpen(true)
@@ -2929,6 +3377,7 @@ function HuanyuEscortSelectCell({
               onClick={() => {
                 onChange(option.id)
                 setSearch('')
+                setIsTyping(false)
                 setOpen(false)
               }}
               className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-surface-bg"
@@ -3009,11 +3458,16 @@ function HuanyuSearchSelect({
   const currentValue = typeof value === 'string' ? value : ''
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
-  const selected = options.find((option) => option.id === currentValue)
-  const shownValue = open ? search : selected?.name ?? currentValue
+  const [isTyping, setIsTyping] = useState(false)
+  const selected = options.find((option) => option.id === currentValue || option.name === currentValue)
+  const currentName = selected?.name ?? currentValue
+  const shownValue = open && isTyping ? search : currentName
 
   function closeSoon(): void {
-    window.setTimeout(() => setOpen(false), 120)
+    window.setTimeout(() => {
+      setOpen(false)
+      setIsTyping(false)
+    }, 200)
   }
 
   return (
@@ -3024,21 +3478,26 @@ function HuanyuSearchSelect({
           value={shownValue}
           disabled={disabled}
           placeholder={disabled ? disabledPlaceholder : '输入搜索'}
-          onFocus={() => {
+          onFocus={(e) => {
             setOpen(true)
+            setIsTyping(false)
             setSearch('')
             onSearch('')
+            e.target.select()
           }}
           onBlur={closeSoon}
           onChange={(event) => {
             const next = event.target.value
+            setIsTyping(true)
             setSearch(next)
             onSearch(next)
             setOpen(true)
           }}
           className={
             'h-8 min-w-0 w-full rounded border border-border-subtle px-2.5 text-body-sm text-text-main outline-none transition-colors ' +
-            (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary')
+            (disabled
+              ? 'cursor-not-allowed bg-surface-container text-text-muted'
+              : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary')
           }
         />
         {open && !disabled && (
@@ -3054,6 +3513,7 @@ function HuanyuSearchSelect({
                 onClick={() => {
                   onChange(option.id)
                   setSearch('')
+                  setIsTyping(false)
                   setOpen(false)
                 }}
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm text-text-main hover:bg-surface-bg"
@@ -3082,7 +3542,8 @@ function HuanyuSelect({
 }): React.JSX.Element {
   const currentValue = typeof value === 'string' ? value : ''
   const normalizedOptions = options.map((option) => typeof option === 'string' ? { value: option, label: option } : option)
-  const visibleOptions = currentValue && !normalizedOptions.some((option) => option.value === currentValue)
+  const isMatched = normalizedOptions.some((option) => option.value === currentValue)
+  const visibleOptions = currentValue && !isMatched
     ? [{ value: currentValue, label: currentValue }, ...normalizedOptions]
     : normalizedOptions
   return (

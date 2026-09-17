@@ -103,7 +103,6 @@ export function setupReminderIPC(
   })
 
   ipcMain.handle('reminder:open-order', (_e, orderNo: string) => {
-    hideReminderWindow()
     showMainWindowFn()
     navigateOrderFn(orderNo)
     return { ok: true }

@@ -6,12 +6,13 @@ import { broadcastAdmin } from './adminBus.js'
 import { summarizeCall, summarizeMessages, summarizeFull } from '../llm/summaryService.js'
 import { getEnv } from '../env.js'
 import { extractOrderCandidate, resolveOrder, type OrderNoEntry } from '../lib/orderNoMatch.js'
+import { parseEscortDispatchTemplate } from '../lib/escortTemplateMatch.js'
 import { parseChatTime } from '../lib/chatTimeParser.js'
 import { extractKeyInfo, type KeyInfoMessage, type KeyInfoContext } from '../llm/keyInfoService.js'
 import { structureMessages, type StructInput } from '../lib/messageStructure.js'
 import { refreshApplicationBrief, refreshOrderBrief } from '../jobs/orderBriefRunner.js'
 import { getRecordingPlaybackInfo } from '../audioTranscode.js'
-import { findHuanyuChannelProductById, listHuanyuBdUsers, listHuanyuChannelProducts, listHuanyuChannels, listHuanyuEscorts, listHuanyuHospitalAddresses, listHuanyuHospitalDepartments, listHuanyuHospitalDoctors, listHuanyuHospitals } from '../db/remoteDictionary.js'
+import { findHuanyuChannelProductById, findHuanyuHospitalById, findHuanyuDepartmentById, findHuanyuDoctorById, listHuanyuBdUsers, listHuanyuChannelProducts, listHuanyuChannels, listHuanyuEscorts, listHuanyuHospitalAddresses, listHuanyuHospitalDepartments, listHuanyuHospitalDoctors, listHuanyuHospitals } from '../db/remoteDictionary.js'
 import { huanyuBookingChannelTypes, huanyuDocumentTypes, huanyuExpertLevels, huanyuMedicareTypes, huanyuOrderStatuses } from '../dictionaries/huanyuOrder.js'
 import { registerDictionaryManageRoutes } from './dictionaryManage.js'
 import { registerEscortFeedbackRoutes } from './escortFeedbackRoutes.js'
@@ -994,13 +995,29 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       escortList
     }
 
+    let displayHospital = orderObj.hospital
+    if (h.H_NAME) {
+      const hosp = await findHuanyuHospitalById(h.H_NAME).catch(() => null)
+      displayHospital = hosp?.name || h.H_NAME
+    }
+    let displayDept = orderObj.dept
+    if (h.H_KS) {
+      const d = await findHuanyuDepartmentById(h.H_KS).catch(() => null)
+      displayDept = d?.name || h.H_KS
+    }
+    let displayDoctor = orderObj.doctor
+    if (h.H_YS) {
+      const doc = await findHuanyuDoctorById(h.H_YS).catch(() => null)
+      displayDoctor = doc?.name || h.H_YS
+    }
+
     return {
       ...orderObj,
       customerName: h.JZR_XM || orderObj.customerName,
       customerPhone: h.JZR_LXDH || orderObj.customerPhone,
-      hospital: h.H_NAME || orderObj.hospital,
-      dept: h.H_KS || orderObj.dept,
-      doctor: h.H_YS || orderObj.doctor,
+      hospital: displayHospital,
+      dept: displayDept,
+      doctor: displayDoctor,
       status: h.DD_state || orderObj.status,
       rawJson: raw
     }
@@ -1234,6 +1251,22 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         })
       }
 
+      let resolvedHospitalName = body.hospital || existingOrder?.hospital || null
+      if (body.hospital) {
+        const hosp = await findHuanyuHospitalById(body.hospital).catch(() => null)
+        if (hosp?.name) resolvedHospitalName = hosp.name
+      }
+      let resolvedDeptName = body.department || existingOrder?.dept || null
+      if (body.department) {
+        const d = await findHuanyuDepartmentById(body.department).catch(() => null)
+        if (d?.name) resolvedDeptName = d.name
+      }
+      let resolvedDoctorName = body.doctor || existingOrder?.doctor || null
+      if (body.doctor) {
+        const doc = await findHuanyuDoctorById(body.doctor).catch(() => null)
+        if (doc?.name) resolvedDoctorName = doc.name
+      }
+
       let syncedOrder
       if (existingOrder) {
         // 原地更新已有订单，保留其原有 source 和 sourceOrderNo（B端订单编号不被篡改）
@@ -1242,9 +1275,9 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           data: {
             customerName: patientName || existingOrder.customerName,
             customerPhone: body.patientPhone || existingOrder.customerPhone,
-            hospital: body.hospital || existingOrder.hospital,
-            dept: body.department || existingOrder.dept,
-            doctor: body.doctor || existingOrder.doctor,
+            hospital: resolvedHospitalName,
+            dept: resolvedDeptName,
+            doctor: resolvedDoctorName,
             status: orderStatus,
             rawJson: {
               ...(typeof existingOrder.rawJson === 'object' && existingOrder.rawJson ? existingOrder.rawJson : {}),
@@ -1262,9 +1295,9 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
             sourceOrderNo: orderNo,
             customerName: patientName,
             customerPhone: body.patientPhone || null,
-            hospital: body.hospital || null,
-            dept: body.department || null,
-            doctor: body.doctor || null,
+            hospital: resolvedHospitalName,
+            dept: resolvedDeptName,
+            doctor: resolvedDoctorName,
             status: orderStatus,
             assignedEmployee: { connect: { id: request.employee.id } },
             rawJson: { ...orderRawBody, orderNo, DDBH: orderNo }
@@ -1393,7 +1426,9 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           { dept: { contains: q, mode: 'insensitive' } },
           { doctor: { contains: q, mode: 'insensitive' } },
           { sourceOrderNo: { contains: q, mode: 'insensitive' } },
-          { huanyuOrderNo: { contains: q, mode: 'insensitive' } }
+          { huanyuOrderNo: { contains: q, mode: 'insensitive' } },
+          { rawJson: { path: ['crmApplyNo'], string_contains: q } },
+          { rawJson: { path: ['applyNo'], string_contains: q } }
         ]
       }
 
@@ -1579,20 +1614,32 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
             (rec.ecpPhone as string | undefined) ??
             o.customerPhone ??
             null
+          const rawHospital = typeof raw.hospital === 'string' ? raw.hospital : undefined
+          const isNumericHospitalId = rawHospital && /^\d{3,6}$/.test(rawHospital.trim())
           const hospitalRow =
-            (raw.hospital as string | undefined) ??
+            (!isNumericHospitalId ? rawHospital : undefined) ??
             (rec.intendHos as string | undefined) ??
             (rec.visitingHospital as string | undefined) ??
+            (o.hospital && !/^\d{3,6}$/.test(o.hospital.trim()) ? o.hospital : undefined) ??
+            rawHospital ??
             o.hospital ??
             null
+          const rawDept = typeof raw.dept === 'string' ? raw.dept : undefined
+          const isNumericDeptId = rawDept && /^\d{6,12}$/.test(rawDept.trim())
           const deptRow =
-            (raw.dept as string | undefined) ??
+            (!isNumericDeptId ? rawDept : undefined) ??
             (rec.intendDept as string | undefined) ??
+            (o.dept && !/^\d{6,12}$/.test(o.dept.trim()) ? o.dept : undefined) ??
+            rawDept ??
             o.dept ??
             null
+          const rawDoctor = typeof raw.doctor === 'string' ? raw.doctor : undefined
+          const isNumericDoctorId = rawDoctor && /^\d{4,10}$/.test(rawDoctor.trim())
           const doctorRow =
-            (raw.doctor as string | undefined) ??
+            (!isNumericDoctorId ? rawDoctor : undefined) ??
             (rec.intendDoc as string | undefined) ??
+            (o.doctor && !/^\d{4,10}$/.test(o.doctor.trim()) ? o.doctor : undefined) ??
+            rawDoctor ??
             o.doctor ??
             null
           const intendDateRow =
@@ -1984,6 +2031,24 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       } = { matchMethod: 'none' }
 
       // 客户会话只按申请号字段 rawJson.crmApplyNo 识别；COD/sourceOrderNo 不参与自动绑定。
+      // 但对于陪诊派单标准模板（陪诊人与电话均非空），精准通过正文 source_order_no 关联当前消息
+      if (!finalOrderId) {
+        const escortMatch = parseEscortDispatchTemplate(contentText)
+        if (escortMatch.matched && escortMatch.sourceOrderNo) {
+          const matchedOrder = await prisma.order.findFirst({
+            where: { sourceOrderNo: { equals: escortMatch.sourceOrderNo, mode: 'insensitive' } },
+            select: { id: true, rawJson: true }
+          })
+          if (matchedOrder) {
+            finalOrderId = matchedOrder.id
+            finalApplicationNo = applicationNosForConversationMatch(matchedOrder.rawJson)[0] ?? null
+            _debug.matchMethod = 'escort_dispatch_template'
+            _debug.matchedOrderId = matchedOrder.id
+            _debug.matchedApplicationNo = finalApplicationNo
+          }
+        }
+      }
+
       if (!finalOrderId) {
         const cand = extractOrderCandidate(orderNoCandidate) ?? extractOrderCandidate(conversationName)
         if (cand) {
@@ -2183,6 +2248,8 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     if (status && status !== 'all') {
       if (status === 'pending') {
         conditions.push(`status IN ('pending', 'unread')`)
+        // 日常录音上传提醒具有当天时效性，跨天自动失效，不查询历史往日的日常提醒
+        conditions.push(`NOT (type = 'upload_recording' AND remind_time < (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date)`)
       } else {
         params.push(status)
         conditions.push(`status = $${params.length}`)
@@ -2419,10 +2486,26 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           chatTime = parsed
         }
       }
+      let itemOrderId = orderId
+      let itemApplicationNo = applicationNo
+      if (!itemOrderId) {
+        const escortMatch = parseEscortDispatchTemplate(content)
+        if (escortMatch.matched && escortMatch.sourceOrderNo) {
+          const matchedOrder = await prisma.order.findFirst({
+            where: { sourceOrderNo: { equals: escortMatch.sourceOrderNo, mode: 'insensitive' } },
+            select: { id: true, rawJson: true }
+          })
+          if (matchedOrder) {
+            itemOrderId = matchedOrder.id
+            itemApplicationNo = applicationNosForConversationMatch(matchedOrder.rawJson)[0] ?? null
+          }
+        }
+      }
+
       const normalized = normalizeMessageContentForDedupe(content)
       const contentHash = hashDedupePart(normalized)
-      const dedupeScope = applicationNo
-        ? `application:${applicationNo}`
+      const dedupeScope = itemApplicationNo
+        ? `application:${itemApplicationNo}`
         : `conversation:${normalizeConversationNameForDedupe(conversationName)}`
       const dedupeKey = hashDedupePart(`${employeeId}|${channel}|${dedupeScope}|${senderType}|${contentHash}`)
 
@@ -2446,8 +2529,8 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           data: {
             seenCount: { increment: 1 },
             lastSeenAt: capAt,
-            orderId: existing.orderId ?? orderId,
-            applicationNo: existing.applicationNo ?? applicationNo,
+            orderId: existing.orderId ?? itemOrderId,
+            applicationNo: existing.applicationNo ?? itemApplicationNo,
             contentHash,
             dedupeKey,
             chatTime: existing.chatTime ?? chatTime,
@@ -2459,7 +2542,10 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       } else {
         await prisma.message.create({
           data: {
-            orderId, applicationNo, channel, conversationName,
+            orderId: itemOrderId,
+            applicationNo: itemApplicationNo,
+            channel,
+            conversationName,
             senderName: m.name ?? null,
             contentText: content,
             screenshotOssKey: screenshotOssKey ?? null,
@@ -2469,8 +2555,11 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
             kind: senderType === 'system' ? (m.kind ?? 'other') : null,
             chatTime,
             sortTime: chatTime ?? capAt, // 排序键：有真实聊天时间用它，否则退回截图时刻
-            contentHash, dedupeKey,
-            seenCount: 1, firstSeenAt: capAt, lastSeenAt: capAt
+            contentHash,
+            dedupeKey,
+            seenCount: 1,
+            firstSeenAt: capAt,
+            lastSeenAt: capAt
           }
         })
         created++

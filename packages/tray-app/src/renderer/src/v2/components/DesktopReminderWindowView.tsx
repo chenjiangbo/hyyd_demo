@@ -47,6 +47,28 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
   }
 
 
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
+
+  const copy = (value: string, key: string, e: React.MouseEvent): void => {
+    e.stopPropagation()
+    if (!value) return
+    void navigator.clipboard?.writeText(value)
+    setCopiedKey(key)
+    setTimeout(() => setCopiedKey(null), 1200)
+  }
+
+  const handleOpenOrder = (orderNo: string): void => {
+    if (!orderNo) return
+    const cleanNo = orderNo.trim()
+    if (window.api?.openOrderFromReminder) {
+      void window.api.openOrderFromReminder(cleanNo)
+    } else {
+      window.dispatchEvent(
+        new CustomEvent('huanyu-navigate-order', { detail: { orderNo: cleanNo } })
+      )
+    }
+  }
+
   const handleSnooze = async (): Promise<void> => {
     if (!reminder || isProcessing) return
     setIsProcessing(true)
@@ -89,6 +111,14 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
   const formattedTime = timeStr
     ? new Date(timeStr).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
     : ''
+
+  const fallbackOrderNo = reminder.order_no || reminder.orderNo
+  const hasOrderInContent =
+    reminder.content?.includes('订单号:') ||
+    reminder.content?.includes('订单号：') ||
+    reminder.content?.includes('单号:') ||
+    reminder.content?.includes('单号：')
+
   const renderFormattedContent = (rawContent: string) => {
     if (!rawContent) return null
     const normalized = rawContent.replace(/\\n/g, '\n')
@@ -101,10 +131,33 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
           if (colonIdx > -1) {
             const label = line.slice(0, colonIdx).trim()
             const val = line.slice(colonIdx + 1).trim()
+            const isOrderField =
+              label.includes('单号') ||
+              label.includes('订单') ||
+              /^(COD|HY|OD|FW|YF)/i.test(val)
+
             return (
               <div key={idx} className="flex items-start text-[13px]">
                 <span className="w-[72px] shrink-0 whitespace-nowrap text-text-muted">{label}：</span>
-                <span className="flex-1 break-words text-text-main leading-relaxed">{val}</span>
+                {isOrderField ? (
+                  <div className="flex-1 flex items-center gap-1.5 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenOrder(val)}
+                      className="font-mono text-primary hover:underline font-medium break-all text-left cursor-pointer transition-colors"
+                      title="点击在工作台中搜索此订单"
+                    >
+                      {val}
+                    </button>
+                    <IconCopyButton
+                      title={`复制订单号 ${val}`}
+                      copied={copiedKey === `val-${idx}`}
+                      onClick={(e) => copy(val, `val-${idx}`, e)}
+                    />
+                  </div>
+                ) : (
+                  <span className="flex-1 break-words text-text-main leading-relaxed">{val}</span>
+                )}
               </div>
             )
           }
@@ -114,6 +167,26 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
             </div>
           )
         })}
+        {!hasOrderInContent && fallbackOrderNo && fallbackOrderNo !== 'SYSTEM' && fallbackOrderNo !== 'ALL' && (
+          <div className="flex items-start text-[13px] pt-1 border-t border-border-subtle/50">
+            <span className="w-[72px] shrink-0 whitespace-nowrap text-text-muted">订单号：</span>
+            <div className="flex-1 flex items-center gap-1.5 min-w-0">
+              <button
+                type="button"
+                onClick={() => handleOpenOrder(fallbackOrderNo)}
+                className="font-mono text-primary hover:underline font-medium break-all text-left cursor-pointer transition-colors"
+                title="点击在工作台中搜索此订单"
+              >
+                {fallbackOrderNo}
+              </button>
+              <IconCopyButton
+                title={`复制订单号 ${fallbackOrderNo}`}
+                copied={copiedKey === 'fallback-orderno'}
+                onClick={(e) => copy(fallbackOrderNo, 'fallback-orderno', e)}
+              />
+            </div>
+          </div>
+        )}
       </div>
     )
   }
@@ -194,5 +267,34 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
         </div>
       </div>
     </div>
+  )
+}
+
+function IconCopyButton({
+  title = '复制订单号',
+  copied,
+  onClick
+}: {
+  title?: string
+  copied: boolean
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void
+}): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-white/70 border border-border-subtle text-[#6f7f95] hover:bg-primary-fixed hover:text-primary hover:border-primary-fixed-dim transition-colors"
+    >
+      {copied ? (
+        <span className="material-symbols-outlined text-action-green" style={{ fontSize: '12px' }}>
+          check
+        </span>
+      ) : (
+        <span className="material-symbols-outlined" style={{ fontSize: '12px' }}>
+          content_copy
+        </span>
+      )}
+    </button>
   )
 }

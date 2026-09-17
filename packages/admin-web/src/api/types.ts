@@ -357,3 +357,32 @@ export interface HealthInfo {
     tokenLastCheckAt: string | null
   }>
 }
+
+export interface SystemReminderRule {
+  category: string
+  name: string
+  trigger: string
+  target: string
+  content: string
+  technicalConditions: string[]
+  dedupeRule: string
+}
+
+export interface SystemReminderConfig {
+  schedule: {
+    timeZone: string
+    scanInterval: string
+    table: string
+    dailyUploadTimes?: string[]
+    dailyUploadDescription?: string
+  }
+  rules: SystemReminderRule[]
+  clientNotification: {
+    display: string
+    actions: Array<{ name: string; detail: string }>
+  }
+  storage: {
+    table: string
+    fields: string
+  }
+}

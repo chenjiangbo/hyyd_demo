@@ -24,7 +24,8 @@ import type {
   CaptureQuality,
   CaptureHealthRow,
   UnmatchedRefItem,
-  CaptureDiagnosticImageItem
+  CaptureDiagnosticImageItem,
+  SystemReminderConfig
 } from './types'
 
 // 把筛选对象拼成 query string（跳过空值）。
@@ -158,6 +159,11 @@ export const adminApi = {
   // ───── 订单 AI 分析配置说明 ─────
   orderAiConfig() {
     return request<OrderAiConfig>('/api/v1/admin/order-ai-config')
+  },
+
+  // ───── 系统提醒说明 ─────
+  systemReminderConfig() {
+    return request<SystemReminderConfig>('/api/v1/admin/system-reminder-config')
   },
 
   // ───── 仪表盘 ─────

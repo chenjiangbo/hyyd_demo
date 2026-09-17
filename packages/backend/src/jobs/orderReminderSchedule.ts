@@ -70,7 +70,7 @@ async function createReminderIfAbsent(
   params: {
     orderNo: string
     employeeId: number
-    type: 'hospital_booking' | 'escort' | 'hospital_care'
+    type: 'hospital_booking' | 'escort' | 'hospital_care' | 'system' | 'upload_recording'
     content: string
     dedupeKey: string
     logger?: LoggerLike
@@ -446,12 +446,78 @@ async function scanHospitalCareReminders(prisma: PrismaClient, logger?: LoggerLi
 }
 
 /**
+ * 场景 0：【通话录音与通话记录上传提醒】（默认每天 11:30 和 17:30 提醒所有在职员工）
+ */
+async function scanDailyCallUploadReminders(prisma: PrismaClient, logger?: LoggerLike): Promise<void> {
+  const { ymd, hours, minutes } = shanghaiNowParts()
+  let slot: string | null = null
+
+  // 11:30 触发上午时段批次
+  if (hours === 11 && minutes >= 30) {
+    slot = '1130'
+  } else if (hours === 17 && minutes >= 30) {
+    // 17:30 触发下午时段批次
+    slot = '1730'
+  }
+
+  if (!slot) return
+
+  try {
+    const employees = await prisma.employee.findMany({
+      where: { enabled: 1 },
+      select: { id: true, name: true }
+    })
+
+    const content = '请打开手机app上传通话录音和通话记录'
+
+    for (const emp of employees) {
+      const dedupeKey = `auto:call_upload_reminder:${emp.id}:${ymd}:${slot}`
+      await createReminderIfAbsent(prisma, {
+        orderNo: 'SYSTEM',
+        employeeId: emp.id,
+        type: 'upload_recording',
+        content,
+        dedupeKey,
+        logger,
+        extra: { slot, reminderType: 'call_upload_reminder', employeeName: emp.name }
+      })
+    }
+  } catch (err) {
+    logger?.error('[orderReminderSchedule] 通话录音上传提醒扫描异常:', err)
+  }
+}
+
+/**
+ * 清理过期的日常录音上传提醒：
+ * 日常录音提醒（11:30、17:30）仅在当天有效。
+ * 若员工昨日未开机或未处理，跨天后自动标记为 expired，绝不延续到次日补弹。
+ */
+async function expirePastDailyUploadReminders(prisma: PrismaClient, logger?: LoggerLike): Promise<void> {
+  try {
+    const expiredCount = await (prisma as any).$executeRawUnsafe(`
+      UPDATE order_reminders
+         SET status = 'expired', updated_at = NOW()
+       WHERE type = 'upload_recording'
+         AND status IN ('pending', 'unread')
+         AND remind_time < (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date;
+    `)
+    if (expiredCount > 0) {
+      logger?.info(`[orderReminderSchedule] 已自动失效 ${expiredCount} 条跨天的日常录音上传提醒`)
+    }
+  } catch (err) {
+    logger?.error('[orderReminderSchedule] 跨天日常提醒失效处理异常:', err)
+  }
+}
+
+/**
  * 单次扫描总入口
  */
 export async function runOrderReminderCycle(prisma: PrismaClient, logger?: LoggerLike): Promise<void> {
   if (isRunning) return
   isRunning = true
   try {
+    await expirePastDailyUploadReminders(prisma, logger)
+    await scanDailyCallUploadReminders(prisma, logger)
     await scanHospitalBookingReminders(prisma, logger)
     await scanEscortUnassignedReminders(prisma, logger)
     await scanEscortDailyCheckReminders(prisma, logger)

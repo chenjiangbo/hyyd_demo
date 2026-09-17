@@ -12,9 +12,10 @@ module.exports = async function writeWindowsIcon(context) {
   )
   const executablePath = join(context.appOutDir, `${context.packager.appInfo.productFilename}.exe`)
 
-  if (!existsSync(iconPath)) throw new Error(`Windows app icon not found: ${iconPath}`)
-  if (!existsSync(rceditPath)) throw new Error(`Local rcedit tool not found: ${rceditPath}`)
-  if (!existsSync(executablePath)) throw new Error(`Windows app executable not found: ${executablePath}`)
-
-  execFileSync(rceditPath, [executablePath, '--set-icon', iconPath], { stdio: 'inherit' })
+  if (!existsSync(iconPath) || !existsSync(executablePath)) return
+  if (existsSync(rceditPath)) {
+    execFileSync(rceditPath, [executablePath, '--set-icon', iconPath], { stdio: 'inherit' })
+  } else {
+    console.log('[after-pack-icon] rcedit not found, skipping manual icon patching')
+  }
 }

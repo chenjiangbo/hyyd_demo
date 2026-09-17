@@ -64,17 +64,31 @@ export default function App(): React.JSX.Element {
     return () => window.removeEventListener(BACKEND_CONFIG_CHANGED, pushConfig)
   }, [session])
 
-  // 监听来自桌面右下角提醒浮窗的"打开订单"点击
+  // 监听来自桌面右下角提醒浮窗 / 内部提醒组件的"打开订单"点击
   useEffect(() => {
-    const cleanup = window.api?.onNavigateOrder?.((orderNo) => {
+    const handleNavigate = (orderNo: string): void => {
       setOpenOrder(null)
       setOpenApplication(null)
       setOpenHuanyuCreate(false)
       setNav('workbench')
       setSearch(orderNo)
+    }
+
+    const cleanup = window.api?.onNavigateOrder?.((orderNo) => {
+      handleNavigate(orderNo)
     })
+
+    const handleWebNavigate = (e: Event): void => {
+      const customEvent = e as CustomEvent<{ orderNo: string }>
+      if (customEvent.detail?.orderNo) {
+        handleNavigate(customEvent.detail.orderNo)
+      }
+    }
+    window.addEventListener('huanyu-navigate-order', handleWebNavigate)
+
     return () => {
       cleanup?.()
+      window.removeEventListener('huanyu-navigate-order', handleWebNavigate)
     }
   }, [])
 

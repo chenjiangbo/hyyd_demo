@@ -30,18 +30,29 @@ async function toJpegBase64(buf: Buffer): Promise<{ b64: string; mime: string }>
       // 后端进程 PATH 常不含 Homebrew，补上 magick 常见安装位置
       const PATH = `${process.env.PATH || ''}:/opt/homebrew/bin:/usr/local/bin`
       const p = spawn('magick', ['-', '-background', 'white', '-flatten', 'jpeg:-'], {
-        env: { ...process.env, PATH }
+        env: { ...process.env, PATH },
+        timeout: 5000
       })
       const chunks: Buffer[] = []
       const errs: Buffer[] = []
+      const timer = setTimeout(() => {
+        try { p.kill() } catch {}
+        reject(new Error('magick 转码超时'))
+      }, 5000)
       p.stdout.on('data', (d) => chunks.push(d))
       p.stderr.on('data', (d) => errs.push(d))
-      p.on('error', reject)
-      p.on('close', (code) =>
-        code === 0 && chunks.length > 0
-          ? resolve(Buffer.concat(chunks))
-          : reject(new Error('magick 转码失败: ' + Buffer.concat(errs).toString().slice(0, 120)))
-      )
+      p.on('error', (err) => {
+        clearTimeout(timer)
+        reject(err)
+      })
+      p.on('close', (code) => {
+        clearTimeout(timer)
+        if (code === 0 && chunks.length > 0) {
+          resolve(Buffer.concat(chunks))
+        } else {
+          reject(new Error('magick 转码失败: ' + Buffer.concat(errs).toString().slice(0, 120)))
+        }
+      })
       p.stdin.on('error', () => {})
       p.stdin.end(buf)
     })

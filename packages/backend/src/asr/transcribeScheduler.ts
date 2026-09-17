@@ -240,50 +240,62 @@ async function pollTask(callId: number, taskId: string): Promise<void> {
 /** 启动时恢复 processing 状态的任务 */
 async function resumePendingTasks(): Promise<void> {
   if (!deps) return
-  const calls = await deps.prisma.call.findMany({
-    where: { asrStatus: 'processing', dashscopeTaskId: { not: null } }
-  })
-  if (calls.length === 0) return
-  log('info', `恢复 ${calls.length} 个未完成的转写任务`)
-  for (const c of calls) {
-    void pollTask(c.id, c.dashscopeTaskId!)
+  try {
+    const calls = await deps.prisma.call.findMany({
+      where: { asrStatus: 'processing', dashscopeTaskId: { not: null } }
+    })
+    if (calls.length === 0) return
+    log('info', `恢复 ${calls.length} 个未完成的转写任务`)
+    for (const c of calls) {
+      void pollTask(c.id, c.dashscopeTaskId!)
+    }
+  } catch (err) {
+    log('error', `resumePendingTasks 异常: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
 
 /** 启动时恢复已登记/已上传，但 ASR 未可靠启动的录音 */
 async function recoverReadyRecordings(): Promise<void> {
   if (!deps) return
-  const recordingsBucket = getEnv().minioBucketRecordings
-  const calls = await deps.prisma.call.findMany({
-    where: {
-      recordingOssKey: { not: null },
-      OR: [
-        { asrStatus: 'uploading' },
-        { asrStatus: 'pending', dashscopeTaskId: null },
-        { asrStatus: 'failed', asrText: { contains: 'MinIO 对象' } }
-      ]
-    },
-    take: 200,
-    orderBy: { startedAt: 'desc' }
-  })
-  if (calls.length === 0) return
-
-  let recovered = 0
-  for (const call of calls) {
-    if (!call.recordingOssKey) continue
-    try {
-      await deps.minioClient.statObject(recordingsBucket, call.recordingOssKey)
-    } catch {
-      continue
-    }
-    await deps.prisma.call.update({
-      where: { id: call.id },
-      data: { asrStatus: 'pending', asrText: null, dashscopeTaskId: null, asrFinishedAt: null }
+  try {
+    const recordingsBucket = getEnv().minioBucketRecordings
+    const calls = await deps.prisma.call.findMany({
+      where: {
+        recordingOssKey: { not: null },
+        OR: [
+          { asrStatus: 'uploading' },
+          { asrStatus: 'pending', dashscopeTaskId: null },
+          { asrStatus: 'failed', asrText: { contains: 'MinIO 对象' } }
+        ]
+      },
+      take: 200,
+      orderBy: { startedAt: 'desc' }
     })
-    recovered += 1
-    void scheduleTranscription(call.id)
+    if (calls.length === 0) return
+
+    let recovered = 0
+    for (const call of calls) {
+      if (!call.recordingOssKey) continue
+      try {
+        await deps.minioClient.statObject(recordingsBucket, call.recordingOssKey)
+      } catch {
+        continue
+      }
+      try {
+        await deps.prisma.call.update({
+          where: { id: call.id },
+          data: { asrStatus: 'pending', asrText: null, dashscopeTaskId: null, asrFinishedAt: null }
+        })
+        recovered += 1
+        void scheduleTranscription(call.id)
+      } catch (err) {
+        log('warn', `callId=${call.id} 恢复转写状态更新失败: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    if (recovered > 0) log('info', `恢复 ${recovered} 个已上传但未转写的录音`)
+  } catch (err) {
+    log('error', `recoverReadyRecordings 异常: ${err instanceof Error ? err.message : String(err)}`)
   }
-  if (recovered > 0) log('info', `恢复 ${recovered} 个已上传但未转写的录音`)
 }
 
 function sleep(ms: number): Promise<void> {

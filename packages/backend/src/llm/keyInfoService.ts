@@ -30,6 +30,8 @@ export interface KeyInfoResult {
 
 // 默认抽取字段（可回填工单用）。没有的填 null，禁止编造。后续可按真实回填字段增减。
 const FIELD_KEYS = [
+  '陪诊人',
+  '陪诊人电话',
   '意向医院',
   '意向科室',
   '意向医生',
