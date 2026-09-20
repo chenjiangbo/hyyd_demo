@@ -36,7 +36,7 @@ interface WindowPreferences {
 }
 
 const DEFAULT_WINDOW_PREFS: WindowPreferences = {
-  closeBehavior: 'ask'
+  closeBehavior: 'minimize'
 }
 
 function windowPrefsPath(): string {
@@ -46,11 +46,15 @@ function windowPrefsPath(): string {
 function readWindowPreferences(): WindowPreferences {
   const file = windowPrefsPath()
   if (!existsSync(file)) return DEFAULT_WINDOW_PREFS
-  const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<WindowPreferences>
-  if (parsed.closeBehavior === 'ask' || parsed.closeBehavior === 'minimize' || parsed.closeBehavior === 'quit') {
-    return { closeBehavior: parsed.closeBehavior }
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<WindowPreferences>
+    if (parsed.closeBehavior === 'minimize' || parsed.closeBehavior === 'quit') {
+      return { closeBehavior: parsed.closeBehavior }
+    }
+  } catch {
+    // 忽略异常，降级回默认设置
   }
-  throw new Error(`窗口关闭偏好非法: ${String(parsed.closeBehavior)}`)
+  return DEFAULT_WINDOW_PREFS
 }
 
 function writeWindowPreferences(prefs: WindowPreferences): void {

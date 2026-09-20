@@ -45,7 +45,7 @@ export default function SettingsPage(): React.JSX.Element {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<'ok' | 'fail' | null>(null)
   const [testMsg, setTestMsg] = useState('')
-  const [closeBehavior, setCloseBehavior] = useState<CloseBehavior>('ask')
+  const [closeBehavior, setCloseBehavior] = useState<CloseBehavior>('minimize')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState<CloseBehavior | null>(null)
   const [error, setError] = useState<string | null>(null)
