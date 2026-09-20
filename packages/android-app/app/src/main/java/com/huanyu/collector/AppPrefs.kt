@@ -52,6 +52,34 @@ class AppPrefs(context: Context) {
         get() = prefs.getLong("last_sync_finished_at", 0L)
         set(value) = prefs.edit().putLong("last_sync_finished_at", value).apply()
 
+    var lastRunStartedAt: Long
+        get() = prefs.getLong("last_run_started_at", 0L)
+        set(value) = prefs.edit().putLong("last_run_started_at", value).apply()
+
+    var lastRunFinishedAt: Long
+        get() = prefs.getLong("last_run_finished_at", 0L)
+        set(value) = prefs.edit().putLong("last_run_finished_at", value).apply()
+
+    var lastRunRecordingsTotal: Int
+        get() = prefs.getInt("last_run_recordings_total", 0)
+        set(value) = prefs.edit().putInt("last_run_recordings_total", value).apply()
+
+    var lastRunRecordingsUploaded: Int
+        get() = prefs.getInt("last_run_recordings_uploaded", 0)
+        set(value) = prefs.edit().putInt("last_run_recordings_uploaded", value).apply()
+
+    var lastRunRecordingsFailed: Int
+        get() = prefs.getInt("last_run_recordings_failed", 0)
+        set(value) = prefs.edit().putInt("last_run_recordings_failed", value).apply()
+
+    var lastRunCallsScanned: Int
+        get() = prefs.getInt("last_run_calls_scanned", 0)
+        set(value) = prefs.edit().putInt("last_run_calls_scanned", value).apply()
+
+    var lastRunCallsUploaded: Int
+        get() = prefs.getInt("last_run_calls_uploaded", 0)
+        set(value) = prefs.edit().putInt("last_run_calls_uploaded", value).apply()
+
     var lastSyncError: String
         get() = prefs.getString("last_sync_error", "").orEmpty()
         set(value) = prefs.edit().putString("last_sync_error", value.take(600)).apply()

@@ -35,8 +35,11 @@ class CollectorRunner(context: Context) {
     fun syncOnce() = synchronized(SYNC_LOCK) {
         Log.i(TAG, "开始同步通话记录和录音")
         val prefs = AppPrefs(appContext)
-        prefs.validateConfig()
-        val initialFloor = System.currentTimeMillis() - INITIAL_HISTORY_DAYS * 24 * 60 * 60 * 1000L
+        val runStartedAt = System.currentTimeMillis()
+        prefs.lastRunStartedAt = runStartedAt
+        prefs.lastSyncStartedAt = runStartedAt
+        prefs.lastSyncError = ""
+        val initialFloor = runStartedAt - INITIAL_HISTORY_DAYS * 24 * 60 * 60 * 1000L
         if (prefs.recordingScanFloorTs == 0L) prefs.recordingScanFloorTs = initialFloor
         if (prefs.lastCallLogTs == 0L) {
             prefs.lastCallLogTs = initialFloor
@@ -243,6 +246,14 @@ class CollectorRunner(context: Context) {
         if (recordingFailureCount > 0) {
             prefs.lastSyncError = "录音上传失败 $recordingFailureCount 条，已继续处理后续录音；最后失败: $lastRecordingFailure"
         }
+        val finishedAt = System.currentTimeMillis()
+        prefs.lastRunCallsScanned = calls.size
+        prefs.lastRunCallsUploaded = prefs.lastCallUploadCount
+        prefs.lastRunRecordingsTotal = pendingRecordings.size
+        prefs.lastRunRecordingsUploaded = recordingUploadedCount
+        prefs.lastRunRecordingsFailed = recordingFailureCount
+        prefs.lastRunFinishedAt = finishedAt
+        prefs.lastSyncFinishedAt = finishedAt
         prefs.updateSyncProgress(
             "本轮完成",
             total = pendingRecordings.size,

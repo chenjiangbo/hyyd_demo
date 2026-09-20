@@ -178,60 +178,23 @@ class MainActivity : Activity() {
     private fun renderOverview(prefs: AppPrefs) {
         val serviceRunning = isCollectorRunning()
         val syncing = isSyncing(prefs)
-        val isCompleted = prefs.collectionEnabled &&
-            !syncing &&
-            prefs.pendingCallCount() == 0 &&
-            prefs.lastRecordingProgressFailed == 0 &&
-            prefs.lastSyncFinishedAt > 0L
-
         val serviceText = when {
             serviceRunning -> "前台服务运行中"
             prefs.collectionEnabled -> "后台采集已启用"
             else -> "未启用"
         }
+        val progressPercent = recordingProgressPercent(prefs)
 
-        // 1. 顶部唯一核心操作按钮（直接置顶，零滑动点击）
+        // 1. 顶部唯一核心操作按钮（永远保留清晰明确的【启动采集】）
         val btnText: String
         val btnKind: Kind
         val btnAction: () -> Unit
 
-        if (!prefs.collectionEnabled) {
-            btnText = "▶ 启动采集"
-            btnKind = Kind.PRIMARY
-            btnAction = { startCollectorService() }
-        } else if (syncing) {
+        if (syncing) {
             btnText = "🔄 正在采集与上传中..."
             btnKind = Kind.WARNING
             btnAction = {
                 Toast.makeText(this, "正在处理通话与录音上传，请稍候...", Toast.LENGTH_SHORT).show()
-            }
-        } else if (isCompleted) {
-            btnText = "✅ 采集完成"
-            btnKind = Kind.SUCCESS
-            btnAction = {
-                Toast.makeText(this, "所有录音已全部上传完成，正在重新扫描...", Toast.LENGTH_SHORT).show()
-                Thread {
-                    try {
-                        CollectorRunner(this).syncOnce()
-                    } catch (e: Exception) {
-                        Log.w(TAG, "手动检查同步失败", e)
-                    }
-                    runOnUiThread { refreshStatus() }
-                }.start()
-            }
-        } else if (prefs.lastRecordingProgressFailed > 0) {
-            btnText = "⚠ 存在 ${prefs.lastRecordingProgressFailed} 条失败（点击重试）"
-            btnKind = Kind.ERROR
-            btnAction = {
-                Toast.makeText(this, "正在重试失败录音上传...", Toast.LENGTH_SHORT).show()
-                Thread {
-                    try {
-                        CollectorRunner(this).syncOnce()
-                    } catch (e: Exception) {
-                        Log.w(TAG, "重试同步失败", e)
-                    }
-                    runOnUiThread { refreshStatus() }
-                }.start()
             }
         } else {
             btnText = "▶ 启动采集"
@@ -244,54 +207,22 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(12))
         }
         topActionContainer.addView(actionButton(btnText, btnKind, btnAction), blockParams())
+        topActionContainer.addView(space(dp(8)))
+        topActionContainer.addView(sessionFeedbackCard(prefs, syncing))
         content.addView(topActionContainer)
 
-        // 2. 服务状态卡片（原样保留，进度标签按真实状态反映）
-        val progressPercent: Int
-        val progressLabel: String
-        if (!prefs.collectionEnabled) {
-            progressLabel = "录音同步进度"
-            progressPercent = 0
-        } else if (syncing) {
-            val total = prefs.lastRecordingProgressTotal
-            val processed = prefs.lastRecordingProgressProcessed
-            progressLabel = if (total > 0) "录音同步进度 (正在上传 $processed/$total)" else "录音同步进度 (正在扫描)"
-            progressPercent = recordingProgressPercent(prefs)
-        } else if (isCompleted) {
-            progressLabel = "录音同步进度：所有录音已全部同步完毕"
-            progressPercent = 100
-        } else if (prefs.lastRecordingProgressFailed > 0) {
-            progressLabel = "录音同步进度：存在 ${prefs.lastRecordingProgressFailed} 条上传失败"
-            progressPercent = recordingProgressPercent(prefs)
-        } else {
-            progressLabel = "录音同步进度"
-            progressPercent = recordingProgressPercent(prefs)
-        }
-
-        val badgeText = when {
-            isCompleted -> "采集完成"
-            syncing -> "同步中"
-            prefs.collectionEnabled -> "运行中"
-            else -> "未启用"
-        }
-        val badgeKind = when {
-            isCompleted -> Kind.SUCCESS
-            syncing -> Kind.WARNING
-            prefs.collectionEnabled -> Kind.SUCCESS
-            else -> Kind.NEUTRAL
-        }
-
+        // 2. 服务状态卡片（完全还原为最原始版本，不作任何修改）
         content.addView(statusCard(
             title = "服务状态",
-            badge = badgeText,
-            badgeKind = badgeKind,
+            badge = if (prefs.collectionEnabled) "运行中" else "未启用",
+            badgeKind = if (prefs.collectionEnabled) Kind.SUCCESS else Kind.NEUTRAL,
             rows = listOf(
                 "员工 ID" to prefs.employeeCode.ifBlank { "未配置" },
                 "后端服务" to compactBackend(prefs.backendUrl),
                 "服务" to serviceText,
                 "心跳" to prefs.lastHeartbeatStatus
             ),
-            progressLabel = progressLabel,
+            progressLabel = "录音同步进度",
             progressValue = progressPercent
         ))
 
@@ -508,11 +439,12 @@ class MainActivity : Activity() {
         val serviceRunning = isCollectorRunning()
         val hasError = prefs.lastSyncError.isNotBlank()
         val pending = prefs.pendingCallCount()
+        val syncing = isSyncing(prefs)
         statusDot.setTextColor(
             when {
                 !prefs.collectionEnabled -> COLOR_NEUTRAL
                 hasError -> COLOR_ERROR
-                !serviceRunning || pending > 0 || isSyncing(prefs) -> COLOR_WARNING
+                syncing || pending > 0 -> COLOR_WARNING
                 else -> COLOR_SUCCESS
             }
         )
@@ -521,8 +453,13 @@ class MainActivity : Activity() {
             prefs.collectionEnabled -> "后台采集已启用"
             else -> "未启用"
         }
-        statusLine.text = "$serviceText · ${syncStatusText(prefs)} · 待上传 $pending · ${prefs.employeeCode.ifBlank { "未配置员工 ID" }}"
-        syncSpinner.visibility = if (isSyncing(prefs)) View.VISIBLE else View.GONE
+        val summaryText = when {
+            syncing -> "正在同步中"
+            prefs.lastRunFinishedAt > 0L && prefs.lastRunRecordingsFailed == 0 && pending == 0 -> "所有录音已同步"
+            else -> syncStatusText(prefs)
+        }
+        statusLine.text = "$serviceText · $summaryText · 待上传 $pending · ${prefs.employeeCode.ifBlank { "未配置员工 ID" }}"
+        syncSpinner.visibility = if (syncing) View.VISIBLE else View.GONE
         if (currentTab == Tab.SETTINGS &&
             ((::backendInput.isInitialized && backendInput.isFocused) ||
                 (::employeeCodeInput.isInitialized && employeeCodeInput.isFocused))
@@ -592,6 +529,98 @@ class MainActivity : Activity() {
             addView(iconView(iconRes, iconColor, iconDp))
             layoutParams = LinearLayout.LayoutParams(dp(boxDp), dp(boxDp))
         }
+    }
+
+    private fun sessionFeedbackCard(prefs: AppPrefs, syncing: Boolean): View {
+        val box = card()
+        val head = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        head.addView(TextView(this).apply {
+            text = "本次采集动态反馈"
+            textSize = 17f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(COLOR_ON_SURFACE)
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+        val pendingCalls = prefs.pendingCallCount()
+        val total = prefs.lastRecordingProgressTotal
+        val processed = prefs.lastRecordingProgressProcessed
+        val uploaded = prefs.lastRecordingProgressUploaded
+        val failed = prefs.lastRecordingProgressFailed
+        val currentFile = prefs.lastRecordingProgressCurrent
+
+        val badgeText: String
+        val badgeKind: Kind
+        val descText: String
+        val showProgress: Boolean
+        val progressPercent: Int
+
+        if (syncing) {
+            badgeText = "同步中"
+            badgeKind = Kind.WARNING
+            showProgress = true
+            if (total > 0) {
+                progressPercent = (processed * 100 / total).coerceIn(0, 100)
+                val fileInfo = if (currentFile.isNotBlank()) "\n当前文件: $currentFile" else ""
+                descText = "正在上传录音：$processed / $total ($progressPercent%) · 已成功 $uploaded 条$fileInfo"
+            } else {
+                progressPercent = 0
+                descText = "正在扫描系统通话记录与录音目录，请稍候..."
+            }
+        } else if (prefs.lastRunFinishedAt > 0L) {
+            if (pendingCalls > 0) {
+                badgeText = "待采集"
+                badgeKind = Kind.PRIMARY
+                showProgress = false
+                progressPercent = 0
+                descText = "检测到有 $pendingCalls 通新通话待同步，点击上方「启动采集」即可开始同步。"
+            } else if (prefs.lastRunRecordingsFailed > 0) {
+                badgeText = "部分失败"
+                badgeKind = Kind.ERROR
+                showProgress = true
+                progressPercent = if (prefs.lastRunRecordingsTotal > 0) {
+                    (prefs.lastRunRecordingsUploaded * 100 / prefs.lastRunRecordingsTotal).coerceIn(0, 100)
+                } else 0
+                descText = "⚠ 本次存在 ${prefs.lastRunRecordingsFailed} 条录音上传失败，点击上方「启动采集」可重试。"
+            } else if (prefs.lastRunRecordingsTotal > 0 || prefs.lastRunCallsUploaded > 0) {
+                badgeText = "采集完成"
+                badgeKind = Kind.SUCCESS
+                showProgress = true
+                progressPercent = 100
+                val recDetail = if (prefs.lastRunRecordingsUploaded > 0) "共成功上传 ${prefs.lastRunRecordingsUploaded} 条录音" else "通话记录已同步"
+                descText = "✅ 本次采集完成：$recDetail，所有录音已全部同步完毕。"
+            } else {
+                badgeText = "数据最新"
+                badgeKind = Kind.SUCCESS
+                showProgress = true
+                progressPercent = 100
+                descText = "✅ 本次检查完成：暂无待采集的新通话与录音，所有数据已是最新。"
+            }
+        } else {
+            badgeText = "就绪"
+            badgeKind = Kind.NEUTRAL
+            showProgress = false
+            progressPercent = 0
+            descText = "点击上方「启动采集」按钮，开始扫描并上传通话与录音。"
+        }
+
+        head.addView(badge(badgeText, badgeKind))
+        box.addView(head)
+
+        box.addView(TextView(this).apply {
+            text = descText
+            textSize = 13f
+            setTextColor(COLOR_ON_SURFACE_VARIANT)
+            setPadding(0, dp(10), 0, dp(4))
+        })
+
+        if (showProgress) {
+            box.addView(horizontalProgress(progressPercent))
+        }
+
+        return box
     }
 
     private fun statusCard(
@@ -1149,7 +1178,19 @@ class MainActivity : Activity() {
                 } catch (e: Exception) {
                     Log.w(TAG, "启动后首次同步失败", e)
                 }
-                runOnUiThread { refreshStatus() }
+                runOnUiThread {
+                    refreshStatus()
+                    val p = AppPrefs(this@MainActivity)
+                    if (p.lastRunRecordingsFailed == 0) {
+                        if (p.lastRunRecordingsUploaded > 0) {
+                            Toast.makeText(this@MainActivity, "本次采集完成，共成功上传 ${p.lastRunRecordingsUploaded} 条录音", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(this@MainActivity, "本次检查完成，暂无新通话与录音", Toast.LENGTH_SHORT).show()
+                        }
+                    } else {
+                        Toast.makeText(this@MainActivity, "本次同步存在 ${p.lastRunRecordingsFailed} 条失败，请重试", Toast.LENGTH_SHORT).show()
+                    }
+                }
             }.start()
         } catch (e: Exception) {
             prefs.collectionEnabled = false
