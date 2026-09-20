@@ -111,7 +111,8 @@ export const ORDER_AI_PROMPT_RULES = [
   '若信息不能确定属于当前服务类型，返回 ambiguous 字段候选且 requires_confirmation=true；不得输出自动流转事件。',
   '金额、诊断、ICD10 必须 requires_confirmation=true。医院、科室、医生只输出名称，不输出任何内部字典 ID。',
   '日期能精确时输出 YYYY-MM-DD HH:mm:ss；不能精确时保留原文，不要编造。没有明确值的字段不要输出。',
-  '每个候选都必须引用消息#ID或通话#ID及其原文短句；只输出合法 JSON。'
+  '每个候选都必须引用消息#ID或通话#ID及其原文短句；只输出合法 JSON。',
+  '【时区基准】：沟通时间线中的所有消息和通话时间均为中国东八区北京时间，提取的时间字段务必保持一致。'
 ] as const
 
 export const ORDER_AI_PROMPT_INPUTS = [
@@ -132,7 +133,9 @@ function fieldsFor(serviceType: string): readonly OrderAiFieldDefinition[] {
 
 function fmt(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  // 显式锁定中国东八区（UTC+8），保证无论运行环境为何时区输出皆一致
+  const b = new Date(date.getTime() + 8 * 3600 * 1000)
+  return `${b.getUTCFullYear()}-${pad(b.getUTCMonth() + 1)}-${pad(b.getUTCDate())} ${pad(b.getUTCHours())}:${pad(b.getUTCMinutes())}`
 }
 
 function timeline(messages: OrderAiSourceMessage[], calls: OrderAiSourceCall[]): string {

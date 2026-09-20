@@ -1,3 +1,6 @@
+// 全局统一东八区（中国标准时间）
+process.env.TZ = 'Asia/Shanghai'
+
 import fastify from 'fastify'
 import cors from '@fastify/cors'
 import cookie from '@fastify/cookie'

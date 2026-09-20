@@ -113,7 +113,9 @@ function pad(n: number): string {
   return String(n).padStart(2, '0')
 }
 function fmt(d: Date): string {
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  // 显式锁定中国东八区（UTC+8），保证无论运行环境为何时区输出皆一致
+  const b = new Date(d.getTime() + 8 * 3600 * 1000)
+  return `${b.getUTCFullYear()}-${pad(b.getUTCMonth() + 1)}-${pad(b.getUTCDate())} ${pad(b.getUTCHours())}:${pad(b.getUTCMinutes())}`
 }
 
 /** 把新增消息 + 通话 + 手工补录合并成一条按时间排序的"带角色 + 时间"文本时间线 */
