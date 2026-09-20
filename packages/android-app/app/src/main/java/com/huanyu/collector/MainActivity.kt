@@ -19,6 +19,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -176,28 +177,125 @@ class MainActivity : Activity() {
 
     private fun renderOverview(prefs: AppPrefs) {
         val serviceRunning = isCollectorRunning()
+        val syncing = isSyncing(prefs)
+        val isCompleted = prefs.collectionEnabled &&
+            !syncing &&
+            prefs.pendingCallCount() == 0 &&
+            prefs.lastRecordingProgressFailed == 0 &&
+            prefs.lastSyncFinishedAt > 0L
+
         val serviceText = when {
             serviceRunning -> "前台服务运行中"
             prefs.collectionEnabled -> "后台采集已启用"
             else -> "未启用"
         }
-        val progressPercent = recordingProgressPercent(prefs)
-        val currentFile = prefs.lastRecordingProgressCurrent.ifBlank { "无" }
+
+        // 1. 顶部唯一核心操作按钮（直接置顶，零滑动点击）
+        val btnText: String
+        val btnKind: Kind
+        val btnAction: () -> Unit
+
+        if (!prefs.collectionEnabled) {
+            btnText = "▶ 启动采集"
+            btnKind = Kind.PRIMARY
+            btnAction = { startCollectorService() }
+        } else if (syncing) {
+            btnText = "🔄 正在采集与上传中..."
+            btnKind = Kind.WARNING
+            btnAction = {
+                Toast.makeText(this, "正在处理通话与录音上传，请稍候...", Toast.LENGTH_SHORT).show()
+            }
+        } else if (isCompleted) {
+            btnText = "✅ 采集完成"
+            btnKind = Kind.SUCCESS
+            btnAction = {
+                Toast.makeText(this, "所有录音已全部上传完成，正在重新扫描...", Toast.LENGTH_SHORT).show()
+                Thread {
+                    try {
+                        CollectorRunner(this).syncOnce()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "手动检查同步失败", e)
+                    }
+                    runOnUiThread { refreshStatus() }
+                }.start()
+            }
+        } else if (prefs.lastRecordingProgressFailed > 0) {
+            btnText = "⚠ 存在 ${prefs.lastRecordingProgressFailed} 条失败（点击重试）"
+            btnKind = Kind.ERROR
+            btnAction = {
+                Toast.makeText(this, "正在重试失败录音上传...", Toast.LENGTH_SHORT).show()
+                Thread {
+                    try {
+                        CollectorRunner(this).syncOnce()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "重试同步失败", e)
+                    }
+                    runOnUiThread { refreshStatus() }
+                }.start()
+            }
+        } else {
+            btnText = "▶ 启动采集"
+            btnKind = Kind.PRIMARY
+            btnAction = { startCollectorService() }
+        }
+
+        val topActionContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 0, 0, dp(12))
+        }
+        topActionContainer.addView(actionButton(btnText, btnKind, btnAction), blockParams())
+        content.addView(topActionContainer)
+
+        // 2. 服务状态卡片（原样保留，进度标签按真实状态反映）
+        val progressPercent: Int
+        val progressLabel: String
+        if (!prefs.collectionEnabled) {
+            progressLabel = "录音同步进度"
+            progressPercent = 0
+        } else if (syncing) {
+            val total = prefs.lastRecordingProgressTotal
+            val processed = prefs.lastRecordingProgressProcessed
+            progressLabel = if (total > 0) "录音同步进度 (正在上传 $processed/$total)" else "录音同步进度 (正在扫描)"
+            progressPercent = recordingProgressPercent(prefs)
+        } else if (isCompleted) {
+            progressLabel = "录音同步进度：所有录音已全部同步完毕"
+            progressPercent = 100
+        } else if (prefs.lastRecordingProgressFailed > 0) {
+            progressLabel = "录音同步进度：存在 ${prefs.lastRecordingProgressFailed} 条上传失败"
+            progressPercent = recordingProgressPercent(prefs)
+        } else {
+            progressLabel = "录音同步进度"
+            progressPercent = recordingProgressPercent(prefs)
+        }
+
+        val badgeText = when {
+            isCompleted -> "采集完成"
+            syncing -> "同步中"
+            prefs.collectionEnabled -> "运行中"
+            else -> "未启用"
+        }
+        val badgeKind = when {
+            isCompleted -> Kind.SUCCESS
+            syncing -> Kind.WARNING
+            prefs.collectionEnabled -> Kind.SUCCESS
+            else -> Kind.NEUTRAL
+        }
 
         content.addView(statusCard(
             title = "服务状态",
-            badge = if (prefs.collectionEnabled) "运行中" else "未启用",
-            badgeKind = if (prefs.collectionEnabled) Kind.SUCCESS else Kind.NEUTRAL,
+            badge = badgeText,
+            badgeKind = badgeKind,
             rows = listOf(
                 "员工 ID" to prefs.employeeCode.ifBlank { "未配置" },
                 "后端服务" to compactBackend(prefs.backendUrl),
                 "服务" to serviceText,
                 "心跳" to prefs.lastHeartbeatStatus
             ),
-            progressLabel = "录音同步进度",
+            progressLabel = progressLabel,
             progressValue = progressPercent
         ))
 
+        // 3. 最近同步卡片（原封不动）
         content.addView(summaryCard(
             title = "最近同步",
             iconRes = R.drawable.ic_sync,
@@ -211,6 +309,8 @@ class MainActivity : Activity() {
             )
         ))
 
+        // 4. 同步详情卡片（原封不动）
+        val currentFile = prefs.lastRecordingProgressCurrent.ifBlank { "无" }
         val progressRows = listOf(
             "当前阶段" to syncStatusText(prefs),
             "当前文件" to currentFile,
@@ -219,6 +319,7 @@ class MainActivity : Activity() {
         )
         content.addView(summaryCard("同步详情", R.drawable.ic_sync, progressRows, highlight = isSyncing(prefs)))
 
+        // 5. 系统状态卡片（原封不动）
         content.addView(summaryCard(
             title = "系统状态",
             iconRes = R.drawable.ic_health,
@@ -229,16 +330,6 @@ class MainActivity : Activity() {
                 "待上传通话" to "${prefs.pendingCallCount()}"
             )
         ))
-
-        val actions = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(10), 0, dp(2))
-        }
-        actions.addView(actionButton("▶ 启动采集", Kind.PRIMARY) { startCollectorService() }, weightParams())
-        actions.addView(space(dp(12)))
-        actions.addView(actionButton("□ 停止服务", Kind.ERROR) { stopCollectorService() }, weightParams())
-        content.addView(actions)
-        content.addView(outlineButton("检查后端") { checkBackendHealth() })
     }
 
     private fun renderCalls(prefs: AppPrefs) {
@@ -840,6 +931,8 @@ class MainActivity : Activity() {
             setTextColor(if (kind == Kind.ERROR) COLOR_ERROR else COLOR_ON_PRIMARY)
             background = when (kind) {
                 Kind.ERROR -> roundedBg(Color.TRANSPARENT, dp(10), COLOR_ERROR, 1)
+                Kind.SUCCESS -> roundedBg(Color.parseColor("#1B873F"), dp(10), Color.TRANSPARENT, 0)
+                Kind.WARNING -> roundedBg(Color.parseColor("#D97706"), dp(10), Color.TRANSPARENT, 0)
                 else -> roundedBg(COLOR_PRIMARY, dp(10), Color.TRANSPARENT, 0)
             }
             minHeight = dp(52)
@@ -1050,6 +1143,14 @@ class MainActivity : Activity() {
             } else {
                 startService(intent)
             }
+            Thread {
+                try {
+                    CollectorRunner(this).syncOnce()
+                } catch (e: Exception) {
+                    Log.w(TAG, "启动后首次同步失败", e)
+                }
+                runOnUiThread { refreshStatus() }
+            }.start()
         } catch (e: Exception) {
             prefs.collectionEnabled = false
             CollectorWorkScheduler.cancel(this)
@@ -1057,7 +1158,7 @@ class MainActivity : Activity() {
             refreshStatus()
             return
         }
-        Toast.makeText(this, "采集服务已启动", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "采集服务已启动，正在扫描同步...", Toast.LENGTH_SHORT).show()
         refreshStatus()
     }
 
@@ -1269,6 +1370,7 @@ class MainActivity : Activity() {
     }
 
     companion object {
+        private const val TAG = "MainActivity"
         private val COLOR_BACKGROUND = Color.rgb(247, 249, 255)
         private val COLOR_SURFACE = Color.WHITE
         private val COLOR_SURFACE_LOW = Color.rgb(241, 244, 250)
