@@ -18,6 +18,10 @@ export default defineConfig(({ mode }) => ({
       '/ws': {
         target: 'ws://localhost:13000',
         ws: true
+      },
+      '/download': {
+        target: 'http://localhost:13000',
+        changeOrigin: true
       }
     }
   }

@@ -435,6 +435,7 @@ export function registerApiRoutes(
       request.url.startsWith('/api/v1/order-attachments/') ||
       request.url.startsWith('/admin') ||
       request.url.startsWith('/ext') || // 插件分发文件（.crx / update.xml），公开资源
+      request.url.startsWith('/download') || // App 安装包下载，公开资源
       request.url.startsWith('/api/v1/departments') ||
       request.url.startsWith('/api/v1/hospitals') ||
       request.url.startsWith('/api/v1/doctors') ||

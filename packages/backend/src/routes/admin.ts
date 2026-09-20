@@ -15,6 +15,9 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { Prisma, PrismaClient } from '@prisma/client'
 import * as Minio from 'minio'
 import jwt from 'jsonwebtoken'
+import { existsSync, statSync, createWriteStream, mkdirSync, readdirSync, unlinkSync } from 'node:fs'
+import { join, basename } from 'node:path'
+import os from 'node:os'
 import { activeConnections, mobileSeenMap, presenceMap, trayRestSeenMap } from './api.js'
 import { getEnv } from '../env.js'
 import { getRecordingPlaybackInfo } from '../audioTranscode.js'
@@ -2223,6 +2226,134 @@ export function registerAdminRoutes(
       } catch (err: any) {
         rootFastify.log.error('admin health 失败:', err)
         return reply.status(500).send({ error: '健康检查失败: ' + err.message })
+      }
+    })
+
+    // GET /api/v1/admin/app/info - 获取最新 App 安装包状态
+    fastify.get('/api/v1/admin/app/info', async (req: FastifyRequest, reply: FastifyReply) => {
+      const downloadsDir = join(__dirname, '../../public/downloads')
+      if (!existsSync(downloadsDir)) {
+        return reply.send({ data: { exists: false } })
+      }
+      const files = readdirSync(downloadsDir).filter(f => f.toLowerCase().endsWith('.apk'))
+      if (files.length === 0) {
+        return reply.send({ data: { exists: false } })
+      }
+
+      // 获取修改时间最新的一个 apk 安装包
+      let latestFile = files[0]
+      let latestStat = statSync(join(downloadsDir, latestFile))
+      for (let i = 1; i < files.length; i++) {
+        const s = statSync(join(downloadsDir, files[i]))
+        if (s.mtimeMs > latestStat.mtimeMs) {
+          latestFile = files[i]
+          latestStat = s
+        }
+      }
+
+      try {
+        const stat = latestStat
+        const sizeMb = Number((stat.size / (1024 * 1024)).toFixed(2))
+
+        // 计算可在局域网/公网直接访问该后端的 IP 地址与端口
+        const port = getEnv().port || 13000
+        let hostIp = '127.0.0.1'
+        const reqHost = ((req.headers['x-forwarded-host'] || req.headers.host || '') as string).split(':')[0]
+        if (reqHost && reqHost !== 'localhost' && reqHost !== '127.0.0.1') {
+          hostIp = reqHost
+        } else {
+          // 获取本机首选的物理网卡 IPv4 局域网地址（过滤虚拟网卡如 VMware、WSL、Mihomo 等）
+          const nets = os.networkInterfaces()
+          const isVirtual = (name: string) => /vmware|virtual|wsl|vethernet|hyper-v|docker|tailscale|mihomo|tap|tun/i.test(name)
+          const candidates: Array<{ name: string; ip: string }> = []
+          for (const [name, iface] of Object.entries(nets)) {
+            for (const item of iface || []) {
+              if (item.family === 'IPv4' && !item.internal) {
+                candidates.push({ name, ip: item.address })
+              }
+            }
+          }
+          const best = candidates.find(c => !isVirtual(c.name) && (c.ip.startsWith('192.168.') || c.ip.startsWith('10.') || c.ip.startsWith('172.')))
+            || candidates.find(c => !isVirtual(c.name))
+            || candidates[0]
+          if (best) hostIp = best.ip
+        }
+
+        const encodedName = encodeURIComponent(latestFile)
+        const downloadUrl = `/download/${encodedName}`
+        const mobileDownloadUrl = `http://${hostIp}:${port}/download/${encodedName}`
+
+        return reply.send({
+          data: {
+            exists: true,
+            fileName: latestFile,
+            sizeBytes: stat.size,
+            sizeMb,
+            updatedAt: stat.mtime.toISOString(),
+            downloadUrl,
+            mobileDownloadUrl
+          }
+        })
+      } catch (e: any) {
+        return reply.send({ data: { exists: false, error: e?.message } })
+      }
+    })
+
+    // POST /api/v1/admin/app/upload - 上传最新的 App 安装包 (.apk)，保留原始文件名并覆盖旧版本
+    fastify.post('/api/v1/admin/app/upload', async (req: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const data = await req.file()
+        if (!data) {
+          return reply.status(400).send({ error: '未接收到上传的文件' })
+        }
+        if (!data.filename.toLowerCase().endsWith('.apk')) {
+          return reply.status(400).send({ error: '上传的文件必须是 Android 安装包 (.apk)' })
+        }
+
+        const downloadsDir = join(__dirname, '../../public/downloads')
+        if (!existsSync(downloadsDir)) {
+          mkdirSync(downloadsDir, { recursive: true })
+        }
+
+        // 获取用户上传的原始文件名（过滤非法路径字符）
+        const rawName = basename(data.filename || 'app.apk')
+        const safeName = rawName.replace(/[/\\?%*:|"<>]/g, '_')
+
+        // 清理目录内历史旧 .apk 文件，保证最新包即当前唯一有效包
+        try {
+          const oldFiles = readdirSync(downloadsDir).filter(f => f.toLowerCase().endsWith('.apk'))
+          for (const f of oldFiles) {
+            try { unlinkSync(join(downloadsDir, f)) } catch {}
+          }
+        } catch {}
+
+        const apkPath = join(downloadsDir, safeName)
+        const writeStream = createWriteStream(apkPath)
+        await new Promise<void>((resolve, reject) => {
+          data.file.pipe(writeStream)
+          data.file.on('end', () => resolve())
+          data.file.on('error', (err: unknown) => reject(err))
+          writeStream.on('error', (err: unknown) => reject(err))
+        })
+
+        const stat = statSync(apkPath)
+        const sizeMb = Number((stat.size / (1024 * 1024)).toFixed(2))
+        const encodedName = encodeURIComponent(safeName)
+        const downloadUrl = `/download/${encodedName}`
+
+        return reply.send({
+          data: {
+            ok: true,
+            message: `最新安装包「${safeName}」上传成功`,
+            fileName: safeName,
+            sizeMb,
+            updatedAt: stat.mtime.toISOString(),
+            downloadUrl
+          }
+        })
+      } catch (err: any) {
+        rootFastify.log.error('上传 App 安装包失败:', err)
+        return reply.status(500).send({ error: '上传失败: ' + (err?.message || err) })
       }
     })
   })

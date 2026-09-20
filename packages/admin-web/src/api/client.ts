@@ -96,13 +96,18 @@ interface ApiEnvelope<T> {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData
+  const headers: Record<string, string> = {
+    ...(options.headers as Record<string, string> ?? {})
+  }
+  if (!isFormData && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json'
+  }
+
   const res = await fetch(path, {
     ...options,
     credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers ?? {})
-    }
+    headers
   })
 
   if (res.status === 401) {
@@ -276,5 +281,26 @@ export const adminApi = {
   // ───── 系统健康 ─────
   health() {
     return request<HealthInfo>('/api/v1/admin/health')
+  },
+
+  // ───── App 安装包发包与下载 ─────
+  appInfo() {
+    return request<{
+      exists: boolean
+      fileName?: string
+      sizeBytes?: number
+      sizeMb?: number
+      updatedAt?: string
+      downloadUrl?: string
+      mobileDownloadUrl?: string
+    }>('/api/v1/admin/app/info')
+  },
+  uploadApp(file: File) {
+    const formData = new FormData()
+    formData.append('file', file)
+    return request<{ ok: boolean; message: string; downloadUrl: string }>('/api/v1/admin/app/upload', {
+      method: 'POST',
+      body: formData
+    })
   }
 }

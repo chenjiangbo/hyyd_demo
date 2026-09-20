@@ -23,8 +23,9 @@ import { addAdminSocket, removeAdminSocket } from './routes/adminBus.js'
 import { saveOrderDetailBundle } from './orderDetail.js'
 import { initScheduler } from './asr/transcribeScheduler.js'
 import fastifyStatic from '@fastify/static'
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import fastifyMultipart from '@fastify/multipart'
+import { existsSync, mkdirSync } from 'node:fs'
+import { join, basename } from 'node:path'
 import { getEnv } from './env.js'
 import { ensureHuanyuTables } from './db/ensureHuanyuTables.js'
 import { ensureBOrderFormTables } from './db/ensureBOrderFormTables.js'
@@ -108,6 +109,13 @@ async function start() {
 
     // 1.5 注册 cookie 插件（管理后台鉴权用 httpOnly cookie）
     await server.register(cookie)
+
+    // 1.6 注册 multipart 插件（支持 App 安装包等文件上传）
+    await server.register(fastifyMultipart, {
+      limits: {
+        fileSize: 150 * 1024 * 1024
+      }
+    })
 
     // 2. 注册 WebSocket 插件
     await server.register(websocket)
@@ -524,6 +532,26 @@ async function start() {
     } else {
       server.log.info('未发现 public/ext，跳过插件分发托管')
     }
+
+    // 4.4 托管移动端 App 安装包（APK）直连下载到 /download/*
+    const downloadsDir = join(__dirname, '../public/downloads')
+    if (!existsSync(downloadsDir)) {
+      mkdirSync(downloadsDir, { recursive: true })
+    }
+    await server.register(fastifyStatic, {
+      root: downloadsDir,
+      prefix: '/download/',
+      decorateReply: false,
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.apk')) {
+          const name = basename(filePath)
+          const encoded = encodeURIComponent(name)
+          res.setHeader('Content-Disposition', `attachment; filename="${encoded}"; filename*=UTF-8''${encoded}`)
+          res.setHeader('Content-Type', 'application/vnd.android.package-archive')
+        }
+      }
+    })
+    server.log.info(`App 下载目录资源已挂载: /download/  ← ${downloadsDir}`)
 
     // 4.5 初始化 ASR 调度器（启动后会自动恢复 processing 状态任务）
     initScheduler({
