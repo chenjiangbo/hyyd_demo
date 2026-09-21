@@ -1,6 +1,5 @@
 appId: com.electron.app
 productName: tray-app
-afterPack: build/after-pack-icon.cjs
 directories:
   buildResources: build
 files:
@@ -21,10 +20,10 @@ extraResources:
     to: capture-sidecar
     filter:
       - '**/*'
+afterPack: build/after-pack-icon.cjs
 win:
   executableName: tray-app
   icon: resources/icon.ico
-  # 当前交付不配置代码签名证书；图标由 afterPack 使用本地 rcedit 写入。
   signAndEditExecutable: false
 nsis:
   artifactName: ${name}-${version}-setup.${ext}

@@ -1,6 +1,7 @@
 node_modules/
 dist/
-build/
+/build/
+!packages/tray-app/build/
 debug/
 dist-artifacts/
 .env
