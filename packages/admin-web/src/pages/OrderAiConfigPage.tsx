@@ -39,7 +39,9 @@ export default function OrderAiConfigPage(): React.JSX.Element {
             <p>时区：{config.schedule.timeZone}</p>
             <p>{config.schedule.condition}</p>
             <p>{config.schedule.scope}</p>
-            <p className="rounded bg-surface-2 px-3 py-2 text-fg">如需调整时点，请修改后端环境变量 <code>{config.schedule.setting}</code>，例如 <code>12:00,18:00</code>，然后热重启后端服务。</p>
+            <p className="rounded bg-surface-2 px-3 py-2 text-fg">
+              如需调整调用时段与频次，请直接前往左侧导航菜单的 <a href="/ai-schedule-config" className="font-semibold text-accent-strong underline">「⏱ AI调用时间配置」</a> 页面进行可视化调整，即改即生效，无需重启服务。
+            </p>
           </div>
         </Card>
 
