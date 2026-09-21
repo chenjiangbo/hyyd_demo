@@ -33,6 +33,7 @@ import { getEnv } from './env.js'
 import { ensureHuanyuTables } from './db/ensureHuanyuTables.js'
 import { ensureBOrderFormTables } from './db/ensureBOrderFormTables.js'
 import { ensureReminderTables } from './db/ensureReminderTables.js'
+import { ensureSysSettingsTable } from './db/ensureSysSettingsTable.js'
 import { syncHuanyuOrderFromTaikang } from './huanyuOrderSync.js'
 import { initializeOrderWorkflow } from './workflow/serviceWorkflow.js'
 
@@ -100,6 +101,7 @@ async function start() {
     await ensureHuanyuTables(prisma)
     await ensureBOrderFormTables(prisma)
     await ensureReminderTables(prisma, server.log)
+    await ensureSysSettingsTable(prisma, server.log)
     await ensureBuckets()
 
     // 1. 注册 CORS 跨域插件

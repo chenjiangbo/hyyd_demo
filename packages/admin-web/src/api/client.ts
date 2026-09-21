@@ -25,8 +25,12 @@ import type {
   CaptureHealthRow,
   UnmatchedRefItem,
   CaptureDiagnosticImageItem,
-  SystemReminderConfig
+  SystemReminderConfig,
+  AiScheduleConfig,
+  UpdateAiSchedulePayload
 } from './types'
+
+export type { AiScheduleConfig, UpdateAiSchedulePayload }
 
 // 把筛选对象拼成 query string（跳过空值）。
 function qs(params: Record<string, string | number | null | undefined>): string {
@@ -158,6 +162,17 @@ export const adminApi = {
   saveWorkflowTemplate(id: number, data: Pick<WorkflowTemplateConfig, 'name' | 'description' | 'steps'>) {
     return request<{ ok: boolean }>(`/api/v1/admin/workflow-templates/${id}`, {
       method: 'PUT', body: JSON.stringify(data)
+    })
+  },
+
+  // ───── AI 调用时间配置 ─────
+  aiScheduleConfig() {
+    return request<AiScheduleConfig>('/api/v1/admin/ai-schedule-config')
+  },
+  saveAiScheduleConfig(data: UpdateAiSchedulePayload) {
+    return request<{ data: AiScheduleConfig; message: string }>('/api/v1/admin/ai-schedule-config', {
+      method: 'PUT',
+      body: JSON.stringify(data)
     })
   },
 

@@ -49,14 +49,47 @@ export function registerEscortFeedbackRoutes(
         include: { assignedEmployee: true }
       })
 
-      // 查询寰宇订单表与陪诊人指派信息
+      // 优先从 fact_hy_pzrxx 获取正式陪诊人与服务时间（彻底抛弃 HY_FACT_DDCX_NEW.PZR）
+      const pzrRows = await prisma.$queryRawUnsafe<any[]>(`
+        SELECT "PZR", "BBQ_FW"
+        FROM "fact_hy_pzrxx"
+        WHERE ("DDBH" = $1 OR "DDBH" = $2)
+          AND "PZR" IS NOT NULL AND TRIM("PZR") != ''
+        ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC
+        LIMIT 1;
+      `, cleanOrderNo, order?.huanyuOrderNo || cleanOrderNo)
+
+      const dbPzr = pzrRows[0]
+
+      // 若正式库 fact_hy_pzrxx 没有，则取 AI 候选提取的数据（无需人工在页面点保存）
+      let aiEscortName: string | null = null
+      let aiEscortDate: string | null = null
+      let aiEscortPhone: string | null = null
+
+      if (order?.id) {
+        const aiCandidates = await prisma.$queryRawUnsafe<any[]>(`
+          SELECT field_code, value_text
+          FROM b_order_ai_field_candidates
+          WHERE order_id = $1
+            AND field_code IN ('escort_name', 'escort_service_date', 'escort_phone')
+            AND status != 'dismissed'
+            AND TRIM(value_text) NOT IN ('', '无', '待定', '暂无', '待安排', '待分配', '未指派', '未安排', '无陪诊', '不需陪诊', '不需要陪诊')
+          ORDER BY created_at DESC;
+        `, order.id)
+
+        for (const c of aiCandidates) {
+          if (c.field_code === 'escort_name' && !aiEscortName) aiEscortName = c.value_text?.trim() || null
+          if (c.field_code === 'escort_service_date' && !aiEscortDate) aiEscortDate = c.value_text?.trim() || null
+          if (c.field_code === 'escort_phone' && !aiEscortPhone) aiEscortPhone = c.value_text?.trim() || null
+        }
+      }
+
+      // 查询寰宇订单基础快照信息（仅取就诊人、医院、科室等，绝不取 PZR）
       const huanyuRows = await prisma.$queryRawUnsafe<any[]>(`
         SELECT 
           h."DDBH", h."BDQD_DDBH", h."JZR_XM", h."H_NAME", h."H_KS", h."H_YS",
-          COALESCE(p."PZR", h."PZR") AS pzr_id,
-          COALESCE(p."BBQ_FW", h."BBQ_FW", h."DATE_FW") AS service_date
+          h."BBQ_FW", h."DATE_FW"
         FROM "HY_FACT_DDCX_NEW" h
-        LEFT JOIN "fact_hy_pzrxx" p ON (p."DDBH" = h."DDBH" OR p."DDBH" = h."BDQD_DDBH")
         WHERE h."BDQD_DDBH" = $1 OR h."DDBH" = $1
         LIMIT 1;
       `, cleanOrderNo)
@@ -66,25 +99,25 @@ export function registerEscortFeedbackRoutes(
       const customerName = order?.customerName || hy.JZR_XM || '客户'
       const hospital = order?.hospital || hy.H_NAME || '待定医院'
       const dept = order?.dept || hy.H_KS || ''
-      const pzrId = hy.pzr_id || ''
+      const pzrId = (dbPzr?.PZR ? String(dbPzr.PZR).trim() : null) || aiEscortName || ''
       let pzrName = pzrId || '陪诊人员'
-      let escortPhone = ''
+      let escortPhone = aiEscortPhone || ''
 
       // 从远端 MySQL 字典库 (dim_hy_pzr) 获取陪诊人姓名与默认手机号
       if (pzrId) {
         try {
           const escorts = await listHuanyuEscorts(pzrId)
-          const matched = escorts.find((e) => e.id === pzrId) || escorts[0]
+          const matched = escorts.find((e) => e.id === pzrId || e.name === pzrId) || escorts[0]
           if (matched) {
             pzrName = matched.name || pzrId
-            escortPhone = matched.phone || ''
+            if (matched.phone) escortPhone = matched.phone
           }
         } catch {
           // 远端 MySQL 异常时使用本地编号作为 fallback
         }
       }
 
-      const serviceDate = hy.service_date || ''
+      const serviceDate = (dbPzr?.BBQ_FW ? String(dbPzr.BBQ_FW).trim() : null) || aiEscortDate || hy.BBQ_FW || hy.DATE_FW || ''
       const sourceOrderNo = order?.sourceOrderNo || hy.BDQD_DDBH || cleanOrderNo
       const huanyuOrderNo = order?.huanyuOrderNo || hy.DDBH || ''
 

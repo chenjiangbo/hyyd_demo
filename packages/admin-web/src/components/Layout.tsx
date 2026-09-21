@@ -15,6 +15,7 @@ const NAV_ITEMS: Array<{ to: string; label: string; icon: string; end?: boolean 
   { to: '/capture-diagnostic-images', label: '采集诊断图片', icon: '▧' },
   { to: '/unmatched-refs', label: '待确认订单号', icon: '⚠' },
   { to: '/workflow-config', label: '服务步骤配置', icon: '☷' },
+  { to: '/ai-schedule-config', label: 'AI调用时间配置', icon: '⏱' },
   { to: '/order-ai-config', label: '订单 AI 分析说明', icon: '✦' },
   { to: '/system-reminders', label: '系统提醒说明', icon: '◷' },
   { to: '/health', label: '系统健康', icon: '✚' },

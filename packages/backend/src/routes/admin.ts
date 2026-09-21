@@ -28,6 +28,10 @@ import {
   ORDER_AI_PROMPT_INPUTS,
   ORDER_AI_PROMPT_RULES
 } from '../llm/orderAiExtraction.js'
+import {
+  getScheduleStatus,
+  reloadScheduleConfig
+} from '../jobs/orderAiSchedule.js'
 
 export const ADMIN_COOKIE = 'hyyd_admin'
 const JWT_EXPIRES_IN = '12h'
@@ -253,16 +257,76 @@ export function registerAdminRoutes(
       return reply.send({ data: { role: 'admin' } })
     })
 
+    // 获取 AI 调用时间配置与调度状态
+    fastify.get('/api/v1/admin/ai-schedule-config', async (_request, reply) => {
+      const status = getScheduleStatus()
+      return reply.send({ data: status })
+    })
+
+    // 更新 AI 调用时间配置
+    fastify.put<{
+      Body: {
+        enabled?: boolean
+        startTime?: string
+        endTime?: string
+        intervalMinutes?: number
+      }
+    }>('/api/v1/admin/ai-schedule-config', async (request, reply) => {
+      const body = request.body || {}
+      const enabled = body.enabled !== false
+      const startTime = String(body.startTime || '').trim()
+      const endTime = String(body.endTime || '').trim()
+      const intervalMinutes = Number(body.intervalMinutes)
+
+      // 参数格式校验
+      const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/
+      if (!timeRegex.test(startTime)) {
+        return reply.status(400).send({ error: '开始时间格式不合法，应为 HH:mm（如 09:00）' })
+      }
+      if (!timeRegex.test(endTime)) {
+        return reply.status(400).send({ error: '结束时间格式不合法，应为 HH:mm（如 21:00）' })
+      }
+      if (startTime > endTime) {
+        return reply.status(400).send({ error: '开始时间不能晚于结束时间' })
+      }
+      if (isNaN(intervalMinutes) || intervalMinutes < 5 || intervalMinutes > 720) {
+        return reply.status(400).send({ error: '调用间隔必须在 5 分钟到 720 分钟之间' })
+      }
+
+      const newConfig = {
+        enabled,
+        startTime,
+        endTime,
+        intervalMinutes
+      }
+
+      // 保存到 sys_settings
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO sys_settings (key, value, updated_at)
+         VALUES ('order_ai_schedule', $1::jsonb, NOW())
+         ON CONFLICT (key) DO UPDATE
+         SET value = EXCLUDED.value, updated_at = NOW();`,
+        JSON.stringify(newConfig)
+      )
+
+      // 触发调度器内存热刷新
+      await reloadScheduleConfig(prisma)
+
+      return reply.send({
+        data: getScheduleStatus(),
+        message: 'AI 调用时间配置已成功保存并立即生效'
+      })
+    })
+
     // 订单 AI 分析配置说明：内容直接由实际提取器导出，避免后台说明与运行规则不一致。
     fastify.get('/api/v1/admin/order-ai-config', async (_request, reply) => {
-      const rawTimes = getEnv().orderAiAnalysisTimes ?? '12:00,18:00'
-      const times = rawTimes.split(',').map((item) => item.trim()).filter(Boolean)
+      const scheduleStatus = getScheduleStatus()
       return reply.send({
         data: {
           schedule: {
-            timeZone: 'Asia/Shanghai（上海时区）',
-            times: times.length > 0 ? times : ['12:00', '18:00'],
-            setting: 'ORDER_AI_ANALYSIS_TIMES',
+            timeZone: scheduleStatus.timeZone,
+            times: scheduleStatus.slots,
+            setting: 'order_ai_schedule（在管理后台「AI调用时间配置」中可视化调节）',
             condition: '仅在时点到达且订单自上次分析后存在新的企微消息、微信消息或已完成转写的通话录音时调用；不会因静默、消息条数或转写完成即时自动调用。',
             scope: '沟通记录按申请号聚合；每张订单按自己的服务类型与字段白名单独立分析。页面手动调用入口保留。'
           },
@@ -364,7 +428,7 @@ export function registerAdminRoutes(
               technicalConditions: [
                 '前置步骤（挂号 registration / 检查预约 check_booking / 约住院 hospital_booking）状态为已完成 completed',
                 '前置步骤完成时间 completed_at 满足已满 1 小时（completed_at <= now - 1 hour）且在 3 天内',
-                '检查寰宇订单表 HY_FACT_DDCX_NEW.PZR 为空，且陪诊人员关联表 fact_hy_pzrxx 无对应派单记录',
+                '不取主表 HY_FACT_DDCX_NEW.PZR；优先查陪诊人员明细表 fact_hy_pzrxx，无则降级读取 AI 提取的候选陪诊人（b_order_ai_field_candidates）；两处皆无才判定为未落实',
                 '订单关联的责任客户经理 assigned_employee_id 存在且订单未取消/未完结'
               ],
               dedupeRule: '基于 auto:escort_unassigned:{sourceOrderNo} 去重，同一订单在未指派状态下全局仅告警 1 次。'
@@ -376,8 +440,8 @@ export function registerAdminRoutes(
               target: '订单责任客户经理',
               content: '订单号: COD202609170056\n申请时间: 2026-09-16 14:20:00\n提醒内容: 陪诊人员没有第一次反馈信息，请关注！',
               technicalConditions: [
-                '订单服务日期（BBQ_FW 或 DATE_FW）等于次日（tomorrow）',
-                '陪诊人员（PZR）已指派落实，前一天 11:00 系统已发送确认短信',
+                '服务日期（优先 fact_hy_pzrxx.BBQ_FW，无则取 AI 候选 escort_service_date）等于次日（tomorrow）',
+                '陪诊人员（优先 fact_hy_pzrxx.PZR，无则取 AI 候选 escort_name）已落实',
                 '当前时间到达 13:00（hours >= 13）',
                 '在陪诊反馈表 fact_hy_pzfk（feedback_type = "pre_day"）与原系统反馈表中均未查询到反馈确认记录'
               ],
@@ -390,7 +454,7 @@ export function registerAdminRoutes(
               target: '订单责任客户经理',
               content: '订单号: COD202609170072\n申请时间: 2026-09-16 16:40:00\n提醒内容: 陪诊人员反馈【无法出工】（原因：家中有急事无法出工），请立即处理！',
               technicalConditions: [
-                '订单服务日期为次日（tomorrow）',
+                '服务日期（优先 fact_hy_pzrxx.BBQ_FW，无则取 AI 候选 escort_service_date）为次日（tomorrow）',
                 '陪诊反馈表 fact_hy_pzfk 收到前一天反馈（feedback_type = "pre_day"）且出工意向为否（will_attend = false）',
                 '提取反馈记录中的具体原因备注 remark，动态拼入告警文案'
               ],
@@ -403,8 +467,8 @@ export function registerAdminRoutes(
               target: '订单责任客户经理',
               content: '订单号: COD202609170089\n申请时间: 2026-09-16 11:05:00\n提醒内容: 陪诊人员没有第一次反馈信息，请关注！',
               technicalConditions: [
-                '订单服务日期等于当日（today）',
-                '陪诊人员已指派落实，当天 07:00 系统已发送晨间确认通知',
+                '服务日期（优先 fact_hy_pzrxx.BBQ_FW，无则取 AI 候选 escort_service_date）等于当日（today）',
+                '陪诊人员（优先 fact_hy_pzrxx.PZR，无则取 AI 候选 escort_name）已落实',
                 '当前时间到达 07:20（hours === 7 && minutes >= 20 或 hours > 7）',
                 '在陪诊反馈表 fact_hy_pzfk（feedback_type = "same_day"）与原系统中均无出工反馈记录'
               ],

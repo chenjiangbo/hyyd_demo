@@ -3794,6 +3794,53 @@ function VerticalWorkflowTimeline({ order }: { order: Order }): React.JSX.Elemen
   )
 }
 
+interface PendingImageItem {
+  id: string
+  file: File
+  dataUrl: string
+  rawBase64: string
+}
+
+function ImagePreviewModalOverlay({
+  src,
+  alt = '图片预览',
+  onClose
+}: {
+  src: string
+  alt?: string
+  onClose: () => void
+}): React.JSX.Element {
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent): void {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-8 backdrop-blur-xs select-none"
+      onClick={onClose}
+    >
+      <button
+        type="button"
+        onClick={onClose}
+        className="absolute right-6 top-6 h-10 w-10 rounded-full bg-white/20 hover:bg-white/40 text-white flex items-center justify-center transition-all shadow-lg"
+        title="关闭大图 (Esc)"
+      >
+        <span className="material-symbols-outlined" style={{ fontSize: '22px' }}>close</span>
+      </button>
+      <img
+        src={src}
+        alt={alt}
+        className="max-h-[90vh] max-w-[90vw] object-contain rounded-md shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      />
+    </div>
+  )
+}
+
 function OrderDataEntryPanel({
   order,
   materials,
@@ -3804,39 +3851,143 @@ function OrderDataEntryPanel({
   onReload: () => Promise<void>
 }): React.JSX.Element {
   const [note, setNote] = useState('')
+  const [pendingImages, setPendingImages] = useState<PendingImageItem[]>([])
+  const [activeZoomImage, setActiveZoomImage] = useState<string | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [success, setSuccess] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  async function saveNote(): Promise<void> {
+  function readFileAsDataUrl(file: File): Promise<{ dataUrl: string; rawBase64: string }> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const dataUrl = String(reader.result || '')
+        const rawBase64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl
+        resolve({ dataUrl, rawBase64 })
+      }
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+  }
+
+  async function addPendingFiles(files: File[]): Promise<void> {
+    try {
+      const newItems: PendingImageItem[] = await Promise.all(
+        files.map(async (file) => {
+          const { dataUrl, rawBase64 } = await readFileAsDataUrl(file)
+          return {
+            id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            file,
+            dataUrl,
+            rawBase64
+          }
+        })
+      )
+      setPendingImages((prev) => [...prev, ...newItems])
+    } catch {
+      setErr('读取图片失败，请重试')
+    }
+  }
+
+  // 1. 拦截 Ctrl+V 粘贴事件：支持粘贴文本与截图
+  function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>): void {
+    const items = e.clipboardData?.items
+    if (!items || items.length === 0) return
+
+    const imageFiles: File[] = []
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile()
+        if (file) {
+          imageFiles.push(file)
+        }
+      }
+    }
+
+    if (imageFiles.length > 0) {
+      e.preventDefault() // 阻止默认的乱码文本插入
+      void addPendingFiles(imageFiles)
+    }
+  }
+
+  // 2. 支持拖拽图片到输入区域
+  function handleDragOver(e: React.DragEvent): void {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!isDragging) setIsDragging(true)
+  }
+
+  function handleDragLeave(e: React.DragEvent): void {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+  }
+
+  function handleDrop(e: React.DragEvent): void {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+    const files = e.dataTransfer?.files
+    if (!files || files.length === 0) return
+
+    const imageFiles: File[] = []
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      if (file.type.startsWith('image/')) {
+        imageFiles.push(file)
+      }
+    }
+
+    if (imageFiles.length > 0) {
+      void addPendingFiles(imageFiles)
+    }
+  }
+
+  function removePendingImage(id: string): void {
+    setPendingImages((prev) => prev.filter((item) => item.id !== id))
+  }
+
+  async function onFilePick(e: React.ChangeEvent<HTMLInputElement>): Promise<void> {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    const imageFiles = Array.from(files).filter((f) => f.type.startsWith('image/'))
+    if (imageFiles.length > 0) {
+      await addPendingFiles(imageFiles)
+    }
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  async function saveEntry(): Promise<void> {
     const text = note.trim()
-    if (!text) return
+    if (!text && pendingImages.length === 0) return
+
     setBusy(true)
     setErr(null)
+    setSuccess(false)
     try {
-      await addTextMaterial(order.id, text)
+      if (text) {
+        await addTextMaterial(order.id, text)
+      }
+      for (const item of pendingImages) {
+        await addImageMaterial(order.id, item.file.type || 'image/png', item.rawBase64)
+      }
       setNote('')
+      setPendingImages([])
+      setSuccess(true)
+      setTimeout(() => setSuccess(false), 2500)
       await onReload()
+
+      // 保存成功后直接静默触发该订单的 AI 分析，无需任何多余提示
+      void refreshOrderBrief(order.id).catch((e) => {
+        console.warn('[brief] 补录后订单 AI 静默分析重算失败:', e)
+      })
     } catch (e) {
       setErr(e instanceof Error ? e.message : '保存失败')
     } finally {
       setBusy(false)
-    }
-  }
-
-  async function onFilePick(e: React.ChangeEvent<HTMLInputElement>): Promise<void> {
-    const file = e.target.files?.[0]
-    if (!file) return
-    setBusy(true)
-    setErr(null)
-    try {
-      await addImageMaterial(order.id, file.type, await blobToBase64(file))
-      await onReload()
-    } catch (er) {
-      setErr(er instanceof Error ? er.message : '上传失败')
-    } finally {
-      setBusy(false)
-      if (fileRef.current) fileRef.current.value = ''
     }
   }
 
@@ -3853,6 +4004,8 @@ function OrderDataEntryPanel({
     }
   }
 
+  const hasContent = Boolean(note.trim()) || pendingImages.length > 0
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <div className="p-4 border-b border-border-subtle shrink-0 space-y-3">
@@ -3865,30 +4018,95 @@ function OrderDataEntryPanel({
             </CopyText>
           </div>
         </div>
-        <textarea
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          rows={4}
-          placeholder="补录本订单的文字资料..."
-          className="w-full bg-surface-bg border border-border-subtle rounded-lg px-3 py-2 text-body-md focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary resize-none"
-        />
+
+        {/* 微信风格输入框：支持文本输入、直接 Ctrl+V 粘贴图片、文件拖拽 */}
+        <div
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`w-full bg-surface-bg border rounded-lg transition-colors ${
+            isDragging
+              ? 'border-primary ring-2 ring-primary/20 bg-primary/5'
+              : 'border-border-subtle focus-within:border-primary focus-within:ring-1 focus-within:ring-primary'
+          }`}
+        >
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            onPaste={handlePaste}
+            onKeyDown={(e) => {
+              if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault()
+                void saveEntry()
+              }
+            }}
+            rows={pendingImages.length > 0 ? 3 : 4}
+            placeholder="补录本订单资料（可直接 Ctrl+V 粘贴微信截图/文字，或拖拽图片到此处）..."
+            className="w-full bg-transparent px-3 py-2 text-body-md focus:outline-none resize-none"
+          />
+
+          {/* 已粘贴待保存的图片缩略图展示区 */}
+          {pendingImages.length > 0 && (
+            <div className="px-3 pb-2.5 pt-1 border-t border-dashed border-border-subtle flex flex-wrap items-center gap-2.5">
+              {pendingImages.map((img) => (
+                <div
+                  key={img.id}
+                  onClick={() => setActiveZoomImage(img.dataUrl)}
+                  className="relative group rounded-lg overflow-hidden border border-border-subtle bg-black/5 shadow-xs cursor-pointer hover:ring-2 hover:ring-primary transition-all"
+                  title="点击放大预览大图"
+                >
+                  <img src={img.dataUrl} alt="待上传截图" className="h-16 w-16 object-cover" />
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 flex items-center justify-center transition-colors pointer-events-none">
+                    <span className="material-symbols-outlined text-white opacity-0 group-hover:opacity-100 drop-shadow" style={{ fontSize: '18px' }}>
+                      zoom_in
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      removePendingImage(img.id)
+                    }}
+                    className="absolute top-1 right-1 bg-black/60 hover:bg-error text-white rounded-full w-4 h-4 flex items-center justify-center transition-colors shadow z-10"
+                    title="移除图片"
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: '12px' }}>close</span>
+                  </button>
+                </div>
+              ))}
+              <span className="text-[12px] text-text-muted">
+                已粘贴 {pendingImages.length} 张图片（点击可放大查看，按 Ctrl+Enter 保存）
+              </span>
+            </div>
+          )}
+        </div>
+
         <div className="flex items-center justify-between gap-2">
           <button
             onClick={() => fileRef.current?.click()}
             disabled={busy}
             className="inline-flex items-center gap-1.5 px-3 py-2 bg-surface-bg border border-border-subtle rounded-lg text-body-sm hover:bg-surface-container-low disabled:opacity-50"
+            title="选择本地图片文件上传"
           >
             <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>image</span>
             图片
           </button>
-          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onFilePick} />
-          <button
-            onClick={saveNote}
-            disabled={busy || !note.trim()}
-            className="px-4 py-2 bg-primary text-white rounded-lg text-body-sm font-semibold disabled:opacity-40"
-          >
-            保存补录
-          </button>
+          <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={onFilePick} />
+          <div className="flex items-center gap-3">
+            {success && (
+              <span className="inline-flex items-center gap-1 text-[13px] text-emerald-600 font-medium">
+                <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>check_circle</span>
+                保存成功
+              </span>
+            )}
+            <button
+              onClick={saveEntry}
+              disabled={busy || !hasContent}
+              className="px-4 py-2 bg-primary text-white rounded-lg text-body-sm font-semibold disabled:opacity-40 hover:brightness-105 active:brightness-95 transition-all shadow-xs"
+            >
+              {busy ? '正在保存...' : '保存补录'}
+            </button>
+          </div>
         </div>
         {err && <p className="text-body-sm text-error">{err}</p>}
       </div>
@@ -3904,7 +4122,22 @@ function OrderDataEntryPanel({
               </span>
               <div className="flex-1 min-w-0">
                 {material.type === 'image' && material.url ? (
-                  <img src={material.url} alt="补录图片" className="max-h-36 rounded object-contain" />
+                  <div className="relative inline-block group/img">
+                    <img
+                      src={material.url}
+                      alt="补录图片"
+                      onClick={() => setActiveZoomImage(material.url)}
+                      className="max-h-36 rounded object-contain cursor-pointer hover:opacity-95 hover:ring-2 hover:ring-primary transition-all"
+                      title="点击放大查看大图"
+                    />
+                    <div
+                      onClick={() => setActiveZoomImage(material.url)}
+                      className="absolute bottom-1 right-1 bg-black/60 text-white rounded px-1.5 py-0.5 text-[10px] flex items-center gap-0.5 opacity-0 group-hover/img:opacity-100 transition-opacity cursor-pointer pointer-events-none"
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: '12px' }}>zoom_in</span>
+                      放大
+                    </div>
+                  </div>
                 ) : (
                   <p className="text-body-sm whitespace-pre-wrap break-words">{material.textContent}</p>
                 )}
@@ -3921,6 +4154,14 @@ function OrderDataEntryPanel({
           ))
         )}
       </div>
+
+      {/* 点击大图放大查看器 */}
+      {activeZoomImage && (
+        <ImagePreviewModalOverlay
+          src={activeZoomImage}
+          onClose={() => setActiveZoomImage(null)}
+        />
+      )}
     </div>
   )
 }
@@ -7238,16 +7479,4 @@ function asrStatusLabel(status: string): string {
     requires_manual: '待人工处理'
   }
   return labels[status] ?? status
-}
-
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onloadend = () => {
-      const value = String(reader.result)
-      resolve(value.includes(',') ? value.split(',')[1] : value)
-    }
-    reader.onerror = reject
-    reader.readAsDataURL(blob)
-  })
 }

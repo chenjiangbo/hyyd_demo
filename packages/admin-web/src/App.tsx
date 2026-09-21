@@ -17,6 +17,7 @@ import HealthPage from './pages/HealthPage'
 import SettingsPage from './pages/SettingsPage'
 import CaptureDiagnosticImagesPage from './pages/CaptureDiagnosticImagesPage'
 import WorkflowConfigPage from './pages/WorkflowConfigPage'
+import AiScheduleConfigPage from './pages/AiScheduleConfigPage'
 import OrderAiConfigPage from './pages/OrderAiConfigPage'
 import SystemRemindersPage from './pages/SystemRemindersPage'
 
@@ -52,6 +53,7 @@ export default function App(): React.JSX.Element {
         <Route path="health" element={<HealthPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="workflow-config" element={<WorkflowConfigPage />} />
+        <Route path="ai-schedule-config" element={<AiScheduleConfigPage />} />
         <Route path="order-ai-config" element={<OrderAiConfigPage />} />
         <Route path="system-reminders" element={<SystemRemindersPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />

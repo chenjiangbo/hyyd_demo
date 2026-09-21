@@ -106,10 +106,8 @@ internal sealed class CaptureCollector : IDisposable
         @"[#＃][0-9a-z|]{6,9}(?![0-9a-z|])|fwyy[0-9a-z|]{6,24}|OD[0-9a-z|]{6,24}",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
 
-    // 陪诊会话白名单：陪诊[任意名称/职位/公司]#[11位手机号]
-    private static readonly System.Text.RegularExpressions.Regex EscortTitleRegex = new(
-        @"^陪诊[^\s#＃]+[#＃]\d{11}$",
-        System.Text.RegularExpressions.RegexOptions.Compiled);
+    // 陪诊会话识别：标题只要包含“陪诊”两字（如 陪诊张文娟、北京陪诊协同群、陪诊李老师#13800000000），均视为陪诊协同业务会话
+    private static readonly string EscortKeyword = "陪诊";
 
     // OCR 仍可能把申请号和"就医服务群"拆散或插空白；匹配前先去掉所有空白
     private static readonly System.Text.RegularExpressions.Regex WhitespaceRegex = new(
@@ -122,7 +120,7 @@ internal sealed class CaptureCollector : IDisposable
     /// 判断是否"与客户的会话"，并尽量抽申请号候选——**只看聊天区标题行**（不再用全图 OCR，避免左侧联系人列表污染）。
     /// 群聊：标题含"就医服务群"关键词。
     /// 单聊：标题含申请号候选（fwyy 或 OD）或短备注 #申请号尾号6-9位。
-    /// 陪诊协同：标题匹配 陪诊xxx#11位手机号。
+    /// 陪诊协同：标题只要包含"陪诊"两个字，即作为陪诊协同会话准入。
     /// 命中其一 → 客户/业务会话。标题为空（OCR 没读到/分区失败）或其它私聊 → 非客户。
     /// </summary>
     internal static ConversationClass ClassifyTitle(string? title)
@@ -137,7 +135,7 @@ internal sealed class CaptureCollector : IDisposable
         var isGroup = TitleKeywords.Any(kw => compact.Contains(kw, StringComparison.OrdinalIgnoreCase));
         var m = OrderNoRegex.Match(compact);
         var orderNo = m.Success ? m.Value : null;
-        var isEscort = EscortTitleRegex.IsMatch(compact);
+        var isEscort = compact.Contains(EscortKeyword, StringComparison.OrdinalIgnoreCase);
 
         var isCustomer = isGroup || orderNo is not null || isEscort;
         var kind = isCustomer ? (isGroup ? "group" : isEscort ? "escort" : "single") : null;
@@ -211,7 +209,7 @@ internal sealed class CaptureCollector : IDisposable
         _inputMonitor.Start();
 
         Diag.Line($"去重配置：{_dedup.ConfigSummary}");
-        Diag.Line($"客户会话识别：群聊关键词[{string.Join(" / ", TitleKeywords)}] 或 申请号候选[fwyy… / OD… / #尾号6-9位]，命中其一才保留");
+        Diag.Line($"客户会话识别：群聊关键词[{string.Join(" / ", TitleKeywords)}] 或 申请号候选[fwyy… / OD… / #尾号6-9位] 或 包含“陪诊”，命中其一才保留");
     }
 
     public void Stop()

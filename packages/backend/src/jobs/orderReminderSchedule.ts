@@ -156,17 +156,35 @@ async function scanHospitalBookingReminders(prisma: PrismaClient, logger?: Logge
 
 /**
  * 场景 2.1：【陪诊】派单超时预警（前置完成满 1 小时未抓取到陪诊人）
+ * 逻辑：
+ * 1. 彻底不取 HY_FACT_DDCX_NEW.PZR
+ * 2. 优先查正式表 fact_hy_pzrxx（有值则直接视为已落实）
+ * 3. 库里没有（无人手动保存），取 AI 候选表 b_order_ai_field_candidates 中的 escort_name（排除无效占位词）
+ * 4. 仅当两处皆无陪诊人员，且前置完成满 1 小时，才写入超时未落实预警
+ * 5. 不向数据库做任何回写
  */
 async function scanEscortUnassignedReminders(prisma: PrismaClient, logger?: LoggerLike): Promise<void> {
   const completedPreSteps = await prisma.$queryRawUnsafe<any[]>(`
     SELECT 
       s.id, s.step_code, s.completed_at,
       o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id, o.status AS order_status,
-      h."PZR" AS huanyu_pzr
+      EXISTS(
+        SELECT 1 FROM "fact_hy_pzrxx" p 
+        WHERE (p."DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND p."DDBH" = o.huanyu_order_no))
+          AND p."PZR" IS NOT NULL AND TRIM(p."PZR") != ''
+      ) AS has_db_pzr,
+      (
+        SELECT c.value_text FROM b_order_ai_field_candidates c
+        WHERE c.order_id = o.id 
+          AND c.field_code = 'escort_name'
+          AND c.status != 'dismissed'
+          AND TRIM(c.value_text) NOT IN ('', '无', '待定', '暂无', '待安排', '待分配', '未指派', '未安排', '无陪诊', '不需陪诊', '不需要陪诊')
+        ORDER BY c.created_at DESC
+        LIMIT 1
+      ) AS ai_pzr
     FROM b_order_service_steps s
     JOIN b_order_operations op ON s.operation_id = op.id
     JOIN orders o ON op.order_id = o.id
-    LEFT JOIN "HY_FACT_DDCX_NEW" h ON (h."BDQD_DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND h."DDBH" = o.huanyu_order_no))
     WHERE s.step_code IN ('registration', 'check_booking', 'hospital_booking')
       AND s.step_status = 'completed'
       AND s.completed_at IS NOT NULL
@@ -180,17 +198,11 @@ async function scanEscortUnassignedReminders(prisma: PrismaClient, logger?: Logg
   for (const row of completedPreSteps) {
     if (!row.assigned_employee_id || !row.source_order_no) continue
 
-    // 检查是否已有陪诊人
-    const hasPzrInHuanyu = Boolean(row.huanyu_pzr && String(row.huanyu_pzr).trim())
-    if (hasPzrInHuanyu) continue
+    // 1. 优先检查正式库 fact_hy_pzrxx
+    if (row.has_db_pzr) continue
 
-    // 检查 fact_hy_pzrxx 表
-    const ddbh = row.huanyu_order_no || row.source_order_no
-    const escortRows = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT "ZJ" FROM "fact_hy_pzrxx" WHERE "DDBH" = $1 LIMIT 1;`,
-      ddbh
-    )
-    if (escortRows && escortRows.length > 0) continue
+    // 2. 若正式库没有，检查 AI 提取到的候选数据（无需用户在页面点保存）
+    if (row.ai_pzr && String(row.ai_pzr).trim()) continue
 
     const dedupeKey = `auto:escort_unassigned:${row.source_order_no}`
     const content = `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 陪诊人员没有落实，请关注！`
@@ -209,6 +221,11 @@ async function scanEscortUnassignedReminders(prisma: PrismaClient, logger?: Logg
 
 /**
  * 场景 2.2 & 2.3：【陪诊】前一天出工确认（11:00/13:00）与当天防迟到出工（07:00/07:20）
+ * 逻辑：
+ * 1. 绝不取 HY_FACT_DDCX_NEW.PZR
+ * 2. 陪诊人员优先取 fact_hy_pzrxx.PZR；若无则取 AI 候选表 b_order_ai_field_candidates 的 escort_name
+ * 3. 服务日期优先取 fact_hy_pzrxx.BBQ_FW；若无则取 AI 候选表 b_order_ai_field_candidates 的 escort_service_date；再无兜底 HY_FACT_DDCX_NEW.BBQ_FW / DATE_FW
+ * 4. 仅已落实陪诊人的订单才触发短信及出工检查
  */
 async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger?: LoggerLike): Promise<void> {
   const { ymd, time, hours, minutes } = shanghaiNowParts()
@@ -219,16 +236,55 @@ async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger?: Logg
   const preDayOrders = await prisma.$queryRawUnsafe<any[]>(`
     SELECT 
       o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
-      COALESCE(p."PZR", h."PZR") AS pzr,
-      COALESCE(p."BBQ_FW", h."BBQ_FW", h."DATE_FW") AS service_date,
+      COALESCE(
+        NULLIF(TRIM(p."PZR"), ''),
+        ai_escort.value_text
+      ) AS pzr,
+      COALESCE(
+        NULLIF(TRIM(p."BBQ_FW"), ''),
+        ai_date.value_text,
+        h."BBQ_FW",
+        h."DATE_FW"
+      ) AS service_date,
       h."BBQ_FK", h."DATE_FK"
     FROM orders o
     LEFT JOIN "HY_FACT_DDCX_NEW" h ON (h."BDQD_DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND h."DDBH" = o.huanyu_order_no))
-    LEFT JOIN "fact_hy_pzrxx" p ON (p."DDBH" = o.huanyu_order_no OR p."DDBH" = o.source_order_no)
-    WHERE (p."BBQ_FW" LIKE $1 OR h."BBQ_FW" LIKE $1 OR h."DATE_FW" LIKE $1)
-      AND (p."PZR" IS NOT NULL AND p."PZR" != '' OR h."PZR" IS NOT NULL AND h."PZR" != '')
-      AND o.assigned_employee_id IS NOT NULL
+    LEFT JOIN LATERAL (
+      SELECT "PZR", "BBQ_FW" FROM "fact_hy_pzrxx" p 
+      WHERE (p."DDBH" = o.huanyu_order_no OR p."DDBH" = o.source_order_no)
+        AND p."PZR" IS NOT NULL AND TRIM(p."PZR") != ''
+      ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC
+      LIMIT 1
+    ) p ON true
+    LEFT JOIN LATERAL (
+      SELECT value_text FROM b_order_ai_field_candidates c
+      WHERE c.order_id = o.id 
+        AND c.field_code = 'escort_name'
+        AND c.status != 'dismissed'
+        AND TRIM(c.value_text) NOT IN ('', '无', '待定', '暂无', '待安排', '待分配', '未指派', '未安排', '无陪诊', '不需陪诊', '不需要陪诊')
+      ORDER BY c.created_at DESC
+      LIMIT 1
+    ) ai_escort ON true
+    LEFT JOIN LATERAL (
+      SELECT value_text FROM b_order_ai_field_candidates c
+      WHERE c.order_id = o.id 
+        AND c.field_code = 'escort_service_date'
+        AND c.status != 'dismissed'
+        AND TRIM(c.value_text) NOT IN ('', '无', '待定', '暂无')
+      ORDER BY c.created_at DESC
+      LIMIT 1
+    ) ai_date ON true
+    WHERE o.assigned_employee_id IS NOT NULL
       AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
+      AND (
+        (p."BBQ_FW" LIKE $1)
+        OR (p."BBQ_FW" IS NULL AND ai_date.value_text LIKE $1)
+        OR (p."BBQ_FW" IS NULL AND ai_date.value_text IS NULL AND (h."BBQ_FW" LIKE $1 OR h."DATE_FW" LIKE $1))
+      )
+      AND (
+        (p."PZR" IS NOT NULL AND TRIM(p."PZR") != '')
+        OR (ai_escort.value_text IS NOT NULL AND TRIM(ai_escort.value_text) != '')
+      )
     LIMIT 200;
   `, `%${tomorrowYmd}%`)
 
@@ -292,16 +348,55 @@ async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger?: Logg
   const sameDayOrders = await prisma.$queryRawUnsafe<any[]>(`
     SELECT 
       o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
-      COALESCE(p."PZR", h."PZR") AS pzr,
-      COALESCE(p."BBQ_FW", h."BBQ_FW", h."DATE_FW") AS service_date,
+      COALESCE(
+        NULLIF(TRIM(p."PZR"), ''),
+        ai_escort.value_text
+      ) AS pzr,
+      COALESCE(
+        NULLIF(TRIM(p."BBQ_FW"), ''),
+        ai_date.value_text,
+        h."BBQ_FW",
+        h."DATE_FW"
+      ) AS service_date,
       h."BBQ_FK", h."DATE_FK"
     FROM orders o
     LEFT JOIN "HY_FACT_DDCX_NEW" h ON (h."BDQD_DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND h."DDBH" = o.huanyu_order_no))
-    LEFT JOIN "fact_hy_pzrxx" p ON (p."DDBH" = o.huanyu_order_no OR p."DDBH" = o.source_order_no)
-    WHERE (p."BBQ_FW" LIKE $1 OR h."BBQ_FW" LIKE $1 OR h."DATE_FW" LIKE $1)
-      AND (p."PZR" IS NOT NULL AND p."PZR" != '' OR h."PZR" IS NOT NULL AND h."PZR" != '')
-      AND o.assigned_employee_id IS NOT NULL
+    LEFT JOIN LATERAL (
+      SELECT "PZR", "BBQ_FW" FROM "fact_hy_pzrxx" p 
+      WHERE (p."DDBH" = o.huanyu_order_no OR p."DDBH" = o.source_order_no)
+        AND p."PZR" IS NOT NULL AND TRIM(p."PZR") != ''
+      ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC
+      LIMIT 1
+    ) p ON true
+    LEFT JOIN LATERAL (
+      SELECT value_text FROM b_order_ai_field_candidates c
+      WHERE c.order_id = o.id 
+        AND c.field_code = 'escort_name'
+        AND c.status != 'dismissed'
+        AND TRIM(c.value_text) NOT IN ('', '无', '待定', '暂无', '待安排', '待分配', '未指派', '未安排', '无陪诊', '不需陪诊', '不需要陪诊')
+      ORDER BY c.created_at DESC
+      LIMIT 1
+    ) ai_escort ON true
+    LEFT JOIN LATERAL (
+      SELECT value_text FROM b_order_ai_field_candidates c
+      WHERE c.order_id = o.id 
+        AND c.field_code = 'escort_service_date'
+        AND c.status != 'dismissed'
+        AND TRIM(c.value_text) NOT IN ('', '无', '待定', '暂无')
+      ORDER BY c.created_at DESC
+      LIMIT 1
+    ) ai_date ON true
+    WHERE o.assigned_employee_id IS NOT NULL
       AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
+      AND (
+        (p."BBQ_FW" LIKE $1)
+        OR (p."BBQ_FW" IS NULL AND ai_date.value_text LIKE $1)
+        OR (p."BBQ_FW" IS NULL AND ai_date.value_text IS NULL AND (h."BBQ_FW" LIKE $1 OR h."DATE_FW" LIKE $1))
+      )
+      AND (
+        (p."PZR" IS NOT NULL AND TRIM(p."PZR") != '')
+        OR (ai_escort.value_text IS NOT NULL AND TRIM(ai_escort.value_text) != '')
+      )
     LIMIT 200;
   `, `%${ymd}%`)
 

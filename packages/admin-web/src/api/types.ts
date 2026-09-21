@@ -386,3 +386,25 @@ export interface SystemReminderConfig {
     fields: string
   }
 }
+
+export interface AiScheduleConfig {
+  config: {
+    enabled: boolean
+    startTime: string
+    endTime: string
+    intervalMinutes: number
+  }
+  slots: string[]
+  lastRunSlot: string | null
+  lastRunAt: string | null
+  nextRunSlot: string | null
+  timeZone: string
+}
+
+export interface UpdateAiSchedulePayload {
+  enabled: boolean
+  startTime: string
+  endTime: string
+  intervalMinutes: number
+}
+

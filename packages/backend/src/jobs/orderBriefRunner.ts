@@ -298,13 +298,24 @@ export async function refreshOrderBrief(
         doctor: order.doctor,
         serviceRemark: raw.comments ?? raw.comment ?? null
       },
-      messages: msgs.map((m) => ({
-        id: m.id,
-        channel: m.channel,
-        senderName: m.senderName,
-        contentText: m.contentText,
-        occurredAt: m.sortTime ?? m.chatTime ?? m.capturedAt
-      })),
+      messages: [
+        ...msgs.map((m) => ({
+          id: m.id,
+          channel: m.channel,
+          senderName: m.senderName,
+          contentText: m.contentText,
+          occurredAt: m.sortTime ?? m.chatTime ?? m.capturedAt
+        })),
+        ...briefMats
+          .filter((bm) => (bm.textContent ?? '').trim().length > 0)
+          .map((bm, idx) => ({
+            id: -(idx + 1),
+            channel: 'material',
+            senderName: bm.type === 'image' ? `补录图片(${bm.imageKind || '单据'})` : '专员文字补录',
+            contentText: bm.textContent!,
+            occurredAt: bm.createdAt
+          }))
+      ],
       calls: calls.map((c) => ({ id: c.id, direction: c.direction, asrText: c.asrText, startedAt: c.startedAt }))
     })
     extractionEvents = extraction.workflowEvents
