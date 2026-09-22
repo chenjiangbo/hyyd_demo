@@ -32,12 +32,26 @@ import {
   getScheduleStatus,
   reloadScheduleConfig
 } from '../jobs/orderAiSchedule.js'
+<<<<<<< Updated upstream
 import {
   getSmsConfig,
   saveSmsConfig,
   sendAliyunSms,
   type AliyunSmsConfig
 } from '../services/aliyunSmsService.js'
+=======
+import { findHuanyuChannelById, listHuanyuChannels } from '../db/remoteDictionary.js'
+
+const TAIKANG_BUSINESS_CONFIG = {
+  green_pass: '泰康绿通',
+  register_assist: '泰康挂号协助'
+} as const
+type TaikangBusinessKey = keyof typeof TAIKANG_BUSINESS_CONFIG
+
+function isTaikangBusinessKey(value: unknown): value is TaikangBusinessKey {
+  return typeof value === 'string' && value in TAIKANG_BUSINESS_CONFIG
+}
+>>>>>>> Stashed changes
 
 export const ADMIN_COOKIE = 'hyyd_admin'
 const JWT_EXPIRES_IN = '12h'
@@ -324,6 +338,7 @@ export function registerAdminRoutes(
       })
     })
 
+<<<<<<< Updated upstream
     // 获取短信模板与密钥配置
     fastify.get('/api/v1/admin/sms-config', async (_request, reply) => {
       const config = await getSmsConfig(prisma)
@@ -385,10 +400,81 @@ export function registerAdminRoutes(
           signName: config.signName,
           phone,
           orderNo
+=======
+    // 泰康业务—寰宇 B 端渠道映射。渠道候选固定来自远端 MySQL dim_hy_qd，只读查询。
+    fastify.get<{ Querystring: { q?: string } }>('/api/v1/admin/taikang-huanyu-channel-mappings/channels', async (request, reply) => {
+      return reply.send({ data: await listHuanyuChannels(request.query.q) })
+    })
+
+    fastify.get('/api/v1/admin/taikang-huanyu-channel-mappings', async (_request, reply) => {
+      const rows = await prisma.$queryRaw<Array<{
+        business_key: string
+        business_name: string
+        huanyu_channel_id: string | null
+        huanyu_channel_name: string | null
+        enabled: boolean
+        updated_at: Date
+      }>>`
+        SELECT business_key, business_name, huanyu_channel_id, huanyu_channel_name, enabled, updated_at
+          FROM taikang_huanyu_channel_mappings
+         ORDER BY CASE business_key
+           WHEN 'green_pass' THEN 1
+           WHEN 'register_assist' THEN 2
+           ELSE 99
+         END
+      `
+      return reply.send({
+        data: rows.map((row) => ({
+          businessKey: row.business_key,
+          businessName: row.business_name,
+          huanyuChannelId: row.huanyu_channel_id,
+          huanyuChannelName: row.huanyu_channel_name,
+          enabled: row.enabled,
+          updatedAt: row.updated_at.toISOString()
+        }))
+      })
+    })
+
+    fastify.put<{
+      Params: { businessKey: string }
+      Body: { huanyuChannelId?: string; enabled?: boolean }
+    }>('/api/v1/admin/taikang-huanyu-channel-mappings/:businessKey', async (request, reply) => {
+      const { businessKey } = request.params
+      if (!isTaikangBusinessKey(businessKey)) {
+        return reply.status(400).send({ error: '仅支持配置泰康绿通或泰康挂号协助' })
+      }
+      const channelId = String(request.body?.huanyuChannelId ?? '').trim()
+      const enabled = request.body?.enabled !== false
+      if (!channelId) {
+        return reply.status(400).send({ error: '请选择 B端渠道' })
+      }
+      // 保存前以远端维表的码值精确校验；页面显示名称只是快照，后续创建订单仍按 ID 回查。
+      const channel = await findHuanyuChannelById(channelId)
+      if (!channel) {
+        return reply.status(400).send({ error: '所选 B端渠道已不在远端 dim_hy_qd 维表中，请重新选择' })
+      }
+      await prisma.$executeRaw`
+        UPDATE taikang_huanyu_channel_mappings
+           SET business_name = ${TAIKANG_BUSINESS_CONFIG[businessKey]},
+               huanyu_channel_id = ${channel.id},
+               huanyu_channel_name = ${channel.name},
+               enabled = ${enabled},
+               updated_at = now()
+         WHERE business_key = ${businessKey}
+      `
+      return reply.send({
+        data: {
+          businessKey,
+          businessName: TAIKANG_BUSINESS_CONFIG[businessKey],
+          huanyuChannelId: channel.id,
+          huanyuChannelName: channel.name,
+          enabled
+>>>>>>> Stashed changes
         }
       })
     })
 
+<<<<<<< Updated upstream
     // 查询最近短信发送流水 (最新 50 条)
     fastify.get<{
       Querystring: {
@@ -412,6 +498,8 @@ export function registerAdminRoutes(
       }
     })
 
+=======
+>>>>>>> Stashed changes
     // 订单 AI 分析配置说明：内容直接由实际提取器导出，避免后台说明与运行规则不一致。
     fastify.get('/api/v1/admin/order-ai-config', async (_request, reply) => {
       const scheduleStatus = getScheduleStatus()

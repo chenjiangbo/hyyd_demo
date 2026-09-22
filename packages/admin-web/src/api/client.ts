@@ -109,6 +109,20 @@ export interface OrderAiConfig {
   huanyuPush: { action: string; target: string; notices: string[] }
 }
 
+export interface HuanyuChannelOption {
+  id: string
+  name: string
+}
+
+export interface TaikangHuanyuChannelMapping {
+  businessKey: 'green_pass' | 'register_assist'
+  businessName: string
+  huanyuChannelId: string | null
+  huanyuChannelName: string | null
+  enabled: boolean
+  updatedAt: string
+}
+
 interface ApiEnvelope<T> {
   data?: T
   error?: string
@@ -214,6 +228,22 @@ export const adminApi = {
   // ───── 订单 AI 分析配置说明 ─────
   orderAiConfig() {
     return request<OrderAiConfig>('/api/v1/admin/order-ai-config')
+  },
+
+  // ───── 泰康业务—寰宇渠道映射 ─────
+  taikangHuanyuChannelMappings() {
+    return request<TaikangHuanyuChannelMapping[]>('/api/v1/admin/taikang-huanyu-channel-mappings')
+  },
+  huanyuChannels(search = '') {
+    return request<HuanyuChannelOption[]>(`/api/v1/admin/taikang-huanyu-channel-mappings/channels${qs({ q: search })}`)
+  },
+  saveTaikangHuanyuChannelMapping(
+    businessKey: TaikangHuanyuChannelMapping['businessKey'],
+    payload: { huanyuChannelId: string; enabled: boolean }
+  ) {
+    return request<TaikangHuanyuChannelMapping>(`/api/v1/admin/taikang-huanyu-channel-mappings/${businessKey}`, {
+      method: 'PUT', body: JSON.stringify(payload)
+    })
   },
 
   // ───── 系统提醒说明 ─────

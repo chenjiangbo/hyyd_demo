@@ -146,6 +146,21 @@ export async function findHuanyuChannelByName(name: string): Promise<HuanyuChann
   return row ? { id: String(row.id), name: String(row.name ?? '') } : null
 }
 
+/** 按渠道码值精确读取渠道，用于校验后台保存的业务映射仍指向有效维表项。 */
+export async function findHuanyuChannelById(id: string): Promise<HuanyuChannelOption | null> {
+  const target = searchTerm(id)
+  if (!target) return null
+  const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
+    `SELECT CAST(id AS CHAR) AS id, name
+       FROM dim_hy_qd
+      WHERE CAST(id AS CHAR) = ?
+      LIMIT 1`,
+    [target]
+  )
+  const row = rows[0]
+  return row ? { id: String(row.id), name: String(row.name ?? '') } : null
+}
+
 /** 按渠道和服务项目展示名称精确取服务项目码值；全程只执行参数化 SELECT。 */
 export async function findHuanyuChannelProductByName(channelId: string, name: string): Promise<HuanyuChannelProductOption | null> {
   const channel = searchTerm(channelId).slice(0, 4)

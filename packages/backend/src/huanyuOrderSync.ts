@@ -2,11 +2,12 @@ import { Prisma, PrismaClient } from '@prisma/client'
 import { randomInt } from 'node:crypto'
 import {
   findHuanyuBdUserNameByUserId,
-  findHuanyuChannelByName,
+  findHuanyuChannelById,
   findHuanyuChannelProductByName,
   type HuanyuChannelOption,
   type HuanyuChannelProductOption
 } from './db/remoteDictionary.js'
+import { findTaikangHuanyuChannelMapping, taikangBusinessKeyOf } from './taikangHuanyuChannelMapping.js'
 
 /** 订单同步所需的最小字段，既可用于实时抓单，也可用于历史回填。 */
 export interface HuanyuSourceOrder {
@@ -168,9 +169,9 @@ async function stableDdbh(prisma: PrismaClient, order: HuanyuSourceOrder): Promi
   throw new Error(`无法为订单 ${order.id} 生成唯一的寰宇订单号`)
 }
 
-async function channelByName(name: string): Promise<HuanyuChannelOption | null> {
-  if (!channelCache.has(name)) channelCache.set(name, await findHuanyuChannelByName(name))
-  return channelCache.get(name) ?? null
+async function channelById(id: string): Promise<HuanyuChannelOption | null> {
+  if (!channelCache.has(id)) channelCache.set(id, await findHuanyuChannelById(id))
+  return channelCache.get(id) ?? null
 }
 
 async function productByName(channelId: string, name: string): Promise<HuanyuChannelProductOption | null> {
@@ -212,9 +213,13 @@ export async function syncHuanyuOrderFromTaikang(
   const detail = asRecord(asRecord(order.detailJson ?? null).recommendations)
   // 详情接口是客户信息的权威来源；同名字段覆盖列表值，未返回的字段再回退列表原始数据。
   const raw: JsonRecord = { ...listRaw, ...detail, taikangRawJson: listRaw.taikangRawJson ?? listRaw.rawJson }
-  const isRegister = field(raw, 'poolType') === 'register'
-  const channelName = isRegister ? '泰康挂号协助2025' : '泰康集团（2026）'
-  const channel = await channelByName(channelName)
+  // 渠道不再依赖写死中文名：先按泰康业务类型取后台映射，再按渠道 ID 回查远端 dim_hy_qd。
+  // 维表项已失效或管理员尚未配置时保留空值，不猜测其他渠道。
+  const businessKey = taikangBusinessKeyOf(field(raw, 'poolType'))
+  const channelMapping = await findTaikangHuanyuChannelMapping(prisma, businessKey)
+  const channel = channelMapping?.huanyuChannelId
+    ? await channelById(channelMapping.huanyuChannelId)
+    : null
 
   let product: HuanyuChannelProductOption | null = null
   if (channel) {

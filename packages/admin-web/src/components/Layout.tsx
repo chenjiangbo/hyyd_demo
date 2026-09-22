@@ -18,6 +18,7 @@ const NAV_ITEMS: Array<{ to: string; label: string; icon: string; end?: boolean 
   { to: '/ai-schedule-config', label: 'AI调用时间配置', icon: '⏱' },
   { to: '/sms-config', label: '短信模板配置', icon: '💬' },
   { to: '/order-ai-config', label: '订单 AI 分析说明', icon: '✦' },
+  { to: '/taikang-huanyu-channel-mappings', label: '泰康业务渠道配置', icon: '⇄' },
   { to: '/system-reminders', label: '系统提醒说明', icon: '◷' },
   { to: '/health', label: '系统健康', icon: '✚' },
   { to: '/settings', label: '设置', icon: '⚙' }
