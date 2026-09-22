@@ -32,14 +32,12 @@ import {
   getScheduleStatus,
   reloadScheduleConfig
 } from '../jobs/orderAiSchedule.js'
-<<<<<<< Updated upstream
 import {
   getSmsConfig,
   saveSmsConfig,
   sendAliyunSms,
   type AliyunSmsConfig
 } from '../services/aliyunSmsService.js'
-=======
 import { findHuanyuChannelById, listHuanyuChannels } from '../db/remoteDictionary.js'
 
 const TAIKANG_BUSINESS_CONFIG = {
@@ -51,7 +49,6 @@ type TaikangBusinessKey = keyof typeof TAIKANG_BUSINESS_CONFIG
 function isTaikangBusinessKey(value: unknown): value is TaikangBusinessKey {
   return typeof value === 'string' && value in TAIKANG_BUSINESS_CONFIG
 }
->>>>>>> Stashed changes
 
 export const ADMIN_COOKIE = 'hyyd_admin'
 const JWT_EXPIRES_IN = '12h'
@@ -338,7 +335,6 @@ export function registerAdminRoutes(
       })
     })
 
-<<<<<<< Updated upstream
     // 获取短信模板与密钥配置
     fastify.get('/api/v1/admin/sms-config', async (_request, reply) => {
       const config = await getSmsConfig(prisma)
@@ -400,7 +396,10 @@ export function registerAdminRoutes(
           signName: config.signName,
           phone,
           orderNo
-=======
+        }
+      })
+    })
+
     // 泰康业务—寰宇 B 端渠道映射。渠道候选固定来自远端 MySQL dim_hy_qd，只读查询。
     fastify.get<{ Querystring: { q?: string } }>('/api/v1/admin/taikang-huanyu-channel-mappings/channels', async (request, reply) => {
       return reply.send({ data: await listHuanyuChannels(request.query.q) })
@@ -469,12 +468,10 @@ export function registerAdminRoutes(
           huanyuChannelId: channel.id,
           huanyuChannelName: channel.name,
           enabled
->>>>>>> Stashed changes
         }
       })
     })
 
-<<<<<<< Updated upstream
     // 查询最近短信发送流水 (最新 50 条)
     fastify.get<{
       Querystring: {
@@ -498,8 +495,6 @@ export function registerAdminRoutes(
       }
     })
 
-=======
->>>>>>> Stashed changes
     // 订单 AI 分析配置说明：内容直接由实际提取器导出，避免后台说明与运行规则不一致。
     fastify.get('/api/v1/admin/order-ai-config', async (_request, reply) => {
       const scheduleStatus = getScheduleStatus()
