@@ -11,6 +11,9 @@
 
 import type { PrismaClient } from '@prisma/client'
 import { formatYmd, subtractWorkdays } from '../lib/chineseWorkdays.js'
+import { getEnv } from '../env.js'
+import { sendAliyunSms, getSmsConfig } from '../services/aliyunSmsService.js'
+import { listHuanyuEscorts } from '../db/remoteDictionary.js'
 
 export interface LoggerLike {
   info: (msg: string) => void
@@ -121,6 +124,7 @@ async function scanHospitalBookingReminders(prisma: PrismaClient, logger?: Logge
     JOIN b_order_operations op ON s.operation_id = op.id
     JOIN orders o ON op.order_id = o.id
     WHERE s.step_code = 'hospital_booking'
+      AND op.service_type IN ('全流程', '住院')
       AND s.step_status IN ('pending', 'in_progress')
       AND o.assigned_employee_id IS NOT NULL
       AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
@@ -168,6 +172,7 @@ async function scanEscortUnassignedReminders(prisma: PrismaClient, logger?: Logg
     SELECT 
       s.id, s.step_code, s.completed_at,
       o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id, o.status AS order_status,
+      op.service_type,
       EXISTS(
         SELECT 1 FROM "fact_hy_pzrxx" p 
         WHERE (p."DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND p."DDBH" = o.huanyu_order_no))
@@ -185,13 +190,24 @@ async function scanEscortUnassignedReminders(prisma: PrismaClient, logger?: Logg
     FROM b_order_service_steps s
     JOIN b_order_operations op ON s.operation_id = op.id
     JOIN orders o ON op.order_id = o.id
-    WHERE s.step_code IN ('registration', 'check_booking', 'hospital_booking')
+    WHERE (
+      (s.step_code = 'registration' AND op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务'))
+      OR (s.step_code = 'check_booking' AND op.service_type IN ('全流程', '检查加急'))
+      OR (s.step_code = 'hospital_booking' AND op.service_type IN ('全流程', '住院'))
+      OR (s.step_code = 'revisit' AND op.service_type IN ('全流程', '全程门诊'))
+    )
       AND s.step_status = 'completed'
       AND s.completed_at IS NOT NULL
       AND s.completed_at <= NOW() - INTERVAL '1 hour'
       AND s.completed_at >= NOW() - INTERVAL '3 days'
       AND o.assigned_employee_id IS NOT NULL
       AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
+      AND EXISTS (
+        SELECT 1 FROM b_order_service_steps cstep
+        WHERE cstep.operation_id = op.id
+          AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
+          AND cstep.step_status != 'cancelled'
+      )
     LIMIT 200;
   `)
 
@@ -204,7 +220,7 @@ async function scanEscortUnassignedReminders(prisma: PrismaClient, logger?: Logg
     // 2. 若正式库没有，检查 AI 提取到的候选数据（无需用户在页面点保存）
     if (row.ai_pzr && String(row.ai_pzr).trim()) continue
 
-    const dedupeKey = `auto:escort_unassigned:${row.source_order_no}`
+    const dedupeKey = `auto:escort_unassigned:${row.source_order_no}:${row.step_code}`
     const content = `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 陪诊人员没有落实，请关注！`
 
     await createReminderIfAbsent(prisma, {
@@ -220,22 +236,92 @@ async function scanEscortUnassignedReminders(prisma: PrismaClient, logger?: Logg
 }
 
 /**
- * 场景 2.2 & 2.3：【陪诊】前一天出工确认（11:00/13:00）与当天防迟到出工（07:00/07:20）
- * 逻辑：
- * 1. 绝不取 HY_FACT_DDCX_NEW.PZR
- * 2. 陪诊人员优先取 fact_hy_pzrxx.PZR；若无则取 AI 候选表 b_order_ai_field_candidates 的 escort_name
- * 3. 服务日期优先取 fact_hy_pzrxx.BBQ_FW；若无则取 AI 候选表 b_order_ai_field_candidates 的 escort_service_date；再无兜底 HY_FACT_DDCX_NEW.BBQ_FW / DATE_FW
- * 4. 仅已落实陪诊人的订单才触发短信及出工检查
+ * 辅助方法：解析陪诊人员手机号
+ * 优先级：
+ * 1. 本地陪诊人员表 f_hy_pzr (name / id)
+ * 2. 远端 MySQL 字典库 dim_hy_pzr
+ * 3. AI 候选表 b_order_ai_field_candidates (escort_phone)
  */
-async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger?: LoggerLike): Promise<void> {
-  const { ymd, time, hours, minutes } = shanghaiNowParts()
+async function resolveEscortPhone(
+  prisma: PrismaClient,
+  pzrName: string | null | undefined,
+  orderId: number | null | undefined
+): Promise<string | null> {
+  const cleanName = (pzrName || '').trim()
+  if (cleanName) {
+    try {
+      const rows = await prisma.$queryRawUnsafe<any[]>(`
+        SELECT "sj" FROM "f_hy_pzr"
+        WHERE ("name" = $1 OR "id" = $1)
+          AND "sj" IS NOT NULL AND TRIM("sj") != ''
+        LIMIT 1;
+      `, cleanName)
+      if (rows && rows[0]?.sj && String(rows[0].sj).trim()) {
+        return String(rows[0].sj).trim()
+      }
+    } catch {
+      // 忽略查询异常
+    }
+
+    try {
+      const escorts = await listHuanyuEscorts(cleanName)
+      const matched = escorts.find((e) => e.id === cleanName || e.name === cleanName) || escorts[0]
+      if (matched && matched.phone && String(matched.phone).trim()) {
+        return String(matched.phone).trim()
+      }
+    } catch {
+      // 忽略远端异常
+    }
+  }
+
+  if (orderId) {
+    try {
+      const aiRows = await prisma.$queryRawUnsafe<any[]>(`
+        SELECT value_text FROM b_order_ai_field_candidates
+        WHERE order_id = $1
+          AND field_code = 'escort_phone'
+          AND status != 'dismissed'
+          AND TRIM(value_text) != ''
+        ORDER BY created_at DESC
+        LIMIT 1;
+      `, orderId)
+      if (aiRows && aiRows[0]?.value_text && String(aiRows[0].value_text).trim()) {
+        return String(aiRows[0].value_text).trim()
+      }
+    } catch {
+      // 忽略查询异常
+    }
+  }
+
+  return null
+}
+
+/**
+ * 场景 2.2-A：【陪诊】前一天 11:00 自动发送出工确认短信（模板：SMS_512665048）
+ * 逻辑：
+ * 1. 每天 11:00 启动扫描明日出工的陪诊订单（白名单服务类型）；
+ * 2. 解析陪诊人员手机号，调用阿里云 SendSms 接口下发短信，参数为 { orderNo: source_order_no }；
+ * 3. 发送成功：记录流水表 fact_hy_pz_sms_logs (status = 'success')，静默等待反馈，不打扰客户经理；
+ * 4. 发送失败（或未找到手机号）：记录流水表 (status = 'failed')，并【立即向责任客户经理报警】，通知人工及时介入！
+ */
+async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike): Promise<void> {
+  const { ymd, hours } = shanghaiNowParts()
+  if (hours < 11) return // 11:00 前不执行
+
+  const smsConfig = await getSmsConfig(prisma)
+  if (!smsConfig.enabled) {
+    return
+  }
+
   const tomorrow = new Date(Date.now() + 24 * 3600 * 1000)
   const tomorrowYmd = formatYmd(tomorrow)
+  const templateCode = smsConfig.templatePreDay || 'SMS_512665048'
+  const signName = smsConfig.signName || '寰宇医道'
 
-  // 1. 场景 2.2：前一天出工确认（11:00 发短信，13:00 检查未反馈或异常反馈）
   const preDayOrders = await prisma.$queryRawUnsafe<any[]>(`
     SELECT 
       o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
+      op.service_type,
       COALESCE(
         NULLIF(TRIM(p."PZR"), ''),
         ai_escort.value_text
@@ -245,9 +331,9 @@ async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger?: Logg
         ai_date.value_text,
         h."BBQ_FW",
         h."DATE_FW"
-      ) AS service_date,
-      h."BBQ_FK", h."DATE_FK"
+      ) AS service_date
     FROM orders o
+    JOIN b_order_operations op ON op.order_id = o.id
     LEFT JOIN "HY_FACT_DDCX_NEW" h ON (h."BDQD_DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND h."DDBH" = o.huanyu_order_no))
     LEFT JOIN LATERAL (
       SELECT "PZR", "BBQ_FW" FROM "fact_hy_pzrxx" p 
@@ -276,6 +362,337 @@ async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger?: Logg
     ) ai_date ON true
     WHERE o.assigned_employee_id IS NOT NULL
       AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
+      AND op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
+      AND EXISTS (
+        SELECT 1 FROM b_order_service_steps cstep
+        WHERE cstep.operation_id = op.id
+          AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
+          AND cstep.step_status != 'cancelled'
+      )
+      AND (
+        (p."BBQ_FW" LIKE $1)
+        OR (p."BBQ_FW" IS NULL AND ai_date.value_text LIKE $1)
+        OR (p."BBQ_FW" IS NULL AND ai_date.value_text IS NULL AND (h."BBQ_FW" LIKE $1 OR h."DATE_FW" LIKE $1))
+      )
+      AND (
+        (p."PZR" IS NOT NULL AND TRIM(p."PZR") != '')
+        OR (ai_escort.value_text IS NOT NULL AND TRIM(ai_escort.value_text) != '')
+      )
+    LIMIT 200;
+  `, `%${tomorrowYmd}%`)
+
+  for (const row of preDayOrders) {
+    if (!row.assigned_employee_id || !row.source_order_no) continue
+
+    // 检查今天是否已处理过该订单前一天短信发送
+    const existingLog = await prisma.$queryRawUnsafe<any[]>(`
+      SELECT id, status FROM "fact_hy_pz_sms_logs"
+      WHERE order_no = $1 AND batch_type = 'pre_day' AND send_ymd = $2
+      LIMIT 1;
+    `, row.source_order_no, ymd)
+
+    if (existingLog && existingLog.length > 0) {
+      continue
+    }
+
+    const phone = await resolveEscortPhone(prisma, row.pzr, row.order_id)
+    const cleanPhone = (phone || '').replace(/\D/g, '')
+
+    if (cleanPhone && cleanPhone.length === 11) {
+      const result = await sendAliyunSms({
+        phoneNumbers: cleanPhone,
+        signName,
+        templateCode,
+        templateParam: { orderNo: row.source_order_no }
+      }, smsConfig)
+
+      if (result.success) {
+        await prisma.$executeRawUnsafe(`
+          INSERT INTO "fact_hy_pz_sms_logs" (
+            order_no, batch_type, phone, pzr_name, service_date, template_code, sign_name,
+            params_json, biz_id, request_id, status, send_ymd, created_at
+          ) VALUES ($1, 'pre_day', $2, $3, $4, $5, $6, $7::jsonb, $8, $9, 'success', $10, NOW());
+        `, row.source_order_no, cleanPhone, row.pzr, tomorrowYmd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no }), result.bizId, result.requestId, ymd)
+
+        logger?.info(`[orderReminderSchedule] 前一天出工确认短信发送成功: 订单 ${row.source_order_no}, 手机 ${cleanPhone}, bizId=${result.bizId}`)
+      } else {
+        await prisma.$executeRawUnsafe(`
+          INSERT INTO "fact_hy_pz_sms_logs" (
+            order_no, batch_type, phone, pzr_name, service_date, template_code, sign_name,
+            params_json, request_id, status, error_code, error_message, send_ymd, created_at
+          ) VALUES ($1, 'pre_day', $2, $3, $4, $5, $6, $7::jsonb, $8, 'failed', $9, $10, $11, NOW());
+        `, row.source_order_no, cleanPhone, row.pzr, tomorrowYmd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no }), result.requestId, result.code, result.message, ymd)
+
+        logger?.warn(`[orderReminderSchedule] 前一天出工确认短信发送失败: 订单 ${row.source_order_no}, 错误: ${result.message}`)
+
+        const dedupeKey = `auto:escort_sms_failed:${row.source_order_no}:pre_day:${ymd}`
+        const content = `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 陪诊出工确认短信发送失败（原因：${result.message}），请及时人工联系陪诊人员！`
+
+        await createReminderIfAbsent(prisma, {
+          orderNo: row.source_order_no,
+          employeeId: row.assigned_employee_id,
+          type: 'escort',
+          content,
+          dedupeKey,
+          logger,
+          extra: { failureReason: result.message, phone: cleanPhone, pzr: row.pzr, batchType: 'pre_day' }
+        })
+      }
+    } else {
+      await prisma.$executeRawUnsafe(`
+        INSERT INTO "fact_hy_pz_sms_logs" (
+          order_no, batch_type, pzr_name, service_date, template_code, sign_name,
+          params_json, status, error_code, error_message, send_ymd, created_at
+        ) VALUES ($1, 'pre_day', $2, $3, $4, $5, $6::jsonb, 'failed', 'NO_PHONE', '未配置有效陪诊人员手机号', $7, NOW());
+      `, row.source_order_no, row.pzr, tomorrowYmd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no }), ymd)
+
+      logger?.warn(`[orderReminderSchedule] 前一天出工短信未发送：未找到陪诊人手机号: 订单 ${row.source_order_no}, 陪诊人 ${row.pzr}`)
+
+      const dedupeKey = `auto:escort_sms_failed:${row.source_order_no}:pre_day:${ymd}`
+      const content = `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 未找到陪诊人员有效手机号，出工确认短信无法发送，请及时人工联系陪诊人员！`
+
+      await createReminderIfAbsent(prisma, {
+        orderNo: row.source_order_no,
+        employeeId: row.assigned_employee_id,
+        type: 'escort',
+        content,
+        dedupeKey,
+        logger,
+        extra: { failureReason: '未配置有效陪诊人员手机号', pzr: row.pzr, batchType: 'pre_day' }
+      })
+    }
+  }
+}
+
+/**
+ * 场景 2.3-A：【陪诊】当天 07:00 自动发送出工打卡短信（模板：SMS_512530051）
+ * 逻辑：
+ * 1. 每天 07:00 启动扫描当天出工的陪诊订单（白名单服务类型）；
+ * 2. 下发打卡短信；成功记录流水，失败立即报警通知客户经理。
+ */
+async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike): Promise<void> {
+  const { ymd, hours } = shanghaiNowParts()
+  if (hours < 7) return // 07:00 前不执行
+
+  const smsConfig = await getSmsConfig(prisma)
+  if (!smsConfig.enabled) {
+    return
+  }
+
+  const templateCode = smsConfig.templateSameDay || 'SMS_512530051'
+  const signName = smsConfig.signName || '寰宇医道'
+
+  const sameDayOrders = await prisma.$queryRawUnsafe<any[]>(`
+    SELECT 
+      o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
+      op.service_type,
+      COALESCE(
+        NULLIF(TRIM(p."PZR"), ''),
+        ai_escort.value_text
+      ) AS pzr,
+      COALESCE(
+        NULLIF(TRIM(p."BBQ_FW"), ''),
+        ai_date.value_text,
+        h."BBQ_FW",
+        h."DATE_FW"
+      ) AS service_date
+    FROM orders o
+    JOIN b_order_operations op ON op.order_id = o.id
+    LEFT JOIN "HY_FACT_DDCX_NEW" h ON (h."BDQD_DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND h."DDBH" = o.huanyu_order_no))
+    LEFT JOIN LATERAL (
+      SELECT "PZR", "BBQ_FW" FROM "fact_hy_pzrxx" p 
+      WHERE (p."DDBH" = o.huanyu_order_no OR p."DDBH" = o.source_order_no)
+        AND p."PZR" IS NOT NULL AND TRIM(p."PZR") != ''
+      ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC
+      LIMIT 1
+    ) p ON true
+    LEFT JOIN LATERAL (
+      SELECT value_text FROM b_order_ai_field_candidates c
+      WHERE c.order_id = o.id 
+        AND c.field_code = 'escort_name'
+        AND c.status != 'dismissed'
+        AND TRIM(c.value_text) NOT IN ('', '无', '待定', '暂无', '待安排', '待分配', '未指派', '未安排', '无陪诊', '不需陪诊', '不需要陪诊')
+      ORDER BY c.created_at DESC
+      LIMIT 1
+    ) ai_escort ON true
+    LEFT JOIN LATERAL (
+      SELECT value_text FROM b_order_ai_field_candidates c
+      WHERE c.order_id = o.id 
+        AND c.field_code = 'escort_service_date'
+        AND c.status != 'dismissed'
+        AND TRIM(c.value_text) NOT IN ('', '无', '待定', '暂无')
+      ORDER BY c.created_at DESC
+      LIMIT 1
+    ) ai_date ON true
+    WHERE o.assigned_employee_id IS NOT NULL
+      AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
+      AND op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
+      AND EXISTS (
+        SELECT 1 FROM b_order_service_steps cstep
+        WHERE cstep.operation_id = op.id
+          AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
+          AND cstep.step_status != 'cancelled'
+      )
+      AND (
+        (p."BBQ_FW" LIKE $1)
+        OR (p."BBQ_FW" IS NULL AND ai_date.value_text LIKE $1)
+        OR (p."BBQ_FW" IS NULL AND ai_date.value_text IS NULL AND (h."BBQ_FW" LIKE $1 OR h."DATE_FW" LIKE $1))
+      )
+      AND (
+        (p."PZR" IS NOT NULL AND TRIM(p."PZR") != '')
+        OR (ai_escort.value_text IS NOT NULL AND TRIM(ai_escort.value_text) != '')
+      )
+    LIMIT 200;
+  `, `%${ymd}%`)
+
+  for (const row of sameDayOrders) {
+    if (!row.assigned_employee_id || !row.source_order_no) continue
+
+    const existingLog = await prisma.$queryRawUnsafe<any[]>(`
+      SELECT id, status FROM "fact_hy_pz_sms_logs"
+      WHERE order_no = $1 AND batch_type = 'same_day' AND send_ymd = $2
+      LIMIT 1;
+    `, row.source_order_no, ymd)
+
+    if (existingLog && existingLog.length > 0) {
+      continue
+    }
+
+    const phone = await resolveEscortPhone(prisma, row.pzr, row.order_id)
+    const cleanPhone = (phone || '').replace(/\D/g, '')
+
+    if (cleanPhone && cleanPhone.length === 11) {
+      const result = await sendAliyunSms({
+        phoneNumbers: cleanPhone,
+        signName,
+        templateCode,
+        templateParam: { orderNo: row.source_order_no }
+      }, smsConfig)
+
+      if (result.success) {
+        await prisma.$executeRawUnsafe(`
+          INSERT INTO "fact_hy_pz_sms_logs" (
+            order_no, batch_type, phone, pzr_name, service_date, template_code, sign_name,
+            params_json, biz_id, request_id, status, send_ymd, created_at
+          ) VALUES ($1, 'same_day', $2, $3, $4, $5, $6, $7::jsonb, $8, $9, 'success', $10, NOW());
+        `, row.source_order_no, cleanPhone, row.pzr, ymd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no }), result.bizId, result.requestId, ymd)
+
+        logger?.info(`[orderReminderSchedule] 当日出工打卡短信发送成功: 订单 ${row.source_order_no}, 手机 ${cleanPhone}, bizId=${result.bizId}`)
+      } else {
+        await prisma.$executeRawUnsafe(`
+          INSERT INTO "fact_hy_pz_sms_logs" (
+            order_no, batch_type, phone, pzr_name, service_date, template_code, sign_name,
+            params_json, request_id, status, error_code, error_message, send_ymd, created_at
+          ) VALUES ($1, 'same_day', $2, $3, $4, $5, $6, $7::jsonb, $8, 'failed', $9, $10, $11, NOW());
+        `, row.source_order_no, cleanPhone, row.pzr, ymd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no }), result.requestId, result.code, result.message, ymd)
+
+        logger?.warn(`[orderReminderSchedule] 当日出工打卡短信发送失败: 订单 ${row.source_order_no}, 错误: ${result.message}`)
+
+        const dedupeKey = `auto:escort_sms_failed:${row.source_order_no}:same_day:${ymd}`
+        const content = `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 陪诊当日出工打卡短信发送失败（原因：${result.message}），请紧急人工联系陪诊人员！`
+
+        await createReminderIfAbsent(prisma, {
+          orderNo: row.source_order_no,
+          employeeId: row.assigned_employee_id,
+          type: 'escort',
+          content,
+          dedupeKey,
+          logger,
+          extra: { failureReason: result.message, phone: cleanPhone, pzr: row.pzr, batchType: 'same_day' }
+        })
+      }
+    } else {
+      await prisma.$executeRawUnsafe(`
+        INSERT INTO "fact_hy_pz_sms_logs" (
+          order_no, batch_type, pzr_name, service_date, template_code, sign_name,
+          params_json, status, error_code, error_message, send_ymd, created_at
+        ) VALUES ($1, 'same_day', $2, $3, $4, $5, $6::jsonb, 'failed', 'NO_PHONE', '未配置有效陪诊人员手机号', $7, NOW());
+      `, row.source_order_no, row.pzr, ymd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no }), ymd)
+
+      logger?.warn(`[orderReminderSchedule] 当日出工短信未发送：未找到陪诊人手机号: 订单 ${row.source_order_no}, 陪诊人 ${row.pzr}`)
+
+      const dedupeKey = `auto:escort_sms_failed:${row.source_order_no}:same_day:${ymd}`
+      const content = `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 未找到陪诊人员有效手机号，当日出工打卡短信无法发送，请紧急人工联系陪诊人员！`
+
+      await createReminderIfAbsent(prisma, {
+        orderNo: row.source_order_no,
+        employeeId: row.assigned_employee_id,
+        type: 'escort',
+        content,
+        dedupeKey,
+        logger,
+        extra: { failureReason: '未配置有效陪诊人员手机号', pzr: row.pzr, batchType: 'same_day' }
+      })
+    }
+  }
+}
+
+/**
+ * 场景 2.2-B & 2.3-B：【陪诊】前一天出工反馈监控（13:00）与当天防迟到出工监控（07:20）
+ * 核心门禁：
+ * 1. 绝不取 HY_FACT_DDCX_NEW.PZR
+ * 2. 陪诊人员优先取 fact_hy_pzrxx.PZR；若无则取 AI 候选表 b_order_ai_field_candidates 的 escort_name
+ * 3. 严格限定白名单服务类型，排除住院护工协助等非陪诊订单
+ * 4. 【关键门禁】：未反馈提醒仅在今天成功发送过对应批次短信的前提下才触发！未发短信或发送失败（已报警）绝不重复误报！
+ */
+async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger?: LoggerLike): Promise<void> {
+  const { ymd, time, hours, minutes } = shanghaiNowParts()
+  const tomorrow = new Date(Date.now() + 24 * 3600 * 1000)
+  const tomorrowYmd = formatYmd(tomorrow)
+
+  // 1. 场景 2.2：前一天出工确认（11:00 发短信，13:00 检查未反馈或异常反馈）
+  const preDayOrders = await prisma.$queryRawUnsafe<any[]>(`
+    SELECT 
+      o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
+      op.service_type,
+      COALESCE(
+        NULLIF(TRIM(p."PZR"), ''),
+        ai_escort.value_text
+      ) AS pzr,
+      COALESCE(
+        NULLIF(TRIM(p."BBQ_FW"), ''),
+        ai_date.value_text,
+        h."BBQ_FW",
+        h."DATE_FW"
+      ) AS service_date,
+      h."BBQ_FK", h."DATE_FK"
+    FROM orders o
+    JOIN b_order_operations op ON op.order_id = o.id
+    LEFT JOIN "HY_FACT_DDCX_NEW" h ON (h."BDQD_DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND h."DDBH" = o.huanyu_order_no))
+    LEFT JOIN LATERAL (
+      SELECT "PZR", "BBQ_FW" FROM "fact_hy_pzrxx" p 
+      WHERE (p."DDBH" = o.huanyu_order_no OR p."DDBH" = o.source_order_no)
+        AND p."PZR" IS NOT NULL AND TRIM(p."PZR") != ''
+      ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC
+      LIMIT 1
+    ) p ON true
+    LEFT JOIN LATERAL (
+      SELECT value_text FROM b_order_ai_field_candidates c
+      WHERE c.order_id = o.id 
+        AND c.field_code = 'escort_name'
+        AND c.status != 'dismissed'
+        AND TRIM(c.value_text) NOT IN ('', '无', '待定', '暂无', '待安排', '待分配', '未指派', '未安排', '无陪诊', '不需陪诊', '不需要陪诊')
+      ORDER BY c.created_at DESC
+      LIMIT 1
+    ) ai_escort ON true
+    LEFT JOIN LATERAL (
+      SELECT value_text FROM b_order_ai_field_candidates c
+      WHERE c.order_id = o.id 
+        AND c.field_code = 'escort_service_date'
+        AND c.status != 'dismissed'
+        AND TRIM(c.value_text) NOT IN ('', '无', '待定', '暂无')
+      ORDER BY c.created_at DESC
+      LIMIT 1
+    ) ai_date ON true
+    WHERE o.assigned_employee_id IS NOT NULL
+      AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
+      AND op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
+      AND EXISTS (
+        SELECT 1 FROM b_order_service_steps cstep
+        WHERE cstep.operation_id = op.id
+          AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
+          AND cstep.step_status != 'cancelled'
+      )
       AND (
         (p."BBQ_FW" LIKE $1)
         OR (p."BBQ_FW" IS NULL AND ai_date.value_text LIKE $1)
@@ -328,6 +745,18 @@ async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger?: Logg
     // 情况 C：未在 fact_hy_pzfk 中提交反馈，且旧表也无反馈
     const hasLegacyFeedback = Boolean((row.BBQ_FK && String(row.BBQ_FK).trim()) || (row.DATE_FK && String(row.DATE_FK).trim()))
     if (!hasLegacyFeedback && hours >= 13) {
+      // 强前置门禁：必须检查今天是否向该陪诊员成功发送过前一天出工短信！
+      const smsLog = await prisma.$queryRawUnsafe<any[]>(`
+        SELECT id FROM "fact_hy_pz_sms_logs"
+        WHERE order_no = $1 AND batch_type = 'pre_day' AND send_ymd = $2 AND status = 'success'
+        LIMIT 1;
+      `, row.source_order_no, ymd)
+
+      if (!smsLog || smsLog.length === 0) {
+        // 未发送短信或发送失败（发送失败已在 11:00 报警过），绝不报未反馈假提醒
+        continue
+      }
+
       const dedupeKey = `auto:escort_pre_day_unack:${row.source_order_no}:${ymd}`
       const content = `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 陪诊人员没有第一次反馈信息，请关注！`
 
@@ -348,6 +777,7 @@ async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger?: Logg
   const sameDayOrders = await prisma.$queryRawUnsafe<any[]>(`
     SELECT 
       o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
+      op.service_type,
       COALESCE(
         NULLIF(TRIM(p."PZR"), ''),
         ai_escort.value_text
@@ -360,6 +790,7 @@ async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger?: Logg
       ) AS service_date,
       h."BBQ_FK", h."DATE_FK"
     FROM orders o
+    JOIN b_order_operations op ON op.order_id = o.id
     LEFT JOIN "HY_FACT_DDCX_NEW" h ON (h."BDQD_DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND h."DDBH" = o.huanyu_order_no))
     LEFT JOIN LATERAL (
       SELECT "PZR", "BBQ_FW" FROM "fact_hy_pzrxx" p 
@@ -388,6 +819,13 @@ async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger?: Logg
     ) ai_date ON true
     WHERE o.assigned_employee_id IS NOT NULL
       AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
+      AND op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
+      AND EXISTS (
+        SELECT 1 FROM b_order_service_steps cstep
+        WHERE cstep.operation_id = op.id
+          AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
+          AND cstep.step_status != 'cancelled'
+      )
       AND (
         (p."BBQ_FW" LIKE $1)
         OR (p."BBQ_FW" IS NULL AND ai_date.value_text LIKE $1)
@@ -439,6 +877,17 @@ async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger?: Logg
     // 情况 C：07:20 后未收到当天反馈
     const hasLegacyFeedback = Boolean((row.BBQ_FK && String(row.BBQ_FK).trim()) || (row.DATE_FK && String(row.DATE_FK).trim()))
     if (!hasLegacyFeedback && isAfter720) {
+      // 强前置门禁：必须检查今天是否向该陪诊员成功发送过当日出工打卡短信！
+      const smsLog = await prisma.$queryRawUnsafe<any[]>(`
+        SELECT id FROM "fact_hy_pz_sms_logs"
+        WHERE order_no = $1 AND batch_type = 'same_day' AND send_ymd = $2 AND status = 'success'
+        LIMIT 1;
+      `, row.source_order_no, ymd)
+
+      if (!smsLog || smsLog.length === 0) {
+        continue
+      }
+
       const dedupeKey = `auto:escort_same_day_unack:${row.source_order_no}:${ymd}`
       const content = `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 陪诊人员没有第一次反馈信息，请关注！`
 
@@ -473,7 +922,7 @@ async function scanHospitalCareReminders(prisma: PrismaClient, logger?: LoggerLi
     JOIN b_order_operations op ON op.order_id = o.id
     LEFT JOIN b_order_service_steps s ON s.operation_id = op.id AND s.step_code = 'hospital_care'
     LEFT JOIN "HY_FACT_DDCX_NEW" h ON (h."BDQD_DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND h."DDBH" = o.huanyu_order_no))
-    WHERE (op.service_type = '住院护工协助' OR o.status LIKE '%护工%' OR o.status LIKE '%住院%')
+    WHERE op.service_type = '住院护工协助'
       AND o.assigned_employee_id IS NOT NULL
       AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
     LIMIT 200;
@@ -615,6 +1064,8 @@ export async function runOrderReminderCycle(prisma: PrismaClient, logger?: Logge
     await scanDailyCallUploadReminders(prisma, logger)
     await scanHospitalBookingReminders(prisma, logger)
     await scanEscortUnassignedReminders(prisma, logger)
+    await sendPreDayEscortSms(prisma, logger)
+    await sendSameDayEscortSms(prisma, logger)
     await scanEscortDailyCheckReminders(prisma, logger)
     await scanHospitalCareReminders(prisma, logger)
   } catch (err) {

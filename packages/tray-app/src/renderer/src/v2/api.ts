@@ -416,17 +416,19 @@ export function fetchOrderAggregate(orderId: number): Promise<OrderAggregateResp
 }
 
 /** 寰宇订单 B 端渠道字典（后端仅执行参数化 SELECT）。 */
-export function fetchHuanyuChannels(search = ''): Promise<HuanyuChannelOption[]> {
+export function fetchHuanyuChannels(search = '', currentId = ''): Promise<HuanyuChannelOption[]> {
   const params = new URLSearchParams()
   if (search.trim()) params.set('q', search.trim())
+  if (currentId.trim()) params.set('currentId', currentId.trim())
   const suffix = params.size ? `?${params}` : ''
   return authedGet<HuanyuChannelOption[]>(`/api/v1/dictionaries/huanyu/channels${suffix}`)
 }
 
 /** 按 B 端渠道 ID 前四位过滤的服务项目字典（后端仅执行参数化 SELECT）。 */
-export function fetchHuanyuChannelProducts(channelId: string, search = ''): Promise<HuanyuChannelProductOption[]> {
+export function fetchHuanyuChannelProducts(channelId: string, search = '', currentId = ''): Promise<HuanyuChannelProductOption[]> {
   const params = new URLSearchParams({ channelId })
   if (search.trim()) params.set('q', search.trim())
+  if (currentId.trim()) params.set('currentId', currentId.trim())
   return authedGet<HuanyuChannelProductOption[]>(`/api/v1/dictionaries/huanyu/channel-products?${params}`)
 }
 
@@ -451,47 +453,70 @@ export function fetchHuanyuMedicareTypes(): Promise<HuanyuChannelOption[]> {
 }
 
 /** 寰宇订单 BD 用户字典（后端仅执行参数化 SELECT）。 */
-export function fetchHuanyuBdUsers(search = ''): Promise<HuanyuChannelOption[]> {
+export function fetchHuanyuBdUsers(search = '', currentId = ''): Promise<HuanyuChannelOption[]> {
   const params = new URLSearchParams()
   if (search.trim()) params.set('q', search.trim())
+  if (currentId.trim()) params.set('currentId', currentId.trim())
   const suffix = params.size ? `?${params}` : ''
   return authedGet<HuanyuChannelOption[]>(`/api/v1/dictionaries/huanyu/bd-users${suffix}`)
 }
 
-function huanyuDictionarySearchPath(path: string, search = '', hospitalId?: string): string {
+function huanyuDictionarySearchPath(path: string, search = '', hospitalId?: string, currentId?: string): string {
   const params = new URLSearchParams()
   if (hospitalId) params.set('hospitalId', hospitalId)
   if (search.trim()) params.set('q', search.trim())
+  if (currentId?.trim()) params.set('currentId', currentId.trim())
   return params.size ? `${path}?${params}` : path
 }
 
-export function fetchHuanyuHospitals(search = ''): Promise<HuanyuChannelOption[]> {
-  return authedGet<HuanyuChannelOption[]>(huanyuDictionarySearchPath('/api/v1/dictionaries/huanyu/hospitals', search))
+export function fetchHuanyuHospitals(search = '', currentId = ''): Promise<HuanyuChannelOption[]> {
+  return authedGet<HuanyuChannelOption[]>(huanyuDictionarySearchPath('/api/v1/dictionaries/huanyu/hospitals', search, undefined, currentId))
 }
 
-export function fetchHuanyuHospitalAddresses(hospitalId: string, search = ''): Promise<HuanyuChannelOption[]> {
-  return authedGet<HuanyuChannelOption[]>(huanyuDictionarySearchPath('/api/v1/dictionaries/huanyu/hospital-addresses', search, hospitalId))
+export function fetchHuanyuHospitalById(id: string): Promise<HuanyuChannelOption | null> {
+  if (!id.trim()) return Promise.resolve(null)
+  return authedGet<HuanyuChannelOption | null>(`/api/v1/dictionaries/huanyu/hospitals/${encodeURIComponent(id.trim())}`)
 }
 
-export function fetchHuanyuHospitalDepartments(hospitalId: string, search = ''): Promise<HuanyuHospitalDepartmentOption[]> {
-  return authedGet<HuanyuHospitalDepartmentOption[]>(huanyuDictionarySearchPath('/api/v1/dictionaries/huanyu/hospital-departments', search, hospitalId))
+export function fetchHuanyuHospitalAddresses(hospitalId: string, search = '', currentId = ''): Promise<HuanyuChannelOption[]> {
+  return authedGet<HuanyuChannelOption[]>(huanyuDictionarySearchPath('/api/v1/dictionaries/huanyu/hospital-addresses', search, hospitalId, currentId))
 }
 
-export function fetchHuanyuHospitalDoctors(hospitalId: string, departmentId: string, search = ''): Promise<HuanyuDoctorOption[]> {
+export function fetchHuanyuHospitalDepartments(hospitalId: string, search = '', currentId = ''): Promise<HuanyuHospitalDepartmentOption[]> {
+  return authedGet<HuanyuHospitalDepartmentOption[]>(huanyuDictionarySearchPath('/api/v1/dictionaries/huanyu/hospital-departments', search, hospitalId, currentId))
+}
+
+export function fetchHuanyuDepartmentById(id: string): Promise<HuanyuHospitalDepartmentOption | null> {
+  if (!id.trim()) return Promise.resolve(null)
+  return authedGet<HuanyuHospitalDepartmentOption | null>(`/api/v1/dictionaries/huanyu/departments/${encodeURIComponent(id.trim())}`)
+}
+
+export function fetchHuanyuHospitalDoctors(hospitalId: string, departmentId: string, search = '', currentId = ''): Promise<HuanyuDoctorOption[]> {
   if (!hospitalId || !departmentId) return Promise.resolve([])
   const params = new URLSearchParams()
   params.set('hospitalId', hospitalId)
   params.set('departmentId', departmentId)
   if (search.trim()) params.set('q', search.trim())
+  if (currentId.trim()) params.set('currentId', currentId.trim())
   return authedGet<HuanyuDoctorOption[]>(`/api/v1/dictionaries/huanyu/hospital-doctors?${params.toString()}`)
+}
+
+export function fetchHuanyuDoctorById(id: string): Promise<HuanyuDoctorOption | null> {
+  if (!id.trim()) return Promise.resolve(null)
+  return authedGet<HuanyuDoctorOption | null>(`/api/v1/dictionaries/huanyu/doctors/${encodeURIComponent(id.trim())}`)
 }
 
 export function fetchHuanyuExpertLevels(search = ''): Promise<HuanyuChannelOption[]> {
   return authedGet<HuanyuChannelOption[]>(huanyuDictionarySearchPath('/api/v1/dictionaries/huanyu/expert-levels', search))
 }
 
-export function fetchHuanyuEscorts(search = ''): Promise<HuanyuEscortOption[]> {
-  return authedGet<HuanyuEscortOption[]>(huanyuDictionarySearchPath('/api/v1/dictionaries/huanyu/escorts', search))
+export function fetchHuanyuEscorts(search = '', currentId = ''): Promise<HuanyuEscortOption[]> {
+  return authedGet<HuanyuEscortOption[]>(huanyuDictionarySearchPath('/api/v1/dictionaries/huanyu/escorts', search, undefined, currentId))
+}
+
+export function fetchHuanyuEscortById(id: string): Promise<HuanyuEscortOption | null> {
+  if (!id.trim()) return Promise.resolve(null)
+  return authedGet<HuanyuEscortOption | null>(`/api/v1/dictionaries/huanyu/escorts/${encodeURIComponent(id.trim())}`)
 }
 
 // ─── 在线状态（状态栏用）────────────────────────────────

@@ -408,3 +408,64 @@ export interface UpdateAiSchedulePayload {
   intervalMinutes: number
 }
 
+export interface SmsConfig {
+  enabled: boolean
+  accessKeyId: string
+  accessKeySecret: string
+  signName: string
+  templatePreDay: string
+  templateSameDay: string
+}
+
+export interface SmsConfigResponse {
+  config: SmsConfig
+  isConfigured: boolean
+}
+
+export interface UpdateSmsConfigPayload {
+  enabled?: boolean
+  accessKeyId?: string
+  accessKeySecret?: string
+  signName?: string
+  templatePreDay?: string
+  templateSameDay?: string
+}
+
+export interface TestSmsPayload {
+  phone: string
+  orderNo?: string
+  batchType: 'pre_day' | 'same_day'
+}
+
+export interface TestSmsResult {
+  success: boolean
+  code: string
+  message: string
+  bizId?: string
+  requestId?: string
+  batchType: string
+  templateCode: string
+  signName: string
+  phone: string
+  orderNo: string
+}
+
+export interface SmsLogItem {
+  id: number
+  order_no: string
+  batch_type: 'pre_day' | 'same_day'
+  phone: string | null
+  pzr_name: string | null
+  service_date: string | null
+  template_code: string | null
+  sign_name: string | null
+  params_json: Record<string, any> | null
+  biz_id: string | null
+  request_id: string | null
+  status: 'success' | 'failed'
+  error_code: string | null
+  error_message: string | null
+  send_ymd: string
+  created_at: string
+}
+

@@ -27,10 +27,25 @@ import type {
   CaptureDiagnosticImageItem,
   SystemReminderConfig,
   AiScheduleConfig,
-  UpdateAiSchedulePayload
+  UpdateAiSchedulePayload,
+  SmsConfig,
+  SmsConfigResponse,
+  UpdateSmsConfigPayload,
+  TestSmsPayload,
+  TestSmsResult,
+  SmsLogItem
 } from './types'
 
-export type { AiScheduleConfig, UpdateAiSchedulePayload }
+export type {
+  AiScheduleConfig,
+  UpdateAiSchedulePayload,
+  SmsConfig,
+  SmsConfigResponse,
+  UpdateSmsConfigPayload,
+  TestSmsPayload,
+  TestSmsResult,
+  SmsLogItem
+}
 
 // 把筛选对象拼成 query string（跳过空值）。
 function qs(params: Record<string, string | number | null | undefined>): string {
@@ -174,6 +189,26 @@ export const adminApi = {
       method: 'PUT',
       body: JSON.stringify(data)
     })
+  },
+
+  // ───── 短信模板与密钥配置 ─────
+  smsConfig() {
+    return request<SmsConfigResponse>('/api/v1/admin/sms-config')
+  },
+  saveSmsConfig(data: UpdateSmsConfigPayload) {
+    return request<{ data: SmsConfigResponse; message: string }>('/api/v1/admin/sms-config', {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    })
+  },
+  testSendSms(data: TestSmsPayload) {
+    return request<TestSmsResult>('/api/v1/admin/sms-config/test', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    })
+  },
+  smsLogs(limit = 50) {
+    return request<SmsLogItem[]>(`/api/v1/admin/sms-config/logs${qs({ limit })}`)
   },
 
   // ───── 订单 AI 分析配置说明 ─────

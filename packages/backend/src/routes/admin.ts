@@ -32,6 +32,12 @@ import {
   getScheduleStatus,
   reloadScheduleConfig
 } from '../jobs/orderAiSchedule.js'
+import {
+  getSmsConfig,
+  saveSmsConfig,
+  sendAliyunSms,
+  type AliyunSmsConfig
+} from '../services/aliyunSmsService.js'
 
 export const ADMIN_COOKIE = 'hyyd_admin'
 const JWT_EXPIRES_IN = '12h'
@@ -316,6 +322,94 @@ export function registerAdminRoutes(
         data: getScheduleStatus(),
         message: 'AI 调用时间配置已成功保存并立即生效'
       })
+    })
+
+    // 获取短信模板与密钥配置
+    fastify.get('/api/v1/admin/sms-config', async (_request, reply) => {
+      const config = await getSmsConfig(prisma)
+      return reply.send({
+        data: {
+          config,
+          isConfigured: Boolean(config.accessKeyId && config.accessKeySecret)
+        }
+      })
+    })
+
+    // 保存短信模板与密钥配置（热加载，无须重启）
+    fastify.put<{
+      Body: Partial<AliyunSmsConfig>
+    }>('/api/v1/admin/sms-config', async (request, reply) => {
+      const body = request.body || {}
+      const updated = await saveSmsConfig(prisma, body)
+      return reply.send({
+        data: {
+          config: updated,
+          isConfigured: Boolean(updated.accessKeyId && updated.accessKeySecret)
+        },
+        message: '短信模板配置已成功保存并立即生效'
+      })
+    })
+
+    // 发送单条测试短信
+    fastify.post<{
+      Body: {
+        phone: string
+        orderNo?: string
+        batchType?: 'pre_day' | 'same_day'
+      }
+    }>('/api/v1/admin/sms-config/test', async (request, reply) => {
+      const body = request.body || ({} as any)
+      const phone = String(body.phone || '').trim()
+      const orderNo = String(body.orderNo || 'TEST2026092201').trim()
+      const batchType = body.batchType === 'same_day' ? 'same_day' : 'pre_day'
+
+      if (!/^1\d{10}$/.test(phone)) {
+        return reply.status(400).send({ error: '请输入有效的11位手机号码' })
+      }
+
+      const config = await getSmsConfig(prisma)
+      const templateCode = batchType === 'same_day' ? config.templateSameDay : config.templatePreDay
+
+      const result = await sendAliyunSms({
+        phoneNumbers: phone,
+        signName: config.signName,
+        templateCode,
+        templateParam: { orderNo }
+      }, config)
+
+      return reply.send({
+        data: {
+          ...result,
+          batchType,
+          templateCode,
+          signName: config.signName,
+          phone,
+          orderNo
+        }
+      })
+    })
+
+    // 查询最近短信发送流水 (最新 50 条)
+    fastify.get<{
+      Querystring: {
+        limit?: string
+      }
+    }>('/api/v1/admin/sms-config/logs', async (request, reply) => {
+      const limit = Math.min(Math.max(Number(request.query?.limit) || 30, 1), 100)
+      try {
+        const rows = await prisma.$queryRawUnsafe<any[]>(`
+          SELECT 
+            id, order_no, batch_type, phone, pzr_name, service_date,
+            template_code, sign_name, params_json, biz_id, request_id,
+            status, error_code, error_message, send_ymd, created_at
+          FROM fact_hy_pz_sms_logs
+          ORDER BY created_at DESC
+          LIMIT $1;
+        `, limit)
+        return reply.send({ data: rows })
+      } catch {
+        return reply.send({ data: [] })
+      }
     })
 
     // 订单 AI 分析配置说明：内容直接由实际提取器导出，避免后台说明与运行规则不一致。

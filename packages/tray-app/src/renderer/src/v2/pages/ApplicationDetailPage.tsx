@@ -18,10 +18,14 @@ import {
   fetchHuanyuMedicareTypes,
   fetchHuanyuExpertLevels,
   fetchHuanyuEscorts,
+  fetchHuanyuEscortById,
   fetchHuanyuHospitalAddresses,
   fetchHuanyuHospitalDepartments,
+  fetchHuanyuDepartmentById,
   fetchHuanyuHospitalDoctors,
+  fetchHuanyuDoctorById,
   fetchHuanyuHospitals,
+  fetchHuanyuHospitalById,
   fetchOrderAiFieldCandidates,
   pushHuanyuOrder,
   saveHuanyuOrder,
@@ -1394,6 +1398,10 @@ function HuanyuOrderForm({
 
     for (const candidate of candidates) {
       const key = formKeyByCandidate[candidate.fieldCode]
+      // 业务铁律：专家级别为医生档案固有属性（纯靠医生联动，有就有，没有就没有），只要有具体医生，AI 绝不越俎代庖填充 expertLevel
+      if (key === 'expertLevel' && ((next.doctor && !String(next.doctor).endsWith('WXSYSXM')) || candidates.some((c) => c.fieldCode === 'doctor' && c.value && !c.value.endsWith('WXSYSXM')))) {
+        continue
+      }
       const currentValue = key ? next[key] : undefined
       if (key && candidate.candidateType === 'new_or_confirmed' &&
         (typeof currentValue !== 'string' || !currentValue.trim())) {
@@ -1503,10 +1511,18 @@ function HuanyuOrderForm({
 
   useEffect(() => {
     let active = true
-    fetchHuanyuEscorts('')
-      .then((options) => {
+    const currentEscort = (form.escortName || escortRows[0]?.escortName)?.trim() || ''
+    fetchHuanyuEscorts('', currentEscort)
+      .then(async (options) => {
         if (!active) return
-        setEscortOptions(options)
+        let finalOptions = options
+        if (currentEscort && !options.some((item) => item.id === currentEscort || item.name === currentEscort)) {
+          const specific = await fetchHuanyuEscortById(currentEscort).catch(() => null)
+          if (specific) {
+            finalOptions = [specific, ...options]
+          }
+        }
+        setEscortOptions(finalOptions)
         setLoadedMap((prev) => ({ ...prev, escort: true }))
       })
       .catch(() => {
@@ -1514,7 +1530,7 @@ function HuanyuOrderForm({
         setLoadedMap((prev) => ({ ...prev, escort: true }))
       })
     return () => { active = false }
-  }, [])
+  }, [form.escortName, escortRows])
 
   // 正式寰宇字段有值时绝不覆盖；只有为空的字段才用 AI 候选做页面补位。
   // 变更候选和歧义候选仅展示给人工，不自动放进输入框。
@@ -1780,10 +1796,10 @@ function HuanyuOrderForm({
       setChannelLoading(true)
       setChannelError(null)
       try {
-        let options = await fetchHuanyuChannels(channelSearch)
+        let options = await fetchHuanyuChannels(channelSearch, form.channel)
         if (!active) return
         if (form.channel && !options.some((item) => item.id === form.channel || item.name === form.channel)) {
-          const specific = await fetchHuanyuChannels(form.channel).catch(() => [])
+          const specific = await fetchHuanyuChannels('', form.channel).catch(() => [])
           if (specific.length > 0) {
             const map = new Map<string, HuanyuChannelOption>()
             specific.forEach((item) => map.set(item.id, item))
@@ -1824,10 +1840,10 @@ function HuanyuOrderForm({
       setServiceLoading(true)
       setServiceError(null)
       try {
-        let options = await fetchHuanyuChannelProducts(channelId, serviceSearch)
+        let options = await fetchHuanyuChannelProducts(channelId, serviceSearch, form.channelService)
         if (!active) return
         if (form.channelService && !options.some((item) => item.id === form.channelService || item.name === form.channelService)) {
-          const specific = await fetchHuanyuChannelProducts(channelId, form.channelService).catch(() => [])
+          const specific = await fetchHuanyuChannelProducts(channelId, '', form.channelService).catch(() => [])
           if (specific.length > 0) {
             const map = new Map<string, HuanyuChannelProductOption>()
             specific.forEach((item) => map.set(item.id, item))
@@ -1965,10 +1981,10 @@ function HuanyuOrderForm({
       setBdLoading(true)
       setBdError(null)
       try {
-        let options = await fetchHuanyuBdUsers(bdSearch)
+        let options = await fetchHuanyuBdUsers(bdSearch, form.bd)
         if (!active) return
         if (form.bd && form.bd !== '无' && !options.some((item) => item.id === form.bd || item.name === form.bd)) {
-          const specific = await fetchHuanyuBdUsers(form.bd).catch(() => [])
+          const specific = await fetchHuanyuBdUsers('', form.bd).catch(() => [])
           if (specific.length > 0) {
             const map = new Map<string, HuanyuChannelOption>()
             specific.forEach((item) => map.set(item.id, item))
@@ -2004,15 +2020,20 @@ function HuanyuOrderForm({
       setHospitalLoading(true)
       setHospitalError(null)
       try {
-        let options = await fetchHuanyuHospitals(hospitalSearch)
+        let options = await fetchHuanyuHospitals(hospitalSearch, form.hospital)
         if (!active) return
         if (form.hospital && !options.some((item) => item.id === form.hospital || item.name === form.hospital)) {
-          const specific = await fetchHuanyuHospitals(form.hospital).catch(() => [])
-          if (specific.length > 0) {
-            const map = new Map<string, HuanyuChannelOption>()
-            specific.forEach((item) => map.set(item.id, item))
-            options.forEach((item) => map.set(item.id, item))
-            options = Array.from(map.values())
+          const specific = await fetchHuanyuHospitalById(form.hospital).catch(() => null)
+          if (specific) {
+            options = [specific, ...options]
+          } else {
+            const bySearch = await fetchHuanyuHospitals('', form.hospital).catch(() => [])
+            if (bySearch.length > 0) {
+              const map = new Map<string, HuanyuChannelOption>()
+              bySearch.forEach((item) => map.set(item.id, item))
+              options.forEach((item) => map.set(item.id, item))
+              options = Array.from(map.values())
+            }
           }
         }
         setHospitalOptions(options)
@@ -2046,10 +2067,10 @@ function HuanyuOrderForm({
       setAddressLoading(true)
       setAddressError(null)
       try {
-        let options = await fetchHuanyuHospitalAddresses(hospitalId, addressSearch)
+        let options = await fetchHuanyuHospitalAddresses(hospitalId, addressSearch, form.hospitalAddress)
         if (!active) return
         if (form.hospitalAddress && !options.some((item) => item.id === form.hospitalAddress || item.name === form.hospitalAddress)) {
-          const specific = await fetchHuanyuHospitalAddresses(hospitalId, form.hospitalAddress).catch(() => [])
+          const specific = await fetchHuanyuHospitalAddresses(hospitalId, '', form.hospitalAddress).catch(() => [])
           if (specific.length > 0) {
             const map = new Map<string, HuanyuChannelOption>()
             specific.forEach((item) => map.set(item.id, item))
@@ -2083,15 +2104,20 @@ function HuanyuOrderForm({
       setDepartmentLoading(true)
       setDepartmentError(null)
       try {
-        let options = await fetchHuanyuHospitalDepartments(hospitalId, departmentSearch)
+        let options = await fetchHuanyuHospitalDepartments(hospitalId, departmentSearch, form.department)
         if (!active) return
         if (form.department && !options.some((item) => item.id === form.department || item.name === form.department)) {
-          const specific = await fetchHuanyuHospitalDepartments(hospitalId, form.department).catch(() => [])
-          if (specific.length > 0) {
-            const map = new Map<string, HuanyuHospitalDepartmentOption>()
-            specific.forEach((item) => map.set(item.id, item))
-            options.forEach((item) => map.set(item.id, item))
-            options = Array.from(map.values())
+          const specific = await fetchHuanyuDepartmentById(form.department).catch(() => null)
+          if (specific) {
+            options = [specific, ...options]
+          } else {
+            const bySearch = await fetchHuanyuHospitalDepartments(hospitalId, '', form.department).catch(() => [])
+            if (bySearch.length > 0) {
+              const map = new Map<string, HuanyuHospitalDepartmentOption>()
+              bySearch.forEach((item) => map.set(item.id, item))
+              options.forEach((item) => map.set(item.id, item))
+              options = Array.from(map.values())
+            }
           }
         }
         setDepartmentOptions(options)
@@ -2128,23 +2154,36 @@ function HuanyuOrderForm({
       setDoctorLoading(true)
       setDoctorError(null)
       try {
-        let options = await fetchHuanyuHospitalDoctors(hospitalId, departmentId, doctorSearch)
+        let options = await fetchHuanyuHospitalDoctors(hospitalId, departmentId, doctorSearch, form.doctor)
         if (!active) return
         if (form.doctor && !options.some((item) => item.id === form.doctor || item.name === form.doctor)) {
-          const specific = await fetchHuanyuHospitalDoctors(hospitalId, departmentId, form.doctor).catch(() => [])
-          if (specific.length > 0) {
-            const map = new Map<string, HuanyuDoctorOption>()
-            specific.forEach((item) => map.set(item.id, item))
-            options.forEach((item) => map.set(item.id, item))
-            options = Array.from(map.values())
+          const specific = await fetchHuanyuDoctorById(form.doctor).catch(() => null)
+          if (specific) {
+            options = [specific, ...options]
+          } else {
+            const bySearch = await fetchHuanyuHospitalDoctors(hospitalId, departmentId, '', form.doctor).catch(() => [])
+            if (bySearch.length > 0) {
+              const map = new Map<string, HuanyuDoctorOption>()
+              bySearch.forEach((item) => map.set(item.id, item))
+              options.forEach((item) => map.set(item.id, item))
+              options = Array.from(map.values())
+            }
           }
         }
         setDoctorOptions(options)
         setLoadedMap((prev) => ({ ...prev, doctor: true }))
         if (form.doctor) {
           const matched = options.find((item) => item.id === form.doctor || item.name === form.doctor)
-          if (matched && form.doctor !== matched.id) {
-            setForm((current) => ({ ...current, doctor: matched.id }))
+          if (matched) {
+            const isUnknownDoctor = matched.id.endsWith('WXSYSXM')
+            const nextExpert = isUnknownDoctor ? form.expertLevel : (matched.expertLevel || '')
+            if (form.doctor !== matched.id || (!isUnknownDoctor && form.expertLevel !== nextExpert)) {
+              setForm((current) => ({
+                ...current,
+                doctor: matched.id,
+                expertLevel: isUnknownDoctor ? current.expertLevel : (matched.expertLevel || '')
+              }))
+            }
           }
         }
       } catch (error: unknown) {
@@ -3091,17 +3130,24 @@ function HuanyuEscortInformationTable({
       setEscortLoading(true)
       setEscortError(null)
       try {
-        let options = await fetchHuanyuEscorts(escortSearch)
+        const currentRows = rowsRef.current
+        const firstEscortName = currentRows[0]?.escortName?.trim() || ''
+        let options = await fetchHuanyuEscorts(escortSearch, firstEscortName)
         if (!active) return
 
-        // 如果现有行中有陪诊人员名字/ID不在当前 options 中，定向查询补充
-        const currentRows = rowsRef.current
+        // 如果现有行中有陪诊人员名字/ID不在当前 options 中，定向单点/模糊查询补充
         const missingNames = currentRows
           .map((r) => r.escortName?.trim())
           .filter((name): name is string => Boolean(name && !options.some((o) => o.id === name || o.name === name)))
 
         if (missingNames.length > 0) {
-          const extraResults = await Promise.all(missingNames.map((name) => fetchHuanyuEscorts(name).catch(() => [])))
+          const extraResults = await Promise.all(
+            missingNames.map(async (name) => {
+              const exact = await fetchHuanyuEscortById(name).catch(() => null)
+              if (exact) return [exact]
+              return fetchHuanyuEscorts('', name).catch(() => [])
+            })
+          )
           if (!active) return
           const extraMap = new Map<string, HuanyuEscortOption>()
           options.forEach((o) => extraMap.set(o.id, o))

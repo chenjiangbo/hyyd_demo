@@ -15,6 +15,7 @@ import {
 } from '../llm/orderBriefService.js'
 import { extractOrderServiceFields, ORDER_AI_FIELD_PROMPT_VERSION } from '../llm/orderAiExtraction.js'
 import { understandImage } from '../llm/imageUnderstandService.js'
+import { autoSyncOrderMasterData } from '../services/masterDataAutoSync.js'
 
 async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = []
@@ -329,6 +330,29 @@ export async function refreshOrderBrief(
       raw: extraction.raw,
       candidates: extraction.candidates
     })
+
+    // 自动在远程 MySQL (hyyd) 中维护 医院、院区、科室、医生与陪诊人员主数据
+    try {
+      const hospCand = extraction.candidates.find((c) => c.fieldCode === 'hospital')?.value
+      const addrCand = extraction.candidates.find((c) => c.fieldCode === 'hospital_address')?.value
+      const deptCand = extraction.candidates.find((c) => c.fieldCode === 'department')?.value
+      const docCand = extraction.candidates.find((c) => c.fieldCode === 'doctor')?.value
+      const expertCand = extraction.candidates.find((c) => c.fieldCode === 'expert_level')?.value
+      const escortNameCand = extraction.candidates.find((c) => c.fieldCode === 'escort_name')?.value
+      const escortPhoneCand = extraction.candidates.find((c) => c.fieldCode === 'escort_phone')?.value
+
+      await autoSyncOrderMasterData({
+        hospitalName: hospCand || order.hospital,
+        hospitalAddress: addrCand,
+        departmentName: deptCand || order.dept,
+        doctorName: docCand || order.doctor,
+        expertLevel: expertCand,
+        escortName: escortNameCand,
+        escortPhone: escortPhoneCand
+      })
+    } catch (syncErr) {
+      console.warn(`[master-data] 订单 ${orderId} 远程主数据自动建档异常:`, (syncErr as Error).message)
+    }
   } catch (error) {
     console.warn(`[order-ai] 订单 ${orderId} 字段提取失败，保留简报并等待下次重试:`, (error as Error).message)
   }

@@ -35,6 +35,12 @@ export interface AppEnv {
   huanyuPushDbSsl?: string
   // 每日订单 AI 分析时点，上海时区，逗号分隔；例如 12:00,18:00。
   orderAiAnalysisTimes?: string
+  // 阿里云短信配置
+  aliyunSmsAccessKeyId?: string
+  aliyunSmsAccessKeySecret?: string
+  aliyunSmsSignName?: string
+  aliyunSmsTemplatePreDay?: string
+  aliyunSmsTemplateSameDay?: string
 }
 
 let cached: AppEnv | null = null
@@ -94,7 +100,12 @@ export function getEnv(): AppEnv {
     huanyuPushDbUser: optional('HUANYU_PUSH_DB_USER'),
     huanyuPushDbPassword: optional('HUANYU_PUSH_DB_PASSWORD'),
     huanyuPushDbSsl: optional('HUANYU_PUSH_DB_SSL'),
-    orderAiAnalysisTimes: optional('ORDER_AI_ANALYSIS_TIMES')
+    orderAiAnalysisTimes: optional('ORDER_AI_ANALYSIS_TIMES'),
+    aliyunSmsAccessKeyId: optional('ALIYUN_SMS_ACCESS_KEY_ID'),
+    aliyunSmsAccessKeySecret: optional('ALIYUN_SMS_ACCESS_KEY_SECRET'),
+    aliyunSmsSignName: optional('ALIYUN_SMS_SIGN_NAME') || '寰宇医道',
+    aliyunSmsTemplatePreDay: optional('ALIYUN_SMS_TEMPLATE_PRE_DAY') || 'SMS_512665048',
+    aliyunSmsTemplateSameDay: optional('ALIYUN_SMS_TEMPLATE_SAME_DAY') || 'SMS_512530051'
   }
   return cached
 }

@@ -21,6 +21,16 @@ const INIT_ORDER_AI_SCHEDULE_SQL = `
   ON CONFLICT (key) DO NOTHING;
 `
 
+const INIT_ALIYUN_SMS_CONFIG_SQL = `
+  INSERT INTO sys_settings (key, value, updated_at)
+  VALUES (
+    'aliyun_sms_config',
+    '{"enabled": true, "accessKeyId": "", "accessKeySecret": "", "signName": "寰宇医道", "templatePreDay": "SMS_512665048", "templateSameDay": "SMS_512530051"}'::jsonb,
+    NOW()
+  )
+  ON CONFLICT (key) DO NOTHING;
+`
+
 export async function ensureSysSettingsTable(
   prisma: PrismaClient,
   logger?: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string, err?: unknown) => void }
@@ -28,6 +38,7 @@ export async function ensureSysSettingsTable(
   try {
     await prisma.$executeRawUnsafe(CREATE_TABLE_SQL)
     await prisma.$executeRawUnsafe(INIT_ORDER_AI_SCHEDULE_SQL)
+    await prisma.$executeRawUnsafe(INIT_ALIYUN_SMS_CONFIG_SQL)
     logger?.info('系统设置表 (sys_settings) 结构与默认值校验完成')
   } catch (err) {
     logger?.error('创建/校验 sys_settings 系统设置表失败:', err)

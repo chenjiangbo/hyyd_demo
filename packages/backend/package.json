@@ -14,7 +14,8 @@
     "huanyu:backfill": "tsx src/scripts/backfillHuanyuOrders.ts",
     "huanyu:backfill-patient": "tsx src/scripts/backfillHuanyuPatientInfo.ts",
     "huanyu:backfill-product": "tsx src/scripts/backfillHuanyuChannelProductFields.ts",
-    "huanyu:repair-patient-contacts": "tsx src/scripts/repairHuanyuPatientContacts.ts"
+    "huanyu:repair-patient-contacts": "tsx src/scripts/repairHuanyuPatientContacts.ts",
+    "test:master-data": "tsx scripts/test_master_data.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^9.4.0",

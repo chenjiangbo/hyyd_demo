@@ -295,6 +295,30 @@ const CREATE_STATEMENTS = [
   `,
   `
     CREATE INDEX IF NOT EXISTS "idx_fact_hy_pzfk_ddbh" ON "fact_hy_pzfk" ("ddbh");
+  `,
+  // 18. 陪诊人员出工短信发送流水表 fact_hy_pz_sms_logs
+  `
+    CREATE TABLE IF NOT EXISTS "fact_hy_pz_sms_logs" (
+      "id" SERIAL PRIMARY KEY,
+      "order_no" VARCHAR(100) NOT NULL,
+      "batch_type" VARCHAR(20) NOT NULL,
+      "phone" VARCHAR(50),
+      "pzr_name" VARCHAR(100),
+      "service_date" VARCHAR(50),
+      "template_code" VARCHAR(50) NOT NULL,
+      "sign_name" VARCHAR(100) NOT NULL,
+      "params_json" JSONB,
+      "biz_id" VARCHAR(100),
+      "request_id" VARCHAR(100),
+      "status" VARCHAR(20) NOT NULL,
+      "error_code" VARCHAR(100),
+      "error_message" TEXT,
+      "send_ymd" VARCHAR(20) NOT NULL,
+      "created_at" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS "idx_fact_hy_pz_sms_logs_query" ON "fact_hy_pz_sms_logs" ("order_no", "batch_type", "send_ymd", "status");
   `
 ]
 

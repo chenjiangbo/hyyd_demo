@@ -12,12 +12,13 @@ import { extractKeyInfo, type KeyInfoMessage, type KeyInfoContext } from '../llm
 import { structureMessages, type StructInput } from '../lib/messageStructure.js'
 import { refreshApplicationBrief, refreshOrderBrief } from '../jobs/orderBriefRunner.js'
 import { getRecordingPlaybackInfo } from '../audioTranscode.js'
-import { findHuanyuChannelProductById, findHuanyuHospitalById, findHuanyuDepartmentById, findHuanyuDoctorById, listHuanyuBdUsers, listHuanyuChannelProducts, listHuanyuChannels, listHuanyuEscorts, listHuanyuHospitalAddresses, listHuanyuHospitalDepartments, listHuanyuHospitalDoctors, listHuanyuHospitals } from '../db/remoteDictionary.js'
+import { findHuanyuChannelProductById, findHuanyuHospitalById, findHuanyuDepartmentById, findHuanyuDoctorById, findHuanyuEscortById, listHuanyuBdUsers, listHuanyuChannelProducts, listHuanyuChannels, listHuanyuEscorts, listHuanyuHospitalAddresses, listHuanyuHospitalDepartments, listHuanyuHospitalDoctors, listHuanyuHospitals } from '../db/remoteDictionary.js'
 import { huanyuBookingChannelTypes, huanyuDocumentTypes, huanyuExpertLevels, huanyuMedicareTypes, huanyuOrderStatuses } from '../dictionaries/huanyuOrder.js'
 import { registerDictionaryManageRoutes } from './dictionaryManage.js'
 import { registerEscortFeedbackRoutes } from './escortFeedbackRoutes.js'
 import { applyOrderWorkflowEvent, getOrderWorkflow, initializeOrderWorkflow, type WorkflowEventInput } from '../workflow/serviceWorkflow.js'
 import { pushHuanyuOrderToMysql } from '../huanyuMysqlPush.js'
+import { autoSyncOrderMasterData, ensureRemoteEscort } from '../services/masterDataAutoSync.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   CreateOrderPayload,
@@ -626,15 +627,15 @@ export function registerApiRoutes(
   })
 
   // 寰宇订单下拉字典：仅调用 remoteDictionary 中固定的参数化 SELECT。
-  fastify.get<{ Querystring: { q?: string } }>('/api/v1/dictionaries/huanyu/channels', async (request, reply) => {
+  fastify.get<{ Querystring: { q?: string; currentId?: string } }>('/api/v1/dictionaries/huanyu/channels', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-    const options = await listHuanyuChannels(request.query.q)
+    const options = await listHuanyuChannels(request.query.q, request.query.currentId)
     return reply.send({ data: options })
   })
 
-  fastify.get<{ Querystring: { channelId?: string; q?: string } }>('/api/v1/dictionaries/huanyu/channel-products', async (request, reply) => {
+  fastify.get<{ Querystring: { channelId?: string; q?: string; currentId?: string } }>('/api/v1/dictionaries/huanyu/channel-products', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-    const options = await listHuanyuChannelProducts(request.query.channelId, request.query.q)
+    const options = await listHuanyuChannelProducts(request.query.channelId, request.query.q, request.query.currentId)
     return reply.send({ data: options })
   })
 
@@ -662,30 +663,48 @@ export function registerApiRoutes(
     return reply.send({ data: huanyuMedicareTypes() })
   })
 
-  fastify.get<{ Querystring: { q?: string } }>('/api/v1/dictionaries/huanyu/bd-users', async (request, reply) => {
+  fastify.get<{ Querystring: { q?: string; currentId?: string } }>('/api/v1/dictionaries/huanyu/bd-users', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-    const options = await listHuanyuBdUsers(request.query.q)
+    const options = await listHuanyuBdUsers(request.query.q, request.query.currentId)
     return reply.send({ data: options })
   })
 
-  fastify.get<{ Querystring: { q?: string } }>('/api/v1/dictionaries/huanyu/hospitals', async (request, reply) => {
+  fastify.get<{ Querystring: { q?: string; currentId?: string } }>('/api/v1/dictionaries/huanyu/hospitals', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-    return reply.send({ data: await listHuanyuHospitals(request.query.q) })
+    return reply.send({ data: await listHuanyuHospitals(request.query.q, request.query.currentId) })
   })
 
-  fastify.get<{ Querystring: { hospitalId?: string; q?: string } }>('/api/v1/dictionaries/huanyu/hospital-addresses', async (request, reply) => {
+  fastify.get<{ Params: { id: string } }>('/api/v1/dictionaries/huanyu/hospitals/:id', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-    return reply.send({ data: await listHuanyuHospitalAddresses(request.query.hospitalId, request.query.q) })
+    const item = await findHuanyuHospitalById(request.params.id)
+    return reply.send({ data: item })
   })
 
-  fastify.get<{ Querystring: { hospitalId?: string; q?: string } }>('/api/v1/dictionaries/huanyu/hospital-departments', async (request, reply) => {
+  fastify.get<{ Querystring: { hospitalId?: string; q?: string; currentId?: string } }>('/api/v1/dictionaries/huanyu/hospital-addresses', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-    return reply.send({ data: await listHuanyuHospitalDepartments(request.query.hospitalId, request.query.q) })
+    return reply.send({ data: await listHuanyuHospitalAddresses(request.query.hospitalId, request.query.q, request.query.currentId) })
   })
 
-  fastify.get<{ Querystring: { hospitalId?: string; departmentId?: string; q?: string } }>('/api/v1/dictionaries/huanyu/hospital-doctors', async (request, reply) => {
+  fastify.get<{ Querystring: { hospitalId?: string; q?: string; currentId?: string } }>('/api/v1/dictionaries/huanyu/hospital-departments', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-    return reply.send({ data: await listHuanyuHospitalDoctors(request.query.hospitalId, request.query.departmentId, request.query.q) })
+    return reply.send({ data: await listHuanyuHospitalDepartments(request.query.hospitalId, request.query.q, request.query.currentId) })
+  })
+
+  fastify.get<{ Params: { id: string } }>('/api/v1/dictionaries/huanyu/departments/:id', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const item = await findHuanyuDepartmentById(request.params.id)
+    return reply.send({ data: item })
+  })
+
+  fastify.get<{ Querystring: { hospitalId?: string; departmentId?: string; q?: string; currentId?: string } }>('/api/v1/dictionaries/huanyu/hospital-doctors', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    return reply.send({ data: await listHuanyuHospitalDoctors(request.query.hospitalId, request.query.departmentId, request.query.q, request.query.currentId) })
+  })
+
+  fastify.get<{ Params: { id: string } }>('/api/v1/dictionaries/huanyu/doctors/:id', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const item = await findHuanyuDoctorById(request.params.id)
+    return reply.send({ data: item })
   })
 
   fastify.get<{ Querystring: { q?: string } }>('/api/v1/dictionaries/huanyu/expert-levels', async (request, reply) => {
@@ -693,9 +712,15 @@ export function registerApiRoutes(
     return reply.send({ data: huanyuExpertLevels(request.query.q) })
   })
 
-  fastify.get<{ Querystring: { q?: string } }>('/api/v1/dictionaries/huanyu/escorts', async (request, reply) => {
+  fastify.get<{ Querystring: { q?: string; currentId?: string } }>('/api/v1/dictionaries/huanyu/escorts', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-    return reply.send({ data: await listHuanyuEscorts(request.query.q) })
+    return reply.send({ data: await listHuanyuEscorts(request.query.q, request.query.currentId) })
+  })
+
+  fastify.get<{ Params: { id: string } }>('/api/v1/dictionaries/huanyu/escorts/:id', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const item = await findHuanyuEscortById(request.params.id)
+    return reply.send({ data: item })
   })
 
   // 2.5 当前员工 presence 状态查询（给 Tray App 显示警告 banner 用）
@@ -1337,6 +1362,33 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           `
         }
       }
+
+      // 4. 触发远程 MySQL 核心主数据（医院、院区、对外科室、医生、陪诊人员）查重与自动建档
+      void (async () => {
+        try {
+          // 同步医院、院区、科室、医生
+          await autoSyncOrderMasterData({
+            hospitalName: resolvedHospitalName || body.hospital,
+            hospitalAddress: body.hospitalAddress,
+            departmentName: resolvedDeptName || body.department,
+            doctorName: resolvedDoctorName || body.doctor,
+            expertLevel: body.expertLevel,
+            escortName: body.escortName,
+            escortPhone: body.escortPhone || (Array.isArray(body.escortList) ? body.escortList[0]?.phone : null)
+          })
+
+          // 如果陪诊人列表中包含手机号，也一并确保建档
+          if (Array.isArray(body.escortList)) {
+            for (const item of body.escortList) {
+              if (item?.escortName && item?.phone) {
+                await ensureRemoteEscort(item.escortName, item.phone)
+              }
+            }
+          }
+        } catch (syncErr) {
+          fastify.log.warn({ err: syncErr }, '[master-data] 手工保存订单后触发主数据同步异常')
+        }
+      })()
 
       return reply.send({ ok: true, order: syncedOrder, message: '寰宇订单保存成功' })
     } catch (err: any) {
