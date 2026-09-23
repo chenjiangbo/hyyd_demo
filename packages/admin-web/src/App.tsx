@@ -21,6 +21,7 @@ import AiScheduleConfigPage from './pages/AiScheduleConfigPage'
 import SmsConfigPage from './pages/SmsConfigPage'
 import OrderAiConfigPage from './pages/OrderAiConfigPage'
 import SystemRemindersPage from './pages/SystemRemindersPage'
+import TaikangHuanyuChannelMappingPage from './pages/TaikangHuanyuChannelMappingPage'
 
 export default function App(): React.JSX.Element {
   const { status } = useAuth()
@@ -57,6 +58,7 @@ export default function App(): React.JSX.Element {
         <Route path="ai-schedule-config" element={<AiScheduleConfigPage />} />
         <Route path="sms-config" element={<SmsConfigPage />} />
         <Route path="order-ai-config" element={<OrderAiConfigPage />} />
+        <Route path="taikang-huanyu-channel-mappings" element={<TaikangHuanyuChannelMappingPage />} />
         <Route path="system-reminders" element={<SystemRemindersPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
