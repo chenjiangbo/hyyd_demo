@@ -45,7 +45,9 @@ type Candidate = {
   currentChannelId: string | null
   currentProductId: string | null
   expectedChannel: HuanyuChannelOption
-  expectedProduct: HuanyuChannelProductOption
+  expectedProduct: HuanyuChannelProductOption | null
+  channelNeedsUpdate: boolean
+  productNeedsUpdate: boolean
   reason: string
 }
 
@@ -54,6 +56,10 @@ type Unresolved = {
   sourceOrderNo: string
   huanyuOrderNo: string
   businessKey: TaikangBusinessKey
+  currentChannelId: string | null
+  currentProductId: string | null
+  expectedChannel: HuanyuChannelOption
+  channelWillBeUpdated: boolean
   reason: string
 }
 
@@ -97,21 +103,24 @@ function backupTableName(): string {
   return `hy_channel_mapping_backup_${timestampTag()}`
 }
 
-async function isCurrentPairValid(
-  currentChannelId: string | null,
-  currentProductId: string | null,
-  cache: Map<string, Promise<HuanyuChannelOption | null | HuanyuChannelProductOption>>
+async function isChannelValid(
+  channelId: string | null,
+  cache: Map<string, Promise<HuanyuChannelOption | null>>
 ): Promise<boolean> {
-  if (!currentChannelId || !currentProductId) return false
-  const channelKey = `channel:${currentChannelId}`
-  const productKey = `product:${currentProductId}`
-  if (!cache.has(channelKey)) cache.set(channelKey, findHuanyuChannelById(currentChannelId))
-  if (!cache.has(productKey)) cache.set(productKey, findHuanyuChannelProductById(currentProductId))
-  const [channel, product] = await Promise.all([cache.get(channelKey)!, cache.get(productKey)!])
-  return Boolean(
-    channel && product &&
-    String(product.id).slice(0, 4) === String(channel.id).slice(0, 4)
-  )
+  if (!channelId) return false
+  if (!cache.has(channelId)) cache.set(channelId, findHuanyuChannelById(channelId))
+  return Boolean(await cache.get(channelId))
+}
+
+async function isProductValidForChannel(
+  channelId: string,
+  productId: string | null,
+  cache: Map<string, Promise<HuanyuChannelProductOption | null>>
+): Promise<boolean> {
+  if (!productId) return false
+  if (!cache.has(productId)) cache.set(productId, findHuanyuChannelProductById(productId))
+  const product = await cache.get(productId)
+  return Boolean(product && String(product.id).slice(0, 4) === String(channelId).slice(0, 4))
 }
 
 async function main(): Promise<void> {
@@ -165,7 +174,8 @@ async function main(): Promise<void> {
   const candidates: Candidate[] = []
   const unresolved: Unresolved[] = []
   let unchanged = 0
-  const validityCache = new Map<string, Promise<HuanyuChannelOption | null | HuanyuChannelProductOption>>()
+  const channelValidityCache = new Map<string, Promise<HuanyuChannelOption | null>>()
+  const productValidityCache = new Map<string, Promise<HuanyuChannelProductOption | null>>()
 
   for (const row of rows) {
     const detail = asRecord(asRecord(row.detail_json).recommendations)
@@ -173,9 +183,24 @@ async function main(): Promise<void> {
     const businessKey = taikangBusinessKeyOf(field(raw, 'poolType'))
     const expectedChannel = channelByBusiness.get(businessKey)
     if (!expectedChannel) {
-      unresolved.push({ orderId: row.order_id, sourceOrderNo: row.source_order_no, huanyuOrderNo: row.huanyu_order_no, businessKey, reason: '后台未配置有效 B端渠道' })
+      unresolved.push({
+        orderId: row.order_id,
+        sourceOrderNo: row.source_order_no,
+        huanyuOrderNo: row.huanyu_order_no,
+        businessKey,
+        currentChannelId: row.current_channel_id,
+        currentProductId: row.current_product_id,
+        expectedChannel: { id: '', name: '' },
+        channelWillBeUpdated: false,
+        reason: '后台未配置有效 B端渠道'
+      })
       continue
     }
+
+    // 渠道和服务项目拆开处理：渠道配置有效时，不等待服务项目匹配。
+    // 对已有有效但不同的渠道仍沿用 --force 保护；空值/无效值可直接补齐。
+    const currentChannelValid = await isChannelValid(row.current_channel_id, channelValidityCache)
+    const channelNeedsUpdate = row.current_channel_id !== expectedChannel.id && (force || !currentChannelValid)
 
     let expectedProduct: HuanyuChannelProductOption | null = null
     const names = productNames(raw)
@@ -189,35 +214,69 @@ async function main(): Promise<void> {
         sourceOrderNo: row.source_order_no,
         huanyuOrderNo: row.huanyu_order_no,
         businessKey,
-        reason: names.length > 0 ? `目标渠道下未匹配服务项目：${names.join(' / ')}` : '泰康订单缺少服务项目名称'
+        currentChannelId: row.current_channel_id,
+        currentProductId: row.current_product_id,
+        expectedChannel,
+        channelWillBeUpdated: channelNeedsUpdate,
+        reason: names.length > 0
+          ? `目标渠道下未匹配服务项目：${names.join(' / ')}；BDQD 将独立按渠道配置处理，BDQD_FWXM 保留原值/空值`
+          : '泰康订单缺少服务项目名称；BDQD 将独立按渠道配置处理，BDQD_FWXM 保留原值/空值'
       })
+    } else {
+      // 服务项目只有在已匹配到当前目标渠道下的维表值时才更新。
+      // 同样保留 --force 以覆盖已有有效但不一致的服务项目。
+      const currentProductValid = await isProductValidForChannel(
+        expectedChannel.id,
+        row.current_product_id,
+        productValidityCache
+      )
+      const productNeedsUpdate = row.current_product_id !== expectedProduct.id && (force || !currentProductValid)
+      if (channelNeedsUpdate || productNeedsUpdate) {
+        candidates.push({
+          orderId: row.order_id,
+          sourceOrderNo: row.source_order_no,
+          huanyuOrderNo: row.huanyu_order_no,
+          businessKey,
+          currentChannelId: row.current_channel_id,
+          currentProductId: row.current_product_id,
+          expectedChannel,
+          expectedProduct,
+          channelNeedsUpdate,
+          productNeedsUpdate,
+          reason: channelNeedsUpdate && productNeedsUpdate
+            ? '渠道与服务项目均需按当前配置和维表匹配值更新'
+            : channelNeedsUpdate
+              ? '渠道需按当前配置更新；服务项目已正确或受保护保留'
+              : '服务项目需按维表匹配值更新'
+        })
+        continue
+      }
+      unchanged += 1
       continue
     }
 
-    if (row.current_channel_id === expectedChannel.id && row.current_product_id === expectedProduct.id) {
-      unchanged += 1
-      continue
+    // 服务项目没有匹配到时，仍允许只补 B端渠道。
+    if (channelNeedsUpdate) {
+      candidates.push({
+        orderId: row.order_id,
+        sourceOrderNo: row.source_order_no,
+        huanyuOrderNo: row.huanyu_order_no,
+        businessKey,
+        currentChannelId: row.current_channel_id,
+        currentProductId: row.current_product_id,
+        expectedChannel,
+        expectedProduct: null,
+        channelNeedsUpdate: true,
+        productNeedsUpdate: false,
+        reason: '服务项目未匹配，仅按当前配置更新 B端渠道'
+      })
     }
-    const currentValid = await isCurrentPairValid(row.current_channel_id, row.current_product_id, validityCache)
-    if (currentValid && !force) {
-      unchanged += 1
-      continue
-    }
-    candidates.push({
-      orderId: row.order_id,
-      sourceOrderNo: row.source_order_no,
-      huanyuOrderNo: row.huanyu_order_no,
-      businessKey,
-      currentChannelId: row.current_channel_id,
-      currentProductId: row.current_product_id,
-      expectedChannel,
-      expectedProduct,
-      reason: currentValid ? '强制替换现有有效渠道/服务项目' : '当前渠道或服务项目为空、旧名称或无效码值'
-    })
   }
 
   let backupTable: string | null = null
   let updated = 0
+  let updatedChannels = 0
+  let updatedProducts = 0
   if (apply && candidates.length > 0) {
     backupTable = backupTableName()
     const backupIdentifier = Prisma.raw(`"${backupTable}"`)
@@ -229,13 +288,27 @@ async function main(): Promise<void> {
          WHERE h."DDBH" IN (${Prisma.join(candidates.map((candidate) => candidate.huanyuOrderNo))})
       `
       for (const candidate of candidates) {
-        const count = await tx.$executeRaw`
-          UPDATE "HY_FACT_DDCX_NEW"
-             SET "BDQD" = ${candidate.expectedChannel.id},
-                 "BDQD_FWXM" = ${candidate.expectedProduct.id}
-           WHERE "DDBH" = ${candidate.huanyuOrderNo}
-        `
+        const count = candidate.channelNeedsUpdate && candidate.productNeedsUpdate
+          ? await tx.$executeRaw`
+              UPDATE "HY_FACT_DDCX_NEW"
+                 SET "BDQD" = ${candidate.expectedChannel.id},
+                     "BDQD_FWXM" = ${candidate.expectedProduct!.id}
+               WHERE "DDBH" = ${candidate.huanyuOrderNo}
+            `
+          : candidate.channelNeedsUpdate
+            ? await tx.$executeRaw`
+                UPDATE "HY_FACT_DDCX_NEW"
+                   SET "BDQD" = ${candidate.expectedChannel.id}
+                 WHERE "DDBH" = ${candidate.huanyuOrderNo}
+              `
+            : await tx.$executeRaw`
+                UPDATE "HY_FACT_DDCX_NEW"
+                   SET "BDQD_FWXM" = ${candidate.expectedProduct!.id}
+                 WHERE "DDBH" = ${candidate.huanyuOrderNo}
+              `
         updated += Number(count)
+        if (Number(count) > 0 && candidate.channelNeedsUpdate) updatedChannels += 1
+        if (Number(count) > 0 && candidate.productNeedsUpdate) updatedProducts += 1
       }
     })
   }
@@ -245,7 +318,11 @@ async function main(): Promise<void> {
     force,
     totalHistoryOrders: rows.length,
     candidateCount: candidates.length,
+    channelCandidateCount: candidates.filter((candidate) => candidate.channelNeedsUpdate).length,
+    productCandidateCount: candidates.filter((candidate) => candidate.productNeedsUpdate).length,
     updated,
+    updatedChannels,
+    updatedProducts,
     unchanged,
     unresolvedCount: unresolved.length,
     backupTable,

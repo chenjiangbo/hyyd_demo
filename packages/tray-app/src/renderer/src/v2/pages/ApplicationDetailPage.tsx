@@ -3352,16 +3352,21 @@ function HuanyuEscortSelectCell({
   const selected = options.find((option) => option.id === value || option.name === value)
   const currentName = selected?.name ?? value
   const shownValue = open && isTyping ? search : currentName
+  const desiredDropdownWidth = useMemo(() => dropdownWidthForNames(options.map((option) => option.name), 220), [options])
 
   const updatePosition = useCallback(() => {
     if (!inputRef.current) return
     const rect = inputRef.current.getBoundingClientRect()
+    const width = Math.min(
+      Math.max(240, window.innerWidth - 24),
+      Math.max(rect.width, desiredDropdownWidth)
+    )
     setDropdownPos({
       top: rect.bottom + 4,
-      left: rect.left,
-      width: Math.max(rect.width, 320)
+      left: Math.max(12, Math.min(rect.left, window.innerWidth - width - 12)),
+      width
     })
-  }, [])
+  }, [desiredDropdownWidth])
 
   useEffect(() => {
     if (!open) return
@@ -3426,10 +3431,9 @@ function HuanyuEscortSelectCell({
                 setIsTyping(false)
                 setOpen(false)
               }}
-              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-surface-bg"
+              className="block w-full whitespace-nowrap px-3 py-2 text-left hover:bg-surface-bg"
             >
-              <span className="min-w-0 font-medium text-text-main truncate">{option.name}</span>
-              <span className="shrink-0 font-mono-data text-xs text-text-muted">{option.id}</span>
+              <span className="font-medium text-text-main">{option.name}</span>
             </button>
           ))}
         </div>
@@ -3478,6 +3482,20 @@ interface HuanyuSelectOption {
 interface HuanyuSearchOption {
   id: string
   name: string
+}
+
+/**
+ * 下拉项只展示名称；面板按最长名称计算宽度，避免有代码时靠截断勉强显示。
+ * 最小宽度仍由触发输入框约束，超出视口时交由面板横向滚动处理。
+ */
+function dropdownWidthForNames(names: string[], minimum: number): number {
+  const validNames = names.filter(Boolean)
+  if (validNames.length === 0 || typeof document === 'undefined') return minimum
+  const canvas = document.createElement('canvas')
+  const context = canvas.getContext('2d')
+  if (!context) return Math.max(minimum, ...validNames.map((name) => name.length * 14 + 28))
+  context.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif'
+  return Math.max(minimum, ...validNames.map((name) => Math.ceil(context.measureText(name).width) + 28))
 }
 
 function HuanyuSearchSelect({
@@ -3547,7 +3565,7 @@ function HuanyuSearchSelect({
           }
         />
         {open && !disabled && (
-          <div className="absolute z-20 mt-1 max-h-52 w-full overflow-y-auto rounded-md border border-border-subtle bg-white py-1 shadow-lg">
+          <div className="absolute z-20 mt-1 max-h-52 w-max min-w-full max-w-[calc(100vw-24px)] overflow-x-auto overflow-y-auto rounded-md border border-border-subtle bg-white py-1 shadow-lg">
             {loading && <div className="px-3 py-1.5 text-body-sm text-text-muted">加载中…</div>}
             {!loading && error && <div className="px-3 py-1.5 text-body-sm text-error">{error}</div>}
             {!loading && !error && options.length === 0 && <div className="px-3 py-1.5 text-body-sm text-text-muted">暂无匹配数据</div>}
@@ -3562,10 +3580,9 @@ function HuanyuSearchSelect({
                   setIsTyping(false)
                   setOpen(false)
                 }}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm text-text-main hover:bg-surface-bg"
+                className="block w-full whitespace-nowrap px-3 py-1.5 text-left text-body-sm text-text-main hover:bg-surface-bg"
               >
-                <span className="min-w-0 flex-1 truncate">{option.name}</span>
-                <span className="shrink-0 font-mono-data text-xs text-text-muted">{option.id}</span>
+                {option.name}
               </button>
             ))}
           </div>
