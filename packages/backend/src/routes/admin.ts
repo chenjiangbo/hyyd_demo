@@ -612,13 +612,28 @@ export function registerAdminRoutes(
             },
             {
               category: '陪诊服务',
+              name: '陪诊前一天出工短信发送异常报警',
+              trigger: '次日就诊的陪诊订单，前一天 11:00 发送出工确认短信失败或未找到手机号',
+              target: '订单责任客户经理',
+              content: '订单号: COD202609170056\n申请时间: 2026-09-16 14:20:00\n提醒内容: 陪诊出工确认短信发送失败（原因：触发流控限流），请及时人工联系陪诊人员！',
+              technicalConditions: [
+                '次日有陪诊出工安排且陪诊人员已落实',
+                '每天 11:00 启动短信自动下发批次（SMS_512665048）',
+                '解析陪诊人员手机号（依次检索本地档案表 f_hy_pzr、远端字典 dim_hy_pzr、AI 候选表 b_order_ai_field_candidates）',
+                '若阿里云接口返回失败或未检索到 11 位有效手机号，立即记录流水并报警通知客户经理人工介入'
+              ],
+              dedupeRule: '基于 auto:escort_sms_failed:{sourceOrderNo}:pre_day:{YYYY-MM-DD} 去重，前一天仅触发 1 次即时报警。'
+            },
+            {
+              category: '陪诊服务',
               name: '陪诊前一天出工未反馈预警',
-              trigger: '次日就诊的陪诊订单，前一天 11:00 发出通知，截至 13:00 仍未收到出工反馈',
+              trigger: '次日就诊的陪诊订单，前一天 11:00 已成功发出短信，截至 13:00 仍未收到出工反馈',
               target: '订单责任客户经理',
               content: '订单号: COD202609170056\n申请时间: 2026-09-16 14:20:00\n提醒内容: 陪诊人员没有第一次反馈信息，请关注！',
               technicalConditions: [
                 '服务日期（优先 fact_hy_pzrxx.BBQ_FW，无则取 AI 候选 escort_service_date）等于次日（tomorrow）',
                 '陪诊人员（优先 fact_hy_pzrxx.PZR，无则取 AI 候选 escort_name）已落实',
+                '【强前置门禁】：流水表 fact_hy_pz_sms_logs 中今日必须有该订单 pre_day 批次且 status="success" 的成功发送记录，未发送或发送失败（已报警）绝不重复误报',
                 '当前时间到达 13:00（hours >= 13）',
                 '在陪诊反馈表 fact_hy_pzfk（feedback_type = "pre_day"）与原系统反馈表中均未查询到反馈确认记录'
               ],
@@ -639,13 +654,27 @@ export function registerAdminRoutes(
             },
             {
               category: '陪诊服务',
+              name: '陪诊当天出工短信发送异常报警',
+              trigger: '今日就诊的陪诊订单，当天 07:00 发送出工打卡短信失败或未找到手机号',
+              target: '订单责任客户经理',
+              content: '订单号: COD202609170089\n申请时间: 2026-09-16 11:05:00\n提醒内容: 陪诊当日出工打卡短信发送失败（原因：触发流控限流），请紧急人工联系陪诊人员！',
+              technicalConditions: [
+                '当日有陪诊出工安排且陪诊人员已落实',
+                '每天 07:00 启动短信自动打卡下发批次（SMS_512530051）',
+                '若调用短信接口失败或未找到有效手机号，写入流水并立即生成紧急告警'
+              ],
+              dedupeRule: '基于 auto:escort_sms_failed:{sourceOrderNo}:same_day:{YYYY-MM-DD} 去重，当天仅触发 1 次即时报警。'
+            },
+            {
+              category: '陪诊服务',
               name: '陪诊当天出工未反馈报警',
-              trigger: '今日就诊的陪诊订单，当天 07:00 发出通知，截至 07:20 仍未收到出工打卡反馈',
+              trigger: '今日就诊的陪诊订单，当天 07:00 已成功发出短信，截至 07:20 仍未收到出工打卡反馈',
               target: '订单责任客户经理',
               content: '订单号: COD202609170089\n申请时间: 2026-09-16 11:05:00\n提醒内容: 陪诊人员没有第一次反馈信息，请关注！',
               technicalConditions: [
                 '服务日期（优先 fact_hy_pzrxx.BBQ_FW，无则取 AI 候选 escort_service_date）等于当日（today）',
                 '陪诊人员（优先 fact_hy_pzrxx.PZR，无则取 AI 候选 escort_name）已落实',
+                '【强前置门禁】：流水表 fact_hy_pz_sms_logs 中今日必须有该订单 same_day 批次且 status="success" 的成功发送记录',
                 '当前时间到达 07:20（hours === 7 && minutes >= 20 或 hours > 7）',
                 '在陪诊反馈表 fact_hy_pzfk（feedback_type = "same_day"）与原系统中均无出工反馈记录'
               ],

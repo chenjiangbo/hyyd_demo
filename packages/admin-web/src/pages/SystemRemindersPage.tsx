@@ -75,11 +75,11 @@ export default function SystemRemindersPage(): React.JSX.Element {
                   全系统提醒机制与触发时点总览
                 </h2>
                 <p className="text-sm text-slate-500 mt-0.5">
-                  覆盖日常录音回传广播、约住院周期跟进、陪诊 5 大时效预警节点及住院陪护全周期关怀
+                  覆盖日常录音回传广播、约住院周期跟进、陪诊 7 大时效预警节点（含出工短信与异常即时报警）及住院陪护全周期关怀
                 </p>
               </div>
               <span className="rounded-md bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600 border border-slate-200">
-                共 4 大业务类别 · 9 种精准提醒机制
+                共 4 大业务类别 · 11 种精准提醒机制
               </span>
             </div>
 
@@ -170,14 +170,14 @@ export default function SystemRemindersPage(): React.JSX.Element {
                 </div>
               </div>
 
-              {/* 板块 3: 陪诊服务 (5 大节点) */}
+              {/* 板块 3: 陪诊服务 (7 大节点) */}
               <div className="rounded-xl border border-amber-200 bg-amber-50/40 p-4.5 shadow-2xs">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <span className="flex h-6 w-6 items-center justify-center rounded-md bg-amber-600 text-white text-xs font-bold">
                       陪
                     </span>
-                    <h3 className="font-bold text-base text-amber-950">陪诊服务（5 个时效节点与预警）</h3>
+                    <h3 className="font-bold text-base text-amber-950">陪诊服务（7 个时效节点与闭环预警）</h3>
                   </div>
                   <span className="text-xs font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded border border-amber-300">
                     接收对象：责任客户经理
@@ -192,7 +192,19 @@ export default function SystemRemindersPage(): React.JSX.Element {
                       <span>① 陪诊人员未落实预警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      前置步骤完成满 1 小时仍未抓取到陪诊人。提醒内容：<code className="text-amber-900 font-medium">陪诊人员没有落实，请关注！</code>
+                      前置完成满 1 小时未指派陪诊人（库表+AI均无）。提醒：<code className="text-amber-900 font-medium">陪诊人员没有落实，请关注！</code>
+                    </p>
+                  </div>
+
+                  <div className="rounded-lg bg-white/90 border border-amber-200/80 p-2.5 shadow-2xs">
+                    <div className="flex items-center gap-2 font-bold text-slate-900 text-xs sm:text-sm">
+                      <span className="px-1.5 py-0.5 text-[11px] font-bold bg-rose-100 text-rose-800 rounded shrink-0">
+                        前天 11:00
+                      </span>
+                      <span>② 出工确认短信异常/无号码报警</span>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-600">
+                      11:00 下发短信成功则等待反馈；若发送失败或无有效手机号，<code className="text-rose-900 font-medium">立即向客户经理报警</code>，促人工介入。
                     </p>
                   </div>
 
@@ -201,10 +213,10 @@ export default function SystemRemindersPage(): React.JSX.Element {
                       <span className="px-1.5 py-0.5 text-[11px] font-bold bg-amber-100 text-amber-900 rounded shrink-0">
                         前天 13:00
                       </span>
-                      <span>② 陪诊人员未第1次反馈预警</span>
+                      <span>③ 陪诊人员未第1次反馈预警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      前一天 11:00 发短信，截至 13:00 仍未收到出工反馈。提醒内容：<code className="text-amber-900 font-medium">陪诊人员没有第一次反馈信息，请关注！</code>
+                      门禁：须 11:00 成功发短信。截至 13:00 仍未反馈提醒：<code className="text-amber-900 font-medium">陪诊人员没有第一次反馈信息，请关注！</code>
                     </p>
                   </div>
 
@@ -213,10 +225,22 @@ export default function SystemRemindersPage(): React.JSX.Element {
                       <span className="px-1.5 py-0.5 text-[11px] font-bold bg-red-100 text-red-800 rounded shrink-0">
                         前天 实时
                       </span>
-                      <span>③ 前一天反馈【无法出工】预警</span>
+                      <span>④ 前一天反馈【无法出工】预警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      陪诊员前一天明确反馈无法出工。提醒内容：<code className="text-red-900 font-medium">陪诊人员反馈【无法出工】（原因：xxx），请立即处理！</code>
+                      陪诊员前一天明确反馈无法出工。提醒：<code className="text-red-900 font-medium">陪诊人员反馈【无法出工】（原因：xxx），请立即处理！</code>
+                    </p>
+                  </div>
+
+                  <div className="rounded-lg bg-white/90 border border-amber-200/80 p-2.5 shadow-2xs">
+                    <div className="flex items-center gap-2 font-bold text-slate-900 text-xs sm:text-sm">
+                      <span className="px-1.5 py-0.5 text-[11px] font-bold bg-rose-100 text-rose-800 rounded shrink-0">
+                        当天 07:00
+                      </span>
+                      <span>⑤ 当天打卡短信异常/无号码紧急报警</span>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-600">
+                      07:00 下发打卡短信成功则等待反馈；若发送失败或无手机号，<code className="text-rose-900 font-medium">立即紧急报警</code>通知客户经理！
                     </p>
                   </div>
 
@@ -225,10 +249,10 @@ export default function SystemRemindersPage(): React.JSX.Element {
                       <span className="px-1.5 py-0.5 text-[11px] font-bold bg-amber-100 text-amber-900 rounded shrink-0">
                         当天 07:20
                       </span>
-                      <span>④ 当天未反馈出工信息预警</span>
+                      <span>⑥ 当天未反馈出工信息预警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      当天 07:00 发短信，截至 07:20 仍未收到打卡反馈。提醒内容：<code className="text-amber-900 font-medium">陪诊人员没有第一次反馈信息，请关注！</code>
+                      门禁：须 07:00 成功发短信。截至 07:20 仍未打卡提醒：<code className="text-amber-900 font-medium">陪诊人员没有第一次反馈信息，请关注！</code>
                     </p>
                   </div>
 
@@ -237,10 +261,10 @@ export default function SystemRemindersPage(): React.JSX.Element {
                       <span className="px-1.5 py-0.5 text-[11px] font-bold bg-red-100 text-red-800 rounded shrink-0">
                         当天 实时紧急
                       </span>
-                      <span>⑤ 当天反馈【无法出工】紧急预警</span>
+                      <span>⑦ 当天反馈【无法出工】极速报警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      陪诊员当天反馈无法出工。提醒内容：<code className="text-red-900 font-medium">陪诊人员当天反馈【无法出工】（原因：xxx），请紧急处理！</code>
+                      陪诊员当天反馈无法出工。提醒：<code className="text-red-900 font-medium">陪诊人员当天反馈【无法出工】（原因：xxx），请紧急处理！</code>
                     </p>
                   </div>
                 </div>

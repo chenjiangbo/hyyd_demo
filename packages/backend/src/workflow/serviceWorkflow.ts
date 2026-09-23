@@ -399,7 +399,10 @@ export async function applyOrderWorkflowEvent(
   orderId: number,
   input: WorkflowEventInput
 ): Promise<OrderWorkflow | null> {
-  const order = await prisma.order.findUnique({ where: { id: orderId }, select: { id: true, rawJson: true } })
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: { id: true, rawJson: true, huanyuOrderNo: true, sourceOrderNo: true }
+  })
   if (!order) return null
   const serviceType = serviceTypeOf(order.rawJson)
   return prisma.$transaction(async (tx) => {
@@ -505,6 +508,53 @@ export async function applyOrderWorkflowEvent(
         occurrence = input.occurrenceNo ?? 1
         await setStepStatus(tx, operation.id, 'revisit_escort', occurrence, 'completed', input)
         await refreshPackageStatus(tx, operation.id, packageCode, occurrence)
+        break
+      case 'service_cancelled':
+        // 1. 将当前订单所有非 end 步骤中处于 pending 或 in_progress 的步骤置为 cancelled
+        await tx.$executeRaw`
+          UPDATE b_order_service_steps
+          SET step_status = 'cancelled',
+              updated_at = now()
+          WHERE operation_id = ${operation.id}
+            AND step_code <> 'end'
+            AND step_status IN ('pending', 'in_progress')
+        `
+        // 2. 将 end 步骤置为 completed（结束）
+        await tx.$executeRaw`
+          UPDATE b_order_service_steps
+          SET step_status = 'completed',
+              activated_at = COALESCE(activated_at, now()),
+              completed_at = now(),
+              source_type = ${input.source},
+              source_ref = ${input.sourceRef ?? null},
+              ai_confidence = ${input.confidence ?? null},
+              evidence_json = ${JSON.stringify(input.evidence ?? [])}::jsonb,
+              updated_at = now()
+          WHERE operation_id = ${operation.id}
+            AND step_code = 'end'
+        `
+        // 3. 将订单主表 orders 的 status 更新为 '已取消'
+        await tx.order.update({
+          where: { id: order.id },
+          data: { status: '已取消' }
+        })
+        // 4. 同步更新本地镜像表 HY_FACT_DDCX_NEW 的 DD_state 为 '已取消'
+        try {
+          const raw = (order.rawJson ?? {}) as Record<string, unknown>
+          const huanyuOrderNo = order.huanyuOrderNo || (typeof raw.orderNo === 'string' ? raw.orderNo : null) || (typeof raw.crmApplyNo === 'string' ? raw.crmApplyNo : null)
+          const sourceOrderNo = order.sourceOrderNo || (typeof raw.sourceOrderNo === 'string' ? raw.sourceOrderNo : null)
+          if (huanyuOrderNo || sourceOrderNo) {
+            await tx.$executeRaw`
+              UPDATE "HY_FACT_DDCX_NEW"
+              SET "DD_state" = '已取消',
+                  xtsj_ = now()
+              WHERE (${huanyuOrderNo ? Prisma.sql`"DDBH" = ${huanyuOrderNo}` : Prisma.sql`FALSE`})
+                 OR (${sourceOrderNo ? Prisma.sql`"BDQD_DDBH" = ${sourceOrderNo}` : Prisma.sql`FALSE`})
+            `
+          }
+        } catch (syncErr) {
+          console.warn(`[workflow] 订单 ${order.id} 同步 HY_FACT_DDCX_NEW 取消状态跳过:`, (syncErr as Error).message)
+        }
         break
       default:
         throw new Error(`不支持的业务流程事件: ${input.code}`)

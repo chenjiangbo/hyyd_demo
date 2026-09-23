@@ -5,6 +5,7 @@
 import { Prisma, type PrismaClient } from '@prisma/client'
 import type * as Minio from 'minio'
 import { spawn } from 'child_process'
+import { createHash } from 'crypto'
 import {
   buildOrderBrief,
   type OrderBrief,
@@ -16,6 +17,7 @@ import {
 import { extractOrderServiceFields, ORDER_AI_FIELD_PROMPT_VERSION } from '../llm/orderAiExtraction.js'
 import { understandImage } from '../llm/imageUnderstandService.js'
 import { autoSyncOrderMasterData } from '../services/masterDataAutoSync.js'
+import { applyOrderWorkflowEvent } from '../workflow/serviceWorkflow.js'
 
 async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = []
@@ -364,6 +366,22 @@ export async function refreshOrderBrief(
       raw: extraction.raw,
       candidates: extraction.candidates
     })
+
+    // 自动应用 AI 识别出的工作流事件（包括 service_cancelled 取消关单、各履约环节等）
+    for (const event of extractionEvents) {
+      const fingerprint = createHash('sha256').update(`${orderId}:${event.code}:${event.evidence}`).digest('hex').slice(0, 32)
+      try {
+        await applyOrderWorkflowEvent(prisma, orderId, {
+          code: event.code,
+          source: 'ai',
+          sourceRef: `qwen:${event.code}:${fingerprint}`,
+          confidence: 0.85,
+          evidence: [{ text: event.evidence, model: extraction.model ?? 'qwen-plus' }]
+        })
+      } catch (eventErr) {
+        console.warn(`[order-ai] 订单 ${orderId} 自动应用事件 ${event.code} 异常:`, (eventErr as Error).message)
+      }
+    }
   } catch (error) {
     console.warn(`[order-ai] 订单 ${orderId} 字段提取失败，保留简报并等待下次重试:`, (error as Error).message)
   }

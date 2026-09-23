@@ -36,7 +36,8 @@ export const WORKFLOW_EVENT_CODES = [
   'hospital_companion_completed',
   'revisit_confirmed',
   'revisit_completed',
-  'revisit_escort_completed'
+  'revisit_escort_completed',
+  'service_cancelled'
 ] as const
 export type WorkflowEventCode = (typeof WORKFLOW_EVENT_CODES)[number]
 export interface WorkflowAnalysisEvent {

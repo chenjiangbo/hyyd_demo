@@ -5,7 +5,7 @@ import { Card, PageHeader } from '../components/ui'
 const EVENT_OPTIONS = [
   'hospital_confirmed', 'revisit_confirmed', 'check_confirmed',
   'registration_completed', 'escort_completed', 'check_booking_completed',
-  'hospital_booking_completed', 'revisit_completed'
+  'hospital_booking_completed', 'revisit_completed', 'service_cancelled'
 ]
 
 const emptyStep = (index: number): WorkflowStepConfig => ({
