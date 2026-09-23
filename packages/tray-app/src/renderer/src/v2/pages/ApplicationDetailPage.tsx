@@ -2039,7 +2039,11 @@ function HuanyuOrderForm({
         setHospitalOptions(options)
         setLoadedMap((prev) => ({ ...prev, hospital: true }))
         if (form.hospital) {
-          const matched = options.find((item) => item.id === form.hospital || item.name === form.hospital)
+          let matched = options.find((item) => item.id === form.hospital || item.name === form.hospital)
+          if (!matched && form.hospital.length >= 4) {
+            // 智能双向包含匹配（例如传入“北京协和医院”自动对齐选定“中国医学科学院北京协和医院”）
+            matched = options.find((item) => item.name.includes(form.hospital) || form.hospital.includes(item.name))
+          }
           if (matched && form.hospital !== matched.id) {
             setForm((current) => ({ ...current, hospital: matched.id }))
           }

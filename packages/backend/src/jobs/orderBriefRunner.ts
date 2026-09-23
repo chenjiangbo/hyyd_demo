@@ -319,6 +319,40 @@ export async function refreshOrderBrief(
       ],
       calls: calls.map((c) => ({ id: c.id, direction: c.direction, asrText: c.asrText, startedAt: c.startedAt }))
     })
+    // 自动在远程 MySQL (hyyd) 中维护 医院、院区、科室、医生与陪诊人员主数据，并获取官方标准全称对齐
+    let normalizedHospName: string | null = null
+    try {
+      const hospCand = extraction.candidates.find((c) => c.fieldCode === 'hospital')?.value
+      const addrCand = extraction.candidates.find((c) => c.fieldCode === 'hospital_address')?.value
+      const deptCand = extraction.candidates.find((c) => c.fieldCode === 'department')?.value
+      const docCand = extraction.candidates.find((c) => c.fieldCode === 'doctor')?.value
+      const expertCand = extraction.candidates.find((c) => c.fieldCode === 'expert_level')?.value
+      const escortNameCand = extraction.candidates.find((c) => c.fieldCode === 'escort_name')?.value
+      const escortPhoneCand = extraction.candidates.find((c) => c.fieldCode === 'escort_phone')?.value
+
+      const syncRes = await autoSyncOrderMasterData({
+        hospitalName: hospCand || order.hospital,
+        hospitalAddress: addrCand,
+        departmentName: deptCand || order.dept,
+        doctorName: docCand || order.doctor,
+        expertLevel: expertCand,
+        escortName: escortNameCand,
+        escortPhone: escortPhoneCand
+      })
+
+      if (syncRes.normalizedHospitalName) {
+        normalizedHospName = syncRes.normalizedHospitalName
+        // 同步修正候选中的医院为官方标准全称与标准 ID
+        const hospCandidate = extraction.candidates.find((c) => c.fieldCode === 'hospital')
+        if (hospCandidate) {
+          hospCandidate.value = normalizedHospName
+          hospCandidate.normalizedValue = syncRes.hospitalId ? { id: syncRes.hospitalId, name: normalizedHospName } : normalizedHospName
+        }
+      }
+    } catch (syncErr) {
+      console.warn(`[master-data] 订单 ${orderId} 远程主数据自动建档异常:`, (syncErr as Error).message)
+    }
+
     extractionEvents = extraction.workflowEvents
     await persistFieldCandidates(prisma, {
       orderId,
@@ -330,29 +364,6 @@ export async function refreshOrderBrief(
       raw: extraction.raw,
       candidates: extraction.candidates
     })
-
-    // 自动在远程 MySQL (hyyd) 中维护 医院、院区、科室、医生与陪诊人员主数据
-    try {
-      const hospCand = extraction.candidates.find((c) => c.fieldCode === 'hospital')?.value
-      const addrCand = extraction.candidates.find((c) => c.fieldCode === 'hospital_address')?.value
-      const deptCand = extraction.candidates.find((c) => c.fieldCode === 'department')?.value
-      const docCand = extraction.candidates.find((c) => c.fieldCode === 'doctor')?.value
-      const expertCand = extraction.candidates.find((c) => c.fieldCode === 'expert_level')?.value
-      const escortNameCand = extraction.candidates.find((c) => c.fieldCode === 'escort_name')?.value
-      const escortPhoneCand = extraction.candidates.find((c) => c.fieldCode === 'escort_phone')?.value
-
-      await autoSyncOrderMasterData({
-        hospitalName: hospCand || order.hospital,
-        hospitalAddress: addrCand,
-        departmentName: deptCand || order.dept,
-        doctorName: docCand || order.doctor,
-        expertLevel: expertCand,
-        escortName: escortNameCand,
-        escortPhone: escortPhoneCand
-      })
-    } catch (syncErr) {
-      console.warn(`[master-data] 订单 ${orderId} 远程主数据自动建档异常:`, (syncErr as Error).message)
-    }
   } catch (error) {
     console.warn(`[order-ai] 订单 ${orderId} 字段提取失败，保留简报并等待下次重试:`, (error as Error).message)
   }

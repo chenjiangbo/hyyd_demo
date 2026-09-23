@@ -45,6 +45,7 @@ export interface MasterDataSyncResult {
   hospitalId: string | null
   deptId: string | null
   doctorId: string | null
+  normalizedHospitalName?: string | null
 }
 
 /**
@@ -59,8 +60,8 @@ export async function ensureRemoteEscort(
   const name = (rawName ?? '').trim().replace(/^(陪诊员|陪诊老师|陪诊|师傅)-?/, '')
   const cleanPhone = (rawPhone ?? '').replace(/\D/g, '').slice(-11)
 
-  // 必须同时具备有效姓名和合法的 11 位大陆手机号
-  if (!name || name.length < 2 || !/^1[3-9]\d{9}$/.test(cleanPhone)) {
+  // 必须同时具备有效姓名和合法的 11 位大陆手机号，且严禁占位假词
+  if (!name || name.length < 2 || INVALID_NAME_PATTERN.test(name) || !/^1[3-9]\d{9}$/.test(cleanPhone)) {
     return null
   }
 
@@ -118,7 +119,11 @@ async function getCslbData(pool: any): Promise<CslbRow[]> {
   return cslbCache
 }
 
+// 严格的实体名称黑名单正则：阻断所有占位词、无效代称与虚词建档
+export const INVALID_NAME_PATTERN = /^(未明确|未知|暂无|无|待定|待确认|不详|空|none|null|undefined|\/|-|未填写|待补|随便|待选)$/i
+
 export interface RealHospitalProfile {
+  officialStandardName: string | null
   province: string | null
   city: string | null
   district?: string | null
@@ -126,12 +131,14 @@ export interface RealHospitalProfile {
 }
 
 /**
- * 权威检索医院真实档案（所属省份、城市、区县、官方登记等级）
+ * 权威检索医院真实档案（所属省份、城市、区县、官方登记等级、国家卫健委官方注册标准全称）
  * 不靠名称盲猜，不臆造虚假数据，直接检索官方知识库
  */
 export async function lookupRealHospitalProfile(hospitalName: string): Promise<RealHospitalProfile> {
   const cleanName = (hospitalName || '').trim()
-  if (!cleanName) return { province: null, city: null, level: null }
+  if (!cleanName || INVALID_NAME_PATTERN.test(cleanName)) {
+    return { officialStandardName: null, province: null, city: null, level: null }
+  }
 
   try {
     const res = await chat(
@@ -140,15 +147,16 @@ export async function lookupRealHospitalProfile(hospitalName: string): Promise<R
           role: 'system',
           content:
             '你是一个专业的中国医疗机构权威档案专家。请严格检索国家卫健委/官方登记的真实医院档案信息。' +
+            '特别注意：必须输出该机构在国家卫健委登记备案挂牌的【官方标准注册全称】（如输入“北京协和/协和医院”，官方全称必须为“中国医学科学院北京协和医院”；输入“北医三院”，官方全称为“北京大学第三医院”；输入“宣武医院”，官方全称为“首都医科大学宣武医院”）。' +
             '只输出一个合法JSON对象，不要加任何markdown标记、注释或多余文字：' +
-            '{"province":"真实省份全称如广东省或北京市","city":"真实城市全称如深圳市或成都市或北京市","district":"真实区县全称","level":"真实官方等级如三级甲等/二级甲等/二级乙等/民营/其他"}'
+            '{"officialStandardName":"国家卫健委官方标准挂牌全称","province":"真实省份全称如广东省或北京市","city":"真实城市全称如深圳市或成都市或北京市","district":"真实区县全称","level":"真实官方等级如三级甲等/二级甲等/二级乙等/民营/其他"}'
         },
         {
           role: 'user',
           content: `请查询并输出该医院真实档案：${cleanName}`
         }
       ],
-      { temperature: 0, maxTokens: 300 }
+      { temperature: 0, maxTokens: 350 }
     )
 
     const text = res.content.trim().replace(/^```json/i, '').replace(/```$/i, '').trim()
@@ -156,6 +164,7 @@ export async function lookupRealHospitalProfile(hospitalName: string): Promise<R
     if (match) {
       const data = JSON.parse(match[0])
       return {
+        officialStandardName: typeof data.officialStandardName === 'string' && data.officialStandardName.trim() ? data.officialStandardName.trim() : null,
         province: typeof data.province === 'string' && data.province.trim() ? data.province.trim() : null,
         city: typeof data.city === 'string' && data.city.trim() ? data.city.trim() : null,
         district: typeof data.district === 'string' && data.district.trim() ? data.district.trim() : null,
@@ -166,7 +175,7 @@ export async function lookupRealHospitalProfile(hospitalName: string): Promise<R
     console.warn(`[master-data] 真实医院权威档案检索异常 (${cleanName}):`, (err as Error).message)
   }
 
-  return { province: null, city: null, level: null }
+  return { officialStandardName: null, province: null, city: null, level: null }
 }
 
 /**
@@ -249,23 +258,62 @@ export async function mapProvinceCityToCslb(
 export async function ensureRemoteHospital(
   rawHospital: string | null | undefined,
   rawAddress?: string | null
-): Promise<{ id: string; province: string | null; city: string | null } | null> {
+): Promise<{ id: string; province: string | null; city: string | null; name: string } | null> {
   const hospital = (rawHospital ?? '').trim()
-  if (!hospital || hospital.length < 2) return null
+  // 严禁任何占位假词建档
+  if (!hospital || hospital.length < 2 || INVALID_NAME_PATTERN.test(hospital)) return null
 
   const pool = getRemoteDictionaryPool()
   const today = shanghaiDate8()
   const address = (rawAddress ?? '').trim()
 
-  // 1. 查询医院是否已存在
-  const [existing] = await pool.execute<RowDataPacket[]>(
+  // 1. 查询医院是否已存在（精确名称匹配）
+  let [existing] = await pool.execute<RowDataPacket[]>(
     `SELECT id, name, dz1, dz2, dz3, dq_sf, dq_cs, level FROM f_hy_yywh WHERE name = ? LIMIT 1`,
     [hospital]
   )
 
+  // 2. 如果精确匹配未命中：启动权威档案检索，查出官方注册标准全称与省市
+  let profile: RealHospitalProfile | null = null
+  if (!existing || existing.length === 0) {
+    profile = await lookupRealHospitalProfile(hospital)
+    if (profile.officialStandardName && profile.officialStandardName !== hospital) {
+      // 尝试用官方全称在已有库中查找（例如："北京协和医院" -> "中国医学科学院北京协和医院"）
+      const [officialRows] = await pool.execute<RowDataPacket[]>(
+        `SELECT id, name, dz1, dz2, dz3, dq_sf, dq_cs, level FROM f_hy_yywh WHERE name = ? LIMIT 1`,
+        [profile.officialStandardName]
+      )
+      if (officialRows && officialRows.length > 0) {
+        console.log(`[master-data] 医院【${hospital}】通过官方挂牌全称【${profile.officialStandardName}】直接命中已有医院档案: ID=${officialRows[0].id}`)
+        existing = officialRows
+      }
+    }
+  }
+
+  // 3. 如果依然未命中：尝试同城双向包含匹配（防止“带省份/大学前缀”与“无前缀”重复建档）
+  if (!existing || existing.length === 0) {
+    if (!profile) profile = await lookupRealHospitalProfile(hospital)
+    const region = await mapProvinceCityToCslb(pool, profile.province, profile.city, profile.district)
+    if (region.province) {
+      // 在同一省份下查找双向包含匹配的医院
+      const [containRows] = await pool.execute<RowDataPacket[]>(
+        `SELECT id, name, dz1, dz2, dz3, dq_sf, dq_cs, level FROM f_hy_yywh 
+          WHERE dq_sf = ? AND (? LIKE CONCAT('%', name, '%') OR name LIKE CONCAT('%', ?, '%'))
+          ORDER BY LENGTH(name) ASC
+          LIMIT 1`,
+        [region.province, hospital, hospital]
+      )
+      if (containRows && containRows.length > 0) {
+        console.log(`[master-data] 医院【${hospital}】在同省(${region.province})通过双向包含命中已有档案: ID=${containRows[0].id}, 现有全称=${containRows[0].name}`)
+        existing = containRows
+      }
+    }
+  }
+
   if (existing && existing.length > 0) {
     const h = existing[0]
     const hId = String(h.id)
+    const officialName = String(h.name)
 
     // 容错与槽位自愈：如果 DZ1 为空而 DZ2 有值，优先将 DZ2 归位至 DZ1
     if (!h.dz1 && h.dz2) {
@@ -275,7 +323,7 @@ export async function ensureRemoteHospital(
       )
       h.dz1 = h.dz2
       h.dz2 = null
-      console.log(`[master-data] 医院 ${hospital} (${hId}) 纠正院区地址槽位: 将 DZ2 归位至 DZ1`)
+      console.log(`[master-data] 医院 ${officialName} (${hId}) 纠正院区地址槽位: 将 DZ2 归位至 DZ1`)
     }
 
     // 检查并按序顺延补充真实就诊地址（实事求是：用户有输入才记，不输入绝不臆造补全）
@@ -287,15 +335,15 @@ export async function ensureRemoteHospital(
       if (!alreadyHas) {
         if (!h.dz1) {
           await pool.execute(`UPDATE f_hy_yywh SET dz1 = ?, u_date = ? WHERE id = ?`, [address, today, hId])
-          console.log(`[master-data] 医院 ${hospital} (${hId}) 补充真实就诊地址 DZ1: ${address}`)
+          console.log(`[master-data] 医院 ${officialName} (${hId}) 补充真实就诊地址 DZ1: ${address}`)
           h.dz1 = address
         } else if (!h.dz2) {
           await pool.execute(`UPDATE f_hy_yywh SET dz2 = ?, u_date = ? WHERE id = ?`, [address, today, hId])
-          console.log(`[master-data] 医院 ${hospital} (${hId}) 补充真实分院区地址 DZ2: ${address}`)
+          console.log(`[master-data] 医院 ${officialName} (${hId}) 补充真实分院区地址 DZ2: ${address}`)
           h.dz2 = address
         } else if (!h.dz3) {
           await pool.execute(`UPDATE f_hy_yywh SET dz3 = ?, u_date = ? WHERE id = ?`, [address, today, hId])
-          console.log(`[master-data] 医院 ${hospital} (${hId}) 补充真实分院区地址 DZ3: ${address}`)
+          console.log(`[master-data] 医院 ${officialName} (${hId}) 补充真实分院区地址 DZ3: ${address}`)
           h.dz3 = address
         }
       }
@@ -307,7 +355,7 @@ export async function ensureRemoteHospital(
     let currentLevel = h.level ? String(h.level) : null
 
     if (!currentSf || !currentCs || !currentLevel || currentLevel === '009') {
-      const profile = await lookupRealHospitalProfile(hospital)
+      if (!profile) profile = await lookupRealHospitalProfile(officialName)
       const region = await mapProvinceCityToCslb(pool, profile.province, profile.city, profile.district)
       const levelCode = profile.level ? mapHospitalLevelToCode(profile.level) : currentLevel
 
@@ -320,7 +368,7 @@ export async function ensureRemoteHospital(
           `UPDATE f_hy_yywh SET dq_sf = ?, dq_cs = ?, level = ?, u_date = ? WHERE id = ?`,
           [newSf, newCs, newLevel, today, hId]
         )
-        console.log(`[master-data] 医院 ${hospital} (${hId}) 真实直查补齐: 省=${newSf}, 市=${newCs}, 等级=${newLevel} (官方档案: ${profile.level})`)
+        console.log(`[master-data] 医院 ${officialName} (${hId}) 真实直查补齐: 省=${newSf}, 市=${newCs}, 等级=${newLevel} (官方档案: ${profile.level})`)
         currentSf = newSf
         currentCs = newCs
       }
@@ -329,37 +377,37 @@ export async function ensureRemoteHospital(
     return {
       id: hId,
       province: currentSf,
-      city: currentCs
+      city: currentCs,
+      name: officialName
     }
   }
 
-  // 2. 全新医院：计算下一个 4 位自增 ID
+  // 4. 全新医院：确实是全国数据库未收录的全新实体，计算下一个 4 位自增 ID
   const [maxRows] = await pool.execute<RowDataPacket[]>(
     `SELECT MAX(CAST(id AS UNSIGNED)) AS max_id FROM f_hy_yywh`
   )
   const maxNum = Number(maxRows[0]?.max_id ?? 0)
   const nextId = String(maxNum + 1).padStart(4, '0')
 
-  // 3. 权威检索医院真实档案（真实所属省市区、卫健委官方等级）
-  const profile = await lookupRealHospitalProfile(hospital)
-  console.log(`[master-data] 医院【${hospital}】真实档案检索结果:`, profile)
+  if (!profile) profile = await lookupRealHospitalProfile(hospital)
+  const finalHospitalName = profile.officialStandardName || hospital
+  console.log(`[master-data] 确认为全新机构，准备建档【${finalHospitalName}】(原始输入: ${hospital})`)
 
-  // 4. 精确映射省市与等级维表代码
+  // 精确映射省市与等级维表代码
   const region = await mapProvinceCityToCslb(pool, profile.province, profile.city, profile.district)
   const dqSf = region.province
   const dqCs = region.city
   const levelId = mapHospitalLevelToCode(profile.level)
 
-  // 5. 写入 f_hy_yywh
-  // 实事求是：用户有输入真实地址就写入 dz1，没有输入则严格为 NULL，绝不臆造
+  // 写入 f_hy_yywh（保存官方标准全称）
   await pool.execute(
     `INSERT INTO f_hy_yywh (id, name, level, dz1, dq_sf, dq_cs, state, u_date, bq, dq, dz, tips, bz, dz2, dz3)
      VALUES (?, ?, ?, ?, ?, ?, '启用', ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL)`,
-    [nextId, hospital, levelId, address || null, dqSf, dqCs, today]
+    [nextId, finalHospitalName, levelId, address || null, dqSf, dqCs, today]
   )
 
-  console.log(`[master-data] 自动建档全新医院(真实直查): ID=${nextId}, 名称=${hospital}, 等级=${levelId}(${profile.level ?? '未定级'}), 地址=${address || '无(留空)'}, 省=${dqSf}, 市=${dqCs}`)
-  return { id: nextId, province: dqSf, city: dqCs }
+  console.log(`[master-data] 自动建档全新医院(官方标准): ID=${nextId}, 名称=${finalHospitalName}, 等级=${levelId}(${profile.level ?? '未定级'}), 地址=${address || '无(留空)'}, 省=${dqSf}, 市=${dqCs}`)
+  return { id: nextId, province: dqSf, city: dqCs, name: finalHospitalName }
 }
 
 /**
@@ -372,7 +420,7 @@ export async function ensureRemoteDepartment(
   rawDept: string | null | undefined
 ): Promise<string | null> {
   const dept = (rawDept ?? '').trim()
-  if (!hospitalId || !dept || dept.length < 2) return null
+  if (!hospitalId || !dept || dept.length < 2 || INVALID_NAME_PATTERN.test(dept)) return null
 
   const pool = getRemoteDictionaryPool()
   const today = shanghaiDate8()
@@ -455,7 +503,8 @@ export async function ensureRemoteDoctor(
   city?: string | null
 ): Promise<string | null> {
   const doctor = (rawDoctor ?? '').trim().replace(/^(医生|大夫|主任|专家)-?/, '')
-  if (!hospitalId || !doctor || doctor.length < 2) return null
+  // 严禁占位假词建档；支持汉字、少数民族姓名（含·间隔号）、外籍英文名（长度需 >= 2）
+  if (!hospitalId || !doctor || doctor.length < 2 || INVALID_NAME_PATTERN.test(doctor)) return null
 
   const pool = getRemoteDictionaryPool()
   const today = shanghaiDate8()
@@ -531,11 +580,12 @@ export async function autoSyncOrderMasterData(
       result.escortId = await ensureRemoteEscort(params.escortName, params.escortPhone)
     }
 
-    // 2. 同步医院（含多院区流转）
-    let hospitalInfo: { id: string; province: string | null; city: string | null } | null = null
+    // 2. 同步医院（含多院区流转与官方全称对齐）
+    let hospitalInfo: { id: string; province: string | null; city: string | null; name: string } | null = null
     if (params.hospitalName) {
       hospitalInfo = await ensureRemoteHospital(params.hospitalName, params.hospitalAddress)
       result.hospitalId = hospitalInfo?.id ?? null
+      result.normalizedHospitalName = hospitalInfo?.name ?? null
     }
 
     // 3. 同步对外科室（依赖医院）

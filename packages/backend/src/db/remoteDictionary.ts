@@ -422,18 +422,37 @@ export async function findHuanyuEscortById(idOrName: string): Promise<HuanyuEsco
   } : null
 }
 
-export async function findHuanyuHospitalById(id: string): Promise<HuanyuChannelOption | null> {
-  const target = searchTerm(id)
+export async function findHuanyuHospitalById(idOrName: string): Promise<HuanyuChannelOption | null> {
+  const target = searchTerm(idOrName)
   if (!target) return null
+  // 1. 先按 4 位 ID 精确查
   const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
     `SELECT CAST(id AS CHAR) AS id, name
        FROM dim_hy_yywh
-      WHERE CAST(id AS CHAR) = ?
+      WHERE CAST(id AS CHAR) = ? OR name = ?
       LIMIT 1`,
-    [target]
+    [target, target]
   )
-  const row = rows[0]
-  return row ? { id: String(row.id), name: String(row.name ?? '') } : null
+  if (rows[0]) {
+    return { id: String(rows[0].id), name: String(rows[0].name ?? '') }
+  }
+
+  // 2. 若传入的是名称，尝试全称包含简称查找（例如传入“北京协和医院”匹配到“中国医学科学院北京协和医院”）
+  if (target.length >= 4) {
+    const [likeRows] = await readOnlyPool().execute<RowDataPacket[]>(
+      `SELECT CAST(id AS CHAR) AS id, name
+         FROM dim_hy_yywh
+        WHERE name LIKE CONCAT('%', ?, '%') OR ? LIKE CONCAT('%', name, '%')
+        ORDER BY LENGTH(name) ASC
+        LIMIT 1`,
+      [target, target]
+    )
+    if (likeRows[0]) {
+      return { id: String(likeRows[0].id), name: String(likeRows[0].name ?? '') }
+    }
+  }
+
+  return null
 }
 
 export async function findHuanyuDepartmentById(id: string): Promise<HuanyuHospitalDepartmentOption | null> {
