@@ -242,6 +242,9 @@ export async function syncHuanyuOrderFromTaikang(
   // 用于一次性历史修复的旧映射判断。常规抓单不会据此覆盖已有值。
   const legacyPatientPhone = field(raw, 'paMobile', 'patientMobile', 'patientPhone')
   const legacyFamilyPhone = field(raw, 'ecpPhone')
+  // 泰康界面和消息/通话关联统一使用 CRM 申请号。它与 applyNo 是两个不同字段，
+  // 备用订单号仅使用 crmApplyNo，缺失时保持空值，绝不猜测或回退成其他编号。
+  const backupOrderNo = field(raw, 'crmApplyNo')
   const repairPatientContactMapping = Boolean(options.repairPatientContactMapping)
   // 取消类订单的金额规则优先级最高，固定写 0；其他订单取维表 CPJG。
   const amount = isCancelledOrder(order.status) ? 0 : productPrice(product?.price)
@@ -250,14 +253,14 @@ export async function syncHuanyuOrderFromTaikang(
   `
   await prisma.$executeRaw`
     INSERT INTO "HY_FACT_DDCX_NEW" (
-      "DDBH", "DD_state", "BDQD", "BDQD_DDBH", "BDQD_FWXM", "DDJE", "KHJL",
+      "DDBH", "DD_state", "BDQD", "BDQD_DDBH", "BDQD_DDBH2", "BDQD_FWXM", "DDJE", "KHJL",
       "JZR_XM", "JZR_ZJLX", "JZR_ZJHM", "JZR_XB", "JZR_NL", "JZR_LXDH",
       "JZR_JSMC", "JZR_JSGX", "JZR_JSLXFS", "JZR_JB", "JZR_BZ",
       "H_NAME", "H_ADDRESS", "H_KS", "H_YS", "DDFWBZ",
       "BBQ_XQ", "DATE_XQ", "YYQDLX", "xtsj_",
       "expectedProvince", "expectedCity", "expectedHospital", "expectedDepartment"
     ) VALUES (
-      ${ddbh}, ${'待跟进'}, ${text(channel?.id ?? null, 100)}, ${text(order.sourceOrderNo, 50)}, ${text(product?.id ?? null, 50)}, ${amount}, ${text(manager, 50)},
+      ${ddbh}, ${'待跟进'}, ${text(channel?.id ?? null, 100)}, ${text(order.sourceOrderNo, 50)}, ${text(backupOrderNo, 50)}, ${text(product?.id ?? null, 50)}, ${amount}, ${text(manager, 50)},
       ${text(patientName, 50)}, ${huanyuDocumentType(field(raw, 'cardType'))}, ${text(field(raw, 'cardId'), 50)}, ${text(field(raw, 'sex'), 20)}, ${ageFromBirthday(birthday)}, ${text(patientPhone, 18)},
       ${text(field(raw, 'ecpName'), 50)}, ${text(field(raw, 'patEcpRelationship', 'relationship'), 50)}, ${text(familyPhone, 18)}, ${text(field(raw, 'suspectDisease'), 100)}, ${text(field(raw, 'comments', 'comment'), 2000)},
       ${text(field(raw, 'hospital', 'intendHos', 'visitingHospital'), 100)}, ${text(field(raw, 'visitingHospitalDetailAddress'), 500)}, ${text(field(raw, 'dept', 'intendDept'), 50)}, ${text(field(raw, 'doctor', 'intendDoc'), 50)}, ${text(field(raw, 'comments', 'comment'), 2000)},
@@ -265,6 +268,12 @@ export async function syncHuanyuOrderFromTaikang(
       ${text(field(raw, 'intendProvince'), 50)}, ${text(field(raw, 'intendCity'), 50)}, ${text(field(raw, 'intendHos', 'hospital'), 255)}, ${text(field(raw, 'intendDept', 'dept'), 255)}
     ) ON CONFLICT ("DDBH") DO UPDATE
       SET "BDQD_DDBH" = EXCLUDED."BDQD_DDBH",
+          "BDQD_DDBH2" = CASE
+            WHEN NULLIF(BTRIM("HY_FACT_DDCX_NEW"."BDQD_DDBH2"), '') IS NULL
+              AND NULLIF(BTRIM(EXCLUDED."BDQD_DDBH2"), '') IS NOT NULL
+              THEN EXCLUDED."BDQD_DDBH2"
+            ELSE "HY_FACT_DDCX_NEW"."BDQD_DDBH2"
+          END,
           "DDJE" = COALESCE("HY_FACT_DDCX_NEW"."DDJE", EXCLUDED."DDJE"),
           "KHJL" = COALESCE("HY_FACT_DDCX_NEW"."KHJL", EXCLUDED."KHJL"),
           "JZR_XM" = CASE

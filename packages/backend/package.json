@@ -15,6 +15,7 @@
     "huanyu:backfill-patient": "tsx src/scripts/backfillHuanyuPatientInfo.ts",
     "huanyu:backfill-product": "tsx src/scripts/backfillHuanyuChannelProductFields.ts",
     "huanyu:backfill-channel-mappings": "tsx src/scripts/backfillHuanyuChannelMappings.ts",
+    "huanyu:backfill-backup-order-no": "tsx src/scripts/backfillHuanyuBackupOrderNos.ts",
     "huanyu:repair-patient-contacts": "tsx src/scripts/repairHuanyuPatientContacts.ts",
     "test:master-data": "tsx scripts/test_master_data.ts"
   },
