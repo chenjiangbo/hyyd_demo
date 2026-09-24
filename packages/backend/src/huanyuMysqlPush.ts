@@ -1,4 +1,4 @@
-import mysql, { type Pool } from 'mysql2/promise'
+import mysql, { type Pool, type RowDataPacket } from 'mysql2/promise'
 import type { PrismaClient } from '@prisma/client'
 import { getEnv } from './env.js'
 
@@ -41,16 +41,30 @@ const ORDER_COLUMNS = [
   'medicareType', 'isTaiKang', 'aliPayTradeNo', 'expert_level'
 ] as const
 
+/** 泰康挂号协助详情页始终以远端 MySQL 为准、推送时也不得反向覆盖的字段。 */
+export const REGISTRATION_ASSIST_REMOTE_AUTHORITATIVE_COLUMNS = [
+  'advanceRegisterAmount',
+  'registerPayStatus',
+  'refundCustAmount',
+  'aliPayTradeNo',
+  'medicare',
+  'messageUrl'
+] as const
+
 const ESCORT_COLUMNS = ['DDBH', 'PZR', 'BBQ_FW', 'ZJ', 'xtsj'] as const
 const ATTACHMENT_COLUMNS = [
   'DDBH', 'TP_A', 'TP_B', 'TP_C', 'TP_D', 'TP_E', 'TP_F', 'TP_G', 'TP_H', 'TP_I', 'TP_J',
   'FIELD12_', 'FIELD13_', 'FIELD14_', 'FIELD15_', 'FIELD16_', 'FIELD17_', 'FIELD18_', 'FIELD19_', 'FIELD20_'
 ] as const
 
-function insertSql(table: string, columns: readonly string[], key: string): string {
+function insertSql(table: string, columns: readonly string[], key: string, excludedUpdateColumns: readonly string[] = []): string {
   const escapedColumns = columns.map((column) => `\`${column}\``).join(', ')
   const placeholders = columns.map(() => '?').join(', ')
-  const update = columns.filter((column) => column !== key).map((column) => `\`${column}\` = VALUES(\`${column}\`)`).join(', ')
+  const excluded = new Set(excludedUpdateColumns)
+  const update = columns
+    .filter((column) => column !== key && !excluded.has(column))
+    .map((column) => `\`${column}\` = VALUES(\`${column}\`)`)
+    .join(', ')
   return `INSERT INTO \`${table}\` (${escapedColumns}) VALUES (${placeholders}) ON DUPLICATE KEY UPDATE ${update}`
 }
 
@@ -78,11 +92,156 @@ function values(row: Record<string, unknown>, columns: readonly string[]): Mysql
   })
 }
 
+function mysqlColumns(columns: readonly string[]): string {
+  return columns.map((column) => `\`${column}\``).join(', ')
+}
+
+function postgresUpsertSql(table: string, columns: readonly string[], key: string): string {
+  // 表名和列名都来自本文件的固定白名单，绝不接受外部输入。
+  const quoted = (identifier: string) => `"${identifier.replace(/"/g, '""')}"`
+  const columnSql = columns.map(quoted).join(', ')
+  const placeholders = columns.map((_, index) => `$${index + 1}`).join(', ')
+  const updates = columns
+    .filter((column) => column !== key)
+    .map((column) => `${quoted(column)} = EXCLUDED.${quoted(column)}`)
+    .join(', ')
+  return `INSERT INTO ${quoted(table)} (${columnSql}) VALUES (${placeholders}) ON CONFLICT (${quoted(key)}) DO UPDATE SET ${updates}`
+}
+
+export interface HuanyuMysqlPullResult {
+  found: boolean
+  ddbh: string | null
+  escortCount: number
+  attachmentFound: boolean
+}
+
+export interface HuanyuMysqlPushOptions {
+  /** 仅从 ON DUPLICATE KEY UPDATE 排除；新建远端行时仍按本地快照完整写入。 */
+  excludeOrderUpdateColumns?: readonly string[]
+}
+
+/**
+ * 以泰康子订单号查询远端寰宇主表；命中后按 DDBH 回拉陪诊明细及附件快照，
+ * 并以远端数据为准写入本地 PostgreSQL 三张寰宇表。
+ *
+ * 此函数严格只读远端 MySQL，不会触发推送或修改远端任何数据。
+ */
+export async function pullHuanyuOrderFromMysqlByChannelOrderNo(
+  prisma: PrismaClient,
+  channelOrderNo: string
+): Promise<HuanyuMysqlPullResult> {
+  const lookupNo = channelOrderNo.trim()
+  if (!lookupNo) return { found: false, ddbh: null, escortCount: 0, attachmentFound: false }
+
+  const connection = await mysqlWriterPool().getConnection()
+  try {
+    const [orderRows] = await connection.execute<RowDataPacket[]>(
+      `SELECT ${mysqlColumns(ORDER_COLUMNS)}
+         FROM \`HY_FACT_DDCX_NEW\`
+        WHERE \`BDQD_DDBH\` = ?
+        ORDER BY \`xtsj_\` DESC, \`DDBH\` DESC
+        LIMIT 1`,
+      [lookupNo]
+    )
+    const order = orderRows[0]
+    const ddbh = order?.DDBH == null ? '' : String(order.DDBH).trim()
+    if (!ddbh) return { found: false, ddbh: null, escortCount: 0, attachmentFound: false }
+
+    const [escortRows] = await connection.execute<RowDataPacket[]>(
+      `SELECT ${mysqlColumns(ESCORT_COLUMNS)}
+         FROM \`fact_hy_pzrxx\`
+        WHERE \`DDBH\` = ?
+        ORDER BY \`ZJ\` ASC`,
+      [ddbh]
+    )
+    const [attachmentRows] = await connection.execute<RowDataPacket[]>(
+      `SELECT ${mysqlColumns(ATTACHMENT_COLUMNS)}
+         FROM \`hy_d_tp\`
+        WHERE \`DDBH\` = ?
+        LIMIT 1`,
+      [ddbh]
+    )
+
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        postgresUpsertSql('HY_FACT_DDCX_NEW', ORDER_COLUMNS, 'DDBH'),
+        ...values(order as Record<string, unknown>, ORDER_COLUMNS)
+      )
+      for (const escort of escortRows) {
+        await tx.$executeRawUnsafe(
+          postgresUpsertSql('fact_hy_pzrxx', ESCORT_COLUMNS, 'ZJ'),
+          ...values(escort as Record<string, unknown>, ESCORT_COLUMNS)
+        )
+      }
+      const attachment = attachmentRows[0]
+      if (attachment) {
+        await tx.$executeRawUnsafe(
+          postgresUpsertSql('hy_d_tp', ATTACHMENT_COLUMNS, 'DDBH'),
+          ...values(attachment as Record<string, unknown>, ATTACHMENT_COLUMNS)
+        )
+      }
+    })
+
+    return {
+      found: true,
+      ddbh,
+      escortCount: escortRows.length,
+      attachmentFound: Boolean(attachmentRows[0])
+    }
+  } finally {
+    connection.release()
+  }
+}
+
+/**
+ * 挂号协助详情每次打开时，从远端主订单刷新六个远端权威字段到本地快照。
+ * 远端没有同一 DDBH 时保持本地值不变，以免远端暂不可用影响详情展示。
+ */
+export async function refreshRegistrationAssistFieldsFromMysql(
+  prisma: PrismaClient,
+  ddbh: string
+): Promise<boolean> {
+  const cleanDdbh = ddbh.trim()
+  if (!cleanDdbh) return false
+
+  const connection = await mysqlWriterPool().getConnection()
+  try {
+    const columns = ['DDBH', ...REGISTRATION_ASSIST_REMOTE_AUTHORITATIVE_COLUMNS] as const
+    const [rows] = await connection.execute<RowDataPacket[]>(
+      `SELECT ${mysqlColumns(columns)}
+         FROM \`HY_FACT_DDCX_NEW\`
+        WHERE \`DDBH\` = ?
+        LIMIT 1`,
+      [cleanDdbh]
+    )
+    const remote = rows[0]
+    if (!remote) return false
+
+    const assignments = REGISTRATION_ASSIST_REMOTE_AUTHORITATIVE_COLUMNS
+      .map((column, index) => `"${column}" = $${index + 1}`)
+      .join(', ')
+    await prisma.$executeRawUnsafe(
+      `UPDATE "HY_FACT_DDCX_NEW"
+          SET ${assignments}
+        WHERE "DDBH" = $${REGISTRATION_ASSIST_REMOTE_AUTHORITATIVE_COLUMNS.length + 1}`,
+      ...values(remote as Record<string, unknown>, REGISTRATION_ASSIST_REMOTE_AUTHORITATIVE_COLUMNS),
+      cleanDdbh
+    )
+    return true
+  } finally {
+    connection.release()
+  }
+}
+
 /**
  * 将本地 PostgreSQL 三张寰宇订单表的当前快照写到远端 MySQL。
  * 此函数没有自动触发入口，只能由“确认推送寰宇订单信息”按钮对应的 API 调用。
  */
-export async function pushHuanyuOrderToMysql(prisma: PrismaClient, ddbh: string): Promise<{ escortCount: number }> {
+export async function pushHuanyuOrderToMysql(
+  prisma: PrismaClient,
+  ddbh: string,
+  options: HuanyuMysqlPushOptions = {}
+): Promise<{ escortCount: number }> {
   const [orders, escorts, attachments] = await Promise.all([
     prisma.$queryRawUnsafe<Record<string, unknown>[]>(`SELECT * FROM "HY_FACT_DDCX_NEW" WHERE "DDBH" = $1 LIMIT 1`, ddbh),
     prisma.$queryRawUnsafe<Record<string, unknown>[]>(`SELECT * FROM "fact_hy_pzrxx" WHERE "DDBH" = $1 ORDER BY "ZJ" ASC`, ddbh),
@@ -94,7 +253,10 @@ export async function pushHuanyuOrderToMysql(prisma: PrismaClient, ddbh: string)
   const connection = await mysqlWriterPool().getConnection()
   try {
     await connection.beginTransaction()
-    await connection.execute(insertSql('HY_FACT_DDCX_NEW', ORDER_COLUMNS, 'DDBH'), values(order, ORDER_COLUMNS))
+    await connection.execute(
+      insertSql('HY_FACT_DDCX_NEW', ORDER_COLUMNS, 'DDBH', options.excludeOrderUpdateColumns),
+      values(order, ORDER_COLUMNS)
+    )
     // 陪诊明细以本地快照为准；先清掉同订单旧行，再按当前列表完整写入。
     await connection.execute('DELETE FROM `fact_hy_pzrxx` WHERE `DDBH` = ?', [ddbh])
     for (const escort of escorts) {

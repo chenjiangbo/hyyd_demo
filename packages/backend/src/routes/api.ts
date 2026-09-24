@@ -17,8 +17,14 @@ import { huanyuBookingChannelTypes, huanyuDocumentTypes, huanyuExpertLevels, hua
 import { registerDictionaryManageRoutes } from './dictionaryManage.js'
 import { registerEscortFeedbackRoutes } from './escortFeedbackRoutes.js'
 import { applyOrderWorkflowEvent, getOrderWorkflow, initializeOrderWorkflow, type WorkflowEventInput } from '../workflow/serviceWorkflow.js'
-import { pushHuanyuOrderToMysql } from '../huanyuMysqlPush.js'
+import {
+  pullHuanyuOrderFromMysqlByChannelOrderNo,
+  pushHuanyuOrderToMysql,
+  refreshRegistrationAssistFieldsFromMysql,
+  REGISTRATION_ASSIST_REMOTE_AUTHORITATIVE_COLUMNS
+} from '../huanyuMysqlPush.js'
 import { autoSyncOrderMasterData, ensureRemoteEscort } from '../services/masterDataAutoSync.js'
+import { requestAbiRefund } from '../services/abiRefundService.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   CreateOrderPayload,
@@ -851,10 +857,37 @@ export function registerApiRoutes(
     }
   })
 
+function isTaikangRegistrationAssistanceOrder(orderObj: any, rawObj: Record<string, unknown>): boolean {
+  const originalRaw = rawObj.taikangRawJson ?? rawObj.rawJson
+  const originalRecord = originalRaw && typeof originalRaw === 'object' && !Array.isArray(originalRaw)
+    ? originalRaw as Record<string, unknown>
+    : {}
+  return orderObj.source === 'taikang' && (
+    rawObj.poolType === 'register' || originalRecord.poolType === 'register'
+  )
+}
+
+/** 金额按人民币元处理，拒绝科学计数法与超过两位的小数，避免退款请求精度漂移。 */
+function parseRefundAmount(value: unknown): number | null {
+  const raw = typeof value === 'number'
+    ? String(value)
+    : typeof value === 'string'
+      ? value.trim()
+      : value != null && typeof (value as { toString?: unknown }).toString === 'function'
+        ? String(value).trim()
+        : ''
+  if (!/^\d+(?:\.\d{1,2})?$/.test(raw)) return null
+  const amount = Number(raw)
+  return Number.isFinite(amount) && amount > 0 ? amount : null
+}
+
 async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
   if (!orderObj) return orderObj
   try {
     const rawObj = (orderObj.rawJson || {})
+    // 挂号协助的寰宇订单由远端回拉，绝不在泰康采集时本地新建。
+    // 仅当本地尚无寰宇订单号时才触发回拉，避免详情页每次打开覆盖人工维护的本地快照。
+    const isTaikangRegistrationAssistance = isTaikangRegistrationAssistanceOrder(orderObj, rawObj)
     const orderNoCandidates = [
       orderObj.sourceOrderNo,
       rawObj.sourceOrderNo,
@@ -869,7 +902,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     if (orderNoCandidates.length === 0) return orderObj
 
     const placeholders = orderNoCandidates.map((_, i) => `$${i + 1}`).join(',')
-    const huanyuRows = await prisma.$queryRawUnsafe<any[]>(`
+    let huanyuRows = await prisma.$queryRawUnsafe<any[]>(`
       SELECT * FROM "HY_FACT_DDCX_NEW"
       WHERE "BDQD_DDBH" IN (${placeholders})
          OR "DDBH" IN (${placeholders})
@@ -877,12 +910,46 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       LIMIT 1;
     `, ...orderNoCandidates)
 
+    if ((!huanyuRows || huanyuRows.length === 0) && isTaikangRegistrationAssistance && !orderObj.huanyuOrderNo) {
+      const pulled = await pullHuanyuOrderFromMysqlByChannelOrderNo(prisma, String(orderObj.sourceOrderNo || ''))
+      if (pulled.found && pulled.ddbh) {
+        await prisma.order.update({
+          where: { id: orderObj.id },
+          data: { huanyuOrderNo: pulled.ddbh }
+        })
+        // 回拉完成后从本地三张表统一组装，确保展示逻辑与普通寰宇订单一致。
+        return enrichOrderWithHuanyuFact({ ...orderObj, huanyuOrderNo: pulled.ddbh })
+      }
+    }
+
     if (!huanyuRows || huanyuRows.length === 0) {
       return orderObj
     }
 
-    const h = huanyuRows[0]
+    let h = huanyuRows[0]
     const ddbh = h.DDBH
+    let linkedOrder = orderObj
+    if (isTaikangRegistrationAssistance && !orderObj.huanyuOrderNo && ddbh) {
+      await prisma.order.update({
+        where: { id: orderObj.id },
+        data: { huanyuOrderNo: String(ddbh) }
+      })
+      linkedOrder = { ...orderObj, huanyuOrderNo: String(ddbh) }
+    }
+    if (isTaikangRegistrationAssistance && ddbh) {
+      try {
+        const refreshed = await refreshRegistrationAssistFieldsFromMysql(prisma, String(ddbh))
+        if (refreshed) {
+          huanyuRows = await prisma.$queryRaw<any[]>`
+            SELECT * FROM "HY_FACT_DDCX_NEW" WHERE "DDBH" = ${String(ddbh)} LIMIT 1
+          `
+          h = huanyuRows[0] ?? h
+        }
+      } catch (error) {
+        // 远端暂时不可用时继续用本地已保存快照展示，不阻断订单详情打开。
+        fastify.log.warn({ err: error, ddbh }, '挂号协助远端权威字段刷新失败')
+      }
+    }
     // 内部一级/二级不落 orders；每次进入详情页都按已选服务项目码值只读查询维表。
     // 字典库暂时不可用时不影响订单详情其他字段展示。
     let channelProduct = null
@@ -1010,6 +1077,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       advanceRegistrationFee: h.advanceRegisterAmount != null ? String(h.advanceRegisterAmount) : '',
       advanceRecovered: h.registerPayStatus || '',
       registrationRefund: h.refundCustAmount != null ? String(h.refundCustAmount) : '',
+      alipayAccount: h.aliPayTradeNo || '',
       hasInsurance: h.medicare || '',
       insuranceType: h.medicareType || '',
       isTaiKang: h.isTaiKang || '0',
@@ -1038,13 +1106,13 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     }
 
     return {
-      ...orderObj,
-      customerName: h.JZR_XM || orderObj.customerName,
-      customerPhone: h.JZR_LXDH || orderObj.customerPhone,
+      ...linkedOrder,
+      customerName: h.JZR_XM || linkedOrder.customerName,
+      customerPhone: h.JZR_LXDH || linkedOrder.customerPhone,
       hospital: displayHospital,
       dept: displayDept,
       doctor: displayDoctor,
-      status: h.DD_state || orderObj.status,
+      status: h.DD_state || linkedOrder.status,
       rawJson: raw
     }
   } catch (err) {
@@ -1060,6 +1128,9 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     // 内部一级/二级是 B 端服务项目的维表衍生展示字段，不应写回 orders.raw_json。
     const { internalLevelOne: _internalLevelOne, internalLevelTwo: _internalLevelTwo, ...orderRawBody } = body
     let orderNo = String(body.orderNo || '').trim()
+    if (body.mode === 'update' && !orderNo) {
+      return reply.status(400).send({ ok: false, error: '当前订单尚无寰宇订单编号，不能保存或创建本地寰宇订单' })
+    }
     if (!orderNo && body.channelOrderNo) {
       const existing = await prisma.$queryRawUnsafe<Array<{ DDBH: string }>>(
         `SELECT "DDBH" FROM "HY_FACT_DDCX_NEW" WHERE "BDQD_DDBH" = $1 AND "DDBH" LIKE 'HYDD%' LIMIT 1;`,
@@ -1403,7 +1474,10 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
     const orderId = parseInt(request.params.id, 10)
     if (!Number.isFinite(orderId)) return reply.status(400).send({ error: '订单ID非法' })
-    const order = await prisma.order.findUnique({ where: { id: orderId }, select: { id: true, sourceOrderNo: true, huanyuOrderNo: true } })
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, source: true, sourceOrderNo: true, huanyuOrderNo: true, rawJson: true }
+    })
     if (!order) return reply.status(404).send({ error: '订单不存在' })
     let ddbh = order.huanyuOrderNo
     if (!ddbh) {
@@ -1416,10 +1490,20 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     }
     if (!ddbh) return reply.status(400).send({ error: '请先保存并创建本地寰宇订单后再推送' })
     try {
-      const result = await pushHuanyuOrderToMysql(prisma, ddbh)
+      const raw = (order.rawJson && typeof order.rawJson === 'object' && !Array.isArray(order.rawJson))
+        ? order.rawJson as Record<string, unknown>
+        : {}
+      const isTaikangRegistrationAssistance = isTaikangRegistrationAssistanceOrder(order, raw)
+      const result = await pushHuanyuOrderToMysql(prisma, ddbh, {
+        excludeOrderUpdateColumns: isTaikangRegistrationAssistance
+          ? REGISTRATION_ASSIST_REMOTE_AUTHORITATIVE_COLUMNS
+          : []
+      })
       await prisma.$executeRaw`
         INSERT INTO b_order_huanyu_push_logs (order_id, huanyu_order_no, status, message, pushed_by_employee_id)
-        VALUES (${orderId}, ${ddbh}, 'succeeded', ${`已推送主订单、${result.escortCount} 条陪诊明细及附件快照`}, ${request.employee.id})
+        VALUES (${orderId}, ${ddbh}, 'succeeded', ${isTaikangRegistrationAssistance
+          ? `已推送主订单、${result.escortCount} 条陪诊明细及附件快照；6 项挂号协助远端权威字段未覆盖`
+          : `已推送主订单、${result.escortCount} 条陪诊明细及附件快照`}, ${request.employee.id})
       `
       return reply.send({ data: { ok: true, ddbh, escortCount: result.escortCount } })
     } catch (error) {
@@ -1431,6 +1515,120 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       fastify.log.error({ err: error, orderId, ddbh }, '推送寰宇订单到 MySQL 失败')
       return reply.status(500).send({ error: `推送寰宇订单失败：${message}` })
     }
+  })
+
+  // 挂号协助退款成功后使用：只把远端 MySQL 的六项权威字段回写到本地 PostgreSQL。
+  // 退款接口不在本服务内，后续由其成功回调/前端成功分支调用本接口；绝不向远端写入退款字段。
+  fastify.post<{ Params: { id: string } }>('/api/v1/orders/:id/huanyu/refresh-registration-assist-fields', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const orderId = parseInt(request.params.id, 10)
+    if (!Number.isFinite(orderId)) return reply.status(400).send({ error: '订单ID非法' })
+
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, source: true, sourceOrderNo: true, huanyuOrderNo: true, rawJson: true }
+    })
+    if (!order) return reply.status(404).send({ error: '订单不存在' })
+    const raw = (order.rawJson && typeof order.rawJson === 'object' && !Array.isArray(order.rawJson))
+      ? order.rawJson as Record<string, unknown>
+      : {}
+    if (!isTaikangRegistrationAssistanceOrder(order, raw)) {
+      return reply.status(400).send({ error: '仅泰康挂号协助订单可刷新挂号退款字段' })
+    }
+
+    let ddbh = order.huanyuOrderNo
+    if (!ddbh) {
+      const rows = await prisma.$queryRaw<Array<{ DDBH: string }>>`
+        SELECT "DDBH" FROM "HY_FACT_DDCX_NEW"
+        WHERE "BDQD_DDBH" = ${order.sourceOrderNo} OR "DDBH" = ${order.sourceOrderNo}
+        ORDER BY "xtsj_" DESC NULLS LAST LIMIT 1
+      `
+      ddbh = rows[0]?.DDBH ?? null
+    }
+    if (!ddbh) return reply.status(404).send({ error: '尚未关联寰宇订单，无法刷新挂号退款字段' })
+
+    try {
+      const refreshed = await refreshRegistrationAssistFieldsFromMysql(prisma, String(ddbh))
+      if (!refreshed) return reply.status(404).send({ error: '远端寰宇订单不存在，无法刷新挂号退款字段' })
+      return reply.send({ data: { ok: true, ddbh: String(ddbh) } })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '远端 MySQL 查询失败'
+      fastify.log.error({ err: error, orderId, ddbh }, '刷新挂号协助退款字段失败')
+      return reply.status(500).send({ error: `刷新挂号退款字段失败：${message}` })
+    }
+  })
+
+  // 泰康挂号协助退款：客户端只提交退款金额；ABI 鉴权及 appsecret 均留在后端。
+  fastify.post<{ Params: { id: string }; Body: { refundAmount?: unknown } }>('/api/v1/orders/:id/huanyu/register-refund', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const orderId = parseInt(request.params.id, 10)
+    if (!Number.isFinite(orderId)) return reply.status(400).send({ error: '订单ID非法' })
+    const refundAmount = parseRefundAmount(request.body?.refundAmount)
+    if (refundAmount == null) return reply.status(400).send({ error: '退款金额必须是大于 0 的数值，且最多保留两位小数' })
+
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, source: true, sourceOrderNo: true, huanyuOrderNo: true, rawJson: true }
+    })
+    if (!order) return reply.status(404).send({ error: '订单不存在' })
+    const raw = (order.rawJson && typeof order.rawJson === 'object' && !Array.isArray(order.rawJson))
+      ? order.rawJson as Record<string, unknown>
+      : {}
+    if (!isTaikangRegistrationAssistanceOrder(order, raw)) {
+      return reply.status(400).send({ error: '仅泰康挂号协助订单可办理挂号退款' })
+    }
+
+    let ddbh = order.huanyuOrderNo
+    if (!ddbh) {
+      const rows = await prisma.$queryRaw<Array<{ DDBH: string }>>`
+        SELECT "DDBH" FROM "HY_FACT_DDCX_NEW"
+        WHERE "BDQD_DDBH" = ${order.sourceOrderNo} OR "DDBH" = ${order.sourceOrderNo}
+        ORDER BY "xtsj_" DESC NULLS LAST LIMIT 1
+      `
+      ddbh = rows[0]?.DDBH ?? null
+    }
+    if (!ddbh) return reply.status(404).send({ error: '尚未关联寰宇订单，无法办理退款' })
+
+    const huanyuRows = await prisma.$queryRaw<Array<{
+      DDBH: string
+      registerAmount: unknown
+      advanceRegisterAmount: unknown
+      aliPayTradeNo: unknown
+    }>>`
+      SELECT "DDBH", "registerAmount", "advanceRegisterAmount", "aliPayTradeNo"
+      FROM "HY_FACT_DDCX_NEW" WHERE "DDBH" = ${String(ddbh)} LIMIT 1
+    `
+    const huanyuOrder = huanyuRows[0]
+    if (!huanyuOrder) return reply.status(404).send({ error: '本地寰宇订单不存在，无法办理退款' })
+    const advanceRegistrationFee = parseRefundAmount(huanyuOrder.advanceRegisterAmount)
+    if (advanceRegistrationFee == null) {
+      return reply.status(400).send({ error: '垫付挂号费金额未大于 0，不能办理退款' })
+    }
+    const registrationFee = parseRefundAmount(huanyuOrder.registerAmount)
+    if (registrationFee == null) return reply.status(400).send({ error: '挂号费金额无效，不能办理退款' })
+    if (refundAmount > registrationFee) {
+      return reply.status(400).send({ error: `退款金额不能大于挂号费金额 ${registrationFee}` })
+    }
+    const aliTradeNo = typeof huanyuOrder.aliPayTradeNo === 'string' ? huanyuOrder.aliPayTradeNo.trim() : String(huanyuOrder.aliPayTradeNo ?? '').trim()
+    if (!aliTradeNo) return reply.status(400).send({ error: '缺少支付宝支付账号，不能办理退款' })
+
+    let refundResult
+    try {
+      refundResult = await requestAbiRefund({ orderNo: String(ddbh), aliTradeNo, refundAmount })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'ABI 退款请求失败'
+      fastify.log.warn({ orderId, ddbh, refundAmount, err: error }, 'ABI 挂号退款失败')
+      return reply.status(502).send({ error: `退款失败：${message}` })
+    }
+
+    // ABI 已明确成功后才刷新；远端写入若有延迟，不改变已退款的结论，详情下次加载会再次尝试刷新。
+    let refreshed = false
+    try {
+      refreshed = await refreshRegistrationAssistFieldsFromMysql(prisma, String(ddbh))
+    } catch (error) {
+      fastify.log.warn({ orderId, ddbh, err: error }, '退款成功后的挂号协助字段刷新失败')
+    }
+    return reply.send({ data: { ok: true, ddbh: String(ddbh), message: refundResult.message, refreshed } })
   })
 
   // 4. 查询订单 GET /api/v1/orders

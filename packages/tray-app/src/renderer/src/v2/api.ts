@@ -407,6 +407,16 @@ export function pushHuanyuOrder(orderId: number): Promise<{ ok: boolean; ddbh: s
   return authedSend<{ ok: boolean; ddbh: string; escortCount: number }>(`/api/v1/orders/${orderId}/huanyu/push`, 'POST', {})
 }
 
+/** 退款服务成功后调用：从远端 MySQL 回写挂号协助的六项只读权威字段。 */
+export function refreshRegistrationAssistFields(orderId: number): Promise<{ ok: boolean; ddbh: string }> {
+  return authedSend<{ ok: boolean; ddbh: string }>(`/api/v1/orders/${orderId}/huanyu/refresh-registration-assist-fields`, 'POST', {})
+}
+
+/** 泰康挂号协助的真实 ABI 退款。密钥和 ABI 鉴权仅由后端处理。 */
+export function refundHuanyuRegistrationFee(orderId: number, refundAmount: number): Promise<{ ok: boolean; ddbh: string; message: string; refreshed: boolean }> {
+  return authedSend<{ ok: boolean; ddbh: string; message: string; refreshed: boolean }>(`/api/v1/orders/${orderId}/huanyu/register-refund`, 'POST', { refundAmount })
+}
+
 export function fetchOrderDetail(orderId: number): Promise<OrderDetailResponse> {
   return authedGet<OrderDetailResponse>(`/api/v1/orders/${orderId}/detail`)
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   addImageMaterial,
   addTextMaterial,
@@ -28,6 +28,7 @@ import {
   fetchHuanyuHospitalById,
   fetchOrderAiFieldCandidates,
   pushHuanyuOrder,
+  refundHuanyuRegistrationFee,
   saveHuanyuOrder,
   getSession,
   refreshOrderBrief,
@@ -1069,6 +1070,11 @@ function OrderExecutionPanel({
     return fetchMaterials(selectedOrder.id).then(setMaterials)
   }, [selectedOrder.id])
 
+  const reloadDetail = useCallback(async () => {
+    const response = await fetchOrderDetail(selectedOrder.id)
+    setDetailResp(response)
+  }, [selectedOrder.id])
+
   useEffect(() => {
     let alive = true
     setDetailLoading(true)
@@ -1170,6 +1176,7 @@ function OrderExecutionPanel({
                     key={selectedOrder.id}
                     order={selectedOrder}
                     detailResp={detailResp}
+                    onReloadDetail={reloadDetail}
                   />
                 )}
                 {tab === 'entry' && (
@@ -1238,11 +1245,13 @@ function OrderDetailPanel({
 function HuanyuOrderDetailPanel({
   order,
   detailResp,
-  onOrderUpdated
+  onOrderUpdated,
+  onReloadDetail
 }: {
   order: Order
   detailResp?: OrderDetailResponse | null
   onOrderUpdated?: (order: Order) => void
+  onReloadDetail?: () => Promise<void>
 }): React.JSX.Element {
   const detailOrder = (detailResp as any)?.order ?? (detailResp as any)?.data?.order
   const currentOrder = detailOrder
@@ -1278,12 +1287,28 @@ function HuanyuOrderDetailPanel({
     return []
   }, [currentOrder])
 
+  const huanyuRaw = (currentOrder.rawJson && typeof currentOrder.rawJson === 'object')
+    ? currentOrder.rawJson as Record<string, unknown>
+    : {}
+  const originalTaikangRaw = huanyuRaw.taikangRawJson ?? huanyuRaw.rawJson
+  const isTaikangRegistrationAssistance = Boolean(currentOrder.source === 'taikang' && (
+    huanyuRaw.poolType === 'register' ||
+    (originalTaikangRaw && typeof originalTaikangRaw === 'object' && !Array.isArray(originalTaikangRaw) &&
+      (originalTaikangRaw as Record<string, unknown>).poolType === 'register')
+  ))
+
   return (
     <HuanyuOrderForm
       key={formKey}
       orderId={currentOrder.id}
       initialForm={buildHuanyuForm(currentOrder)}
       initialEscorts={initialEscorts}
+      isTaikangRegistrationAssistance={isTaikangRegistrationAssistance}
+      onRefundSucceeded={async () => {
+        clearOrdersCache()
+        window.dispatchEvent(new CustomEvent('huanyu-orders-updated'))
+        await onReloadDetail?.()
+      }}
       onSaveSuccess={(savedOrder) => {
         clearOrdersCache()
         window.dispatchEvent(new CustomEvent('huanyu-orders-updated'))
@@ -1336,12 +1361,16 @@ function HuanyuOrderForm({
   initialEscorts,
   orderId,
   mode = 'detail',
+  isTaikangRegistrationAssistance = false,
+  onRefundSucceeded,
   onSaveSuccess
 }: {
   initialForm: Record<string, string | boolean>
   initialEscorts?: HuanyuEscortRow[]
   orderId?: number
   mode?: 'detail' | 'create'
+  isTaikangRegistrationAssistance?: boolean
+  onRefundSucceeded?: () => Promise<void>
   onSaveSuccess?: (order: Order) => void
 }): React.JSX.Element {
   const currentAccountManager = getSession()?.displayName || getSession()?.employeeCode || ''
@@ -1468,7 +1497,18 @@ function HuanyuOrderForm({
   const [isSaving, setIsSaving] = useState(false)
   const [isPushing, setIsPushing] = useState(false)
   const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const [refundModalOpen, setRefundModalOpen] = useState(false)
+  const [refundAmount, setRefundAmount] = useState('')
+  const [refundError, setRefundError] = useState<string | null>(null)
+  const [isRefunding, setIsRefunding] = useState(false)
   const isCreate = mode === 'create'
+  // 泰康挂号协助订单在远端寰宇订单回拉成功前没有 DDBH：此时只能查看，
+  // 不允许客户端通过保存或推送隐式新建本地寰宇订单。
+  const hasHuanyuOrderNo = Boolean(String(form.orderNo || '').trim())
+  const advanceRegistrationFee = Number(String(form.advanceRegistrationFee || '').replace(/,/g, '').trim())
+  const registrationFee = Number(String(form.registrationFee || '').replace(/,/g, '').trim())
+  const canRefundRegistrationFee = !isCreate && isTaikangRegistrationAssistance && hasHuanyuOrderNo &&
+    Number.isFinite(advanceRegistrationFee) && advanceRegistrationFee > 0
   const initialChannelServiceId = useRef(typeof initialForm.channelService === 'string' ? initialForm.channelService : '')
   const initialOrderAmount = useRef(typeof initialForm.orderAmount === 'string' ? initialForm.orderAmount : '')
   const hasSwitchedAwayFromInitialService = useRef(false)
@@ -1674,6 +1714,7 @@ function HuanyuOrderForm({
   ])
 
   async function handleSave(): Promise<boolean> {
+    if (!isCreate && !hasHuanyuOrderNo) return false
     setIsSaving(true)
     setSaveStatus(null)
     try {
@@ -1775,7 +1816,7 @@ function HuanyuOrderForm({
   }
 
   async function handlePush(): Promise<void> {
-    if (!orderId) return
+    if (!orderId || !hasHuanyuOrderNo) return
     if (!window.confirm('将当前已保存的寰宇订单信息推送到目标 MySQL，是否继续？')) return
     const saved = await handleSave()
     if (!saved) return
@@ -1787,6 +1828,64 @@ function HuanyuOrderForm({
       setSaveStatus({ type: 'error', message: error instanceof Error ? error.message : '推送寰宇订单失败' })
     } finally {
       setIsPushing(false)
+    }
+  }
+
+  function openRefundModal(): void {
+    setRefundAmount('')
+    setRefundError(null)
+    setRefundModalOpen(true)
+  }
+
+  function closeRefundModal(): void {
+    setRefundModalOpen(false)
+    setRefundAmount('')
+    setRefundError(null)
+  }
+
+  function validateRefundAmount(): string | null {
+    const value = refundAmount.trim()
+    const amount = Number(value)
+    if (!/^\d+(?:\.\d{1,2})?$/.test(value) || !Number.isFinite(amount) || amount <= 0) {
+      return '退款金额必须是大于 0 的数值，且最多保留两位小数'
+    }
+    if (!Number.isFinite(registrationFee) || registrationFee <= 0) {
+      return '挂号费金额无效，暂不能退款'
+    }
+    if (amount > registrationFee) {
+      return `退款金额不能大于挂号费金额 ${registrationFee}`
+    }
+    return null
+  }
+
+  async function handleRefundSubmit(): Promise<void> {
+    const validationError = validateRefundAmount()
+    if (validationError) {
+      setRefundError(validationError)
+      return
+    }
+    if (!orderId) {
+      setRefundError('订单不存在，不能办理退款')
+      return
+    }
+    setIsRefunding(true)
+    setRefundError(null)
+    try {
+      const result = await refundHuanyuRegistrationFee(orderId, Number(refundAmount))
+      closeRefundModal()
+      try {
+        await onRefundSucceeded?.()
+      } catch {
+        // ABI 已成功，详情重新加载失败不应把外部退款错误标为失败。
+      }
+      setSaveStatus({
+        type: 'success',
+        message: result.refreshed ? `退款成功：${result.message}` : `退款成功：${result.message}；远端字段将在下次刷新时更新`
+      })
+    } catch (error) {
+      setRefundError(error instanceof Error ? error.message : '退款失败')
+    } finally {
+      setIsRefunding(false)
     }
   }
 
@@ -2465,31 +2564,43 @@ function HuanyuOrderForm({
                 {isSaving ? '保存中…' : '保存'}
               </button>
             ) : (
-              ['保存', '刷新预约模板信息', '数据留痕', '复制订单', '确认推送寰宇订单信息'].map((label) => (
-                <button
-                  key={label}
-                  type="button"
-                  disabled={(label === '保存' && isSaving) || (label === '确认推送寰宇订单信息' && (isSaving || isPushing))}
-                  onClick={() => {
-                    if (label === '保存') void handleSave()
-                    if (label === '确认推送寰宇订单信息') void handlePush()
-                    if (label === '刷新预约模板信息') {
-                      setSaveStatus({ type: 'success', message: '预约模板信息已刷新' })
-                      window.setTimeout(() => setSaveStatus(null), 2000)
-                    }
-                  }}
-                  className={
-                    'rounded-md px-3 py-1.5 text-body-sm font-semibold text-white shadow-sm disabled:opacity-50 transition-colors ' +
-                    (label === '确认推送寰宇订单信息'
-                      ? 'bg-primary hover:bg-primary/90'
-                      : label === '保存'
-                        ? 'bg-action-green hover:bg-action-green/90'
-                        : 'bg-action-green/90 hover:bg-action-green')
-                  }
-                >
-                  {label === '保存' && isSaving ? '保存中…' : label === '确认推送寰宇订单信息' && isPushing ? '推送中…' : label}
-                </button>
-              ))
+              ['保存', '刷新预约模板信息', '数据留痕', '复制订单', '确认推送寰宇订单信息']
+                .filter((label) => hasHuanyuOrderNo || (label !== '保存' && label !== '确认推送寰宇订单信息'))
+                .map((label) => (
+                  <Fragment key={label}>
+                    <button
+                      type="button"
+                      disabled={(label === '保存' && isSaving) || (label === '确认推送寰宇订单信息' && (isSaving || isPushing))}
+                      onClick={() => {
+                        if (label === '保存') void handleSave()
+                        if (label === '确认推送寰宇订单信息') void handlePush()
+                        if (label === '刷新预约模板信息') {
+                          setSaveStatus({ type: 'success', message: '预约模板信息已刷新' })
+                          window.setTimeout(() => setSaveStatus(null), 2000)
+                        }
+                      }}
+                      className={
+                        'rounded-md px-3 py-1.5 text-body-sm font-semibold text-white shadow-sm disabled:opacity-50 transition-colors ' +
+                        (label === '确认推送寰宇订单信息'
+                          ? 'bg-primary hover:bg-primary/90'
+                          : label === '保存'
+                            ? 'bg-action-green hover:bg-action-green/90'
+                            : 'bg-action-green/90 hover:bg-action-green')
+                      }
+                    >
+                      {label === '保存' && isSaving ? '保存中…' : label === '确认推送寰宇订单信息' && isPushing ? '推送中…' : label}
+                    </button>
+                    {label === '保存' && canRefundRegistrationFee && (
+                      <button
+                        type="button"
+                        onClick={openRefundModal}
+                        className="rounded-md bg-action-green/90 px-3 py-1.5 text-body-sm font-semibold text-white shadow-sm transition-colors hover:bg-action-green"
+                      >
+                        退款
+                      </button>
+                    )}
+                  </Fragment>
+                ))
             )}
           </div>
         </div>
@@ -2641,6 +2752,53 @@ function HuanyuOrderForm({
         )
       })()}
       </div>
+
+      {refundModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-labelledby="registration-refund-title">
+          <div className="w-full max-w-[520px] overflow-hidden rounded-lg bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-border-subtle bg-surface-bg px-4 py-3">
+              <h3 id="registration-refund-title" className="text-base font-semibold text-text-main">挂号退款</h3>
+              <button type="button" disabled={isRefunding} onClick={closeRefundModal} className="rounded p-1 text-text-muted hover:bg-white hover:text-text-main disabled:opacity-50" aria-label="关闭退款弹窗">
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            <div className="px-8 py-10">
+              <label className="flex items-center gap-3 text-body-sm text-text-main">
+                <span className="shrink-0">退款金额：</span>
+                <input
+                  type="number"
+                  min="0.01"
+                  max={Number.isFinite(registrationFee) && registrationFee > 0 ? registrationFee : undefined}
+                  step="0.01"
+                  inputMode="decimal"
+                  value={refundAmount}
+                  disabled={isRefunding}
+                  onChange={(event) => {
+                    setRefundAmount(event.target.value)
+                    if (refundError) setRefundError(null)
+                  }}
+                  onBlur={() => setRefundError(validateRefundAmount())}
+                  className="h-9 flex-1 rounded border border-border-subtle px-2 outline-none focus:border-primary focus:ring-1 focus:ring-primary/30"
+                  aria-describedby="registration-refund-limit"
+                  autoFocus
+                />
+              </label>
+              <p id="registration-refund-limit" className="mt-2 pl-[72px] text-xs text-text-muted">
+                可退款范围：大于 0，且不超过挂号费金额 {Number.isFinite(registrationFee) ? registrationFee : '—'}
+              </p>
+              {refundError && <p className="mt-2 pl-[72px] text-xs text-error">{refundError}</p>}
+            </div>
+            <div className="flex justify-end gap-3 border-t border-border-subtle px-4 py-3">
+              <button type="button" disabled={isRefunding} onClick={() => void handleRefundSubmit()} className="rounded-md border border-primary bg-white px-4 py-1.5 text-body-sm font-medium text-primary hover:bg-primary/5 disabled:opacity-50">
+                {isRefunding ? '退款中…' : '退款'}
+              </button>
+              <button type="button" disabled={isRefunding} onClick={closeRefundModal} className="rounded-md border border-border-subtle bg-white px-4 py-1.5 text-body-sm font-medium text-text-main hover:bg-surface-bg disabled:opacity-50">
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

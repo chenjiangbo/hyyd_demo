@@ -28,7 +28,7 @@ import { initScheduler } from './asr/transcribeScheduler.js'
 import fastifyStatic from '@fastify/static'
 import fastifyMultipart from '@fastify/multipart'
 import { existsSync, mkdirSync } from 'node:fs'
-import { join, basename } from 'node:path'
+import { join, basename, resolve } from 'node:path'
 import { getEnv } from './env.js'
 import { ensureHuanyuTables } from './db/ensureHuanyuTables.js'
 import { ensureBOrderFormTables } from './db/ensureBOrderFormTables.js'
@@ -38,9 +38,21 @@ import { ensureTaikangHuanyuChannelMappingTable } from './db/ensureTaikangHuanyu
 import { syncHuanyuOrderFromTaikang } from './huanyuOrderSync.js'
 import { initializeOrderWorkflow } from './workflow/serviceWorkflow.js'
 
+function isTaikangRegistrationAssistance(rawJson: unknown): boolean {
+  if (!rawJson || typeof rawJson !== 'object' || Array.isArray(rawJson)) return false
+  const raw = rawJson as Record<string, unknown>
+  const original = raw.taikangRawJson ?? raw.rawJson
+  const originalRecord = original && typeof original === 'object' && !Array.isArray(original)
+    ? original as Record<string, unknown>
+    : {}
+  return raw.poolType === 'register' || originalRecord.poolType === 'register'
+}
+
 if (process.env.NODE_ENV !== 'production') {
-  // 开发期允许从 .env 启动；生产由 Docker/宿主机显式注入环境变量。
-  dotenv.config({ override: true })
+  // pnpm --filter 会将子进程工作目录切到 packages/backend；开发期优先读取包目录，
+  // 再读取仓库根 .env，保证约定的后端热启动方式能加载根配置。
+  dotenv.config({ path: resolve(process.cwd(), '.env'), override: true })
+  dotenv.config({ path: resolve(process.cwd(), '../../.env'), override: true })
 }
 
 const appEnv = getEnv()
@@ -317,18 +329,21 @@ async function start() {
                     }
                   }
 
-                  // orders 落库成功后再创建寰宇主订单。同步失败不影响泰康订单抓取，
-                  // 下次抓单或执行 huanyu:backfill 会按同一个 DDBH 幂等补齐。
-                  try {
-                    const result = await syncHuanyuOrderFromTaikang(prisma, saved, taikangAccount, employee.name)
-                    if (result.created) {
-                      server.log.info(`已创建寰宇订单 ${result.ddbh}（泰康订单 ${orderData.orderId}）`)
+                  // 挂号协助由远端寰宇订单回拉，不再随泰康采集自动创建；其他绿通业务维持原逻辑。
+                  if (isTaikangRegistrationAssistance(saved.rawJson)) {
+                    server.log.info(`泰康挂号协助订单 ${orderData.orderId} 已入库，跳过自动创建寰宇订单`)
+                  } else {
+                    try {
+                      const result = await syncHuanyuOrderFromTaikang(prisma, saved, taikangAccount, employee.name)
+                      if (result.created) {
+                        server.log.info(`已创建寰宇订单 ${result.ddbh}（泰康订单 ${orderData.orderId}）`)
+                      }
+                      if (!result.channelFound || !result.productFound) {
+                        server.log.warn(`寰宇订单 ${result.ddbh} 字典映射不完整：渠道=${result.channelFound}，服务项目=${result.productFound}`)
+                      }
+                    } catch (error) {
+                      server.log.error(error, `泰康订单 ${orderData.orderId} 同步寰宇订单失败，将在下次同步/回填时重试`)
                     }
-                    if (!result.channelFound || !result.productFound) {
-                      server.log.warn(`寰宇订单 ${result.ddbh} 字典映射不完整：渠道=${result.channelFound}，服务项目=${result.productFound}`)
-                    }
-                  } catch (error) {
-                    server.log.error(error, `泰康订单 ${orderData.orderId} 同步寰宇订单失败，将在下次同步/回填时重试`)
                   }
                 }
               }
@@ -374,8 +389,8 @@ async function start() {
                     attachments: payload.attachments || [],
                     fingerprint: payload.fingerprint
                   })
-                  // 客户信息主要来自 recommendations 详情。详情成功后立即补齐寰宇订单中
-                  // 当前为空的就诊人字段；同步函数不会覆盖页面上已有的人工值。
+                  // 客户信息主要来自 recommendations 详情。非挂号协助订单详情成功后立即补齐
+                  // 寰宇订单中当前为空的就诊人字段；挂号协助只允许从远端寰宇订单回拉。
                   const orderForHuanyu = await prisma.order.findUnique({
                     where: { id: result.orderId },
                     select: {
@@ -389,7 +404,7 @@ async function start() {
                       huanyuOrderNo: true
                     }
                   })
-                  if (orderForHuanyu) {
+                  if (orderForHuanyu && !isTaikangRegistrationAssistance(orderForHuanyu.rawJson)) {
                     await syncHuanyuOrderFromTaikang(
                       prisma,
                       orderForHuanyu,
