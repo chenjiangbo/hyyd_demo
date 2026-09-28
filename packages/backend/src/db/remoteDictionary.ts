@@ -213,6 +213,63 @@ export async function findHuanyuChannelProductById(id: unknown): Promise<HuanyuC
     : null
 }
 
+const channelProductMemCache = new Map<string, { item: HuanyuChannelProductOption | null; expiresAt: number }>()
+
+/**
+ * 批量按 B 端渠道服务项目码值读取产品维表信息。列表页批量渲染时使用，
+ * 内置 10 分钟内存缓存，避免对字典库产生高频重复查询。
+ */
+export async function findHuanyuChannelProductsByIds(ids: unknown[]): Promise<Map<string, HuanyuChannelProductOption>> {
+  const result = new Map<string, HuanyuChannelProductOption>()
+  const cleanIds = Array.from(new Set(ids.map(searchTerm).filter(Boolean))) as string[]
+  if (cleanIds.length === 0) return result
+
+  const now = Date.now()
+  const missingIds: string[] = []
+  for (const id of cleanIds) {
+    const cached = channelProductMemCache.get(id)
+    if (cached && cached.expiresAt > now) {
+      if (cached.item) result.set(id, cached.item)
+    } else {
+      missingIds.push(id)
+    }
+  }
+
+  if (missingIds.length > 0) {
+    try {
+      const placeholders = missingIds.map(() => '?').join(', ')
+      const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
+        `SELECT CAST(id AS CHAR) AS id, name, nbyjcp, nbejcp, CPJG AS price
+           FROM dim_hy_qd_cp
+          WHERE CAST(id AS CHAR) IN (${placeholders})`,
+        missingIds
+      )
+      const foundIds = new Set<string>()
+      for (const row of rows) {
+        const item: HuanyuChannelProductOption = {
+          id: String(row.id),
+          name: String(row.name ?? ''),
+          internalLevelOne: String(row.nbyjcp ?? ''),
+          internalLevelTwo: String(row.nbejcp ?? ''),
+          price: row.price == null ? '' : String(row.price)
+        }
+        foundIds.add(item.id)
+        result.set(item.id, item)
+        channelProductMemCache.set(item.id, { item, expiresAt: now + 10 * 60 * 1000 })
+      }
+      for (const id of missingIds) {
+        if (!foundIds.has(id)) {
+          channelProductMemCache.set(id, { item: null, expiresAt: now + 2 * 60 * 1000 })
+        }
+      }
+    } catch {
+      // 容错处理
+    }
+  }
+
+  return result
+}
+
 /** 按 BD 用户码值精确读取名称，供客户经理字段自动带出。 */
 export async function findHuanyuBdUserNameByUserId(userId: string): Promise<string | null> {
   const target = searchTerm(userId)
@@ -511,3 +568,281 @@ export async function findHuanyuDoctorById(id: string): Promise<HuanyuDoctorOpti
     expertLevel: String(row.expertLevel ?? '')
   } : null
 }
+
+const doctorIdCache = new Map<string, { ids: string[]; expiresAt: number }>()
+const deptIdCache = new Map<string, { ids: string[]; expiresAt: number }>()
+const hospitalIdCache = new Map<string, { ids: string[]; expiresAt: number }>()
+const productIdCache = new Map<string, { ids: string[]; expiresAt: number }>()
+
+/**
+ * 按医生名称（模糊/精确）反查所有匹配的医生维表 ID。
+ * 供搜索框输入中文时穿透查询底层可能存为医生编码的订单。
+ */
+export async function findHuanyuDoctorIdsByName(name: string): Promise<string[]> {
+  const target = searchTerm(name)
+  if (!target) return []
+  const now = Date.now()
+  const cached = doctorIdCache.get(target)
+  if (cached && cached.expiresAt > now) {
+    return cached.ids
+  }
+  try {
+    const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
+      `SELECT CAST(ID AS CHAR) AS id
+         FROM dim_hy_ys
+        WHERE NAME LIKE CONCAT('%', ?, '%')
+        LIMIT 100`,
+      [target]
+    )
+    const ids = Array.from(new Set(rows.map((r) => String(r.id)).filter(Boolean)))
+    doctorIdCache.set(target, { ids, expiresAt: now + 5 * 60 * 1000 })
+    return ids
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 按科室名称（模糊/精确）反查所有匹配的科室维表 ID。
+ */
+export async function findHuanyuDepartmentIdsByName(name: string): Promise<string[]> {
+  const target = searchTerm(name)
+  if (!target) return []
+  const now = Date.now()
+  const cached = deptIdCache.get(target)
+  if (cached && cached.expiresAt > now) {
+    return cached.ids
+  }
+  try {
+    const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
+      `SELECT CAST(ID AS CHAR) AS id
+         FROM dim_hy_yy_ks
+        WHERE NAME LIKE CONCAT('%', ?, '%')
+        LIMIT 100`,
+      [target]
+    )
+    const ids = Array.from(new Set(rows.map((r) => String(r.id)).filter(Boolean)))
+    deptIdCache.set(target, { ids, expiresAt: now + 5 * 60 * 1000 })
+    return ids
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 按医院名称（模糊/精确）反查所有匹配的医院维表 ID。
+ */
+export async function findHuanyuHospitalIdsByName(name: string): Promise<string[]> {
+  const target = searchTerm(name)
+  if (!target) return []
+  const now = Date.now()
+  const cached = hospitalIdCache.get(target)
+  if (cached && cached.expiresAt > now) {
+    return cached.ids
+  }
+  try {
+    const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
+      `SELECT CAST(id AS CHAR) AS id
+         FROM dim_hy_yywh
+        WHERE name LIKE CONCAT('%', ?, '%')
+        LIMIT 100`,
+      [target]
+    )
+    const ids = Array.from(new Set(rows.map((r) => String(r.id)).filter(Boolean)))
+    hospitalIdCache.set(target, { ids, expiresAt: now + 5 * 60 * 1000 })
+    return ids
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 按渠道产品/服务项目名称（模糊/精确）反查所有匹配的产品维表 ID。
+ */
+export async function findHuanyuProductIdsByName(name: string): Promise<string[]> {
+  const target = searchTerm(name)
+  if (!target) return []
+  const now = Date.now()
+  const cached = productIdCache.get(target)
+  if (cached && cached.expiresAt > now) {
+    return cached.ids
+  }
+  try {
+    const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
+      `SELECT CAST(id AS CHAR) AS id
+         FROM dim_hy_qd_cp
+        WHERE name LIKE CONCAT('%', ?, '%')
+        LIMIT 100`,
+      [target]
+    )
+    const ids = Array.from(new Set(rows.map((r) => String(r.id)).filter(Boolean)))
+    productIdCache.set(target, { ids, expiresAt: now + 5 * 60 * 1000 })
+    return ids
+  } catch {
+    return []
+  }
+}
+
+const hospitalMemCache = new Map<string, { item: HuanyuChannelOption | null; expiresAt: number }>()
+const deptMemCache = new Map<string, { item: HuanyuHospitalDepartmentOption | null; expiresAt: number }>()
+const doctorMemCache = new Map<string, { item: HuanyuDoctorOption | null; expiresAt: number }>()
+
+/**
+ * 批量按医院 ID 查医院维表信息（带 10 分钟内存缓存）。供列表批量装配使用。
+ */
+export async function findHuanyuHospitalsByIds(ids: unknown[]): Promise<Map<string, HuanyuChannelOption>> {
+  const result = new Map<string, HuanyuChannelOption>()
+  const cleanIds = Array.from(new Set(ids.map(searchTerm).filter(Boolean))) as string[]
+  if (cleanIds.length === 0) return result
+
+  const now = Date.now()
+  const missingIds: string[] = []
+  for (const id of cleanIds) {
+    const cached = hospitalMemCache.get(id)
+    if (cached && cached.expiresAt > now) {
+      if (cached.item) result.set(id, cached.item)
+    } else {
+      missingIds.push(id)
+    }
+  }
+
+  if (missingIds.length > 0) {
+    try {
+      const placeholders = missingIds.map(() => '?').join(', ')
+      const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
+        `SELECT CAST(id AS CHAR) AS id, name
+           FROM dim_hy_yywh
+          WHERE CAST(id AS CHAR) IN (${placeholders})`,
+        missingIds
+      )
+      const foundIds = new Set<string>()
+      for (const row of rows) {
+        const item: HuanyuChannelOption = {
+          id: String(row.id),
+          name: String(row.name ?? '')
+        }
+        foundIds.add(item.id)
+        result.set(item.id, item)
+        hospitalMemCache.set(item.id, { item, expiresAt: now + 10 * 60 * 1000 })
+      }
+      for (const id of missingIds) {
+        if (!foundIds.has(id)) {
+          hospitalMemCache.set(id, { item: null, expiresAt: now + 2 * 60 * 1000 })
+        }
+      }
+    } catch {
+      // 容错处理
+    }
+  }
+  return result
+}
+
+/**
+ * 批量按科室 ID 查科室维表信息（带 10 分钟内存缓存）。供列表批量装配使用。
+ */
+export async function findHuanyuDepartmentsByIds(ids: unknown[]): Promise<Map<string, HuanyuHospitalDepartmentOption>> {
+  const result = new Map<string, HuanyuHospitalDepartmentOption>()
+  const cleanIds = Array.from(new Set(ids.map(searchTerm).filter(Boolean))) as string[]
+  if (cleanIds.length === 0) return result
+
+  const now = Date.now()
+  const missingIds: string[] = []
+  for (const id of cleanIds) {
+    const cached = deptMemCache.get(id)
+    if (cached && cached.expiresAt > now) {
+      if (cached.item) result.set(id, cached.item)
+    } else {
+      missingIds.push(id)
+    }
+  }
+
+  if (missingIds.length > 0) {
+    try {
+      const placeholders = missingIds.map(() => '?').join(', ')
+      const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
+        `SELECT CAST(ks.ID AS CHAR) AS id,
+                ks.NAME AS name,
+                COALESCE(kswh.name, '') AS internalLevelOne,
+                COALESCE(xfks.name, '') AS internalLevelTwo
+           FROM dim_hy_yy_ks AS ks
+           LEFT JOIN dim_hy_kswh AS kswh ON CAST(kswh.id AS CHAR) = CAST(ks.ksdl AS CHAR)
+           LEFT JOIN dim_hy_xfks AS xfks ON CAST(xfks.id AS CHAR) = CAST(ks.ksxf AS CHAR)
+          WHERE CAST(ks.ID AS CHAR) IN (${placeholders})`,
+        missingIds
+      )
+      const foundIds = new Set<string>()
+      for (const row of rows) {
+        const item: HuanyuHospitalDepartmentOption = {
+          id: String(row.id),
+          name: String(row.NAME ?? row.name ?? '').trim(),
+          internalLevelOne: String(row.internalLevelOne ?? ''),
+          internalLevelTwo: String(row.internalLevelTwo ?? '')
+        }
+        foundIds.add(item.id)
+        result.set(item.id, item)
+        deptMemCache.set(item.id, { item, expiresAt: now + 10 * 60 * 1000 })
+      }
+      for (const id of missingIds) {
+        if (!foundIds.has(id)) {
+          deptMemCache.set(id, { item: null, expiresAt: now + 2 * 60 * 1000 })
+        }
+      }
+    } catch {
+      // 容错处理
+    }
+  }
+  return result
+}
+
+/**
+ * 批量按医生 ID 查医生维表信息（带 10 分钟内存缓存）。供列表批量装配使用。
+ */
+export async function findHuanyuDoctorsByIds(ids: unknown[]): Promise<Map<string, HuanyuDoctorOption>> {
+  const result = new Map<string, HuanyuDoctorOption>()
+  const cleanIds = Array.from(new Set(ids.map(searchTerm).filter(Boolean))) as string[]
+  if (cleanIds.length === 0) return result
+
+  const now = Date.now()
+  const missingIds: string[] = []
+  for (const id of cleanIds) {
+    const cached = doctorMemCache.get(id)
+    if (cached && cached.expiresAt > now) {
+      if (cached.item) result.set(id, cached.item)
+    } else {
+      missingIds.push(id)
+    }
+  }
+
+  if (missingIds.length > 0) {
+    try {
+      const placeholders = missingIds.map(() => '?').join(', ')
+      const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
+        `SELECT CAST(ID AS CHAR) AS id, NAME AS name, ZC AS expertLevel
+           FROM dim_hy_ys
+          WHERE CAST(ID AS CHAR) IN (${placeholders})`,
+        missingIds
+      )
+      const foundIds = new Set<string>()
+      for (const row of rows) {
+        const item: HuanyuDoctorOption = {
+          id: String(row.id),
+          name: String(row.NAME ?? row.name ?? '').trim(),
+          expertLevel: String(row.expertLevel ?? '')
+        }
+        foundIds.add(item.id)
+        result.set(item.id, item)
+        doctorMemCache.set(item.id, { item, expiresAt: now + 10 * 60 * 1000 })
+      }
+      for (const id of missingIds) {
+        if (!foundIds.has(id)) {
+          doctorMemCache.set(id, { item: null, expiresAt: now + 2 * 60 * 1000 })
+        }
+      }
+    } catch {
+      // 容错处理
+    }
+  }
+  return result
+}
+
+

@@ -25,9 +25,9 @@ export function DesktopReminderPopup() {
       })
 
       if (due.length > 0) {
-        // 如果在 Electron 环境中，调用原生独立桌面右下角浮窗
+        // 如果在 Electron 环境中，调用原生独立桌面右下角浮窗，传递全部到期提醒
         if (window.api?.showDesktopReminder) {
-          void window.api.showDesktopReminder(due[0])
+          void window.api.showDesktopReminder(due)
           return
         }
 
@@ -60,10 +60,10 @@ export function DesktopReminderPopup() {
   useEffect(() => {
     // 启动时检查一次
     void checkDueReminders()
-    // 每 15 秒轮询一次
+    // 每 5 秒高频准时轮询一次，配合 backgroundThrottling: false 绝不延误
     const timer = setInterval(() => {
       void checkDueReminders()
-    }, 15000)
+    }, 5000)
 
     const handleUpdate = () => {
       void checkDueReminders()

@@ -30,6 +30,7 @@ import {
   pushHuanyuOrder,
   refundHuanyuRegistrationFee,
   saveHuanyuOrder,
+  copyHuanyuOrder,
   getSession,
   refreshOrderBrief,
   type Material,
@@ -1058,24 +1059,35 @@ function OrderExecutionPanel({
   selectedOrder: Order
   onSelect: (id: number) => void
 }): React.JSX.Element {
-  const [tab, setTab] = useState<RightTab>('taikang-detail')
+  const isSelfOperated = selectedOrder.source === 'huanyu' || String(selectedOrder.id).startsWith('huanyu-')
+  const [tab, setTab] = useState<RightTab>(() => isSelfOperated ? 'huanyu-detail' : 'taikang-detail')
   const [detailResp, setDetailResp] = useState<OrderDetailResponse | null>(null)
-  const [detailLoading, setDetailLoading] = useState(true)
+  const [detailLoading, setDetailLoading] = useState(() => !isSelfOperated)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [aggregate, setAggregate] = useState<OrderAggregateResponse | null>(null)
   const [materials, setMaterials] = useState<Material[]>([])
   const selectedIndex = Math.max(0, orders.findIndex((order) => order.id === selectedOrder.id))
 
-  const reloadMaterials = useCallback(() => {
-    return fetchMaterials(selectedOrder.id).then(setMaterials)
-  }, [selectedOrder.id])
+  const reloadMaterials = useCallback(async () => {
+    if (isSelfOperated) return
+    const res = await fetchMaterials(selectedOrder.id)
+    setMaterials(res)
+  }, [selectedOrder.id, isSelfOperated])
 
   const reloadDetail = useCallback(async () => {
+    if (isSelfOperated) return
     const response = await fetchOrderDetail(selectedOrder.id)
     setDetailResp(response)
-  }, [selectedOrder.id])
+  }, [selectedOrder.id, isSelfOperated])
 
   useEffect(() => {
+    if (isSelfOperated) {
+      setDetailLoading(false)
+      setDetailResp(null)
+      setDetailError(null)
+      return
+    }
+
     let alive = true
     setDetailLoading(true)
     setDetailResp(null)
@@ -1098,7 +1110,7 @@ function OrderExecutionPanel({
     return () => {
       alive = false
     }
-  }, [selectedOrder.id, reloadMaterials])
+  }, [selectedOrder.id, isSelfOperated, reloadMaterials])
 
   return (
     <aside className="w-full min-h-0 bg-white border-border-subtle flex flex-col">
@@ -1111,6 +1123,7 @@ function OrderExecutionPanel({
           <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto pb-0.5" role="tablist" aria-label="订单切换">
             {orders.map((order, index) => {
               const active = order.id === selectedOrder.id
+              const displayOrderNo = order.sourceOrderNo || order.huanyuOrderNo || String(order.id)
               return (
                 <button
                   key={order.id}
@@ -1118,7 +1131,7 @@ function OrderExecutionPanel({
                   role="tab"
                   aria-selected={active}
                   onClick={() => onSelect(order.id)}
-                  title={`${order.sourceOrderNo} · ${bizType(order)}`}
+                  title={`${displayOrderNo} · ${bizType(order)}`}
                   className={
                     'shrink-0 rounded-t-md border border-b-2 px-2.5 py-0.5 text-left text-[11px] transition-colors ' +
                     (active
@@ -1126,7 +1139,7 @@ function OrderExecutionPanel({
                       : 'border-border-subtle border-b-transparent bg-surface-container-high text-text-muted hover:bg-white hover:text-text-main')
                   }
                 >
-                  <span className="block max-w-28 truncate font-mono-data">{order.sourceOrderNo}</span>
+                  <span className="block max-w-28 truncate font-mono-data">{displayOrderNo}</span>
                   <span className="block max-w-28 truncate text-[10px] font-normal">第 {index + 1} 单 · {bizType(order)}</span>
                 </button>
               )
@@ -1135,65 +1148,88 @@ function OrderExecutionPanel({
         </div>
         <div className="bg-white border-l-2 border-primary border-y border-r border-border-subtle px-3 py-2 rounded-r shadow-sm">
           <div className="flex items-center justify-between gap-2">
-            <CopyText value={selectedOrder.sourceOrderNo} className="font-mono-data text-[16px] font-bold text-text-main">
-              <span>{selectedOrder.sourceOrderNo}</span>
+            <CopyText value={selectedOrder.sourceOrderNo || selectedOrder.huanyuOrderNo || ''} className="font-mono-data text-[16px] font-bold text-text-main">
+              <span>{selectedOrder.sourceOrderNo || selectedOrder.huanyuOrderNo || '自营订单'}</span>
             </CopyText>
             <span className="shrink-0 text-[10px] text-text-muted">第 {selectedIndex + 1}/{orders.length} 个</span>
           </div>
         </div>
       </div>
 
-      {/* 主工作区（左主表单区 + 右侧独立垂直步骤栏） */}
+      {/* 主工作区（自建自营单：全量展示寰宇详情，无需Tab切换；B端单：保留Tab栏与右侧流程） */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* 左侧主表单区 */}
         <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
-          {/* Tab 栏只位于左侧表单顶部 */}
-          <div className="shrink-0 flex border-b border-border-subtle bg-[#fafafa]">
-            <PanelTab label="B端订单详情" active={tab === 'taikang-detail'} onClick={() => setTab('taikang-detail')} />
-            <PanelTab label="寰宇订单详情" active={tab === 'huanyu-detail'} onClick={() => setTab('huanyu-detail')} />
-            <PanelTab label="数据补录" active={tab === 'entry'} onClick={() => setTab('entry')} />
-            <PanelTab label="AI 任务" active={tab === 'ai'} onClick={() => setTab('ai')} />
-          </div>
+          {isSelfOperated ? (
+            <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+              <div className="shrink-0 flex items-center px-4 py-2 border-b border-border-subtle bg-[#fafafa]">
+                <span className="text-body-sm font-semibold text-text-main flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-primary text-[18px]">assignment</span>
+                  寰宇订单详情
+                </span>
+              </div>
+              <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                <HuanyuOrderDetailPanel
+                  key={selectedOrder.id}
+                  order={selectedOrder}
+                  detailResp={null}
+                  onReloadDetail={async () => {}}
+                />
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Tab 栏只位于左侧表单顶部 */}
+              <div className="shrink-0 flex border-b border-border-subtle bg-[#fafafa]">
+                <PanelTab label="B端订单详情" active={tab === 'taikang-detail'} onClick={() => setTab('taikang-detail')} />
+                <PanelTab label="寰宇订单详情" active={tab === 'huanyu-detail'} onClick={() => setTab('huanyu-detail')} />
+                <PanelTab label="数据补录" active={tab === 'entry'} onClick={() => setTab('entry')} />
+                <PanelTab label="AI 任务" active={tab === 'ai'} onClick={() => setTab('ai')} />
+              </div>
 
-          <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-            {detailLoading ? (
-              <div className="flex-1 min-h-0 flex flex-col items-center justify-center p-12 text-text-muted gap-3">
-                <div className="w-8 h-8 border-3 border-primary/25 border-t-primary rounded-full animate-spin" />
-                <span className="text-body-sm font-medium">正在拉取最新订单数据…</span>
+              <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                {detailLoading ? (
+                  <div className="flex-1 min-h-0 flex flex-col items-center justify-center p-12 text-text-muted gap-3">
+                    <div className="w-8 h-8 border-3 border-primary/25 border-t-primary rounded-full animate-spin" />
+                    <span className="text-body-sm font-medium">正在拉取最新订单数据…</span>
+                  </div>
+                ) : detailError ? (
+                  <div className="p-6 m-4 rounded-lg bg-red-50 border border-error/25 text-error text-body-sm flex items-center gap-2">
+                    <span className="material-symbols-outlined text-error">error</span>
+                    <span>{detailError}</span>
+                  </div>
+                ) : (
+                  <>
+                    {tab === 'taikang-detail' && (
+                      <OrderDetailPanel order={selectedOrder} detailResp={detailResp} error={detailError} />
+                    )}
+                    {tab === 'huanyu-detail' && (
+                      <HuanyuOrderDetailPanel
+                        key={selectedOrder.id}
+                        order={selectedOrder}
+                        detailResp={detailResp}
+                        onReloadDetail={reloadDetail}
+                      />
+                    )}
+                    {tab === 'entry' && (
+                      <OrderDataEntryPanel order={selectedOrder} materials={materials} onReload={reloadMaterials} />
+                    )}
+                    {tab === 'ai' && (
+                      <OrderAiTaskPanel order={selectedOrder} aggregate={aggregate} />
+                    )}
+                  </>
+                )}
               </div>
-            ) : detailError ? (
-              <div className="p-6 m-4 rounded-lg bg-red-50 border border-error/25 text-error text-body-sm flex items-center gap-2">
-                <span className="material-symbols-outlined text-error">error</span>
-                <span>{detailError}</span>
-              </div>
-            ) : (
-              <>
-                {tab === 'taikang-detail' && (
-                  <OrderDetailPanel order={selectedOrder} detailResp={detailResp} error={detailError} />
-                )}
-                {tab === 'huanyu-detail' && (
-                  <HuanyuOrderDetailPanel
-                    key={selectedOrder.id}
-                    order={selectedOrder}
-                    detailResp={detailResp}
-                    onReloadDetail={reloadDetail}
-                  />
-                )}
-                {tab === 'entry' && (
-                  <OrderDataEntryPanel order={selectedOrder} materials={materials} onReload={reloadMaterials} />
-                )}
-                {tab === 'ai' && (
-                  <OrderAiTaskPanel order={selectedOrder} aggregate={aggregate} />
-                )}
-              </>
-            )}
-          </div>
+            </>
+          )}
         </div>
 
-        {/* 右侧独立垂直步骤栏（230px） */}
-        <aside className="w-[230px] shrink-0 border-l border-border-subtle bg-[#fafafa]/80 flex flex-col overflow-y-auto">
-          <VerticalWorkflowTimeline order={selectedOrder} />
-        </aside>
+        {/* 右侧独立垂直步骤栏（仅第三方B端工单展示；自建单隐藏） */}
+        {!isSelfOperated && (
+          <aside className="w-[230px] shrink-0 border-l border-border-subtle bg-[#fafafa]/80 flex flex-col overflow-y-auto">
+            <VerticalWorkflowTimeline order={selectedOrder} />
+          </aside>
+        )}
       </div>
     </aside>
   )
@@ -1407,6 +1443,7 @@ function HuanyuOrderForm({
       escort_name: 'escortName',
       escort_phone: 'escortPhone',
       escort_service_summary: 'escortSummary',
+      order_status: 'orderStatus',
       inspection_booking_time: 'latestTicketTime',
       inspection_actual_time: 'latestTicketTime',
       hospitalization_appointment_time: 'bookingFeedbackTime',
@@ -1496,6 +1533,7 @@ function HuanyuOrderForm({
   })
   const [isSaving, setIsSaving] = useState(false)
   const [isPushing, setIsPushing] = useState(false)
+  const [isCopying, setIsCopying] = useState(false)
   const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const [refundModalOpen, setRefundModalOpen] = useState(false)
   const [refundAmount, setRefundAmount] = useState('')
@@ -1614,7 +1652,87 @@ function HuanyuOrderForm({
           if (phoneMatch) extractedEscortPhone = phoneMatch[1].trim()
         }
 
-        if (extractedEscortName || extractedEscortPhone || extractedEscortDate) {
+        // 1. 尝试从 escort_records 提取多次/多阶段陪诊明细列表
+        const escortRecordsCand = candidates.find((c) => c.fieldCode === 'escort_records' && c.candidateType === 'new_or_confirmed')
+        let rawRecords: any[] = []
+        if (escortRecordsCand) {
+          if (Array.isArray(escortRecordsCand.normalizedValue)) {
+            rawRecords = escortRecordsCand.normalizedValue
+          } else if (typeof escortRecordsCand.normalizedValue === 'string') {
+            try {
+              const parsed = JSON.parse(escortRecordsCand.normalizedValue)
+              if (Array.isArray(parsed)) rawRecords = parsed
+            } catch {
+              // ignore
+            }
+          } else if (typeof escortRecordsCand.value === 'string' && escortRecordsCand.value.startsWith('[')) {
+            try {
+              const parsed = JSON.parse(escortRecordsCand.value)
+              if (Array.isArray(parsed)) rawRecords = parsed
+            } catch {
+              // ignore
+            }
+          }
+        }
+
+        if (rawRecords.length > 0) {
+          const newOptions: HuanyuEscortOption[] = []
+          const resolvedRows: HuanyuEscortRow[] = []
+
+          for (let idx = 0; idx < rawRecords.length; idx++) {
+            const item = rawRecords[idx]
+            const name = String(item.escort_name || item.escortName || '').trim()
+            const phone = String(item.escort_phone || item.escortPhone || '').trim()
+            const date = String(item.service_date || item.serviceDate || '').trim()
+            const scene = String(item.service_scene || item.escortType || '').trim()
+            let matched: HuanyuEscortOption | null = null
+            if (name) {
+              try {
+                const escorts = await fetchHuanyuEscorts(name)
+                matched = escorts.find((e) => e.name === name || e.id === name) || escorts[0] || null
+                if (matched && !newOptions.some((o) => o.id === matched!.id)) {
+                  newOptions.push(matched)
+                }
+              } catch {
+                // ignore
+              }
+            }
+            resolvedRows.push({
+              id: idx + 1,
+              orderNo: typeof form.orderNo === 'string' ? form.orderNo : '',
+              serviceDate: escortServiceDateInputValue(date) || '',
+              escortName: matched ? matched.id : name,
+              escortType: matched?.escortType || scene || (idx === 0 ? '门诊陪诊' : '检查陪诊'),
+              phone: matched?.phone || phone,
+              area: matched?.area || '',
+              sequence: item.sequence ? String(item.sequence) : String(idx + 1)
+            })
+          }
+
+          if (newOptions.length > 0) {
+            setEscortOptions((prev) => {
+              const ids = new Set(prev.map((o) => o.id))
+              const toAdd = newOptions.filter((o) => !ids.has(o.id))
+              return toAdd.length > 0 ? [...toAdd, ...prev] : prev
+            })
+          }
+
+          setEscortRows((current) => {
+            const hasUserFilled = current.length > 1 || (current.length === 1 && Boolean(current[0].escortName?.trim()))
+            if (hasUserFilled) return current
+            return resolvedRows
+          })
+
+          const firstRow = resolvedRows[0]
+          if (firstRow) {
+            setForm((current) => ({
+              ...current,
+              escortName: (!current.escortName || !String(current.escortName).trim()) ? (firstRow.escortName || '') : current.escortName,
+              escortPhone: (!current.escortPhone || !String(current.escortPhone).trim()) ? (firstRow.phone || '') : current.escortPhone,
+              escortServiceDate: (!current.escortServiceDate || !String(current.escortServiceDate).trim()) ? (firstRow.serviceDate || '') : current.escortServiceDate
+            }))
+          }
+        } else if (extractedEscortName || extractedEscortPhone || extractedEscortDate) {
           let matchedEscort: HuanyuEscortOption | null = null
           if (extractedEscortName) {
             try {
@@ -1715,6 +1833,11 @@ function HuanyuOrderForm({
 
   async function handleSave(): Promise<boolean> {
     if (!isCreate && !hasHuanyuOrderNo) return false
+    const patientName = String(form.patientName || '').trim()
+    if (isCreate && !patientName) {
+      window.alert('就诊人姓名不能为空，请输入就诊人姓名')
+      return false
+    }
     setIsSaving(true)
     setSaveStatus(null)
     try {
@@ -1812,6 +1935,41 @@ function HuanyuOrderForm({
       return false
     } finally {
       setIsSaving(false)
+    }
+  }
+
+  async function handleCopyOrder(): Promise<void> {
+    const currentOrderNo = String(form.orderNo || '').trim()
+    if (!currentOrderNo) {
+      setSaveStatus({ type: 'error', message: '当前订单暂无订单号，无法复制' })
+      return
+    }
+    const ok = window.confirm('确定要基于当前订单内容复制一份新订单吗？\n系统将默认先保存当前页面的修改，再执行复制。')
+    if (!ok) return
+
+    setIsCopying(true)
+    setSaveStatus(null)
+    try {
+      // 1. 默认先保存当前页面的修改
+      const saved = await handleSave()
+      if (!saved) {
+        return
+      }
+
+      // 2. 复制三张寰宇表（更新单号，其余不动）
+      const res = await copyHuanyuOrder(currentOrderNo)
+      if (res.ok) {
+        clearOrdersCache()
+        window.dispatchEvent(new CustomEvent('huanyu-orders-updated'))
+        setSaveStatus({ type: 'success', message: `复制成功！新订单号：${res.newOrderNo}` })
+        window.alert(`订单复制成功！\n新订单号：${res.newOrderNo}`)
+      } else {
+        setSaveStatus({ type: 'error', message: res.message || '复制订单失败' })
+      }
+    } catch (err) {
+      setSaveStatus({ type: 'error', message: err instanceof Error ? err.message : '复制订单失败' })
+    } finally {
+      setIsCopying(false)
     }
   }
 
@@ -2565,15 +2723,20 @@ function HuanyuOrderForm({
               </button>
             ) : (
               ['保存', '刷新预约模板信息', '数据留痕', '复制订单', '确认推送寰宇订单信息']
-                .filter((label) => hasHuanyuOrderNo || (label !== '保存' && label !== '确认推送寰宇订单信息'))
+                .filter((label) => hasHuanyuOrderNo || (label !== '保存' && label !== '确认推送寰宇订单信息' && label !== '复制订单'))
                 .map((label) => (
                   <Fragment key={label}>
                     <button
                       type="button"
-                      disabled={(label === '保存' && isSaving) || (label === '确认推送寰宇订单信息' && (isSaving || isPushing))}
+                      disabled={
+                        (label === '保存' && isSaving) ||
+                        (label === '确认推送寰宇订单信息' && (isSaving || isPushing)) ||
+                        (label === '复制订单' && (isSaving || isCopying))
+                      }
                       onClick={() => {
                         if (label === '保存') void handleSave()
                         if (label === '确认推送寰宇订单信息') void handlePush()
+                        if (label === '复制订单') void handleCopyOrder()
                         if (label === '刷新预约模板信息') {
                           setSaveStatus({ type: 'success', message: '预约模板信息已刷新' })
                           window.setTimeout(() => setSaveStatus(null), 2000)
@@ -2588,7 +2751,13 @@ function HuanyuOrderForm({
                             : 'bg-action-green/90 hover:bg-action-green')
                       }
                     >
-                      {label === '保存' && isSaving ? '保存中…' : label === '确认推送寰宇订单信息' && isPushing ? '推送中…' : label}
+                      {label === '保存' && isSaving
+                        ? '保存中…'
+                        : label === '确认推送寰宇订单信息' && isPushing
+                          ? '推送中…'
+                          : label === '复制订单' && isCopying
+                            ? '复制中…'
+                            : label}
                     </button>
                     {label === '保存' && canRefundRegistrationFee && (
                       <button
@@ -2630,7 +2799,36 @@ function HuanyuOrderForm({
         <HuanyuFormSection title="订单基本信息">
         <HuanyuFormGrid>
           <HuanyuInput label="订单号" value={f.orderNo} onChange={(value) => changeField('orderNo', value)} disabled />
-          <HuanyuSelect label="订单状态" value={f.orderStatus} options={orderStatusOptions.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => changeField('orderStatus', value)} />
+          {(() => {
+            const statusCand = aiCandidatesRef.current.find(
+              (c) => c.fieldCode === 'order_status' && c.value && c.value !== f.orderStatus
+            )
+            return (
+              <div className="flex flex-col">
+                <HuanyuSelect
+                  label="订单状态"
+                  value={f.orderStatus}
+                  options={orderStatusOptions.map((item) => ({ value: item.id, label: item.name }))}
+                  onChange={(value) => changeField('orderStatus', value)}
+                />
+                {statusCand && (
+                  <div className="mt-1 flex items-center justify-between gap-1 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded shadow-2xs">
+                    <span className="flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[13px] text-amber-600">auto_awesome</span>
+                      AI建议：<strong className="text-amber-900">{statusCand.value}</strong>
+                    </span>
+                    <button
+                      type="button"
+                      className="text-primary font-semibold hover:underline cursor-pointer ml-1"
+                      onClick={() => changeField('orderStatus', statusCand.value)}
+                    >
+                      采纳
+                    </button>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
           <HuanyuSearchSelect label="B端渠道" value={f.channel} options={channelOptions} loading={channelLoading} error={channelError} onSearch={setChannelSearch} onChange={selectChannel} />
           <HuanyuInput label="B端渠道订单号" value={f.channelOrderNo} onChange={(value) => changeField('channelOrderNo', value)} disabled />
           <HuanyuInput label="备用订单号" value={f.backupOrderNo} onChange={(value) => changeField('backupOrderNo', value)} />
@@ -2651,7 +2849,7 @@ function HuanyuOrderForm({
 
       <HuanyuFormSection title="就诊人信息">
         <HuanyuFormGrid>
-          <HuanyuInput label="就诊人姓名" value={f.patientName} onChange={(value) => changeField('patientName', value)} disabled={!isCreate} />
+          <HuanyuInput label="就诊人姓名" required={isCreate} value={f.patientName} onChange={(value) => changeField('patientName', value)} disabled={!isCreate} />
           <HuanyuSelect label="证件类型" value={f.documentType} options={documentTypeOptions.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => changeField('documentType', value)} />
           <HuanyuInput label="证件号码" value={f.documentNo} onChange={(value) => changeField('documentNo', value)} />
           <HuanyuSelect label="就诊人性别" value={f.patientGender} options={['男', '女']} onChange={(value) => changeField('patientGender', value)} />
@@ -2972,7 +3170,7 @@ function buildHuanyuForm(order: Order): Record<string, string | boolean> {
 
   return {
     // 寰宇订单号：若已有维护保存的 DDBH 单号则回显，否则初始留空
-    orderNo: value(['orderNo', 'DDBH', 'hyOrderNo', 'hyydOrderNo']),
+    orderNo: value(['orderNo', 'DDBH', 'huanyuOrderNo', 'hyOrderNo', 'hyydOrderNo'], (order as any).huanyuOrderNo || (order.rawJson as any)?.DDBH || (order.rawJson as any)?.orderNo || ''),
     orderStatus: value(['orderStatus', 'status'], order.status),
     channel: resolvedChannel,
     channelOrderNo: resolvedChannelOrderNo,
@@ -3639,7 +3837,8 @@ function HuanyuInput({
   onChange,
   wide = false,
   disabled = false,
-  type = 'text'
+  type = 'text',
+  required = false
 }: {
   label: string
   value: string | boolean
@@ -3647,10 +3846,14 @@ function HuanyuInput({
   wide?: boolean
   disabled?: boolean
   type?: React.HTMLInputTypeAttribute
+  required?: boolean
 }): React.JSX.Element {
   return (
     <label className={'flex min-w-0 items-center gap-1.5 ' + (wide ? 'md:col-span-2 xl:col-span-4' : '')}>
-      <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
+      <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">
+        {required && <span className="text-status-danger mr-0.5">*</span>}
+        {label}：
+      </span>
       <input
         type={type}
         disabled={disabled}

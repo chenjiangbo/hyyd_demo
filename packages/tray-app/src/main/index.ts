@@ -167,7 +167,8 @@ function createWindow(): void {
     icon, // Windows 任务栏/窗口图标（否则显示 Electron 默认图标）
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      sandbox: false,
+      backgroundThrottling: false
     }
   })
 

@@ -248,6 +248,7 @@ export interface OrderAiFieldCandidate {
   fieldCode: string
   fieldLabel: string
   value: string
+  normalizedValue?: unknown
   candidateType: 'new_or_confirmed' | 'change_candidate' | 'ambiguous' | string
   confidence: number
   requiresConfirmation: boolean
@@ -443,6 +444,10 @@ export interface SaveHuanyuOrderPayload {
 
 export function saveHuanyuOrder(payload: SaveHuanyuOrderPayload): Promise<{ ok: boolean; order: Order; message?: string }> {
   return authedSend<{ ok: boolean; order: Order; message?: string }>('/api/v1/orders/huanyu/save', 'POST', payload)
+}
+
+export function copyHuanyuOrder(sourceOrderNo: string): Promise<{ ok: boolean; newOrderNo: string; order: Order; message?: string }> {
+  return authedSend<{ ok: boolean; newOrderNo: string; order: Order; message?: string }>('/api/v1/orders/huanyu/copy', 'POST', { sourceOrderNo })
 }
 
 /** 未采用的 AI 字段候选；页面只在正式寰宇字段为空时使用它们作展示补位。 */

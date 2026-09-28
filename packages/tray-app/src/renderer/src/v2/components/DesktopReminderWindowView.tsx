@@ -6,9 +6,24 @@ import {
 } from '../api'
 
 export default function DesktopReminderWindowView(): React.JSX.Element {
-  const [reminder, setReminder] = useState<OrderReminder | null>(null)
+  const [reminders, setReminders] = useState<OrderReminder[]>([])
+  const [currentIndex, setCurrentIndex] = useState(0)
   const [isProcessing, setIsProcessing] = useState(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  const applyNewReminders = (data: unknown) => {
+    if (!data) return
+    const rawList = Array.isArray(data) ? (data as OrderReminder[]) : [data as OrderReminder]
+    if (rawList.length === 0) return
+
+    setReminders((prev) => {
+      const prevIds = new Set(prev.map((r) => r.id))
+      const hasNew = rawList.some((r) => !prevIds.has(r.id))
+      if (hasNew) playChime()
+      return rawList
+    })
+    setCurrentIndex(0)
+  }
 
   useEffect(() => {
     // 设为透明背景
@@ -17,18 +32,12 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
 
     // 获取当前已有提醒数据
     window.api?.getCurrentReminder?.().then((data) => {
-      if (data) {
-        setReminder(data as OrderReminder)
-        playChime()
-      }
+      applyNewReminders(data)
     })
 
     // 监听主进程推过来的提醒
     const cleanup = window.api?.onReminderData?.((data) => {
-      if (data) {
-        setReminder(data as OrderReminder)
-        playChime()
-      }
+      applyNewReminders(data)
     })
 
     return () => {
@@ -45,7 +54,6 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
       void audioRef.current.play()
     } catch {}
   }
-
 
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
 
@@ -69,13 +77,25 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
     }
   }
 
+  // 延后当前条（10分钟）
   const handleSnooze = async (): Promise<void> => {
-    if (!reminder || isProcessing) return
+    if (reminders.length === 0 || isProcessing) return
+    const current = reminders[currentIndex]
+    if (!current) return
+
     setIsProcessing(true)
     try {
-      await snoozeOrderReminder(reminder.id, 10)
+      await snoozeOrderReminder(current.id, 10)
       window.dispatchEvent(new CustomEvent('huanyu-reminders-updated'))
-      window.api?.hideDesktopReminder?.()
+      
+      const nextList = reminders.filter((r) => r.id !== current.id)
+      if (nextList.length === 0) {
+        window.api?.hideDesktopReminder?.()
+        setReminders([])
+      } else {
+        setReminders(nextList)
+        setCurrentIndex((prev) => (prev >= nextList.length ? nextList.length - 1 : prev))
+      }
     } catch (err) {
       console.error('[reminder] snooze failed:', err)
     } finally {
@@ -83,15 +103,59 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
     }
   }
 
+  // 标记当前条已完成
   const handleDone = async (): Promise<void> => {
-    if (!reminder || isProcessing) return
+    if (reminders.length === 0 || isProcessing) return
+    const current = reminders[currentIndex]
+    if (!current) return
+
     setIsProcessing(true)
     try {
-      await doneOrderReminder(reminder.id)
+      await doneOrderReminder(current.id)
       window.dispatchEvent(new CustomEvent('huanyu-reminders-updated'))
-      window.api?.hideDesktopReminder?.()
+
+      const nextList = reminders.filter((r) => r.id !== current.id)
+      if (nextList.length === 0) {
+        window.api?.hideDesktopReminder?.()
+        setReminders([])
+      } else {
+        setReminders(nextList)
+        setCurrentIndex((prev) => (prev >= nextList.length ? nextList.length - 1 : prev))
+      }
     } catch (err) {
       console.error('[reminder] mark done failed:', err)
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  // 全部延后 10 分钟
+  const handleSnoozeAll = async (): Promise<void> => {
+    if (reminders.length === 0 || isProcessing) return
+    setIsProcessing(true)
+    try {
+      await Promise.all(reminders.map((r) => snoozeOrderReminder(r.id, 10)))
+      window.dispatchEvent(new CustomEvent('huanyu-reminders-updated'))
+      window.api?.hideDesktopReminder?.()
+      setReminders([])
+    } catch (err) {
+      console.error('[reminder] snooze all failed:', err)
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  // 全部标记已完成
+  const handleDoneAll = async (): Promise<void> => {
+    if (reminders.length === 0 || isProcessing) return
+    setIsProcessing(true)
+    try {
+      await Promise.all(reminders.map((r) => doneOrderReminder(r.id)))
+      window.dispatchEvent(new CustomEvent('huanyu-reminders-updated'))
+      window.api?.hideDesktopReminder?.()
+      setReminders([])
+    } catch (err) {
+      console.error('[reminder] done all failed:', err)
     } finally {
       setIsProcessing(false)
     }
@@ -101,10 +165,15 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
     window.api?.hideDesktopReminder?.()
   }
 
-  if (!reminder) {
+  if (reminders.length === 0) {
     return <div className="w-full h-full bg-transparent" />
   }
 
+  const safeIndex = Math.min(currentIndex, reminders.length - 1)
+  const reminder = reminders[safeIndex]
+  if (!reminder) return <div className="w-full h-full bg-transparent" />
+
+  const totalCount = reminders.length
   const tag = reminder.type === 'manual' ? '手工备忘' : '系统提醒'
   const isUrgent = tag === '系统提醒'
   const timeStr = reminder.remind_time || reminder.remindTime
@@ -199,7 +268,7 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
           boxShadow: '0 16px 32px -8px rgba(0, 0, 0, 0.25), 0 0 16px rgba(0,0,0,0.08)'
         }}
       >
-        {/* 顶部：标签、时间与关闭 */}
+        {/* 顶部：标签、翻页器、时间与关闭 */}
         <div className="flex items-center justify-between border-b border-border-subtle/80 pb-2">
           <div className="flex items-center gap-1.5">
             <span
@@ -215,6 +284,32 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
               </span>
               {tag}
             </span>
+
+            {/* 多条提醒时的翻页指示器 */}
+            {totalCount > 1 && (
+              <div className="flex items-center gap-1 bg-surface-container px-1.5 py-0.5 rounded text-[11px] text-text-main font-semibold">
+                <span>{safeIndex + 1}/{totalCount}</span>
+                <button
+                  type="button"
+                  disabled={safeIndex <= 0}
+                  onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
+                  className="w-4 h-4 rounded flex items-center justify-center hover:bg-white text-text-muted hover:text-text-main disabled:opacity-30 disabled:hover:bg-transparent"
+                  title="上一条"
+                >
+                  <span className="material-symbols-outlined text-[12px]">chevron_left</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={safeIndex >= totalCount - 1}
+                  onClick={() => setCurrentIndex((prev) => Math.min(totalCount - 1, prev + 1))}
+                  className="w-4 h-4 rounded flex items-center justify-center hover:bg-white text-text-muted hover:text-text-main disabled:opacity-30 disabled:hover:bg-transparent"
+                  title="下一条"
+                >
+                  <span className="material-symbols-outlined text-[12px]">chevron_right</span>
+                </button>
+              </div>
+            )}
+
             {isUrgent && (
               <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-semibold bg-red-50 text-error border border-red-200 animate-pulse">
                 待处理
@@ -230,7 +325,7 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
               type="button"
               onClick={handleClose}
               className="text-text-muted hover:text-text-main p-0.5 rounded hover:bg-surface-container transition-colors"
-              title="关闭"
+              title="关闭浮窗"
             >
               <span className="material-symbols-outlined text-[16px]">close</span>
             </button>
@@ -244,26 +339,54 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
           </div>
         </div>
 
-        {/* 底部按钮：延后 10 分钟 / 已完成 */}
-        <div className="flex items-center justify-between border-t border-border-subtle/80 pt-2.5 gap-2">
-          <button
-            type="button"
-            disabled={isProcessing}
-            onClick={handleSnooze}
-            className="flex-1 inline-flex items-center justify-center gap-1 rounded-lg border border-border-subtle bg-surface-bg px-2.5 py-1.5 text-body-sm font-semibold text-text-main hover:bg-surface-container hover:border-text-muted transition-colors disabled:opacity-50"
-          >
-            <span className="material-symbols-outlined text-[15px]">snooze</span>
-            延后 10 分钟
-          </button>
-          <button
-            type="button"
-            disabled={isProcessing}
-            onClick={handleDone}
-            className="flex-1 inline-flex items-center justify-center gap-1 rounded-lg bg-action-green px-2.5 py-1.5 text-body-sm font-semibold text-white shadow-sm hover:bg-action-green/90 transition-colors disabled:opacity-50"
-          >
-            <span className="material-symbols-outlined text-[15px]">check_circle</span>
-            已完成
-          </button>
+        {/* 底部按钮：延后 10 分钟 / 已完成，以及多条时的批量操作 */}
+        <div className="flex flex-col gap-1.5 border-t border-border-subtle/80 pt-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              disabled={isProcessing}
+              onClick={handleSnooze}
+              className="flex-1 inline-flex items-center justify-center gap-1 rounded-lg border border-border-subtle bg-surface-bg px-2.5 py-1.5 text-body-sm font-semibold text-text-main hover:bg-surface-container hover:border-text-muted transition-colors disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-[15px]">snooze</span>
+              延后 10 分钟
+            </button>
+            <button
+              type="button"
+              disabled={isProcessing}
+              onClick={handleDone}
+              className="flex-1 inline-flex items-center justify-center gap-1 rounded-lg bg-action-green px-2.5 py-1.5 text-body-sm font-semibold text-white shadow-sm hover:bg-action-green/90 transition-colors disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-[15px]">check_circle</span>
+              已完成
+            </button>
+          </div>
+
+          {/* 多条时的批量操作 */}
+          {totalCount > 1 && (
+            <div className="flex items-center justify-between text-[11px] text-text-muted px-1 pt-0.5">
+              <span>当前共有 {totalCount} 条提醒待处理</span>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  disabled={isProcessing}
+                  onClick={handleSnoozeAll}
+                  className="text-primary hover:underline transition-colors disabled:opacity-50 cursor-pointer"
+                >
+                  全部延后
+                </button>
+                <span>·</span>
+                <button
+                  type="button"
+                  disabled={isProcessing}
+                  onClick={handleDoneAll}
+                  className="text-action-green hover:underline transition-colors disabled:opacity-50 cursor-pointer"
+                >
+                  全部完成
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

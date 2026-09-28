@@ -63,6 +63,8 @@ export const ORDER_AI_FIELD_DEFINITIONS: readonly OrderAiFieldDefinition[] = [
   { code: 'escort_name', label: '陪诊人员姓名', services: ['全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院'] },
   { code: 'escort_phone', label: '陪诊联系电话', services: ['全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院'] },
   { code: 'escort_service_summary', label: '陪诊服务小结', services: ['全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院'] },
+  { code: 'escort_records', label: '陪诊明细记录列表（支持多次陪诊）', services: ['全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院'] },
+  { code: 'order_status', label: '建议订单状态', requiresConfirmation: true },
   { code: 'inspection_item', label: '检查项目', services: ['检查加急'] },
   { code: 'inspection_booking_time', label: '检查预约时间', services: ['检查加急'] },
   { code: 'inspection_actual_time', label: '实际检查时间', services: ['检查加急'] },
@@ -102,11 +104,19 @@ export const ORDER_AI_PROMPT_RULES = [
   '4. 预约反馈时间(appointment_success_time)：挂号或预约成功后，服务人员在企微/短信/电话中向客户发送预约结果通知/挂号截图/就诊确认的时间点。',
   '5. 最晚取号时间(latest_ticket_time)：挂号单/预约凭证上载明的最晚取号时间或预约看诊时段起始时间（格式 YYYY-MM-DD HH:mm:ss）。',
   '6. 陪诊服务日期(escort_service_date)：挂号单/预约凭证上确定的看诊/陪诊日期（格式 YYYY-MM-DD）。',
-  '【陪诊人员信息提取与渠道优先级准则（企微 > 微信）】：',
-  '1. 渠道优先级铁律：若在【企业微信（企微 / wxwork）】消息中识别/派发了陪诊人员（escort_name、escort_phone），必须 100% 优先以企微中的陪诊人员信息为准（企微为官方正式协同调度渠道，具有最高权威性，直接覆盖微信中可能存在的旧/初版陪诊人）。',
-  '2. 微信兜底：只有当【企业微信消息中未提及/未分配陪诊人】时，才以【微信（wechat）】派单模板中明确载明的陪诊人和电话为准。',
-  '3. 若沟通记录中出现了包含“渠道/订单号/就诊人/陪诊人/陪诊人电话”的标准派单/预约通知模板卡片，按上述渠道优先级提取，escort_name 与 escort_phone 置信度设为高（confidence >= 0.95），并引用对应渠道的派单消息作为证据。',
-  '4. 若在通话录音或其他非正式聊天中口头提及过其他陪诊人，一律以企微（或微信兜底）的正式派单模板为准覆盖。',
+  '【陪诊人员信息与多次/多阶段陪诊识别准则（支持门诊+检查多次陪诊）】：',
+  '1. 渠道优先级铁律：若在【企业微信（企微 / wxwork）】消息中识别/派发了陪诊人员（escort_name、escort_phone），必须 100% 优先以企微中的陪诊人员信息为准（企微为官方正式协同调度渠道，具有最高权威性，直接覆盖微信中可能存在的旧/初版陪诊人）。企微未提及/未分配时，才以微信派单模板为准兜底。',
+  '2. 多次/多阶段陪诊识别：同一个工单可能包含多天或多次陪诊（例如：今天普通门诊就医陪诊，次日专项检查加急陪诊，后续复诊陪诊等）。',
+  '3. 若沟通记录中涉及多次陪诊安排，必须提取 escort_records 字段，其 normalized_value 必须为 JSON 数组，数组中每一项包含：',
+  '   - sequence：序号字符串（如 "1", "2"）',
+  '   - service_date：陪诊服务日期（格式 YYYY-MM-DD）',
+  '   - escort_name：陪诊人员真实姓名',
+  '   - escort_phone：陪诊人员联系电话（若未提及可为空字符串）',
+  '   - service_scene：服务场景说明（如"门诊陪诊"、"检查陪诊"、"复诊陪诊"等）',
+  '   同时 escort_records 的 value 输出所有陪诊安排的汇总描述文本。',
+  '4. escort_name、escort_service_date、escort_phone 保持与第 1 次陪诊（首次陪诊）信息一致，确保向下兼容。',
+  '5. 若沟通记录中出现了包含“渠道/订单号/就诊人/陪诊人/陪诊人电话”的标准派单/预约通知模板卡片，按上述渠道优先级提取，escort_name 与 escort_phone 置信度设为高（confidence >= 0.95），并引用对应渠道的派单消息作为证据。',
+  '6. 若在通话录音或其他非正式聊天中口头提及过其他陪诊人，一律以企微（或微信兜底）的正式派单模板为准覆盖。',
   '“计划、想约、正在约、可能”不是完成；只有明确已挂号、预约成功、已检查、已住院、已出院、已陪诊、已复诊、已明确确认取消等事实才可输出步骤事件。',
   '【服务取消事件(service_cancelled)识别铁律（极其严谨）】：',
   '1. 必须有双方明确达成一致确认取消就医服务、退单或服务终止解散群聊的确凿事实证据，才能输出 service_cancelled 事件！',
@@ -129,6 +139,12 @@ export const ORDER_AI_PROMPT_RULES = [
   '6. 专家级别(expert_level)是医生的档案属性由医生主档联动带出，若已有明确具体医生，不要单独提取专家级别；仅未提及具体医生时才可提取标准枚举之一（知名专家、主任医师、副主任医师、主治医师、住院医师），绝不得包含“教授/博士”等非标教学称谓。',
   '日期能精确时输出 YYYY-MM-DD HH:mm:ss；不能精确时保留原文，不要编造。没有明确值的字段不要输出。',
   '每个候选都必须引用消息#ID或通话#ID及其原文短句；只输出合法 JSON。',
+  '【建议订单状态(order_status)识别准则（输出为候选建议，必须人工确认）】：',
+  '1. 适用状态枚举仅限：已完成、待跟进、待预约、待交付、预约完成待支付、已取消。',
+  '2. “已完成”识别要求（极其严谨，必须有确凿事实证据）：',
+  '   - 必须有沟通记录或通话录音明确证实本次就医全流程履约已彻底结束（例如：陪诊/门诊已完成且患者已顺利就医返程，服务人员发送了就诊结束总结/回访/感谢确认，或双方明确确认“本次服务已全部完成/结束”）；',
+  '   - 严禁将预约成功、仅完成挂号或单次门诊看诊后仍有后续检查/复诊计划的情况误判为“已完成”；',
+  '   - 必须 requires_confirmation=true，并引用证明服务彻底结束的具体消息或通话原文作为 evidence。',
   '【时区基准】：沟通时间线中的所有消息和通话时间均为中国东八区北京时间，提取的时间字段务必保持一致。'
 ] as const
 
@@ -207,17 +223,98 @@ function normalizeCandidates(raw: unknown, allowed: Map<string, OrderAiFieldDefi
         }).slice(0, 5)
       : []
     if (evidence.length === 0) continue
+
+    let normalizedValue = record.normalized_value ?? value
+    if (fieldCode === 'escort_records' && typeof normalizedValue === 'string') {
+      try {
+        normalizedValue = JSON.parse(normalizedValue)
+      } catch {
+        // ignore
+      }
+    }
+
     latest.set(fieldCode!, {
       fieldCode: fieldCode!,
       fieldLabel: definition.label,
       value: value.slice(0, 2000),
-      normalizedValue: record.normalized_value ?? value,
+      normalizedValue,
       candidateType,
       confidence,
       requiresConfirmation: definition.requiresConfirmation || record.requires_confirmation === true || candidateType !== 'new_or_confirmed',
       evidence
     })
   }
+
+  // 1. 若提取到了多笔/多阶段 escort_records，自动将第 1 笔填充到 escort_name / escort_service_date / escort_phone，
+  // 确保旧系统视图与下游定时提醒服务无缝兼容。
+  const escortRecordsCand = latest.get('escort_records')
+  if (escortRecordsCand && Array.isArray(escortRecordsCand.normalizedValue) && escortRecordsCand.normalizedValue.length > 0) {
+    const first = escortRecordsCand.normalizedValue[0] as Record<string, unknown>
+    const firstEscortName = stringValue(first.escort_name || first.escortName)
+    const firstEscortPhone = stringValue(first.escort_phone || first.escortPhone)
+    const firstEscortDate = stringValue(first.service_date || first.serviceDate)
+
+    if (firstEscortName && !latest.has('escort_name') && allowed.has('escort_name')) {
+      latest.set('escort_name', {
+        fieldCode: 'escort_name',
+        fieldLabel: allowed.get('escort_name')!.label,
+        value: firstEscortName,
+        normalizedValue: firstEscortName,
+        candidateType: escortRecordsCand.candidateType,
+        confidence: escortRecordsCand.confidence,
+        requiresConfirmation: false,
+        evidence: escortRecordsCand.evidence
+      })
+    }
+    if (firstEscortPhone && !latest.has('escort_phone') && allowed.has('escort_phone')) {
+      latest.set('escort_phone', {
+        fieldCode: 'escort_phone',
+        fieldLabel: allowed.get('escort_phone')!.label,
+        value: firstEscortPhone,
+        normalizedValue: firstEscortPhone,
+        candidateType: escortRecordsCand.candidateType,
+        confidence: escortRecordsCand.confidence,
+        requiresConfirmation: false,
+        evidence: escortRecordsCand.evidence
+      })
+    }
+    if (firstEscortDate && !latest.has('escort_service_date') && allowed.has('escort_service_date')) {
+      latest.set('escort_service_date', {
+        fieldCode: 'escort_service_date',
+        fieldLabel: allowed.get('escort_service_date')!.label,
+        value: firstEscortDate,
+        normalizedValue: firstEscortDate,
+        candidateType: escortRecordsCand.candidateType,
+        confidence: escortRecordsCand.confidence,
+        requiresConfirmation: false,
+        evidence: escortRecordsCand.evidence
+      })
+    }
+  } else if (!latest.has('escort_records') && allowed.has('escort_records')) {
+    // 2. 反向兼容：若仅提取了单值 escort_name / escort_service_date，自动包装成只有 1 项的 escort_records
+    const singleName = latest.get('escort_name')
+    const singleDate = latest.get('escort_service_date')
+    const singlePhone = latest.get('escort_phone')
+    if (singleName && singleName.value) {
+      latest.set('escort_records', {
+        fieldCode: 'escort_records',
+        fieldLabel: allowed.get('escort_records')!.label,
+        value: `陪诊人: ${singleName.value}${singleDate ? `，服务日期: ${singleDate.value}` : ''}`,
+        normalizedValue: [{
+          sequence: '1',
+          service_date: singleDate?.value || '',
+          escort_name: singleName.value,
+          escort_phone: singlePhone?.value || '',
+          service_scene: '门诊陪诊'
+        }],
+        candidateType: singleName.candidateType,
+        confidence: singleName.confidence,
+        requiresConfirmation: false,
+        evidence: singleName.evidence
+      })
+    }
+  }
+
   return [...latest.values()]
 }
 
@@ -249,7 +346,10 @@ export async function extractOrderServiceFields(input: {
     ...ORDER_AI_PROMPT_RULES,
     'JSON 格式：',
     JSON.stringify({
-      field_candidates: [{ field_code: '白名单字段', value: '候选值', normalized_value: '可选标准化值', candidate_type: 'new_or_confirmed | change_candidate | ambiguous', confidence: 0.0, requires_confirmation: false, evidence: [{ source_id: '消息#123 或 通话#456', quote: '原文短句' }] }],
+      field_candidates: [
+        { field_code: '白名单字段', value: '候选值', normalized_value: '可选标准化值', candidate_type: 'new_or_confirmed | change_candidate | ambiguous', confidence: 0.0, requires_confirmation: false, evidence: [{ source_id: '消息#123 或 通话#456', quote: '原文短句' }] },
+        { field_code: 'escort_records', value: '共识别到2次陪诊：1. 2026-09-28 张三(门诊陪诊)；2. 2026-09-29 李四(检查陪诊)', normalized_value: [{ sequence: '1', service_date: '2026-09-28', escort_name: '张三', escort_phone: '13800000001', service_scene: '门诊陪诊' }, { sequence: '2', service_date: '2026-09-29', escort_name: '李四', escort_phone: '13900000002', service_scene: '检查陪诊' }], candidate_type: 'new_or_confirmed', confidence: 0.95, requires_confirmation: false, evidence: [{ source_id: '消息#123', quote: '原文短句' }] }
+      ],
       workflow_events: [{ code: WORKFLOW_EVENT_CODES.join(' | '), evidence: '明确完成或确认的原文事实' }]
     })
   ].join('\n')

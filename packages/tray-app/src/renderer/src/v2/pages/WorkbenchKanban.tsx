@@ -280,7 +280,7 @@ export function getServicesOfGroup(group: ApplicationGroup): FlattenedService[] 
           applicationNo: order.applicationNo || applicationNoOf(order),
           sourceOrderNo: bNo,
           huanyuOrderNo: hNo,
-          serviceType: h.serviceName || order.serviceType || bizType(order),
+          serviceType: (h.serviceName && !/^\d+$/.test(h.serviceName.trim()) ? h.serviceName : null) || (order.serviceType && !/^\d+$/.test(order.serviceType.trim()) ? order.serviceType : null) || bizType(order),
           customerName: h.patientName || displayCustomerNameOf(order),
           status: h.status || order.huanyuOrderStatus || order.status,
           accountManager: h.accountManager || order.accountManager || '—',
