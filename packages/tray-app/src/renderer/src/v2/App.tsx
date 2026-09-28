@@ -40,6 +40,8 @@ export default function App(): React.JSX.Element {
   const [openHuanyuCreate, setOpenHuanyuCreate] = useState(false)
   // 顶部导航全局搜索（驱动工作台过滤）
   const [search, setSearch] = useState('')
+  const [showAdvancedSearch, setShowAdvancedSearch] = useState(false)
+  const [advancedFilterCount, setAdvancedFilterCount] = useState(0)
 
   // 登录态用小窗，登录后放大到工作台尺寸
   useEffect(() => {
@@ -120,6 +122,9 @@ export default function App(): React.JSX.Element {
         session={session}
         search={search}
         onSearch={setSearch}
+        onToggleAdvancedSearch={() => setShowAdvancedSearch((v) => !v)}
+        isAdvancedSearchOpen={showAdvancedSearch}
+        activeFilterCount={advancedFilterCount}
         onLogout={() => {
           clearSession()
           setSession(null)
@@ -130,6 +135,9 @@ export default function App(): React.JSX.Element {
           <WorkbenchKanban
             employeeCode={session.employeeCode}
             query={search}
+            showAdvancedSearch={showAdvancedSearch}
+            onToggleAdvancedSearch={setShowAdvancedSearch}
+            onAdvancedFilterCountChange={setAdvancedFilterCount}
             onOpenApplication={(group, selectedOrderId) => setOpenApplication({ group, selectedOrderId })}
             onCreateHuanyuOrder={() => setOpenHuanyuCreate(true)}
           />

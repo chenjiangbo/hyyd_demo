@@ -65,7 +65,7 @@ export function stageIndexOf(o: Order): number {
 /** 业务类型展示标签：挂号池 → 挂号协助；绿通池 → 具体服务名 */
 export function bizType(o: Order): string {
   if (o.rawJson?.poolType === 'register') return '挂号协助'
-  return o.rawJson?.serviceType || o.rawJson?.itemName || '绿通业务'
+  return o.rawJson?.serviceType || o.rawJson?.itemName || o.serviceType || ''
 }
 
 /**
@@ -116,7 +116,9 @@ const SOURCE_LABELS: Record<string, string> = {
   picc: '人保',
   taiping: '太平洋',
   guoshou: '人寿',
-  xinhua: '新华'
+  xinhua: '新华',
+  huanyu: '自营',
+  self: '自营'
 }
 
 export function sourceLabel(o: Order): string {
@@ -135,7 +137,8 @@ export const SOURCE_OPTIONS: { code: string; label: string }[] = [
   { code: 'picc', label: '人保' },
   { code: 'taiping', label: '太平洋' },
   { code: 'guoshou', label: '人寿' },
-  { code: 'xinhua', label: '新华' }
+  { code: 'xinhua', label: '新华' },
+  { code: 'huanyu', label: '自营' }
 ]
 
 /** 来源（甲方保险公司）配色：不同来源不同色 */
@@ -151,7 +154,9 @@ const SOURCE_STYLES: Record<string, SourceStyle> = {
   picc: { label: '人保', text: 'text-[#0e7490]', bg: 'bg-[#cffafe]' },
   taiping: { label: '太平洋', text: 'text-[#1d4ed8]', bg: 'bg-[#dbeafe]' },
   guoshou: { label: '人寿', text: 'text-[#b91c1c]', bg: 'bg-[#fee2e2]' },
-  xinhua: { label: '新华', text: 'text-[#6d28d9]', bg: 'bg-[#ede9fe]' }
+  xinhua: { label: '新华', text: 'text-[#6d28d9]', bg: 'bg-[#ede9fe]' },
+  huanyu: { label: '自营', text: 'text-[#1e40af]', bg: 'bg-[#dbeafe]' },
+  self: { label: '自营', text: 'text-[#1e40af]', bg: 'bg-[#dbeafe]' }
 }
 
 export function sourceStyle(o: Order): SourceStyle {

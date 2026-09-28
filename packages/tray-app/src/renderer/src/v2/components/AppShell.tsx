@@ -29,6 +29,96 @@ const NAV: { key: NavKey; label: string }[] = [
   { key: 'debug', label: '🔧 采集调试' }
 ]
 
+function GlobalSearchInput({
+  search,
+  onSearch,
+  onToggleAdvancedSearch,
+  isAdvancedSearchOpen = false,
+  activeFilterCount = 0
+}: {
+  search: string
+  onSearch: (v: string) => void
+  onToggleAdvancedSearch?: () => void
+  isAdvancedSearchOpen?: boolean
+  activeFilterCount?: number
+}): React.JSX.Element {
+  const [val, setVal] = useState(search)
+  const isComposingRef = useRef(false)
+
+  // 当外部 search 被清空或更改时同步
+  useEffect(() => {
+    setVal(search)
+  }, [search])
+
+  // 300ms 防抖避免频繁触发接口请求
+  useEffect(() => {
+    if (val === search) return
+    const timer = setTimeout(() => {
+      if (!isComposingRef.current) {
+        onSearch(val)
+      }
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [val, search, onSearch])
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (e.key === 'Enter') {
+      onSearch(val)
+    }
+  }
+
+  const handleClear = (): void => {
+    setVal('')
+    onSearch('')
+  }
+
+  return (
+    <div className="relative flex items-center w-full">
+      <span className="material-symbols-outlined absolute left-3 text-outline text-[20px] pointer-events-none">search</span>
+      <input
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onCompositionStart={() => {
+          isComposingRef.current = true
+        }}
+        onCompositionEnd={(e) => {
+          isComposingRef.current = false
+          const text = (e.target as HTMLInputElement).value
+          setVal(text)
+          onSearch(text)
+        }}
+        onKeyDown={handleKeyDown}
+        placeholder="搜索申请号、单号、客户姓名、医院、医生、客户经理…"
+        className="w-full pl-10 pr-24 py-2 bg-surface-container-low border border-transparent rounded-lg text-body-md focus:outline-none focus:bg-white focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
+      />
+      {val && (
+        <button
+          type="button"
+          onClick={handleClear}
+          className="absolute right-16 p-1 text-text-muted hover:text-text-main rounded transition-colors"
+          title="清空搜索"
+        >
+          <span className="material-symbols-outlined text-[16px]">close</span>
+        </button>
+      )}
+      {onToggleAdvancedSearch && (
+        <button
+          type="button"
+          onClick={onToggleAdvancedSearch}
+          className={
+            'absolute right-2 px-2 py-1 rounded text-[12px] leading-4 font-bold transition-colors ' +
+            (isAdvancedSearchOpen
+              ? 'bg-primary text-white shadow-xs'
+              : 'text-primary hover:bg-primary-fixed/40')
+          }
+        >
+          高级{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+        </button>
+      )}
+    </div>
+  )
+}
+
 /**
  * 应用外壳：顶部 64px 导航条（品牌 + 5 个一级 Tab + 右侧操作 + 头像）。
  * 各业务页面作为 children 渲染在导航条下方。
@@ -41,6 +131,9 @@ export default function AppShell({
   onChangePassword,
   search,
   onSearch,
+  onToggleAdvancedSearch,
+  isAdvancedSearchOpen = false,
+  activeFilterCount = 0,
   children
 }: {
   active: NavKey
@@ -50,6 +143,9 @@ export default function AppShell({
   onChangePassword?: () => void
   search: string
   onSearch: (v: string) => void
+  onToggleAdvancedSearch?: () => void
+  isAdvancedSearchOpen?: boolean
+  activeFilterCount?: number
   children: ReactNode
 }): React.JSX.Element {
   return (
@@ -87,18 +183,13 @@ export default function AppShell({
 
         {/* 全局搜索 */}
         <div className="flex-1 max-w-2xl ml-auto">
-          <div className="relative flex items-center w-full">
-            <span className="material-symbols-outlined absolute left-3 text-outline text-[20px]">search</span>
-            <input
-              value={search}
-              onChange={(e) => onSearch(e.target.value)}
-              placeholder="搜索申请号、患者姓名、电话…"
-              className="w-full pl-10 pr-16 py-2 bg-surface-container-low border border-transparent rounded-lg text-body-md focus:outline-none focus:bg-white focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
-            />
-            <button className="absolute right-3 text-primary text-[12px] leading-4 font-bold hover:bg-primary-fixed/30 px-2 py-1 rounded transition-colors">
-              高级
-            </button>
-          </div>
+          <GlobalSearchInput
+            search={search}
+            onSearch={onSearch}
+            onToggleAdvancedSearch={onToggleAdvancedSearch}
+            isAdvancedSearchOpen={isAdvancedSearchOpen}
+            activeFilterCount={activeFilterCount}
+          />
         </div>
 
         {/* 右侧操作 */}

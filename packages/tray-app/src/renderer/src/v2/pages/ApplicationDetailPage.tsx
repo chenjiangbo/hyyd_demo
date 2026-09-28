@@ -2941,17 +2941,46 @@ function buildHuanyuForm(order: Order): Record<string, string | boolean> {
   const fallbackDefaultDate = value(['defaultDate']).replace(/\D/g, '').slice(0, 8)
   const fallbackDefaultTime = value(['defaultTime'])
 
+  const resolvedChannel = (() => {
+    const ch = value(['channel', 'bChannel', 'sourceChannel', 'BDQD'])
+    if (ch && ch !== '自营' && ch !== 'huanyu') return ch
+    if (order.source && order.source !== 'huanyu' && order.source !== 'self') {
+      const lbl = sourceStyle(order).label
+      if (lbl && lbl !== '自营') return lbl
+    }
+    return ''
+  })()
+
+  const resolvedChannelOrderNo = (() => {
+    const bNo = value(['bOrderNo', 'channelOrderNo', 'BDQD_DDBH'])
+    if (bNo && !bNo.startsWith('HYDD')) return bNo
+    if (order.sourceOrderNo && !order.sourceOrderNo.startsWith('HYDD') && order.source !== 'huanyu') {
+      return order.sourceOrderNo
+    }
+    return ''
+  })()
+
+  const resolvedChannelService = (() => {
+    const s = value(['channelService', 'serviceProject', 'BDQD_FWXM'])
+    if (s && s !== '绿通业务') return s
+    if (order.source && order.source !== 'huanyu' && order.source !== 'self') {
+      const bt = bizType(order)
+      if (bt && bt !== '绿通业务') return bt
+    }
+    return ''
+  })()
+
   return {
     // 寰宇订单号：若已有维护保存的 DDBH 单号则回显，否则初始留空
     orderNo: value(['orderNo', 'DDBH', 'hyOrderNo', 'hyydOrderNo']),
     orderStatus: value(['orderStatus', 'status'], order.status),
-    channel: value(['channel', 'bChannel', 'sourceChannel'], sourceStyle(order).label),
-    channelOrderNo: value(['bOrderNo', 'channelOrderNo', 'sourceOrderNo'], order.sourceOrderNo),
+    channel: resolvedChannel,
+    channelOrderNo: resolvedChannelOrderNo,
     backupOrderNo: value(['backupOrderNo']),
-    channelDetail: value(['channelDetail', 'bChannelDetail']),
-    channelContact: value(['channelContact', 'bContact']),
-    channelBackupContact: value(['channelBackupContact', 'bBackupContact']),
-    channelService: value(['channelService', 'serviceProject', 'bizType'], bizType(order)),
+    channelDetail: value(['channelDetail', 'bChannelDetail', 'BDQD_XF']),
+    channelContact: value(['channelContact', 'bContact', 'BDQD_DJR']),
+    channelBackupContact: value(['channelBackupContact', 'bBackupContact', 'BDQD_DJR2']),
+    channelService: resolvedChannelService,
     internalLevelOne: value(['internalLevelOne', 'innerLevelOne']),
     internalLevelTwo: value(['internalLevelTwo', 'innerLevelTwo']),
     orderAmount: value(['orderAmount', 'amount', 'price']),
@@ -3015,7 +3044,7 @@ function buildHuanyuForm(order: Order): Record<string, string | boolean> {
     hasInsurance: huanyuInsuranceLabel(value(['hasInsurance', 'medicalInsurance'])),
     insuranceType: value(['insuranceType', 'medicalInsuranceType']),
     smsLink: value(['smsLink']),
-    internalBookingTemplate: buildHuanyuBookingTemplate('对内', { channel: value(['channel', 'bChannel'], sourceStyle(order).label), orderNo: value(['orderNo', 'hyydOrderNo'], order.sourceOrderNo), channelOrderNo: value(['bOrderNo', 'channelOrderNo'], order.sourceOrderNo), service: value(['channelService', 'serviceProject'], bizType(order)), patientName, patientPhone, hospital, department, doctor, bookingTime, escortName: value(['escortName', 'companionName']), escortPhone: value(['escortPhone', 'companionPhone']), hospitalAddress: value(['hospitalAddress', 'address']), remark: value(['serviceRemark', 'orderRemark', 'comments']) }),
+    internalBookingTemplate: buildHuanyuBookingTemplate('对内', { channel: resolvedChannel, orderNo: value(['orderNo', 'hyydOrderNo', 'DDBH'], order.sourceOrderNo), channelOrderNo: resolvedChannelOrderNo, service: resolvedChannelService, patientName, patientPhone, hospital, department, doctor, bookingTime, escortName: value(['escortName', 'companionName']), escortPhone: value(['escortPhone', 'companionPhone']), hospitalAddress: value(['hospitalAddress', 'address']), remark: value(['serviceRemark', 'orderRemark', 'comments']) }),
     externalBookingTemplate: buildHuanyuBookingTemplate('对外', { patientName, patientPhone, hospital, department, doctor, bookingTime, escortName: value(['escortName', 'companionName']), escortPhone: value(['escortPhone', 'companionPhone']), hospitalAddress: value(['hospitalAddress', 'address']), remark: value(['serviceRemark', 'orderRemark', 'comments']) }),
     escortSummary: value(['escortSummary', 'serviceSummary'])
   }

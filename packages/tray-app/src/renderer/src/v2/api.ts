@@ -100,6 +100,32 @@ export interface Order {
   audioCount: number
   textCount: number
   imageCount: number
+  applicationNo?: string | null
+  accountManager?: string | null
+  orderAmount?: number | null
+  serviceType?: string | null
+  huanyuOrderNo?: string | null
+  bOrderNo?: string | null
+  isAiHospital?: boolean
+  isAiDept?: boolean
+  isAiDoctor?: boolean
+  huanyuOrders?: Array<{
+    id: string
+    ddbh: string
+    huanyuOrderNo?: string | null
+    bOrderNo?: string | null
+    isClone: boolean
+    sequence: number
+    status: string
+    serviceName: string
+    amount?: number | null
+    accountManager: string
+    hospital: string
+    dept: string
+    doctor: string
+    patientName: string
+    createdAt: string
+  }>
   rawJson?: Record<string, unknown> & {
     poolType?: 'register' | 'general'
     serviceType?: string
@@ -253,6 +279,17 @@ export interface FetchOrdersParams {
   sortKey?: string
   sortDir?: 'asc' | 'desc'
   pool?: string
+  applicationNo?: string
+  sourceOrderNo?: string
+  huanyuOrderNo?: string
+  serviceType?: string
+  customerName?: string
+  accountManager?: string
+  hospital?: string
+  dept?: string
+  doctor?: string
+  startDate?: string
+  endDate?: string
 }
 
 export interface PaginatedOrdersResult {
@@ -272,6 +309,17 @@ export async function fetchOrdersPaginated(params: FetchOrdersParams): Promise<P
   if (params.sortKey) q.set('sortKey', params.sortKey)
   if (params.sortDir) q.set('sortDir', params.sortDir)
   if (params.pool) q.set('pool', params.pool)
+  if (params.applicationNo) q.set('applicationNo', params.applicationNo)
+  if (params.sourceOrderNo) q.set('sourceOrderNo', params.sourceOrderNo)
+  if (params.huanyuOrderNo) q.set('huanyuOrderNo', params.huanyuOrderNo)
+  if (params.serviceType) q.set('serviceType', params.serviceType)
+  if (params.customerName) q.set('customerName', params.customerName)
+  if (params.accountManager) q.set('accountManager', params.accountManager)
+  if (params.hospital) q.set('hospital', params.hospital)
+  if (params.dept) q.set('dept', params.dept)
+  if (params.doctor) q.set('doctor', params.doctor)
+  if (params.startDate) q.set('startDate', params.startDate)
+  if (params.endDate) q.set('endDate', params.endDate)
 
   const code = getSession()?.employeeCode
   if (!code) throw new Error('未登录')

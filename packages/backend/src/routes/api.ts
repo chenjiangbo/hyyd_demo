@@ -1364,7 +1364,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         if (doc?.name) resolvedDoctorName = doc.name
       }
 
-      let syncedOrder
+      let syncedOrder: any
       if (existingOrder) {
         // 原地更新已有订单，保留其原有 source 和 sourceOrderNo（B端订单编号不被篡改）
         syncedOrder = await prisma.order.update({
@@ -1384,60 +1384,58 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
             }
           }
         })
-      } else {
-        // 全新自建寰宇订单
-        syncedOrder = await prisma.order.create({
-          data: {
-            source: 'huanyu',
-            sourceOrderNo: orderNo,
-            customerName: patientName,
-            customerPhone: body.patientPhone || null,
-            hospital: resolvedHospitalName,
-            dept: resolvedDeptName,
-            doctor: resolvedDoctorName,
-            status: orderStatus,
-            assignedEmployee: { connect: { id: request.employee.id } },
-            rawJson: { ...orderRawBody, orderNo, DDBH: orderNo }
+
+        await initializeOrderWorkflow(prisma, syncedOrder.id)
+
+        // 用户保存时，只有实际采纳且值一致的 AI 候选才标为 adopted；手工改成其他值时不误标。
+        const candidateValueByCode: Record<string, unknown> = {
+          hospital: body.hospital,
+          hospital_address: body.hospitalAddress,
+          department: body.department,
+          doctor: body.doctor,
+          expert_level: body.expertLevel,
+          service_remark: body.serviceRemark,
+          appointment_time: body.responseTime,
+          appointment_success_time: body.bookingFeedbackTime,
+          service_start_time: body.serviceStartTime,
+          latest_ticket_time: body.latestTicketTime || body.lastQueuingTime,
+          registration_fee_amount: body.registrationFee,
+          escort_service_summary: body.escortSummary
+        }
+        const pendingCandidates = await prisma.$queryRaw<Array<{ id: bigint; field_code: string; value_text: string }>>`
+          SELECT id, field_code, value_text FROM b_order_ai_field_candidates
+          WHERE order_id = ${syncedOrder.id} AND status = 'pending'
+        `
+        for (const candidate of pendingCandidates) {
+          const saved = candidateValueByCode[candidate.field_code]
+          if (typeof saved === 'string' && saved.trim() && saved.trim() === candidate.value_text.trim()) {
+            await prisma.$executeRaw`
+              UPDATE b_order_ai_field_candidates
+              SET status = 'adopted', adopted_at = now(), adopted_by_employee_id = ${request.employee.id}
+              WHERE id = ${candidate.id}
+            `
           }
-        })
-      }
-
-      await initializeOrderWorkflow(prisma, syncedOrder.id)
-
-      // 用户保存时，只有实际采纳且值一致的 AI 候选才标为 adopted；手工改成其他值时不误标。
-      const candidateValueByCode: Record<string, unknown> = {
-        hospital: body.hospital,
-        hospital_address: body.hospitalAddress,
-        department: body.department,
-        doctor: body.doctor,
-        expert_level: body.expertLevel,
-        service_remark: body.serviceRemark,
-        appointment_time: body.responseTime,
-        appointment_success_time: body.bookingFeedbackTime,
-        service_start_time: body.serviceStartTime,
-        latest_ticket_time: body.latestTicketTime || body.lastQueuingTime,
-        registration_fee_amount: body.registrationFee,
-        escort_service_summary: body.escortSummary
-      }
-      const pendingCandidates = await prisma.$queryRaw<Array<{ id: bigint; field_code: string; value_text: string }>>`
-        SELECT id, field_code, value_text FROM b_order_ai_field_candidates
-        WHERE order_id = ${syncedOrder.id} AND status = 'pending'
-      `
-      for (const candidate of pendingCandidates) {
-        const saved = candidateValueByCode[candidate.field_code]
-        if (typeof saved === 'string' && saved.trim() && saved.trim() === candidate.value_text.trim()) {
-          await prisma.$executeRaw`
-            UPDATE b_order_ai_field_candidates
-            SET status = 'adopted', adopted_at = now(), adopted_by_employee_id = ${request.employee.id}
-            WHERE id = ${candidate.id}
-          `
+        }
+      } else {
+        // 全新自建寰宇订单：不写 orders 表，只在寰宇表保存即可，直接构造返回对象
+        syncedOrder = {
+          id: null,
+          source: 'huanyu',
+          sourceOrderNo: orderNo,
+          huanyuOrderNo: orderNo,
+          customerName: patientName,
+          customerPhone: body.patientPhone || null,
+          hospital: resolvedHospitalName,
+          dept: resolvedDeptName,
+          doctor: resolvedDoctorName,
+          status: orderStatus,
+          rawJson: { ...orderRawBody, orderNo, DDBH: orderNo }
         }
       }
 
       // 4. 触发远程 MySQL 核心主数据（医院、院区、对外科室、医生、陪诊人员）查重与自动建档
       void (async () => {
         try {
-          // 同步医院、院区、科室、医生
           await autoSyncOrderMasterData({
             hospitalName: resolvedHospitalName || body.hospital,
             hospitalAddress: body.hospitalAddress,
@@ -1447,8 +1445,6 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
             escortName: body.escortName,
             escortPhone: body.escortPhone || (Array.isArray(body.escortList) ? body.escortList[0]?.phone : null)
           })
-
-          // 如果陪诊人列表中包含手机号，也一并确保建档
           if (Array.isArray(body.escortList)) {
             for (const item of body.escortList) {
               if (item?.escortName && item?.phone) {
@@ -1631,6 +1627,130 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     return reply.send({ data: { ok: true, ddbh: String(ddbh), message: refundResult.message, refreshed } })
   })
 
+function cleanHospitalName(val: unknown): string | null {
+  if (typeof val !== 'string') return null
+  const s = val.trim()
+  if (!s || s === '-' || s === '--') return null
+  if (/^\d+$/.test(s)) return null
+  // 过滤形如 "江苏省-泰州市-泰兴市" 或以省/市/区/县结尾且不含医院关键词的地区字符串
+  const isRegionFormat = /(?:省.*市|市.*区|市.*县)/.test(s) || /^[^-]+-[^-]+-[^-]+$/.test(s)
+  const hasHospitalKeyword = /(?:医院|卫生院|诊所|中心|门诊部|妇幼|医学院)/.test(s)
+  if (isRegionFormat && !hasHospitalKeyword) return null
+  if (/(?:省|市|区|县)$/.test(s) && !hasHospitalKeyword) return null
+  return s
+}
+
+function cleanDeptName(val: unknown): string | null {
+  if (typeof val !== 'string') return null
+  const s = val.trim()
+  if (!s || s === '-' || s === '--') return null
+  if (/^\d+$/.test(s)) return null
+  return s
+}
+
+function cleanDoctorName(val: unknown): string | null {
+  if (typeof val !== 'string') return null
+  const s = val.trim()
+  if (!s || s === '-' || s === '--') return null
+  if (/^\d+$/.test(s)) return null
+  return s
+}
+
+function isCancelledOrderText(status: string | null | undefined): boolean {
+  return Boolean(status && (status.includes('已取消') || status.includes('无责取消') || status.includes('取消')))
+}
+
+let channelProductCache: {
+  timestamp: number
+  p72: Array<{ id: string; name: string; price: string }>
+  p62: Array<{ id: string; name: string; price: string }>
+} | null = null
+
+async function getCachedChannelProducts() {
+  const now = Date.now()
+  if (channelProductCache && now - channelProductCache.timestamp < 5 * 60 * 1000) {
+    return channelProductCache
+  }
+  try {
+    const [p72, p62] = await Promise.all([
+      listHuanyuChannelProducts('0072', ''),
+      listHuanyuChannelProducts('0062', '')
+    ])
+    channelProductCache = { timestamp: now, p72, p62 }
+    return channelProductCache
+  } catch (err) {
+    if (channelProductCache) return channelProductCache
+    return { timestamp: now, p72: [], p62: [] }
+  }
+}
+
+function calculateChannelProductPrice(
+  products: Array<{ id: string; name: string; price: string }>,
+  candidateNames: unknown[],
+  isCancelled: boolean
+): number | null {
+  if (isCancelled) return 0
+  const cleanCandidates = candidateNames
+    .map((c) => (typeof c === 'string' ? c.trim() : ''))
+    .filter(Boolean)
+  if (cleanCandidates.length === 0) return null
+
+  // 1. 精确匹配（ID 或 名称）
+  for (const c of cleanCandidates) {
+    const byId = products.find((p) => p.id === c)
+    if (byId && byId.price && Number.isFinite(Number(byId.price))) return Number(byId.price)
+    const byName = products.find((p) => p.name === c)
+    if (byName && byName.price && Number.isFinite(Number(byName.price))) return Number(byName.price)
+  }
+
+  // 2. 常见业务类型关键词智能模糊匹配
+  for (const c of cleanCandidates) {
+    if (c.includes('挂号协助')) {
+      const p = products.find((x) => x.name.includes('挂号协助（副高及以上）')) || products.find((x) => x.name.includes('挂号协助'))
+      if (p && p.price && Number.isFinite(Number(p.price))) return Number(p.price)
+    }
+    if (c.includes('全程门诊') || c.includes('全程专家门诊')) {
+      if (c.includes('点名')) {
+        const p = products.find((x) => x.name === '全程门诊（点名）')
+        if (p && p.price && Number.isFinite(Number(p.price))) return Number(p.price)
+      }
+      const p = products.find((x) => x.name === '全程门诊')
+      if (p && p.price && Number.isFinite(Number(p.price))) return Number(p.price)
+    }
+    if (c.includes('单次门诊')) {
+      if (c.includes('点名')) {
+        const p = products.find((x) => x.name === '单次门诊（点名）')
+        if (p && p.price && Number.isFinite(Number(p.price))) return Number(p.price)
+      }
+      const p = products.find((x) => x.name === '单次门诊')
+      if (p && p.price && Number.isFinite(Number(p.price))) return Number(p.price)
+    }
+    if (c.includes('住院护工')) {
+      const p = products.find((x) => x.name.includes('住院护工协助（15天）')) || products.find((x) => x.name.includes('住院护工协助'))
+      if (p && p.price && Number.isFinite(Number(p.price))) return Number(p.price)
+    }
+    if (c.includes('住院') || c.includes('病房')) {
+      const p = products.find((x) => x.name === '住院服务')
+      if (p && p.price && Number.isFinite(Number(p.price))) return Number(p.price)
+    }
+    if (c.includes('电话问诊') || c.includes('问诊')) {
+      const p = products.find((x) => x.name === '电话问诊')
+      if (p && p.price && Number.isFinite(Number(p.price))) return Number(p.price)
+    }
+    if (c.includes('检查加急') || c.includes('加急')) {
+      const p = products.find((x) => x.name.includes(c) || c.includes(x.name))
+      if (p && p.price && Number.isFinite(Number(p.price))) return Number(p.price)
+    }
+    if (c.includes('就医交通') || c.includes('接送')) {
+      const p = products.find((x) => x.name.includes('就医交通协助'))
+      if (p && p.price && Number.isFinite(Number(p.price))) return Number(p.price)
+    }
+    const fuzzy = products.find((x) => x.name.includes(c) || c.includes(x.name))
+    if (fuzzy && fuzzy.price && Number.isFinite(Number(fuzzy.price))) return Number(fuzzy.price)
+  }
+  return null
+}
+
   // 4. 查询订单 GET /api/v1/orders
   fastify.get<{
     Querystring: {
@@ -1644,11 +1764,46 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       query?: string
       sortKey?: string
       sortDir?: 'asc' | 'desc'
+      applicationNo?: string
+      sourceOrderNo?: string
+      huanyuOrderNo?: string
+      serviceType?: string
+      customerName?: string
+      accountManager?: string
+      hospital?: string
+      dept?: string
+      doctor?: string
+      minAmount?: string | number
+      maxAmount?: string | number
+      startDate?: string
+      endDate?: string
     }
   }>(
     '/api/v1/orders',
     async (request, reply) => {
-      const { source, status, pool, assignedEmployeeId, assignedEmployeeCode, page, pageSize, query, sortKey, sortDir } = request.query
+      const {
+        source,
+        status,
+        pool,
+        assignedEmployeeId,
+        assignedEmployeeCode,
+        page,
+        pageSize,
+        query,
+        sortKey,
+        sortDir,
+        applicationNo,
+        sourceOrderNo,
+        huanyuOrderNo,
+        serviceType,
+        customerName,
+        accountManager,
+        hospital,
+        dept,
+        doctor,
+        startDate,
+        endDate
+      } = request.query
 
       const where: any = {}
       let captureEmployeeId: number | null = null
@@ -1670,6 +1825,26 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
 
       if (query && typeof query === 'string' && query.trim()) {
         const q = query.trim()
+
+        let factMatchedKeys: string[] = []
+        try {
+          const matchedFacts = await prisma.$queryRaw<Array<{ DDBH: string; BDQD_DDBH: string | null }>>`
+            SELECT "DDBH", "BDQD_DDBH"
+            FROM "HY_FACT_DDCX_NEW"
+            WHERE "JZR_XM" ILIKE ${'%' + q + '%'}
+               OR "H_NAME" ILIKE ${'%' + q + '%'}
+               OR "KHJL" ILIKE ${'%' + q + '%'}
+               OR "DDBH" ILIKE ${'%' + q + '%'}
+               OR "BDQD_FWXM" ILIKE ${'%' + q + '%'}
+            LIMIT 100
+          `
+          factMatchedKeys = Array.from(
+            new Set(matchedFacts.flatMap((f) => [f.DDBH, f.BDQD_DDBH].filter((k): k is string => Boolean(k))))
+          )
+        } catch {
+          // ignore fact query failure
+        }
+
         where.OR = [
           { customerName: { contains: q, mode: 'insensitive' } },
           { customerPhone: { contains: q } },
@@ -1678,9 +1853,102 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           { doctor: { contains: q, mode: 'insensitive' } },
           { sourceOrderNo: { contains: q, mode: 'insensitive' } },
           { huanyuOrderNo: { contains: q, mode: 'insensitive' } },
+          { assignedEmployee: { name: { contains: q, mode: 'insensitive' } } },
+          { rawJson: { path: ['patientName'], string_contains: q } },
+          { rawJson: { path: ['paName'], string_contains: q } },
+          { rawJson: { path: ['trueName'], string_contains: q } },
+          { rawJson: { path: ['insurName'], string_contains: q } },
+          { rawJson: { path: ['ecpName'], string_contains: q } },
+          { rawJson: { path: ['intendHos'], string_contains: q } },
+          { rawJson: { path: ['clinicHos'], string_contains: q } },
+          { rawJson: { path: ['visitingHospital'], string_contains: q } },
           { rawJson: { path: ['crmApplyNo'], string_contains: q } },
-          { rawJson: { path: ['applyNo'], string_contains: q } }
+          { rawJson: { path: ['applyNo'], string_contains: q } },
+          { rawJson: { path: ['itemName'], string_contains: q } },
+          { rawJson: { path: ['serviceType'], string_contains: q } },
+          { rawJson: { path: ['serviceName'], string_contains: q } },
+          { rawJson: { path: ['accountManager'], string_contains: q } },
+          { rawJson: { path: ['cmgrName'], string_contains: q } },
+          { rawJson: { path: ['mmgrName'], string_contains: q } },
+          ...(factMatchedKeys.length > 0
+            ? [{ sourceOrderNo: { in: factMatchedKeys } }, { huanyuOrderNo: { in: factMatchedKeys } }]
+            : [])
         ]
+      }
+
+      if (applicationNo && typeof applicationNo === 'string' && applicationNo.trim()) {
+        const appQ = applicationNo.trim()
+        where.OR = [
+          ...(where.OR || []),
+          { rawJson: { path: ['crmApplyNo'], string_contains: appQ } },
+          { rawJson: { path: ['applyNo'], string_contains: appQ } }
+        ]
+      }
+      if (sourceOrderNo && typeof sourceOrderNo === 'string' && sourceOrderNo.trim()) {
+        where.sourceOrderNo = { contains: sourceOrderNo.trim(), mode: 'insensitive' }
+      }
+      if (huanyuOrderNo && typeof huanyuOrderNo === 'string' && huanyuOrderNo.trim()) {
+        const hNo = huanyuOrderNo.trim()
+        where.OR = [
+          ...(where.OR || []),
+          { huanyuOrderNo: { contains: hNo, mode: 'insensitive' } },
+          { sourceOrderNo: { contains: hNo, mode: 'insensitive' } }
+        ]
+      }
+      if (customerName && typeof customerName === 'string' && customerName.trim()) {
+        const cName = customerName.trim()
+        where.OR = [
+          ...(where.OR || []),
+          { customerName: { contains: cName, mode: 'insensitive' } },
+          { rawJson: { path: ['patientName'], string_contains: cName } },
+          { rawJson: { path: ['paName'], string_contains: cName } }
+        ]
+      }
+      if (hospital && typeof hospital === 'string' && hospital.trim()) {
+        const hName = hospital.trim()
+        where.OR = [
+          ...(where.OR || []),
+          { hospital: { contains: hName, mode: 'insensitive' } },
+          { rawJson: { path: ['hospital'], string_contains: hName } },
+          { rawJson: { path: ['intendHos'], string_contains: hName } },
+          { rawJson: { path: ['clinicHos'], string_contains: hName } }
+        ]
+      }
+      if (dept && typeof dept === 'string' && dept.trim()) {
+        const dName = dept.trim()
+        where.OR = [
+          ...(where.OR || []),
+          { dept: { contains: dName, mode: 'insensitive' } },
+          { rawJson: { path: ['dept'], string_contains: dName } }
+        ]
+      }
+      if (doctor && typeof doctor === 'string' && doctor.trim()) {
+        const docName = doctor.trim()
+        where.OR = [
+          ...(where.OR || []),
+          { doctor: { contains: docName, mode: 'insensitive' } },
+          { rawJson: { path: ['doctor'], string_contains: docName } }
+        ]
+      }
+      if (serviceType && typeof serviceType === 'string' && serviceType.trim()) {
+        const sType = serviceType.trim()
+        where.OR = [
+          ...(where.OR || []),
+          { rawJson: { path: ['itemName'], string_contains: sType } },
+          { rawJson: { path: ['serviceType'], string_contains: sType } }
+        ]
+      }
+      if (accountManager && typeof accountManager === 'string' && accountManager.trim()) {
+        where.assignedEmployee = { name: { contains: accountManager.trim(), mode: 'insensitive' } }
+      }
+      if (startDate || endDate) {
+        where.createdAt = {}
+        if (startDate) where.createdAt.gte = new Date(startDate)
+        if (endDate) {
+          const e = new Date(endDate)
+          e.setHours(23, 59, 59, 999)
+          where.createdAt.lte = e
+        }
       }
 
       const isPaginated = page !== undefined || pageSize !== undefined
@@ -1716,6 +1984,10 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
             huanyuOrderNo: true,
             rawJson: true,
             detailJson: true,
+            aiBriefJson: true,
+            assignedEmployee: {
+              select: { id: true, name: true }
+            },
             createdAt: true,
             updatedAt: true,
             _count: { select: { calls: true, materials: true } },
@@ -1731,8 +2003,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           }
         })
 
-        // 工作台的状态唯一来源是寰宇订单详情 HY_FACT_DDCX_NEW.DD_state。
-        // 一次批量查询，避免在下面逐单查寰宇表造成 N+1 查询。
+        // 批量查询对应的 HY_FACT_DDCX_NEW 记录
         const huanyuOrderKeys = Array.from(
           new Set(
             orders.flatMap((o) => {
@@ -1750,22 +2021,49 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           )
         )
         const huanyuRows = huanyuOrderKeys.length > 0
-          ? await prisma.$queryRaw<Array<{ DDBH: string; BDQD_DDBH: string | null; DD_state: string | null }>>`
-              SELECT "DDBH", "BDQD_DDBH", "DD_state"
+          ? await prisma.$queryRaw<Array<{
+              DDBH: string
+              BDQD_DDBH: string | null
+              DD_state: string | null
+              DDJE: any
+              KHJL: string | null
+              H_NAME: string | null
+              H_KS: string | null
+              H_YS: string | null
+              JZR_XM: string | null
+              BDQD_FWXM: string | null
+              xtsj_: string | null
+            }>>`
+              SELECT "DDBH", "BDQD_DDBH", "DD_state", "DDJE", "KHJL", "H_NAME", "H_KS", "H_YS", "JZR_XM", "BDQD_FWXM", "xtsj_"
               FROM "HY_FACT_DDCX_NEW"
               WHERE "DDBH" IN (${Prisma.join(huanyuOrderKeys)})
                  OR "BDQD_DDBH" IN (${Prisma.join(huanyuOrderKeys)})
             `
           : []
-        const huanyuStatusByOrderKey = new Map<string, string>()
+
+        // 按 orderKey 归类所有的 HY_FACT_DDCX_NEW 记录（支持一单多次服务）
+        const huanyuRowsByKey = new Map<string, Array<{
+          DDBH: string
+          BDQD_DDBH: string | null
+          DD_state: string | null
+          DDJE: any
+          KHJL: string | null
+          H_NAME: string | null
+          H_KS: string | null
+          H_YS: string | null
+          JZR_XM: string | null
+          BDQD_FWXM: string | null
+          xtsj_: string | null
+        }>>()
+
         for (const row of huanyuRows) {
-          const status = stringOrNull(row.DD_state)
-          if (!status) continue
-          if (row.DDBH && !huanyuStatusByOrderKey.has(row.DDBH)) {
-            huanyuStatusByOrderKey.set(row.DDBH, status)
-          }
-          if (row.BDQD_DDBH && !huanyuStatusByOrderKey.has(row.BDQD_DDBH)) {
-            huanyuStatusByOrderKey.set(row.BDQD_DDBH, status)
+          const keys = [row.DDBH, row.BDQD_DDBH].filter((k): k is string => Boolean(k))
+          for (const k of keys) {
+            const list = huanyuRowsByKey.get(k) ?? []
+            if (!list.some(item => item.DDBH === row.DDBH)) {
+              list.push(row)
+            }
+            huanyuRowsByKey.set(k, list)
           }
         }
 
@@ -1811,17 +2109,38 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
             }
           }
         }
-        // 给每单补几个 trayapp 工作台要展示的派生字段：
-        //   - claimedAt：申领时间。优先用泰康 rawJson 里的几种时间字段，
-        //     最后兜底到我们自己的 createdAt。
-        //   - audioCount：已采到的录音条数（calls 表实际行数）。
-        //   - textCount：微信/企微 OCR 消息数 + 手工文字素材数。
-        //   - imageCount：粘贴的图片素材数（materials 表）
-        //   - materialCount：三类合计
-        //   - lastMaterialAt：任何素材的最近一次入库时间（取 max(call, material)）
+
+        const channelCache = await getCachedChannelProducts()
+
+        // 批量查询当前页订单未处理的 AI 识别业务字段（b_order_ai_field_candidates）
+        const aiCandidateRows = orderIds.length > 0
+          ? await prisma.$queryRaw<Array<{
+              order_id: number
+              field_code: string
+              value_text: string
+            }>>`
+              SELECT DISTINCT ON (order_id, field_code)
+                order_id, field_code, value_text
+              FROM b_order_ai_field_candidates
+              WHERE order_id IN (${Prisma.join(orderIds)}) AND status = 'pending'
+              ORDER BY order_id, field_code, created_at DESC, id DESC
+            `
+          : []
+        const aiCandidatesByOrderId = new Map<number, Map<string, string>>()
+        for (const row of aiCandidateRows) {
+          let fieldMap = aiCandidatesByOrderId.get(row.order_id)
+          if (!fieldMap) {
+            fieldMap = new Map<string, string>()
+            aiCandidatesByOrderId.set(row.order_id, fieldMap)
+          }
+          if (row.value_text && row.value_text.trim()) {
+            fieldMap.set(row.field_code, row.value_text.trim())
+          }
+        }
+
         const data = orders.map((o: any) => {
           const raw = (o.rawJson ?? {}) as Record<string, unknown>
-          const huanyuOrderStatus = [
+          const orderKeys = [
             o.huanyuOrderNo,
             o.sourceOrderNo,
             stringOrNull(raw.sourceOrderNo),
@@ -1829,10 +2148,33 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
             stringOrNull(raw.bOrderNo),
             stringOrNull(raw.bChannelOrderNo),
             stringOrNull(raw.orderNo)
-          ]
-            .filter((value): value is string => Boolean(value))
-            .map((value) => huanyuStatusByOrderKey.get(value))
-            .find((value): value is string => Boolean(value)) ?? null
+          ].filter((v): v is string => Boolean(v))
+
+          // 匹配当前订单的所有寰宇服务记录
+          const matchedHuanyuRows: Array<{
+            DDBH: string
+            BDQD_DDBH: string | null
+            DD_state: string | null
+            DDJE: any
+            KHJL: string | null
+            H_NAME: string | null
+            H_KS: string | null
+            H_YS: string | null
+            JZR_XM: string | null
+            BDQD_FWXM: string | null
+            xtsj_: string | null
+          }> = []
+          for (const k of orderKeys) {
+            const list = huanyuRowsByKey.get(k) || []
+            for (const item of list) {
+              if (!matchedHuanyuRows.some(r => r.DDBH === item.DDBH)) {
+                matchedHuanyuRows.push(item)
+              }
+            }
+          }
+
+          // 寰宇状态
+          const huanyuOrderStatus = matchedHuanyuRows[0]?.DD_state || null
           const taikangOrderStateName = taikangOrderStateNameOf(raw, o.status)
           const taikangOrderState = taikangOrderStateOf(raw, o.orderState)
           const taikangCaseStatus = stringOrNull(raw.taikangCaseStatus) ?? stringOrNull(raw.caseStatus)
@@ -1840,7 +2182,6 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           const taikangServState = stringOrNull(raw.taikangServState) ?? stringOrNull(raw.servState)
           const workbenchLane = deriveWorkbenchLane(huanyuOrderStatus)
           const serviceStage = deriveServiceStage(workbenchLane)
-          // chrome 插件抓的详情扁平挂在 detailJson.recommendations 下
           const rec = ((o.detailJson as any)?.recommendations ?? {}) as Record<string, unknown>
           const claimedAt =
             (raw.applyDate as string | undefined) ??
@@ -1848,51 +2189,150 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
             (raw.applyTime as string | undefined) ??
             o.createdAt.toISOString()
 
-          // 泰康个人池列表接口大多数业务字段都不返回（只有订单号 / 状态 / 业务名等几个）。
-          // 真正的医院 / 科室 / 医生 / 手机号 / 就诊日期 都在 recommendations 里。
-          // 这里统一按"列表 rawJson 优先 → 详情 recommendations 兜底"派生，
-          // 让工作台一列一个字段读就行，不用再翻嵌套对象。
+          // 1. 客户姓名：优先取不含 * 的真实姓名
+          const hPatientName = matchedHuanyuRows.find(r => r.JZR_XM && !r.JZR_XM.includes('*'))?.JZR_XM
           const customerNameRow =
+            (hPatientName ? hPatientName.trim() : undefined) ??
+            (rec.patientName && !String(rec.patientName).includes('*') ? String(rec.patientName).trim() : undefined) ??
+            (rec.insurName && !String(rec.insurName).includes('*') ? String(rec.insurName).trim() : undefined) ??
+            (raw.patientName && !String(raw.patientName).includes('*') ? String(raw.patientName).trim() : undefined) ??
+            (raw.insurName && !String(raw.insurName).includes('*') ? String(raw.insurName).trim() : undefined) ??
+            (o.customerName && !String(o.customerName).includes('*') ? String(o.customerName).trim() : undefined) ??
             (raw.patientName as string | undefined) ??
-            (raw.paName as string | undefined) ??
-            (raw.customerName as string | undefined) ??
-            (raw.name as string | undefined) ??
-            (rec.patientName as string | undefined) ??
             o.customerName
+
           const customerPhoneRow =
             (raw.paMobile as string | undefined) ??
             (rec.paMobile as string | undefined) ??
             (rec.ecpPhone as string | undefined) ??
             o.customerPhone ??
             null
+
+          // AI 分析结果（包含 aiBriefJson 与 b_order_ai_field_candidates）
+          const aiKeyInfo = ((o.aiBriefJson as any)?.keyInfo ?? {}) as Record<string, unknown>
+          const aiFieldMap = aiCandidatesByOrderId.get(o.id)
+          const aiHospital = stringOrNull(aiFieldMap?.get('hospital')) ?? stringOrNull(aiKeyInfo['目标医院'])
+          const aiDept = stringOrNull(aiFieldMap?.get('department')) ?? stringOrNull(aiKeyInfo['科室或病种'])
+          const aiDoctor = stringOrNull(aiFieldMap?.get('doctor')) ?? stringOrNull(aiKeyInfo['意向专家'])
+
+          // 2. 医院：1 优先 HY_FACT_DDCX_NEW -> 2 优先 AI 目标医院 -> 3 优先上游意向/原单（清洗过滤省市区）
           const rawHospital = typeof raw.hospital === 'string' ? raw.hospital : undefined
-          const isNumericHospitalId = rawHospital && /^\d{3,6}$/.test(rawHospital.trim())
+          const hName = matchedHuanyuRows.find(r => r.H_NAME?.trim())?.H_NAME?.trim()
           const hospitalRow =
-            (!isNumericHospitalId ? rawHospital : undefined) ??
-            (rec.intendHos as string | undefined) ??
-            (rec.visitingHospital as string | undefined) ??
-            (o.hospital && !/^\d{3,6}$/.test(o.hospital.trim()) ? o.hospital : undefined) ??
-            rawHospital ??
-            o.hospital ??
+            cleanHospitalName(hName) ??
+            cleanHospitalName(aiHospital) ??
+            cleanHospitalName(rec.visitingHospital) ??
+            cleanHospitalName(rec.intendHos) ??
+            cleanHospitalName(raw.clinicHos) ??
+            cleanHospitalName(raw.intendHos) ??
+            cleanHospitalName(raw.visitingHospital) ??
+            cleanHospitalName(rawHospital) ??
+            cleanHospitalName(o.hospital) ??
             null
+
+          // 3. 科室：1 优先 HY_FACT_DDCX_NEW -> 2 优先 AI 科室病种 -> 3 优先原订单
           const rawDept = typeof raw.dept === 'string' ? raw.dept : undefined
           const isNumericDeptId = rawDept && /^\d{6,12}$/.test(rawDept.trim())
+          const hKs = cleanDeptName(matchedHuanyuRows.find(r => r.H_KS?.trim())?.H_KS?.trim())
           const deptRow =
-            (!isNumericDeptId ? rawDept : undefined) ??
-            (rec.intendDept as string | undefined) ??
+            hKs ??
+            cleanDeptName(aiDept) ??
+            (!isNumericDeptId ? cleanDeptName(rawDept) : undefined) ??
+            cleanDeptName(rec.intendDept as string | undefined) ??
             (o.dept && !/^\d{6,12}$/.test(o.dept.trim()) ? o.dept : undefined) ??
-            rawDept ??
-            o.dept ??
+            cleanDeptName(rawDept) ??
+            cleanDeptName(o.dept) ??
             null
+
+          // 4. 医生：1 优先 HY_FACT_DDCX_NEW -> 2 优先 AI 意向专家 -> 3 优先原订单
           const rawDoctor = typeof raw.doctor === 'string' ? raw.doctor : undefined
           const isNumericDoctorId = rawDoctor && /^\d{4,10}$/.test(rawDoctor.trim())
+          const hYs = cleanDoctorName(matchedHuanyuRows.find(r => r.H_YS?.trim())?.H_YS?.trim())
           const doctorRow =
-            (!isNumericDoctorId ? rawDoctor : undefined) ??
-            (rec.intendDoc as string | undefined) ??
+            hYs ??
+            cleanDoctorName(aiDoctor) ??
+            (!isNumericDoctorId ? cleanDoctorName(rawDoctor) : undefined) ??
+            cleanDoctorName(rec.intendDoc as string | undefined) ??
             (o.doctor && !/^\d{4,10}$/.test(o.doctor.trim()) ? o.doctor : undefined) ??
-            rawDoctor ??
-            o.doctor ??
+            cleanDoctorName(rawDoctor) ??
+            cleanDoctorName(o.doctor) ??
             null
+
+          // 5. 客户经理：优先取 HY_FACT_DDCX_NEW 的客户经理，没有的话取 orders 表的 assigned_employee_id (关联 employees.name)
+          const hKhjl = matchedHuanyuRows.find(r => r.KHJL?.trim())?.KHJL?.trim()
+          const accountManagerRow =
+            hKhjl ??
+            o.assignedEmployee?.name ??
+            null
+
+          // 7. 业务类型名称
+          const serviceTypeRow =
+            (raw.poolType === 'register' ? '挂号协助' : null) ??
+            matchedHuanyuRows[0]?.BDQD_FWXM ??
+            stringOrNull(raw.itemName) ??
+            stringOrNull(raw.serviceType) ??
+            stringOrNull(raw.serviceName) ??
+            null
+
+          // 6. 订单金额：优先取 HY_FACT_DDCX_NEW.DDJE；当没有的时候，按照订单B端渠道服务项目计算出来
+          const isCancelled = isCancelledOrderText(o.status) || isCancelledOrderText(huanyuOrderStatus)
+          const isRegister = raw.poolType === 'register' || o.source === 'taikang_register' || raw.serviceType === '挂号协助'
+          const channelProds = isRegister ? channelCache.p62 : channelCache.p72
+
+          const primaryItemCandidates = [
+            matchedHuanyuRows[0]?.BDQD_FWXM,
+            raw.itemName,
+            raw.serviceType,
+            raw.serviceItemName,
+            raw.serviceName,
+            rec.itemName,
+            rec.serviceName,
+            rec.subPlanName,
+            serviceTypeRow
+          ]
+          const computedPrice = calculateChannelProductPrice(channelProds, primaryItemCandidates, isCancelled)
+
+          const firstJe = matchedHuanyuRows[0]?.DDJE != null && Number.isFinite(Number(matchedHuanyuRows[0].DDJE)) && Number(matchedHuanyuRows[0].DDJE) > 0
+            ? Number(matchedHuanyuRows[0].DDJE)
+            : null
+
+          const orderAmountRow = isCancelled
+            ? 0
+            : (firstJe ?? computedPrice ?? (raw.orderAmount != null ? Number(raw.orderAmount) : null))
+
+          // 区分自营订单（无B端单号，只有寰宇订单号）与外部渠道订单
+          const isSelfOperated = o.source === 'huanyu' || (typeof o.sourceOrderNo === 'string' && o.sourceOrderNo.startsWith('HYDD'))
+          const huanyuOrderNoRow =
+            o.huanyuOrderNo ??
+            matchedHuanyuRows[0]?.DDBH ??
+            (isSelfOperated ? o.sourceOrderNo : null) ??
+            null
+          const bOrderNoRow = isSelfOperated ? null : o.sourceOrderNo
+
+          // 多次复制服务单列表
+          const huanyuOrders = matchedHuanyuRows.map((r, index) => {
+            const rowJe = r.DDJE != null && Number.isFinite(Number(r.DDJE)) && Number(r.DDJE) > 0 ? Number(r.DDJE) : null
+            const subCandidates = [r.BDQD_FWXM, r.BDQD_FWXM ? null : serviceTypeRow]
+            const subComputed = calculateChannelProductPrice(channelProds, subCandidates, isCancelled)
+            return {
+              id: r.DDBH,
+              ddbh: r.DDBH,
+              huanyuOrderNo: r.DDBH,
+              bOrderNo: r.BDQD_DDBH || (isSelfOperated ? null : o.sourceOrderNo),
+              isClone: index > 0,
+              sequence: index + 1,
+              status: r.DD_state || '待跟进',
+              serviceName: r.BDQD_FWXM || serviceTypeRow,
+              amount: isCancelled ? 0 : (rowJe ?? subComputed ?? null),
+              accountManager: r.KHJL || accountManagerRow || '',
+              hospital: cleanHospitalName(r.H_NAME) || hospitalRow || '',
+              dept: cleanDeptName(r.H_KS) || deptRow || '',
+              doctor: cleanDoctorName(r.H_YS) || doctorRow || '',
+              patientName: r.JZR_XM || customerNameRow,
+              createdAt: r.xtsj_ || o.createdAt.toISOString()
+            }
+          })
+
           const intendDateRow =
             (raw.intendDate as string | undefined) ??
             (rec.intendDate as string | undefined) ??
@@ -1917,16 +2357,20 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           const lastTs = Math.max(lastCallAt, lastMatAt)
           const lastMaterialAt = lastTs > 0 ? new Date(lastTs).toISOString() : null
 
-          // 删掉 include 出来的辅助字段与 detailJson，给前端返回轻量扁平结构
-          const { _count, calls, materials, detailJson, ...rest } = o
+          const { _count, calls, materials, detailJson, aiBriefJson, assignedEmployee, ...rest } = o
           void _count
           void calls
           void materials
           void detailJson
+          void aiBriefJson
+          void assignedEmployee
+
           return {
             ...rest,
-            // status 为列表展示字段；不回退 B 端状态，确保页面只展示寰宇订单状态。
-            status: huanyuOrderStatus ?? '',
+            sourceOrderNo: bOrderNoRow ?? '',
+            bOrderNo: bOrderNoRow,
+            huanyuOrderNo: huanyuOrderNoRow,
+            status: huanyuOrderStatus ?? (o.status === '候选' ? '待跟进' : o.status),
             huanyuOrderStatus,
             taikangOrderState,
             taikangOrderStateName,
@@ -1937,9 +2381,16 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
             serviceStage,
             customerName: customerNameRow,
             customerPhone: customerPhoneRow,
+            accountManager: accountManagerRow,
             hospital: hospitalRow,
             dept: deptRow,
             doctor: doctorRow,
+            orderAmount: orderAmountRow,
+            serviceType: serviceTypeRow,
+            huanyuOrders,
+            isAiHospital: Boolean(!hName && aiHospital),
+            isAiDept: Boolean(!hKs && aiDept),
+            isAiDoctor: Boolean(!hYs && aiDoctor),
             intendDate: intendDateRow,
             intendDateAmorpm: intendDateAmorpmRow,
             claimedAt,
@@ -1960,6 +2411,111 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
             totalPages: Math.ceil((totalCount ?? data.length) / sizeNum)
           })
         }
+
+        // 非分页模式：追加属于当前员工的纯自营寰宇订单（手动新建、不写 orders 表的）
+        // 条件：DDBH 以 HYDD 开头、BDQD_DDBH 为空、KHJL 匹配当前员工姓名、且 DDBH 不在已有数据里
+        if (captureEmployeeId && !isPaginated) {
+          try {
+            const employee = await prisma.employee.findUnique({ where: { id: captureEmployeeId }, select: { name: true } })
+            const employeeName = employee?.name
+            if (employeeName) {
+              // 已在 data 里的寰宇订单号
+              const existingHuanyuNos = new Set<string>(
+                data.flatMap((d: any) => [d.huanyuOrderNo, ...(d.huanyuOrders || []).map((h: any) => h.ddbh || h.huanyuOrderNo)]).filter(Boolean)
+              )
+              const selfOpRows = await prisma.$queryRaw<Array<{
+                DDBH: string
+                DD_state: string | null
+                DDJE: any
+                KHJL: string | null
+                H_NAME: string | null
+                H_KS: string | null
+                H_YS: string | null
+                JZR_XM: string | null
+                BDQD_FWXM: string | null
+                xtsj_: string | null
+              }>>`
+                SELECT "DDBH", "DD_state", "DDJE", "KHJL", "H_NAME", "H_KS", "H_YS", "JZR_XM", "BDQD_FWXM", "xtsj_"
+                FROM "HY_FACT_DDCX_NEW"
+                WHERE "DDBH" LIKE 'HYDD%'
+                  AND ("BDQD_DDBH" IS NULL OR "BDQD_DDBH" = '')
+                  AND "KHJL" = ${employeeName}
+                ORDER BY "xtsj_" DESC NULLS LAST
+                LIMIT 200
+              `
+              for (const row of selfOpRows) {
+                if (existingHuanyuNos.has(row.DDBH)) continue
+                const dept = cleanDeptName(row.H_KS) ?? null
+                const doctor = cleanDoctorName(row.H_YS) ?? null
+                const hospital = cleanHospitalName(row.H_NAME) ?? null
+                const amount = row.DDJE != null && Number.isFinite(Number(row.DDJE)) && Number(row.DDJE) > 0 ? Number(row.DDJE) : null
+                const status = row.DD_state || '待跟进'
+                const workbenchLane = deriveWorkbenchLane(status)
+                const serviceStage = deriveServiceStage(workbenchLane)
+                data.push({
+                  id: `huanyu-${row.DDBH}`,
+                  source: 'huanyu',
+                  sourceOrderNo: '',
+                  bOrderNo: null,
+                  huanyuOrderNo: row.DDBH,
+                  customerName: row.JZR_XM || null,
+                  customerPhone: null,
+                  hospital,
+                  dept,
+                  doctor,
+                  status,
+                  orderState: null,
+                  rawJson: { orderNo: row.DDBH, DDBH: row.DDBH },
+                  assignedEmployee: { id: captureEmployeeId!, name: employeeName },
+                  createdAt: row.xtsj_ || new Date().toISOString(),
+                  updatedAt: row.xtsj_ || new Date().toISOString(),
+                  huanyuOrderStatus: status,
+                  taikangOrderState: null,
+                  taikangOrderStateName: null,
+                  taikangCaseStatus: null,
+                  taikangWaitType: null,
+                  taikangServState: null,
+                  workbenchLane,
+                  serviceStage,
+                  accountManager: row.KHJL || null,
+                  orderAmount: amount,
+                  serviceType: row.BDQD_FWXM || null,
+                  huanyuOrders: [{
+                    id: row.DDBH,
+                    ddbh: row.DDBH,
+                    huanyuOrderNo: row.DDBH,
+                    bOrderNo: null,
+                    isClone: false,
+                    sequence: 1,
+                    status,
+                    serviceName: row.BDQD_FWXM || null,
+                    amount,
+                    accountManager: row.KHJL || null,
+                    hospital: hospital || '',
+                    dept: dept || '',
+                    doctor: doctor || '',
+                    patientName: row.JZR_XM || null,
+                    createdAt: row.xtsj_ || new Date().toISOString()
+                  }],
+                  isAiHospital: false,
+                  isAiDept: false,
+                  isAiDoctor: false,
+                  intendDate: null,
+                  intendDateAmorpm: null,
+                  claimedAt: row.xtsj_ || new Date().toISOString(),
+                  audioCount: 0,
+                  textCount: 0,
+                  imageCount: 0,
+                  materialCount: 0,
+                  lastMaterialAt: null
+                })
+              }
+            }
+          } catch (selfOpErr: any) {
+            fastify.log.warn({ err: selfOpErr }, '查询自营寰宇订单失败，忽略')
+          }
+        }
+
         return reply.send({ data })
       } catch (err: any) {
         return reply.status(500).send({ error: '查询订单失败: ' + err.message })

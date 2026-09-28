@@ -208,14 +208,148 @@ function progressColorClass(stage: number): string {
   return 'bg-status-success'
 }
 
+export interface FlattenedService {
+  id: string | number
+  key: string
+  parentOrderId: number
+  isClone: boolean
+  sequence: number
+  applicationNo: string | null
+  sourceOrderNo: string
+  huanyuOrderNo?: string | null
+  serviceType: string
+  customerName: string
+  status: string
+  accountManager: string
+  hospital: string
+  dept: string
+  doctor: string
+  isAiHospital: boolean
+  isAiDept: boolean
+  isAiDoctor: boolean
+  amount: number | null
+  dataCount: { textAndImages: number; audio: number }
+  source: string
+  poolEnteredAt: string
+  rawOrder: Order
+}
+
+function isInvalidHospital(h: string | null | undefined): boolean {
+  if (!h) return true
+  const s = h.trim()
+  if (!s || s === '-' || s === '--') return true
+  if (/^\d+$/.test(s)) return true
+  // 过滤形如 "江苏省-泰州市-泰兴市" 或纯省市区的错误回填
+  if (/(?:省.*市|市.*区|市.*县)/.test(s) && !/(?:医院|卫生院|诊所|中心|门诊部|妇幼|医学院)/.test(s)) return true
+  if (/(?:省|市|区|县)$/.test(s) && !/(?:医院|卫生院|诊所|中心|门诊部|妇幼|医学院)/.test(s)) return true
+  return false
+}
+
+export function getServicesOfGroup(group: ApplicationGroup): FlattenedService[] {
+  // 查找整个申请号组内权威有效的真实医院（非省市区）
+  let groupHospital = ''
+  for (const order of group.orders) {
+    if (order.hospital && !isInvalidHospital(order.hospital)) {
+      groupHospital = order.hospital
+      break
+    }
+    if (order.huanyuOrders) {
+      const validH = order.huanyuOrders.find((h) => h.hospital && !isInvalidHospital(h.hospital))
+      if (validH) {
+        groupHospital = validH.hospital
+        break
+      }
+    }
+  }
+
+  const result: FlattenedService[] = []
+  for (const order of group.orders) {
+    const isSelfOperated = order.source === 'huanyu' || (typeof order.sourceOrderNo === 'string' && order.sourceOrderNo.startsWith('HYDD'))
+    const effectiveOrderHospital = (!isInvalidHospital(order.hospital) ? order.hospital : '') || groupHospital
+    if (order.huanyuOrders && order.huanyuOrders.length > 0) {
+      for (const h of order.huanyuOrders) {
+        const effectiveH = (!isInvalidHospital(h.hospital) ? h.hospital : '') || effectiveOrderHospital || groupHospital
+        const bNo = h.bOrderNo || (isSelfOperated ? '' : (order.bOrderNo || order.sourceOrderNo))
+        const hNo = h.huanyuOrderNo || h.ddbh || order.huanyuOrderNo || (isSelfOperated ? order.sourceOrderNo : null)
+        result.push({
+          id: h.id,
+          key: `huanyu:${h.id}`,
+          parentOrderId: order.id,
+          isClone: h.isClone,
+          sequence: h.sequence,
+          applicationNo: order.applicationNo || applicationNoOf(order),
+          sourceOrderNo: bNo,
+          huanyuOrderNo: hNo,
+          serviceType: h.serviceName || order.serviceType || bizType(order),
+          customerName: h.patientName || displayCustomerNameOf(order),
+          status: h.status || order.huanyuOrderStatus || order.status,
+          accountManager: h.accountManager || order.accountManager || '—',
+          hospital: effectiveH,
+          dept: h.dept || order.dept || '',
+          doctor: h.doctor || order.doctor || '',
+          isAiHospital: Boolean(order.isAiHospital && !effectiveH),
+          isAiDept: Boolean(order.isAiDept && !h.dept),
+          isAiDoctor: Boolean(order.isAiDoctor && !h.doctor),
+          amount: h.amount ?? order.orderAmount ?? null,
+          dataCount: {
+            textAndImages: order.textCount + order.imageCount,
+            audio: order.audioCount
+          },
+          source: order.source,
+          poolEnteredAt: h.createdAt || poolEnteredAtOf(order),
+          rawOrder: order
+        })
+      }
+    } else {
+      const bNo = isSelfOperated ? '' : (order.bOrderNo || order.sourceOrderNo)
+      const hNo = order.huanyuOrderNo || (isSelfOperated ? order.sourceOrderNo : null)
+      result.push({
+        id: order.id,
+        key: `order:${order.id}`,
+        parentOrderId: order.id,
+        isClone: false,
+        sequence: 1,
+        applicationNo: order.applicationNo || applicationNoOf(order),
+        sourceOrderNo: bNo,
+        huanyuOrderNo: hNo,
+        serviceType: order.serviceType || bizType(order),
+        customerName: displayCustomerNameOf(order),
+        status: order.huanyuOrderStatus || order.status,
+        accountManager: order.accountManager || '—',
+        hospital: effectiveOrderHospital,
+        dept: order.dept || '',
+        doctor: order.doctor || '',
+        isAiHospital: Boolean(order.isAiHospital && !effectiveOrderHospital),
+        isAiDept: Boolean(order.isAiDept),
+        isAiDoctor: Boolean(order.isAiDoctor),
+        amount: order.orderAmount ?? null,
+        dataCount: {
+          textAndImages: order.textCount + order.imageCount,
+          audio: order.audioCount
+        },
+        source: order.source,
+        poolEnteredAt: poolEnteredAtOf(order),
+        rawOrder: order
+      })
+    }
+  }
+  return result
+}
+
 export default function WorkbenchKanban({
   employeeCode,
   query,
+  showAdvancedSearch = false,
+  onToggleAdvancedSearch,
+  onAdvancedFilterCountChange,
   onOpenApplication,
   onCreateHuanyuOrder
 }: {
   employeeCode: string
   query: string
+  showAdvancedSearch?: boolean
+  onToggleAdvancedSearch?: (open: boolean | ((prev: boolean) => boolean)) => void
+  onAdvancedFilterCountChange?: (count: number) => void
   onOpenApplication: (group: ApplicationGroup, selectedOrderId?: number) => void
   onCreateHuanyuOrder: () => void
 }): React.JSX.Element {
@@ -413,6 +547,9 @@ export default function WorkbenchKanban({
         <ListView
           employeeCode={employeeCode}
           query={query}
+          showAdvancedSearch={showAdvancedSearch}
+          onToggleAdvancedSearch={onToggleAdvancedSearch}
+          onAdvancedFilterCountChange={onAdvancedFilterCountChange}
           onOpen={onOpenApplication}
           onCreateHuanyuOrder={onCreateHuanyuOrder}
           onOpenReminder={setReminderModalOrder}
@@ -889,18 +1026,52 @@ function ApplicationCard({
   )
 }
 
-// ─── 列表视图（密集、可排序、可按泳道筛选、服务端真分页）──────────────
+// ─── 列表视图（14列标准工作台、树状折叠/展开、按列高级搜索、服务端真分页）──────────────
 type SortKey = 'customerName' | 'hospital' | 'status' | 'poolEnteredAt'
+
+interface AdvancedFilters {
+  applicationNo: string
+  sourceOrderNo: string
+  huanyuOrderNo: string
+  serviceType: string
+  customerName: string
+  accountManager: string
+  hospital: string
+  dept: string
+  doctor: string
+  startDate: string
+  endDate: string
+}
+
+const EMPTY_FILTERS: AdvancedFilters = {
+  applicationNo: '',
+  sourceOrderNo: '',
+  huanyuOrderNo: '',
+  serviceType: '',
+  customerName: '',
+  accountManager: '',
+  hospital: '',
+  dept: '',
+  doctor: '',
+  startDate: '',
+  endDate: ''
+}
 
 function ListView({
   employeeCode,
   query,
+  showAdvancedSearch = false,
+  onToggleAdvancedSearch,
+  onAdvancedFilterCountChange,
   onOpen,
   onCreateHuanyuOrder,
   onOpenReminder
 }: {
   employeeCode: string
   query: string
+  showAdvancedSearch?: boolean
+  onToggleAdvancedSearch?: (open: boolean | ((prev: boolean) => boolean)) => void
+  onAdvancedFilterCountChange?: (count: number) => void
   onOpen: (group: ApplicationGroup, selectedOrderId?: number) => void
   onCreateHuanyuOrder: () => void
   onOpenReminder: (order: Order) => void
@@ -914,10 +1085,34 @@ function ListView({
   const [loading, setLoading] = useState<boolean>(true)
   const [error, setError] = useState<string | null>(null)
 
-  // 当筛选、排序或全局搜索变化时重置回第 1 页
+  // 树状展开/折叠状态（默认全部展开，记录折叠的 key）
+  const [collapsedKeys, setCollapsedKeys] = useState<Set<string>>(() => new Set())
+  const toggleExpand = (key: string): void => {
+    setCollapsedKeys((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+  const isExpanded = (key: string): boolean => !collapsedKeys.has(key)
+
+  // 高级搜索状态（表单暂存 vs 已生效执行）
+  const [filtersForm, setFiltersForm] = useState<AdvancedFilters>(EMPTY_FILTERS)
+  const [activeFilters, setActiveFilters] = useState<AdvancedFilters>(EMPTY_FILTERS)
+
+  const activeCount = useMemo(() => {
+    return Object.values(activeFilters).filter((v) => Boolean(v && v.trim())).length
+  }, [activeFilters])
+
+  useEffect(() => {
+    onAdvancedFilterCountChange?.(activeCount)
+  }, [activeCount, onAdvancedFilterCountChange])
+
+  // 当筛选、排序、全局搜索或高级条件变化时重置回第 1 页
   useEffect(() => {
     setPage(1)
-  }, [laneFilter, sort, query])
+  }, [laneFilter, sort, query, activeFilters])
 
   const loadData = useCallback(() => {
     setLoading(true)
@@ -927,7 +1122,18 @@ function ListView({
       query: query.trim() || undefined,
       lane: laneFilter !== 'all' ? laneFilter : undefined,
       sortKey: sort.key,
-      sortDir: sort.dir
+      sortDir: sort.dir,
+      applicationNo: activeFilters.applicationNo.trim() || undefined,
+      sourceOrderNo: activeFilters.sourceOrderNo.trim() || undefined,
+      huanyuOrderNo: activeFilters.huanyuOrderNo.trim() || undefined,
+      serviceType: activeFilters.serviceType.trim() || undefined,
+      customerName: activeFilters.customerName.trim() || undefined,
+      accountManager: activeFilters.accountManager.trim() || undefined,
+      hospital: activeFilters.hospital.trim() || undefined,
+      dept: activeFilters.dept.trim() || undefined,
+      doctor: activeFilters.doctor.trim() || undefined,
+      startDate: activeFilters.startDate.trim() || undefined,
+      endDate: activeFilters.endDate.trim() || undefined
     })
       .then((res) => {
         setOrders(res.data)
@@ -936,7 +1142,7 @@ function ListView({
       })
       .catch((e) => setError(e instanceof Error ? e.message : '加载列表失败'))
       .finally(() => setLoading(false))
-  }, [page, pageSize, query, laneFilter, sort, employeeCode])
+  }, [page, pageSize, query, laneFilter, sort, activeFilters, employeeCode])
 
   useEffect(() => {
     loadData()
@@ -966,8 +1172,21 @@ function ListView({
   ]
   const activeFilter = FILTERS.find((f) => f.key === laneFilter) ?? FILTERS[0]
 
+  const handleSearchSubmit = (e?: React.FormEvent): void => {
+    if (e) e.preventDefault()
+    setActiveFilters({ ...filtersForm })
+    setPage(1)
+  }
+
+  const handleResetFilters = (): void => {
+    setFiltersForm(EMPTY_FILTERS)
+    setActiveFilters(EMPTY_FILTERS)
+    setPage(1)
+  }
+
   return (
     <div className="flex-1 min-h-0 flex flex-col bg-surface-bg">
+      {/* 顶部工具栏 */}
       <div className="shrink-0 px-6 py-4 flex items-center justify-between gap-4">
         <div>
           <h3 className="text-h3-title text-text-main">申请列表</h3>
@@ -981,6 +1200,19 @@ function ListView({
           >
             <span className="material-symbols-outlined text-[18px]">add</span>
             新建寰宇订单
+          </button>
+          <button
+            type="button"
+            onClick={() => onToggleAdvancedSearch?.((v) => !v)}
+            className={
+              'inline-flex h-10 items-center gap-1.5 rounded-md border px-3 text-body-md font-medium shadow-2xs transition-colors ' +
+              (showAdvancedSearch || activeCount > 0
+                ? 'border-primary bg-primary/10 text-primary'
+                : 'border-border-subtle bg-white text-text-main hover:bg-surface-bg')
+            }
+          >
+            <span className="material-symbols-outlined text-[18px]">tune</span>
+            高级筛选{activeCount > 0 ? ` (${activeCount})` : ''}
           </button>
           <select
             value={laneFilter}
@@ -1009,40 +1241,209 @@ function ListView({
         </div>
       </div>
 
+      {/* 高级按列精准筛选面板 */}
+      {showAdvancedSearch && (
+        <form
+          onSubmit={handleSearchSubmit}
+          className="mx-6 mb-3 p-4 bg-white rounded-lg border border-border-subtle shadow-xs space-y-3"
+        >
+          <div className="flex items-center justify-between border-b border-border-subtle pb-2">
+            <div className="flex items-center gap-2">
+              <span className="material-symbols-outlined text-primary text-[18px]">tune</span>
+              <span className="text-body-md font-bold text-text-main">按列高级精准筛选</span>
+              {activeCount > 0 && (
+                <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-primary/10 text-primary">
+                  已生效 {activeCount} 项
+                </span>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => onToggleAdvancedSearch?.(false)}
+              className="text-text-muted hover:text-text-main text-[12px] flex items-center gap-0.5"
+            >
+              <span>收起</span>
+              <span className="material-symbols-outlined text-[16px]">expand_less</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-body-sm">
+            <div>
+              <label className="block text-[12px] text-text-muted mb-1">申请号</label>
+              <input
+                type="text"
+                placeholder="按申请号搜索"
+                value={filtersForm.applicationNo}
+                onChange={(e) => setFiltersForm((prev) => ({ ...prev, applicationNo: e.target.value }))}
+                className="w-full px-2.5 py-1.5 rounded border border-border-subtle bg-surface-bg text-text-main focus:bg-white focus:border-primary focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-[12px] text-text-muted mb-1">B端订单号</label>
+              <input
+                type="text"
+                placeholder="按B端单号搜索"
+                value={filtersForm.sourceOrderNo}
+                onChange={(e) => setFiltersForm((prev) => ({ ...prev, sourceOrderNo: e.target.value }))}
+                className="w-full px-2.5 py-1.5 rounded border border-border-subtle bg-surface-bg text-text-main focus:bg-white focus:border-primary focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-[12px] text-text-muted mb-1">寰宇订单号</label>
+              <input
+                type="text"
+                placeholder="按寰宇订单号搜索"
+                value={filtersForm.huanyuOrderNo}
+                onChange={(e) => setFiltersForm((prev) => ({ ...prev, huanyuOrderNo: e.target.value }))}
+                className="w-full px-2.5 py-1.5 rounded border border-border-subtle bg-surface-bg text-text-main focus:bg-white focus:border-primary focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-[12px] text-text-muted mb-1">业务类型</label>
+              <input
+                type="text"
+                placeholder="例如：挂号协助 / 全程专家门诊"
+                value={filtersForm.serviceType}
+                onChange={(e) => setFiltersForm((prev) => ({ ...prev, serviceType: e.target.value }))}
+                className="w-full px-2.5 py-1.5 rounded border border-border-subtle bg-surface-bg text-text-main focus:bg-white focus:border-primary focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-[12px] text-text-muted mb-1">客户姓名</label>
+              <input
+                type="text"
+                placeholder="按真实姓名搜索"
+                value={filtersForm.customerName}
+                onChange={(e) => setFiltersForm((prev) => ({ ...prev, customerName: e.target.value }))}
+                className="w-full px-2.5 py-1.5 rounded border border-border-subtle bg-surface-bg text-text-main focus:bg-white focus:border-primary focus:outline-none"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[12px] text-text-muted mb-1">客户经理</label>
+              <input
+                type="text"
+                placeholder="例如：唐晓艳"
+                value={filtersForm.accountManager}
+                onChange={(e) => setFiltersForm((prev) => ({ ...prev, accountManager: e.target.value }))}
+                className="w-full px-2.5 py-1.5 rounded border border-border-subtle bg-surface-bg text-text-main focus:bg-white focus:border-primary focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-[12px] text-text-muted mb-1">医院</label>
+              <input
+                type="text"
+                placeholder="按医院名称搜索"
+                value={filtersForm.hospital}
+                onChange={(e) => setFiltersForm((prev) => ({ ...prev, hospital: e.target.value }))}
+                className="w-full px-2.5 py-1.5 rounded border border-border-subtle bg-surface-bg text-text-main focus:bg-white focus:border-primary focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-[12px] text-text-muted mb-1">科室</label>
+              <input
+                type="text"
+                placeholder="按科室名称搜索"
+                value={filtersForm.dept}
+                onChange={(e) => setFiltersForm((prev) => ({ ...prev, dept: e.target.value }))}
+                className="w-full px-2.5 py-1.5 rounded border border-border-subtle bg-surface-bg text-text-main focus:bg-white focus:border-primary focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-[12px] text-text-muted mb-1">医生</label>
+              <input
+                type="text"
+                placeholder="按医生姓名搜索"
+                value={filtersForm.doctor}
+                onChange={(e) => setFiltersForm((prev) => ({ ...prev, doctor: e.target.value }))}
+                className="w-full px-2.5 py-1.5 rounded border border-border-subtle bg-surface-bg text-text-main focus:bg-white focus:border-primary focus:outline-none"
+              />
+            </div>
+
+            <div className="lg:col-span-2">
+              <label className="block text-[12px] text-text-muted mb-1">入池日期范围</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="date"
+                  value={filtersForm.startDate}
+                  onChange={(e) => setFiltersForm((prev) => ({ ...prev, startDate: e.target.value }))}
+                  className="w-full px-2.5 py-1.5 rounded border border-border-subtle bg-surface-bg text-text-main focus:bg-white focus:border-primary focus:outline-none text-[12px]"
+                />
+                <span className="text-text-muted">至</span>
+                <input
+                  type="date"
+                  value={filtersForm.endDate}
+                  onChange={(e) => setFiltersForm((prev) => ({ ...prev, endDate: e.target.value }))}
+                  className="w-full px-2.5 py-1.5 rounded border border-border-subtle bg-surface-bg text-text-main focus:bg-white focus:border-primary focus:outline-none text-[12px]"
+                />
+              </div>
+            </div>
+
+            <div className="lg:col-span-2 flex items-end justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={handleResetFilters}
+                className="px-3 py-1.5 rounded border border-border-subtle text-text-main hover:bg-surface-bg transition-colors font-medium text-body-sm"
+              >
+                重置
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-1.5 rounded bg-primary text-white hover:bg-primary/90 transition-colors font-medium text-body-sm shadow-xs flex items-center gap-1"
+              >
+                <span className="material-symbols-outlined text-[16px]">search</span>
+                查询
+              </button>
+            </div>
+          </div>
+        </form>
+      )}
+
+      {/* 14 列表格容器 */}
       <div className="flex-1 min-h-0 px-6 pb-5 flex flex-col">
         <div className="flex-1 min-h-0 rounded-lg border border-border-subtle bg-white shadow-sm flex flex-col overflow-hidden">
           <div className="flex-1 min-h-0 overflow-auto">
-            <table className="w-full table-fixed border-collapse text-body-sm">
+            <table className="w-full min-w-[1680px] table-fixed border-collapse text-body-sm">
               <colgroup>
-                <col className="w-[210px]" />
-                <col className="w-[200px]" />
-                <col className="w-[180px]" />
-                <col className="w-[200px]" />
-                <col className="w-[155px]" />
-                <col className="w-[110px]" />
-                <col className="w-[100px]" />
-                <col className="w-[68px]" />
-                <col className="w-[95px]" />
-                <col className="w-[84px]" />
+                <col className="w-[190px]" /> {/* 1. 申请号 */}
+                <col className="w-[170px]" /> {/* 2. B端订单号 */}
+                <col className="w-[180px]" /> {/* 3. 寰宇订单号 */}
+                <col className="w-[130px]" /> {/* 4. 业务类型 */}
+                <col className="w-[100px]" /> {/* 5. 客户 */}
+                <col className="w-[115px]" /> {/* 6. 订单状态 */}
+                <col className="w-[90px]" />  {/* 7. 客户经理 */}
+                <col className="w-[170px]" /> {/* 8. 医院 */}
+                <col className="w-[110px]" /> {/* 9. 科室 */}
+                <col className="w-[90px]" />  {/* 10. 医生 */}
+                <col className="w-[100px]" /> {/* 11. 订单金额 */}
+                <col className="w-[95px]" />  {/* 12. 数据量 */}
+                <col className="w-[70px]" />  {/* 13. 来源 */}
+                <col className="w-[95px]" />  {/* 14. 入池 */}
+                <col className="w-[80px]" />  {/* 15. 操作 */}
               </colgroup>
               <thead className="sticky top-0 bg-white z-10 shadow-[0_1px_0_0_#f1f5f9]">
-                <tr className="text-left text-[#454a5a] border-b border-border-subtle">
-                  <th className="py-3.5 px-5 font-bold">申请号</th>
-                  <th className="py-3.5 px-4 font-bold">订单号</th>
+                <tr className="text-left text-[#454a5a] border-b border-border-subtle whitespace-nowrap">
+                  <th className="py-3 px-3 font-bold whitespace-nowrap">申请号</th>
+                  <th className="py-3 px-3 font-bold whitespace-nowrap">B端订单号</th>
+                  <th className="py-3 px-3 font-bold whitespace-nowrap">寰宇订单号</th>
+                  <th className="py-3 px-3 font-bold whitespace-nowrap">业务类型</th>
                   <SortHead label="客户" k="customerName" sort={sort} onSort={toggleSort} />
-                  <SortHead label="医院 / 科室" k="hospital" sort={sort} onSort={toggleSort} />
-                  <th className="py-3.5 px-4 font-bold">业务类型</th>
                   <SortHead label="订单状态" k="status" sort={sort} onSort={toggleSort} />
-                  <th className="py-3.5 px-4 font-bold">数据量</th>
-                  <th className="py-3.5 px-3 font-bold">来源</th>
+                  <th className="py-3 px-3 font-bold whitespace-nowrap">客户经理</th>
+                  <SortHead label="医院" k="hospital" sort={sort} onSort={toggleSort} />
+                  <th className="py-3 px-3 font-bold whitespace-nowrap">科室</th>
+                  <th className="py-3 px-3 font-bold whitespace-nowrap">医生</th>
+                  <th className="py-3 px-3 font-bold whitespace-nowrap">订单金额</th>
+                  <th className="py-3 px-3 font-bold whitespace-nowrap">数据量</th>
+                  <th className="py-3 px-3 font-bold whitespace-nowrap">来源</th>
                   <SortHead label="入池" k="poolEnteredAt" sort={sort} onSort={toggleSort} />
-                  <th className="py-3.5 px-3 font-bold text-center">操作</th>
+                  <th className="py-3 px-3 font-bold whitespace-nowrap text-center">操作</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={10} className="py-12 text-center text-text-muted">
+                    <td colSpan={15} className="py-12 text-center text-text-muted">
                       <div className="flex items-center justify-center gap-2">
                         <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
                         加载中…
@@ -1051,27 +1452,95 @@ function ListView({
                   </tr>
                 ) : error ? (
                   <tr>
-                    <td colSpan={10} className="py-12 text-center text-error">
+                    <td colSpan={15} className="py-12 text-center text-error">
                       {error}
                     </td>
                   </tr>
                 ) : groups.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="py-12 text-center text-text-muted">
+                    <td colSpan={15} className="py-12 text-center text-text-muted">
                       暂无{activeFilter.label}申请
                     </td>
                   </tr>
                 ) : (
                   groups.flatMap((group) => {
-                    if (group.orders.length === 1) {
-                      return [<OrderTreeRow key={group.key} group={group} order={group.primary} onOpen={onOpen} onOpenReminder={onOpenReminder} />]
+                    const services = getServicesOfGroup(group)
+                    // 单个服务的申请或独立自营单：直接单行展示
+                    if (services.length <= 1) {
+                      const isSingleSelfOperated =
+                        group.primary.source === 'huanyu' ||
+                        (typeof group.primary.sourceOrderNo === 'string' && group.primary.sourceOrderNo.startsWith('HYDD'))
+                      const singleService = services[0] || {
+                        id: group.primary.id,
+                        key: `order:${group.primary.id}`,
+                        parentOrderId: group.primary.id,
+                        isClone: false,
+                        sequence: 1,
+                        applicationNo: group.applicationNo,
+                        sourceOrderNo: isSingleSelfOperated ? '' : (group.primary.bOrderNo || group.primary.sourceOrderNo),
+                        huanyuOrderNo: group.primary.huanyuOrderNo || (isSingleSelfOperated ? group.primary.sourceOrderNo : null),
+                        serviceType: group.primary.serviceType || bizType(group.primary),
+                        customerName: group.customerName,
+                        status: group.primary.huanyuOrderStatus || group.primary.status,
+                        accountManager: group.primary.accountManager || '—',
+                        hospital: group.primary.hospital || '',
+                        dept: group.primary.dept || '',
+                        doctor: group.primary.doctor || '',
+                        isAiHospital: Boolean(group.primary.isAiHospital),
+                        isAiDept: Boolean(group.primary.isAiDept),
+                        isAiDoctor: Boolean(group.primary.isAiDoctor),
+                        amount: group.primary.orderAmount ?? null,
+                        dataCount: {
+                          textAndImages: group.primary.textCount + group.primary.imageCount,
+                          audio: group.primary.audioCount
+                        },
+                        source: group.primary.source,
+                        poolEnteredAt: group.poolEnteredAt,
+                        rawOrder: group.primary
+                      }
+                      return [
+                        <ServiceRow
+                          key={group.key}
+                          group={group}
+                          service={singleService}
+                          isChild={false}
+                          sequence={1}
+                          totalServices={1}
+                          onOpen={onOpen}
+                          onOpenReminder={onOpenReminder}
+                        />
+                      ]
                     }
-                    return [
-                      <ApplicationTreeRow key={`${group.key}:application`} group={group} onOpen={onOpen} />,
-                      ...group.orders.map((order) => (
-                        <OrderTreeRow key={`${group.key}:order:${order.id}`} group={group} order={order} child onOpen={onOpen} onOpenReminder={onOpenReminder} />
-                      ))
+
+                    // 多服务场景（多个B端订单或同一母单复制为多次服务）：申请号汇总父行 + 展开所有具体服务子单
+                    const expanded = isExpanded(group.key)
+                    const rows: React.JSX.Element[] = [
+                      <ApplicationTreeRow
+                        key={`${group.key}:parent`}
+                        group={group}
+                        services={services}
+                        isExpanded={expanded}
+                        onToggleExpand={() => toggleExpand(group.key)}
+                        onOpen={onOpen}
+                      />
                     ]
+                    if (expanded) {
+                      services.forEach((svc, index) => {
+                        rows.push(
+                          <ServiceRow
+                            key={`${group.key}:child:${svc.key}`}
+                            group={group}
+                            service={svc}
+                            isChild={true}
+                            sequence={svc.sequence || index + 1}
+                            totalServices={services.length}
+                            onOpen={onOpen}
+                            onOpenReminder={onOpenReminder}
+                          />
+                        )
+                      })
+                    }
+                    return rows
                   })
                 )}
               </tbody>
@@ -1105,98 +1574,369 @@ function rowAccentOf(lane: LaneKey | null): string {
           : 'border-l-border-subtle'
 }
 
+/** 申请号汇总父行（折叠/展开一次，包含所有子单汇总统计） */
 function ApplicationTreeRow({
   group,
+  services,
+  isExpanded,
+  onToggleExpand,
   onOpen
 }: {
   group: ApplicationGroup
+  services: FlattenedService[]
+  isExpanded: boolean
+  onToggleExpand: () => void
   onOpen: (group: ApplicationGroup, selectedOrderId?: number) => void
 }): React.JSX.Element {
   const order = group.primary
-  const services = dedupeServices(group.orders)
   const lane = groupLaneOf(group)
+  const gender = genderOf(order)
+  const uniqueBOrders = new Set(services.map((s) => s.sourceOrderNo).filter(Boolean))
+  const totalAmount = services.reduce((sum, s) => sum + (s.amount ?? 0), 0)
+  const hasAnyAmount = services.some((s) => s.amount != null)
+  const serviceSummaries = dedupeServices(group.orders)
+
   return (
     <tr
       onClick={() => onOpen(group)}
-      className={'border-b border-border-subtle border-l-2 bg-surface-container-low/70 hover:bg-primary-fixed/35 cursor-pointer transition-colors ' + rowAccentOf(lane)}
+      className={
+        'border-b border-border-subtle border-l-2 bg-[#f8fafc] hover:bg-primary-fixed/30 cursor-pointer transition-colors ' +
+        rowAccentOf(lane)
+      }
     >
-      <td className="py-3 px-5 text-[#161a22] font-mono-data font-semibold">
-        <ApplicationCopyButtons applicationNo={group.applicationNo} customerName={group.customerName} className="max-w-full" />
+      {/* 1. 申请号 */}
+      <td className="py-2.5 px-3 text-[#161a22] font-mono-data font-semibold">
+        <div className="flex items-center gap-1 min-w-0">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onToggleExpand()
+            }}
+            className="shrink-0 w-5 h-5 flex items-center justify-center rounded hover:bg-black/5 text-[#536174]"
+            title={isExpanded ? '折叠服务单' : '展开服务单'}
+          >
+            <span className="material-symbols-outlined text-[18px]">
+              {isExpanded ? 'expand_more' : 'chevron_right'}
+            </span>
+          </button>
+          <ApplicationCopyButtons
+            applicationNo={group.applicationNo}
+            customerName={group.customerName}
+            className="max-w-full truncate"
+          />
+        </div>
       </td>
-      <td className="py-3 px-4 text-text-muted">
-        <span className="inline-flex items-center gap-1 rounded bg-white px-2 py-1 text-[11px] font-semibold">
-          <span className="material-symbols-outlined text-primary" style={{ fontSize: '14px' }}>account_tree</span>
-          {group.orders.length} 个订单
-        </span>
+
+      {/* 2. B端订单号 */}
+      <td className="py-2.5 px-3 text-text-muted">
+        {uniqueBOrders.size > 0 ? (
+          <span className="inline-flex items-center gap-1 rounded bg-white px-2 py-0.5 text-[11px] font-semibold text-[#454a5a] border border-border-subtle shadow-2xs">
+            <span className="material-symbols-outlined text-primary text-[14px]">account_tree</span>
+            {uniqueBOrders.size} 个B端单 · {services.length} 次服务
+          </span>
+        ) : (
+          <span className="text-text-muted font-mono-data">—</span>
+        )}
       </td>
-      <td className="py-3 px-4">
-        <span className="font-semibold text-text-main">{group.customerName}</span>
+
+      {/* 3. 寰宇订单号 */}
+      <td className="py-2.5 px-3 text-[#161a22] font-mono-data font-semibold">
+        {(() => {
+          const uniqueHuanyuOrders = [...new Set(services.map((s) => s.huanyuOrderNo).filter((v): v is string => Boolean(v)))]
+          if (uniqueHuanyuOrders.length === 1) {
+            return (
+              <Copyable value={uniqueHuanyuOrders[0]} className="truncate text-[#161a22]">
+                <span className="truncate">{uniqueHuanyuOrders[0]}</span>
+              </Copyable>
+            )
+          }
+          if (uniqueHuanyuOrders.length > 1) {
+            return (
+              <span className="inline-flex items-center gap-1 rounded bg-white px-2 py-0.5 text-[11px] font-semibold text-[#454a5a] border border-border-subtle shadow-2xs">
+                {uniqueHuanyuOrders.length} 个寰宇单
+              </span>
+            )
+          }
+          return <span className="text-text-muted font-mono-data">—</span>
+        })()}
       </td>
-      <td className="py-3 px-4 text-[#454a5a]">
-        <span className="font-semibold">{order.hospital || '医院待定'}</span>
-        <span className="mx-1 text-text-muted font-normal">/</span>
-        <span className="font-normal text-text-muted">{order.dept || '科室待定'}</span>
+
+      {/* 4. 业务类型 */}
+      <td className="py-2.5 px-3">
+        <ServiceChips services={serviceSummaries} />
       </td>
-      <td className="py-3 px-4"><ServiceChips services={services} /></td>
-      <td className="py-3 px-4 whitespace-nowrap"><LaneBadge order={order} /></td>
-      <td className="py-3 px-4"><DataCounts order={order} /></td>
-      <td className="py-3 px-3"><SourceBadge order={order} /></td>
-      <td className="py-3 px-4 text-[#454a5a] whitespace-nowrap" title={group.poolEnteredAt}>{relativeTime(group.poolEnteredAt)}</td>
-      <td className="py-3 px-3 text-center text-text-muted text-[12px]">—</td>
+
+      {/* 4. 客户 (纯姓名，无电话) */}
+      <td className="py-2.5 px-3">
+        <div className="flex items-center gap-1 truncate font-semibold text-text-main">
+          <span className="truncate" title={group.customerName}>{group.customerName}</span>
+          {gender && <GenderIcon gender={gender} />}
+        </div>
+      </td>
+
+      {/* 5. 订单状态 */}
+      <td className="py-2.5 px-3 whitespace-nowrap">
+        <LaneBadge order={order} />
+      </td>
+
+      {/* 6. 客户经理 */}
+      <td className="py-2.5 px-3 text-body-sm text-[#454a5a]">
+        <span className="truncate block" title={order.accountManager || '—'}>{order.accountManager || '—'}</span>
+      </td>
+
+      {/* 7. 医院 */}
+      <td className="py-2.5 px-3 text-[#454a5a] font-medium">
+        {(() => {
+          const validServiceHospital = services.find((s) => s.hospital && !isInvalidHospital(s.hospital))?.hospital
+          const displayHospital = (!isInvalidHospital(order.hospital) ? order.hospital : '') || validServiceHospital || '医院待定'
+          return (
+            <div className="flex items-center gap-1 truncate" title={displayHospital}>
+              <span className="truncate">{displayHospital}</span>
+              {order.isAiHospital && (
+                <span className="shrink-0 text-[10px] px-1 py-0.2 bg-purple-50 text-purple-600 rounded border border-purple-200" title="由AI智能分析识别">AI</span>
+              )}
+            </div>
+          )
+        })()}
+      </td>
+
+      {/* 8. 科室 */}
+      <td className="py-2.5 px-3 text-body-sm text-[#536174]">
+        <div className="flex items-center gap-1 truncate" title={order.dept || '科室待定'}>
+          <span className="truncate">{order.dept || '科室待定'}</span>
+          {order.isAiDept && (
+            <span className="shrink-0 text-[10px] px-1 py-0.2 bg-purple-50 text-purple-600 rounded border border-purple-200" title="由AI智能分析识别">AI</span>
+          )}
+        </div>
+      </td>
+
+      {/* 9. 医生 */}
+      <td className="py-2.5 px-3 text-body-sm text-[#536174]">
+        <div className="flex items-center gap-1 truncate" title={order.doctor || '医生待定'}>
+          <span className="truncate">{order.doctor || '医生待定'}</span>
+          {order.isAiDoctor && (
+            <span className="shrink-0 text-[10px] px-1 py-0.2 bg-purple-50 text-purple-600 rounded border border-purple-200" title="由AI智能分析识别">AI</span>
+          )}
+        </div>
+      </td>
+
+      {/* 10. 订单金额 (自动求和所有子服务) */}
+      <td className="py-2.5 px-3 font-mono-data font-semibold text-text-main">
+        {hasAnyAmount ? `¥${totalAmount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+      </td>
+
+      {/* 11. 数据量 */}
+      <td className="py-2.5 px-3">
+        <DataCounts order={order} />
+      </td>
+
+      {/* 12. 来源 */}
+      <td className="py-2.5 px-3">
+        <SourceBadge order={order} />
+      </td>
+
+      {/* 13. 入池 */}
+      <td className="py-2.5 px-3 text-[#454a5a] whitespace-nowrap text-body-sm font-mono-data" title={group.poolEnteredAt}>
+        {relativeTime(group.poolEnteredAt)}
+      </td>
+
+      {/* 14. 操作 */}
+      <td className="py-2.5 px-3 text-center text-text-muted text-[12px]">
+        —
+      </td>
     </tr>
   )
 }
 
-function OrderTreeRow({
+/** 具体服务项行（包括单服务订单与展开后的子服务行） */
+function ServiceRow({
   group,
-  order,
-  child = false,
+  service,
+  isChild = false,
+  sequence = 1,
+  totalServices = 1,
   onOpen,
   onOpenReminder
 }: {
   group: ApplicationGroup
-  order: Order
-  child?: boolean
+  service: FlattenedService
+  isChild?: boolean
+  sequence?: number
+  totalServices?: number
   onOpen: (group: ApplicationGroup, selectedOrderId?: number) => void
   onOpenReminder: (order: Order) => void
 }): React.JSX.Element {
-  const lane = laneOf(order)
+  const lane = laneOf(service.rawOrder)
+  const gender = genderOf(service.rawOrder)
+
   return (
     <tr
-      onClick={() => onOpen(group, order.id)}
+      onClick={() => onOpen(group, service.parentOrderId)}
       className={
-        'border-b border-border-subtle border-l-2 hover:bg-surface-bg cursor-pointer transition-colors ' +
-        rowAccentOf(lane) +
-        (child ? ' bg-white' : '')
+        'border-b border-border-subtle border-l-2 hover:bg-primary-fixed/20 cursor-pointer transition-colors bg-white ' +
+        rowAccentOf(lane)
       }
     >
-      <td className="py-3 px-5 text-[#161a22] font-mono-data font-semibold">
-        {child ? (
-          <span className="inline-flex items-center gap-1.5 pl-3 text-[11px] text-text-muted">
-            <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>subdirectory_arrow_right</span>
-            子订单
-          </span>
+      {/* 1. 申请号 */}
+      <td className="py-2.5 px-3 text-[#161a22] font-mono-data font-semibold">
+        {isChild ? (
+          <div className="pl-6 flex items-center gap-1.5 text-text-muted">
+            <span className="material-symbols-outlined text-[15px] text-slate-400">subdirectory_arrow_right</span>
+            <span className="text-[12px] font-mono-data text-slate-500">服务 #{sequence}</span>
+          </div>
+        ) : service.applicationNo ? (
+          <ApplicationCopyButtons
+            applicationNo={service.applicationNo}
+            customerName={service.customerName}
+            className="max-w-full"
+          />
         ) : (
-          <ApplicationCopyButtons applicationNo={group.applicationNo} customerName={group.customerName} className="max-w-full" />
+          <span className="text-text-muted font-mono-data pl-2">—</span>
         )}
       </td>
-      <td className="py-3 px-4 text-[#161a22] font-mono-data font-semibold">
-        <Copyable value={order.sourceOrderNo} className="max-w-full"><span className="truncate">{order.sourceOrderNo}</span></Copyable>
+
+      {/* 2. B端订单号 */}
+      <td className="py-2.5 px-3 text-[#161a22] font-mono-data font-semibold">
+        {service.sourceOrderNo ? (
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Copyable value={service.sourceOrderNo} className="truncate text-[#161a22]">
+              <span className="truncate">{service.sourceOrderNo}</span>
+            </Copyable>
+            {service.isClone ? (
+              <span
+                className="shrink-0 text-[10px] px-1 py-0.2 rounded bg-amber-50 text-amber-700 border border-amber-200 font-semibold"
+                title={`基于母单复制的第 ${sequence} 次服务`}
+              >
+                #{sequence} 复制
+              </span>
+            ) : totalServices > 1 ? (
+              <span className="shrink-0 text-[10px] px-1 py-0.2 rounded bg-slate-100 text-slate-600 font-medium">
+                #1
+              </span>
+            ) : null}
+          </div>
+        ) : (
+          <span className="text-text-muted font-mono-data">—</span>
+        )}
       </td>
-      <td className="py-3 px-4"><CustomerCell order={order} fallbackName={group.customerName} /></td>
-      <td className="py-3 px-4 text-[#454a5a]"><HospitalCell order={order} /></td>
-      <td className="py-3 px-4"><ServiceChips services={[{ label: bizType(order), count: 1, order }]} /></td>
-      <td className="py-3 px-4 whitespace-nowrap"><LaneBadge order={order} /></td>
-      <td className="py-3 px-4"><DataCounts order={order} /></td>
-      <td className="py-3 px-3"><SourceBadge order={order} /></td>
-      <td className="py-3 px-4 text-[#454a5a] whitespace-nowrap" title={poolEnteredAtOf(order)}>{relativeTime(poolEnteredAtOf(order))}</td>
-      <td className="py-3 px-3 text-center">
+
+      {/* 3. 寰宇订单号 */}
+      <td className="py-2.5 px-3 text-[#161a22] font-mono-data font-semibold">
+        {service.huanyuOrderNo ? (
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Copyable value={service.huanyuOrderNo} className="truncate text-[#161a22]">
+              <span className="truncate">{service.huanyuOrderNo}</span>
+            </Copyable>
+          </div>
+        ) : (
+          <span className="text-text-muted font-mono-data">—</span>
+        )}
+      </td>
+
+      {/* 4. 业务类型 */}
+      <td className="py-2.5 px-3">
+        {service.serviceType ? (
+          <span
+            className={
+              'text-[12px] leading-5 px-2 py-0.5 rounded font-medium border border-current/20 truncate inline-block max-w-full ' +
+              bizChipClass(service.rawOrder)
+            }
+            title={service.serviceType}
+          >
+            {service.serviceType}
+          </span>
+        ) : (
+          <span className="text-text-muted font-mono-data">—</span>
+        )}
+      </td>
+
+      {/* 4. 客户 (纯姓名，无电话) */}
+      <td className="py-2.5 px-3">
+        <div className="flex items-center gap-1 font-semibold text-text-main truncate">
+          <span className="truncate" title={service.customerName}>{service.customerName}</span>
+          {gender && <GenderIcon gender={gender} />}
+        </div>
+      </td>
+
+      {/* 5. 订单状态 */}
+      <td className="py-2.5 px-3 whitespace-nowrap">
+        <LaneBadge order={service.rawOrder} customLabel={service.status} />
+      </td>
+
+      {/* 6. 客户经理 */}
+      <td className="py-2.5 px-3 text-body-sm text-[#454a5a]">
+        <span className="truncate block" title={service.accountManager}>{service.accountManager || '—'}</span>
+      </td>
+
+      {/* 7. 医院 */}
+      <td className="py-2.5 px-3 text-[#161a22] font-medium">
+        {(() => {
+          const validHospital =
+            (!isInvalidHospital(service.hospital) ? service.hospital : '') ||
+            (!isInvalidHospital(service.rawOrder.hospital) ? service.rawOrder.hospital : '') ||
+            '—'
+          return (
+            <div className="flex items-center gap-1 truncate" title={validHospital}>
+              <span className="truncate">{validHospital}</span>
+              {service.isAiHospital && (
+                <span className="shrink-0 text-[10px] px-1 py-0.2 bg-purple-50 text-purple-600 rounded border border-purple-200" title="由AI智能分析识别">AI</span>
+              )}
+            </div>
+          )
+        })()}
+      </td>
+
+      {/* 8. 科室 */}
+      <td className="py-2.5 px-3 text-body-sm text-[#536174]">
+        <div className="flex items-center gap-1 truncate" title={service.dept || '—'}>
+          <span className="truncate">{service.dept || '—'}</span>
+          {service.isAiDept && (
+            <span className="shrink-0 text-[10px] px-1 py-0.2 bg-purple-50 text-purple-600 rounded border border-purple-200" title="由AI智能分析识别">AI</span>
+          )}
+        </div>
+      </td>
+
+      {/* 9. 医生 */}
+      <td className="py-2.5 px-3 text-body-sm text-[#536174]">
+        <div className="flex items-center gap-1 truncate" title={service.doctor || '—'}>
+          <span className="truncate">{service.doctor || '—'}</span>
+          {service.isAiDoctor && (
+            <span className="shrink-0 text-[10px] px-1 py-0.2 bg-purple-50 text-purple-600 rounded border border-purple-200" title="由AI智能分析识别">AI</span>
+          )}
+        </div>
+      </td>
+
+      {/* 10. 订单金额 */}
+      <td className="py-2.5 px-3 font-mono-data font-semibold text-text-main">
+        {service.amount != null
+          ? `¥${service.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+          : '—'}
+      </td>
+
+      {/* 11. 数据量 */}
+      <td className="py-2.5 px-3">
+        <DataCounts order={service.rawOrder} />
+      </td>
+
+      {/* 12. 来源 */}
+      <td className="py-2.5 px-3">
+        <SourceBadge order={service.rawOrder} />
+      </td>
+
+      {/* 13. 入池 */}
+      <td className="py-2.5 px-3 text-[#454a5a] whitespace-nowrap text-body-sm font-mono-data" title={service.poolEnteredAt}>
+        {relativeTime(service.poolEnteredAt)}
+      </td>
+
+      {/* 14. 操作 */}
+      <td className="py-2.5 px-3 text-center">
         <button
           type="button"
           title="设置跟进提醒"
           onClick={(e) => {
             e.stopPropagation()
-            onOpenReminder(order)
+            onOpenReminder(service.rawOrder)
           }}
           className="inline-flex items-center gap-1 rounded px-2 py-1 text-[12px] font-medium text-text-muted hover:text-primary hover:bg-white transition-colors border border-border-subtle hover:border-primary/40 bg-surface-bg shadow-2xs"
         >
@@ -1208,38 +1948,19 @@ function OrderTreeRow({
   )
 }
 
-function CustomerCell({ order, fallbackName }: { order: Order; fallbackName: string }): React.JSX.Element {
-  return (
-    <div className="flex min-w-0 items-center gap-2">
-      <span className="shrink-0 font-semibold text-text-main">{displayCustomerNameOf(order) || fallbackName}</span>
-      {order.customerPhone ? (
-        <Copyable value={order.customerPhone} className="min-w-0 text-[12px] text-[#6f7f95] font-mono-data"><span className="truncate">{order.customerPhone}</span></Copyable>
-      ) : (
-        <span className="min-w-0 truncate text-[12px] text-text-muted">手机号待补</span>
-      )}
-    </div>
-  )
-}
-
-function HospitalCell({ order }: { order: Order }): React.JSX.Element {
-  return (
-    <div className="font-semibold truncate">
-      {order.hospital || '医院待定'}
-      <span className="mx-1 text-text-muted font-normal">/</span>
-      <span className="font-normal text-text-muted">{order.dept || '科室待定'}</span>
-    </div>
-  )
-}
-
 function ServiceChips({ services }: { services: Array<{ label: string; count: number; order: Order }> }): React.JSX.Element {
+  const nonEmpty = services.filter((s) => s.label.trim())
+  if (nonEmpty.length === 0) {
+    return <span className="text-text-muted font-mono-data">—</span>
+  }
   return (
     <div className="flex flex-wrap gap-1 max-w-[160px]">
-      {services.slice(0, 3).map((service) => (
+      {nonEmpty.slice(0, 2).map((service) => (
         <span key={service.label} className={'text-[12px] leading-5 px-2 rounded font-semibold border border-current/20 ' + bizChipClass(service.order)}>
           {service.label}{service.count > 1 ? ` x${service.count}` : ''}
         </span>
       ))}
-      {services.length > 3 && <span className="text-[12px] leading-5 px-2 rounded bg-surface-bg text-text-muted">+{services.length - 3}</span>}
+      {nonEmpty.length > 2 && <span className="text-[12px] leading-5 px-1.5 rounded bg-surface-bg text-text-muted">+{nonEmpty.length - 2}</span>}
     </div>
   )
 }
@@ -1276,10 +1997,10 @@ function SortHead({
 }): React.JSX.Element {
   const active = sort.key === k
   return (
-    <th className="py-3.5 px-4 font-bold">
-      <button onClick={() => onSort(k)} className="flex items-center gap-1 hover:text-text-main transition-colors">
-        {label}
-        <span className={'material-symbols-outlined text-[16px] ' + (active ? 'text-primary' : 'text-text-muted/40')}>
+    <th className="py-3 px-3 font-bold whitespace-nowrap">
+      <button onClick={() => onSort(k)} className="flex items-center gap-1 hover:text-text-main transition-colors whitespace-nowrap">
+        <span className="whitespace-nowrap">{label}</span>
+        <span className={'material-symbols-outlined text-[16px] shrink-0 ' + (active ? 'text-primary' : 'text-text-muted/40')}>
           {active ? (sort.dir === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'}
         </span>
       </button>
@@ -1287,7 +2008,7 @@ function SortHead({
   )
 }
 
-function LaneBadge({ order }: { order: Order }): React.JSX.Element {
+function LaneBadge({ order, customLabel }: { order: Order; customLabel?: string }): React.JSX.Element {
   const key = laneOf(order)
   const color =
     key === 'todo'
@@ -1299,9 +2020,11 @@ function LaneBadge({ order }: { order: Order }): React.JSX.Element {
           : key === 'done'
             ? 'text-action-green bg-action-green/10'
             : 'text-text-muted bg-surface-variant'
+  const label = customLabel || order.huanyuOrderStatus || '未设置'
   return (
-    <span className={'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-label-caps ' + color} title={order.huanyuOrderStatus || '未设置'}>
-      {order.huanyuOrderStatus || '未设置'}
+    <span className={'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-label-caps ' + color} title={label}>
+      {label}
     </span>
   )
 }
+
