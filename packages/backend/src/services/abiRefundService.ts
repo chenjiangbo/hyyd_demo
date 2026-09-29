@@ -1,11 +1,12 @@
 import { getEnv } from '../env.js'
 
 interface AbiTokenResponse {
-  status?: unknown
-  message?: unknown
+  success?: unknown
+  msg?: unknown
   data?: {
     access_token?: unknown
     access_sign?: unknown
+    expires_in?: unknown
   } | null
 }
 
@@ -73,8 +74,10 @@ async function obtainAbiAccessCredentials(): Promise<{ accessToken: string; acce
   }
 
   const payload = await readJson(response, 'ABI 鉴权请求') as AbiTokenResponse
-  if (payload.status !== 200) {
-    throw new Error(textValue(payload.message) || 'ABI 鉴权未成功')
+  console.log('[ABI鉴权返回数据]', JSON.stringify(payload))
+
+  if (payload.success !== true) {
+    throw new Error(textValue(payload.msg) || 'ABI 鉴权未成功')
   }
   const accessToken = textValue(payload.data?.access_token)
   const accessSign = textValue(payload.data?.access_sign)
@@ -116,6 +119,7 @@ export async function requestAbiRefund(input: AbiRefundInput): Promise<AbiRefund
   }
 
   const payload = await readJson(response, 'ABI 退款请求') as AbiRefundResponse
+  console.log('[ABI退款返回数据]', JSON.stringify(payload))
   if (payload.success !== true) {
     throw new Error(textValue(payload.msg) || 'ABI 退款失败')
   }
