@@ -1093,6 +1093,8 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       alipayAccount: h.aliPayTradeNo || '',
       hasInsurance: h.medicare || '',
       insuranceType: h.medicareType || '',
+      smsLink: (h as any).messageUrl || '',
+      messageUrl: (h as any).messageUrl || '',
       isTaiKang: h.isTaiKang || '0',
       expertLevel: h.expert_level || '',
       tkHospital: h.expectedHospital || rawObj.intendHos || '',

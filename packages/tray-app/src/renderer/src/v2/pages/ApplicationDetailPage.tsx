@@ -1546,7 +1546,8 @@ function HuanyuOrderForm({
   const advanceRegistrationFee = Number(String(form.advanceRegistrationFee || '').replace(/,/g, '').trim())
   const registrationFee = Number(String(form.registrationFee || '').replace(/,/g, '').trim())
   const canRefundRegistrationFee = !isCreate && isTaikangRegistrationAssistance && hasHuanyuOrderNo &&
-    Number.isFinite(advanceRegistrationFee) && advanceRegistrationFee > 0
+    Number.isFinite(advanceRegistrationFee) && advanceRegistrationFee > 0 &&
+    String(form.advanceRecovered || '').trim() === '1'
   const initialChannelServiceId = useRef(typeof initialForm.channelService === 'string' ? initialForm.channelService : '')
   const initialOrderAmount = useRef(typeof initialForm.orderAmount === 'string' ? initialForm.orderAmount : '')
   const hasSwitchedAwayFromInitialService = useRef(false)
@@ -2912,14 +2913,14 @@ function HuanyuOrderForm({
             <HuanyuFormSection title="挂号费及医保信息">
               <HuanyuFormGrid>
                 <HuanyuInput label="挂号费金额" value={f.registrationFee} onChange={(value) => changeField('registrationFee', value)} type="number" />
-                <HuanyuSelect label="是否垫付" value={f.advancePayment} options={[{ value: '0', label: '否' }, { value: '1', label: '是' }]} onChange={(value) => changeField('advancePayment', value)} />
+                <HuanyuSelect label="是否垫付" value={f.advancePayment} options={[{ value: '', label: '' }, { value: '0', label: '否' }, { value: '1', label: '是' }]} onChange={(value) => changeField('advancePayment', value)} />
                 <HuanyuInput label="垫付挂号费金额" value={f.advanceRegistrationFee} onChange={(value) => changeField('advanceRegistrationFee', value)} disabled />
-                <HuanyuInput label="垫付是否收回" value={f.advanceRecovered} onChange={(value) => changeField('advanceRecovered', value)} disabled />
+                <HuanyuInput label="垫付是否收回" value={huanyuYesNoLabel(f.advanceRecovered)} onChange={(value) => changeField('advanceRecovered', value)} disabled />
                 <HuanyuInput label="挂号费退款客户金额" value={f.registrationRefund} onChange={(value) => changeField('registrationRefund', value)} disabled />
                 <HuanyuInput label="支付宝支付账号" value={f.alipayAccount} onChange={(value) => changeField('alipayAccount', value)} disabled />
                 <HuanyuInput label="是否有医保" value={f.hasInsurance} onChange={(value) => changeField('hasInsurance', value)} disabled />
                 <HuanyuSelect label="医保类型" value={f.insuranceType} options={medicareTypeOptions.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => changeField('insuranceType', value)} />
-                <HuanyuInput label="短信链接" value={f.smsLink} onChange={(value) => changeField('smsLink', value)} disabled />
+                <HuanyuInput label="短信链接" value={f.smsLink} onChange={(value) => changeField('smsLink', value)} disabled copyable />
               </HuanyuFormGrid>
             </HuanyuFormSection>
 
@@ -3241,7 +3242,7 @@ function buildHuanyuForm(order: Order): Record<string, string | boolean> {
     alipayAccount: value(['alipayAccount']),
     hasInsurance: huanyuInsuranceLabel(value(['hasInsurance', 'medicalInsurance'])),
     insuranceType: value(['insuranceType', 'medicalInsuranceType']),
-    smsLink: value(['smsLink']),
+    smsLink: value(['smsLink', 'messageUrl']),
     internalBookingTemplate: buildHuanyuBookingTemplate('对内', { channel: resolvedChannel, orderNo: value(['orderNo', 'hyydOrderNo', 'DDBH'], order.sourceOrderNo), channelOrderNo: resolvedChannelOrderNo, service: resolvedChannelService, patientName, patientPhone, hospital, department, doctor, bookingTime, escortName: value(['escortName', 'companionName']), escortPhone: value(['escortPhone', 'companionPhone']), hospitalAddress: value(['hospitalAddress', 'address']), remark: value(['serviceRemark', 'orderRemark', 'comments']) }),
     externalBookingTemplate: buildHuanyuBookingTemplate('对外', { patientName, patientPhone, hospital, department, doctor, bookingTime, escortName: value(['escortName', 'companionName']), escortPhone: value(['escortPhone', 'companionPhone']), hospitalAddress: value(['hospitalAddress', 'address']), remark: value(['serviceRemark', 'orderRemark', 'comments']) }),
     escortSummary: value(['escortSummary', 'serviceSummary'])
@@ -3304,6 +3305,13 @@ function buildHuanyuBookingTemplate(kind: '对内' | '对外', values: Record<st
   return [...lines, ['就诊人', values.patientName], ['联系电话', values.patientPhone], ['医院', values.hospital], ['科室', values.department], ['医生', values.doctor], ['就诊日期', values.bookingTime], ['陪诊人', values.escortName], ['陪诊人电话', values.escortPhone], ['医院地址', values.hospitalAddress], ['订单服务备注', values.remark]]
     .map(([label, content]) => `${label}：${content || ''}`)
     .join('\n')
+}
+
+function huanyuYesNoLabel(value: unknown): string {
+  const s = String(value ?? '').trim()
+  if (s === '1') return '是'
+  if (s === '0') return '否'
+  return ''
 }
 
 function huanyuInsuranceLabel(value: string): string {
@@ -3838,7 +3846,8 @@ function HuanyuInput({
   wide = false,
   disabled = false,
   type = 'text',
-  required = false
+  required = false,
+  copyable = false
 }: {
   label: string
   value: string | boolean
@@ -3847,23 +3856,47 @@ function HuanyuInput({
   disabled?: boolean
   type?: React.HTMLInputTypeAttribute
   required?: boolean
+  copyable?: boolean
 }): React.JSX.Element {
+  const textValue = typeof value === 'string' ? value : (value != null ? String(value) : '')
+  const [copied, setCopied] = useState(false)
   return (
     <label className={'flex min-w-0 items-center gap-1.5 ' + (wide ? 'md:col-span-2 xl:col-span-4' : '')}>
       <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">
         {required && <span className="text-status-danger mr-0.5">*</span>}
         {label}：
       </span>
-      <input
-        type={type}
-        disabled={disabled}
-        value={typeof value === 'string' ? value : ''}
-        onChange={(event) => onChange(event.target.value)}
-        className={
-          'h-8 min-w-0 flex-1 rounded border border-border-subtle px-2.5 text-body-sm text-text-main outline-none transition-colors ' +
-          (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary')
-        }
-      />
+      <div className="relative flex min-w-0 flex-1 items-center">
+        <input
+          type={type}
+          disabled={disabled}
+          value={textValue}
+          onChange={(event) => onChange(event.target.value)}
+          className={
+            'h-8 min-w-0 flex-1 rounded border border-border-subtle px-2.5 text-body-sm text-text-main outline-none transition-colors ' +
+            (copyable ? 'pr-8 ' : '') +
+            (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary')
+          }
+        />
+        {copyable && textValue && (
+          <button
+            type="button"
+            title={copied ? '已复制' : '复制内容'}
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              void navigator.clipboard?.writeText(textValue)
+              setCopied(true)
+              setTimeout(() => setCopied(false), 1200)
+            }}
+            className="absolute right-1.5 flex items-center justify-center p-0.5 text-text-muted transition-colors hover:text-primary"
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>
+              {copied ? 'check' : 'content_copy'}
+            </span>
+          </button>
+        )}
+      </div>
     </label>
   )
 }
@@ -3997,7 +4030,7 @@ function HuanyuSelect({
   options?: Array<string | HuanyuSelectOption>
   onChange: (value: string) => void
 }): React.JSX.Element {
-  const currentValue = typeof value === 'string' ? value : ''
+  const currentValue = typeof value === 'string' ? value.trim() : (value != null ? String(value).trim() : '')
   const normalizedOptions = options.map((option) => typeof option === 'string' ? { value: option, label: option } : option)
   const isMatched = normalizedOptions.some((option) => option.value === currentValue)
   const visibleOptions = currentValue && !isMatched
