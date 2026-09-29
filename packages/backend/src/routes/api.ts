@@ -516,20 +516,17 @@ export function registerApiRoutes(
       return reply.status(403).send({ error: '账号已被停用，请联系管理员' })
     }
 
-    const inputMd5 = /^[a-f0-9]{32}$/i.test(pwd)
-      ? pwd.toLowerCase()
-      : createHash('md5').update(pwd).digest('hex').toLowerCase()
+    // 前台登录强制输入明文：现场计算 MD5（彻底杜绝拿 MD5 密文直接登录的哈希传递漏洞）
+    const inputMd5 = createHash('md5').update(pwd).digest('hex').toLowerCase()
 
     const storedPwd = (emp.password || '').trim()
-    if (!storedPwd) {
+    // 数据库中必须严格是 32 位 MD5 密文，拒绝任何明文存储或非合规数据
+    if (!storedPwd || !/^[a-f0-9]{32}$/i.test(storedPwd)) {
+      request.log.warn(`[Auth] 员工 ${emp.token} 数据库密码未加密或格式不合规，已拒绝登录`)
       return reply.status(401).send({ error: '用户名或密码错误' })
     }
 
-    const storedMd5 = /^[a-f0-9]{32}$/i.test(storedPwd)
-      ? storedPwd.toLowerCase()
-      : createHash('md5').update(storedPwd).digest('hex').toLowerCase()
-
-    if (inputMd5 !== storedMd5) {
+    if (inputMd5 !== storedPwd.toLowerCase()) {
       return reply.status(401).send({ error: '用户名或密码错误' })
     }
 
@@ -567,28 +564,22 @@ export function registerApiRoutes(
       return reply.status(401).send({ error: '未找到当前登录用户' })
     }
 
-    const inputOldMd5 = /^[a-f0-9]{32}$/i.test(oldPwd)
-      ? oldPwd.toLowerCase()
-      : createHash('md5').update(oldPwd).digest('hex').toLowerCase()
+    // 旧密码强制视为明文输入，现场计算 MD5
+    const inputOldMd5 = createHash('md5').update(oldPwd).digest('hex').toLowerCase()
 
     const storedPwd = (emp.password || '').trim()
-    if (!storedPwd) {
-      return reply.status(400).send({ error: '原账号未设置密码，请联系管理员' })
+    if (!storedPwd || !/^[a-f0-9]{32}$/i.test(storedPwd)) {
+      return reply.status(400).send({ error: '原账号密码未加密或未设置，请联系管理员重置' })
     }
 
-    const storedOldMd5 = /^[a-f0-9]{32}$/i.test(storedPwd)
-      ? storedPwd.toLowerCase()
-      : createHash('md5').update(storedPwd).digest('hex').toLowerCase()
-
-    if (inputOldMd5 !== storedOldMd5) {
+    if (inputOldMd5 !== storedPwd.toLowerCase()) {
       return reply.status(400).send({ error: '旧密码输入不正确' })
     }
 
-    const newMd5 = /^[a-f0-9]{32}$/i.test(newPwd)
-      ? newPwd.toLowerCase()
-      : createHash('md5').update(newPwd).digest('hex').toLowerCase()
+    // 新密码强制视为明文输入，计算 MD5 入库，确保数据库保存严格为 32 位密文
+    const newMd5 = createHash('md5').update(newPwd).digest('hex').toLowerCase()
 
-    if (newMd5 === storedOldMd5) {
+    if (newMd5 === storedPwd.toLowerCase()) {
       return reply.status(400).send({ error: '新密码不能与旧密码相同' })
     }
 
