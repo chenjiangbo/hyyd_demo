@@ -25,7 +25,7 @@ const INIT_ALIYUN_SMS_CONFIG_SQL = `
   INSERT INTO sys_settings (key, value, updated_at)
   VALUES (
     'aliyun_sms_config',
-    '{"enabled": true, "accessKeyId": "", "accessKeySecret": "", "signName": "寰宇医道", "templatePreDay": "SMS_512665048", "templateSameDay": "SMS_512530051"}'::jsonb,
+    '{"enabled": false, "accessKeyId": "", "accessKeySecret": "", "signName": "寰宇医道", "templatePreDay": "SMS_512665048", "templateSameDay": "SMS_512530051"}'::jsonb,
     NOW()
   )
   ON CONFLICT (key) DO NOTHING;

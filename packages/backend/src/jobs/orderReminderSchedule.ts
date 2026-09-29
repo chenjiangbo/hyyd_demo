@@ -309,7 +309,7 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike): P
   if (hours < 11) return // 11:00 前不执行
 
   const smsConfig = await getSmsConfig(prisma)
-  if (!smsConfig.enabled) {
+  if (!smsConfig.enabled || !smsConfig.accessKeyId || !smsConfig.accessKeySecret) {
     return
   }
 
@@ -475,7 +475,7 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike): 
   if (hours < 7) return // 07:00 前不执行
 
   const smsConfig = await getSmsConfig(prisma)
-  if (!smsConfig.enabled) {
+  if (!smsConfig.enabled || !smsConfig.accessKeyId || !smsConfig.accessKeySecret) {
     return
   }
 

@@ -8,7 +8,8 @@ import {
 
 export function DesktopReminderPopup() {
   const [activeReminders, setActiveReminders] = useState<OrderReminder[]>([])
-  const [currentIndex] = useState(0)
+  const [currentIndex, setCurrentIndex] = useState(0)
+  const [viewMode, setViewMode] = useState<'card' | 'list'>('card')
   const [isProcessing, setIsProcessing] = useState(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
@@ -76,6 +77,23 @@ export function DesktopReminderPopup() {
     }
   }, [])
 
+  // 监听键盘快捷键
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (viewMode === 'card' && activeReminders.length > 1) {
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault()
+          setCurrentIndex((prev) => Math.max(0, prev - 1))
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault()
+          setCurrentIndex((prev) => Math.min(activeReminders.length - 1, prev + 1))
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [viewMode, activeReminders.length])
+
   // 如果在 Electron 中，由独立桌面原生窗口负责渲染，主窗口无需再渲染 DOM 弹层
   if (window.api?.showDesktopReminder) {
     return null
@@ -88,6 +106,7 @@ export function DesktopReminderPopup() {
   const currentItem = activeReminders[safeIndex]
   if (!currentItem) return null
 
+  const totalCount = activeReminders.length
   const tag = currentItem.type === 'manual' ? '手工备忘' : '系统提醒'
   const isUrgent = tag === '系统提醒'
   const timeStr = currentItem.remind_time || currentItem.remindTime
@@ -117,13 +136,37 @@ export function DesktopReminderPopup() {
     }
   }
 
-  // 延后 10 分钟
-  async function handleSnooze() {
+  const extractOrderNo = (r: OrderReminder): string => {
+    if (r.order_no && r.order_no !== 'SYSTEM' && r.order_no !== 'ALL') return r.order_no
+    if (r.orderNo && r.orderNo !== 'SYSTEM' && r.orderNo !== 'ALL') return r.orderNo
+    const match = r.content?.match(/(?:订单号|单号)[：:]\s*([A-Za-z0-9_-]+)/)
+    return match ? match[1] : ''
+  }
+
+  const extractBriefContent = (rawContent?: string): string => {
+    if (!rawContent) return ''
+    const normalized = rawContent.replace(/\\n/g, '\n')
+    const lines = normalized.split('\n').filter(Boolean)
+    for (const line of lines) {
+      if (line.includes('提醒内容') || line.includes('备忘内容')) {
+        const colonIdx = line.indexOf(':') > -1 ? line.indexOf(':') : line.indexOf('：')
+        if (colonIdx > -1) {
+          return line.slice(colonIdx + 1).trim()
+        }
+      }
+    }
+    const last = lines[lines.length - 1]
+    return last || rawContent
+  }
+
+  // 延后指定一条
+  async function handleSnoozeItem(id: number) {
     if (isProcessing) return
     setIsProcessing(true)
     try {
-      await snoozeOrderReminder(currentItem.id, 10)
-      setActiveReminders((prev) => prev.filter((r) => r.id !== currentItem.id))
+      await snoozeOrderReminder(id, 10)
+      setActiveReminders((prev) => prev.filter((r) => r.id !== id))
+      setCurrentIndex((prev) => Math.max(0, prev - 1))
       window.dispatchEvent(new CustomEvent('huanyu-reminders-updated'))
     } catch {
       // 异常处理
@@ -132,13 +175,14 @@ export function DesktopReminderPopup() {
     }
   }
 
-  // 标记已完成
-  async function handleDone() {
+  // 标记指定一条已完成
+  async function handleDoneItem(id: number) {
     if (isProcessing) return
     setIsProcessing(true)
     try {
-      await doneOrderReminder(currentItem.id)
-      setActiveReminders((prev) => prev.filter((r) => r.id !== currentItem.id))
+      await doneOrderReminder(id)
+      setActiveReminders((prev) => prev.filter((r) => r.id !== id))
+      setCurrentIndex((prev) => Math.max(0, prev - 1))
       window.dispatchEvent(new CustomEvent('huanyu-reminders-updated'))
     } catch {
       // 异常处理
@@ -147,17 +191,46 @@ export function DesktopReminderPopup() {
     }
   }
 
-  const fallbackOrderNo = currentItem.order_no || currentItem.orderNo
-  const hasOrderInContent =
-    currentItem.content?.includes('订单号:') ||
-    currentItem.content?.includes('订单号：') ||
-    currentItem.content?.includes('单号:') ||
-    currentItem.content?.includes('单号：')
+  // 全部延后 10 分钟
+  async function handleSnoozeAll() {
+    if (activeReminders.length === 0 || isProcessing) return
+    setIsProcessing(true)
+    try {
+      await Promise.all(activeReminders.map((r) => snoozeOrderReminder(r.id, 10)))
+      setActiveReminders([])
+      window.dispatchEvent(new CustomEvent('huanyu-reminders-updated'))
+    } catch {
+      // 异常处理
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  // 全部标记已完成
+  async function handleDoneAll() {
+    if (activeReminders.length === 0 || isProcessing) return
+    setIsProcessing(true)
+    try {
+      await Promise.all(activeReminders.map((r) => doneOrderReminder(r.id)))
+      setActiveReminders([])
+      window.dispatchEvent(new CustomEvent('huanyu-reminders-updated'))
+    } catch {
+      // 异常处理
+    } finally {
+      setIsProcessing(false)
+    }
+  }
 
   const renderFormattedContent = (rawContent: string) => {
     if (!rawContent) return null
     const normalized = rawContent.replace(/\\n/g, '\n')
     const lines = normalized.split('\n').filter(Boolean)
+    const fallbackOrderNo = extractOrderNo(currentItem)
+    const hasOrderInContent =
+      rawContent.includes('订单号:') ||
+      rawContent.includes('订单号：') ||
+      rawContent.includes('单号:') ||
+      rawContent.includes('单号：')
 
     return (
       <div className="space-y-1.5 text-[13px] leading-relaxed text-text-main font-normal">
@@ -202,7 +275,7 @@ export function DesktopReminderPopup() {
             </div>
           )
         })}
-        {!hasOrderInContent && fallbackOrderNo && fallbackOrderNo !== 'SYSTEM' && fallbackOrderNo !== 'ALL' && (
+        {!hasOrderInContent && fallbackOrderNo && (
           <div className="flex items-start text-[13px] pt-1 border-t border-border-subtle/50">
             <span className="w-[72px] shrink-0 whitespace-nowrap text-text-muted">订单号：</span>
             <div className="flex-1 flex items-center gap-1.5 min-w-0">
@@ -226,27 +299,199 @@ export function DesktopReminderPopup() {
     )
   }
 
+  const customScrollStyle = (
+    <style>{`
+      .custom-reminder-scroll {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(148, 163, 184, 0.4) transparent;
+      }
+      .custom-reminder-scroll::-webkit-scrollbar {
+        width: 4px;
+      }
+      .custom-reminder-scroll::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .custom-reminder-scroll::-webkit-scrollbar-thumb {
+        background: rgba(148, 163, 184, 0.35);
+        border-radius: 4px;
+      }
+      .custom-reminder-scroll::-webkit-scrollbar-thumb:hover {
+        background: rgba(100, 116, 139, 0.6);
+      }
+    `}</style>
+  )
+
+  // 列表视图
+  if (viewMode === 'list') {
+    return (
+      <div
+        className="fixed bottom-5 right-5 z-[99999] w-[380px] h-[508px] rounded-xl border border-border-subtle bg-white p-2.5 shadow-2xl transition-all duration-300 animate-in slide-in-from-bottom-5 flex flex-col box-border overflow-hidden"
+        style={{
+          boxShadow: '0 20px 30px -10px rgba(0, 0, 0, 0.2), 0 0 15px rgba(0,0,0,0.05)'
+        }}
+      >
+        {customScrollStyle}
+        <div className="flex items-center justify-between border-b border-border-subtle/80 pb-1.5 shrink-0">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[12.5px] font-bold text-text-main flex items-center gap-1">
+              <span className="material-symbols-outlined text-[15px] text-primary">format_list_bulleted</span>
+              待处理清单
+            </span>
+            <span className="bg-primary/10 text-primary text-[10.5px] font-semibold px-1.5 py-0.2 rounded font-mono">
+              {totalCount} 条
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setViewMode('card')}
+              className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded text-[11px] font-medium text-text-main bg-surface-container hover:bg-border-subtle transition-colors cursor-pointer"
+              title="返回卡片模式"
+            >
+              <span className="material-symbols-outlined text-[13px]">view_carousel</span>
+              卡片模式
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setViewMode('card')
+                setActiveReminders([])
+              }}
+              className="text-text-muted hover:text-text-main p-0.5 rounded hover:bg-surface-container transition-colors cursor-pointer"
+              title="关闭"
+            >
+              <span className="material-symbols-outlined text-[15px]">close</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="py-1.5 flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-1 custom-reminder-scroll">
+          {activeReminders.map((r, idx) => {
+            const orderNo = extractOrderNo(r)
+            const rTime = r.remind_time || r.remindTime
+            const rTimeStr = rTime
+              ? new Date(rTime).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+              : ''
+            const brief = extractBriefContent(r.content)
+
+            return (
+              <div
+                key={r.id}
+                className="p-1.5 rounded-lg border border-border-subtle bg-surface-bg/60 hover:bg-surface-bg transition-colors flex flex-col gap-1 shrink-0"
+              >
+                <div className="flex items-center justify-between gap-1.5">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-[11px] font-mono text-text-muted shrink-0">#{idx + 1}</span>
+                    <span
+                      className={
+                        'px-1.5 py-0.2 rounded text-[10px] font-bold shrink-0 ' +
+                        (r.type === 'manual'
+                          ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                          : 'bg-red-50 text-error border border-red-200')
+                      }
+                    >
+                      {r.type === 'manual' ? '备忘' : '系统'}
+                    </span>
+                    {orderNo ? (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenOrder(orderNo)}
+                        className="font-mono text-primary text-[12px] font-medium hover:underline truncate text-left cursor-pointer"
+                        title="点击在工作台中查看此订单"
+                      >
+                        {orderNo}
+                      </button>
+                    ) : (
+                      <span className="text-[11px] text-text-muted">无单号</span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1 shrink-0">
+                    <span className="text-[11px] text-text-muted mr-1">{rTimeStr}</span>
+                    <button
+                      type="button"
+                      disabled={isProcessing}
+                      onClick={() => handleSnoozeItem(r.id)}
+                      className="px-1.5 py-0.5 rounded text-[10.5px] font-medium border border-border-subtle bg-white text-text-main hover:bg-surface-container transition-colors disabled:opacity-50 cursor-pointer"
+                      title="延后 10 分钟"
+                    >
+                      延后
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isProcessing}
+                      onClick={() => handleDoneItem(r.id)}
+                      className="px-1.5 py-0.5 rounded text-[10.5px] font-medium bg-action-green text-white hover:bg-action-green/90 transition-colors disabled:opacity-50 cursor-pointer"
+                      title="标记完成"
+                    >
+                      完成
+                    </button>
+                  </div>
+                </div>
+
+                <div className="text-[11.5px] text-text-main leading-snug line-clamp-2 pl-3">
+                  {brief}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        <div className="flex items-center justify-between border-t border-border-subtle/80 pt-1.5 gap-2 shrink-0">
+          <button
+            type="button"
+            disabled={isProcessing}
+            onClick={async () => {
+              await handleSnoozeAll()
+              setViewMode('card')
+            }}
+            className="flex-1 inline-flex items-center justify-center gap-1 rounded-lg border border-border-subtle bg-surface-bg px-2 py-1.5 text-[12px] font-semibold text-text-main hover:bg-surface-container hover:border-text-muted transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[14px]">snooze</span>
+            全部延后 10 分钟
+          </button>
+          <button
+            type="button"
+            disabled={isProcessing}
+            onClick={async () => {
+              await handleDoneAll()
+              setViewMode('card')
+            }}
+            className="flex-1 inline-flex items-center justify-center gap-1 rounded-lg bg-action-green px-2 py-1.5 text-[12px] font-semibold text-white shadow-sm hover:bg-action-green/90 transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[14px]">check_circle</span>
+            全部标记完成
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // 默认卡片视图 (Card Mode)
   return (
     <div
-      className="fixed bottom-5 right-5 z-[99999] w-96 rounded-xl border border-border-subtle bg-white p-4 shadow-2xl transition-all duration-300 animate-in slide-in-from-bottom-5 overflow-hidden"
+      className="fixed bottom-5 right-5 z-[99999] w-[380px] h-[254px] rounded-xl border border-border-subtle bg-white p-2.5 shadow-2xl transition-all duration-300 animate-in slide-in-from-bottom-5 flex flex-col box-border overflow-hidden"
       style={{
         boxShadow: '0 20px 30px -10px rgba(0, 0, 0, 0.2), 0 0 15px rgba(0,0,0,0.05)'
       }}
     >
-      {/* 顶部标签与时间 */}
-      <div className="flex items-center justify-between border-b border-border-subtle/80 pb-2.5">
+      {customScrollStyle}
+      {/* 顶部：左侧标签，右侧翻页器、时间与关闭 */}
+      <div className="flex items-center justify-between border-b border-border-subtle/80 pb-1.5 shrink-0">
         <div className="flex items-center gap-1.5">
           <span
             className={
-              'inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold ' +
+              'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-bold ' +
               (tag === '手工备忘' ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-red-50 text-error border border-red-200')
             }
           >
-            <span className="material-symbols-outlined text-[14px]">
+            <span className="material-symbols-outlined text-[13px]">
               {tag === '手工备忘' ? 'alarm' : 'warning'}
             </span>
             {tag}
           </span>
+
           {isUrgent && (
             <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-semibold bg-red-50 text-error border border-red-200 animate-pulse">
               待处理
@@ -254,45 +499,117 @@ export function DesktopReminderPopup() {
           )}
         </div>
 
-        <div className="flex items-center gap-2">
-          {activeReminders.length > 1 && (
-            <span className="text-[11px] font-medium text-text-muted bg-surface-container px-1.5 py-0.5 rounded">
-              {safeIndex + 1} / {activeReminders.length}
-            </span>
+        <div className="flex items-center gap-1.5">
+          {/* 翻页器移到右侧后方 */}
+          {totalCount > 1 && (
+            <div className="flex items-center bg-surface-container border border-border-subtle px-1 py-0.5 rounded text-[11px] text-text-main font-semibold shadow-xs">
+              <button
+                type="button"
+                disabled={safeIndex <= 0}
+                onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
+                className="w-3.5 h-3.5 rounded flex items-center justify-center hover:bg-white text-text-muted hover:text-text-main disabled:opacity-25 transition-colors cursor-pointer"
+                title="上一条 (快捷键 ←)"
+              >
+                <span className="material-symbols-outlined text-[13px]">chevron_left</span>
+              </button>
+              <span className="px-1 font-mono text-[11px]">{safeIndex + 1}/{totalCount}</span>
+              <button
+                type="button"
+                disabled={safeIndex >= totalCount - 1}
+                onClick={() => setCurrentIndex((prev) => Math.min(totalCount - 1, prev + 1))}
+                className="w-3.5 h-3.5 rounded flex items-center justify-center hover:bg-white text-text-muted hover:text-text-main disabled:opacity-25 transition-colors cursor-pointer"
+                title="下一条 (快捷键 →)"
+              >
+                <span className="material-symbols-outlined text-[13px]">chevron_right</span>
+              </button>
+            </div>
           )}
-          <span className="text-[12px] font-medium text-text-muted">
+
+          <span className="text-[11.5px] font-medium text-text-muted font-mono">
             {formattedTime}
           </span>
+          <button
+            type="button"
+            onClick={() => {
+              setViewMode('card')
+              setActiveReminders([])
+            }}
+            className="text-text-muted hover:text-text-main p-0.5 rounded hover:bg-surface-container transition-colors cursor-pointer"
+            title="关闭浮窗"
+          >
+            <span className="material-symbols-outlined text-[15px]">close</span>
+          </button>
         </div>
       </div>
 
-      {/* 提醒主要内容：展示多行结构化提醒/备忘内容 */}
-      <div className="py-2.5">
-        <div className="bg-surface-bg/70 p-2.5 rounded-lg border border-border-subtle/70">
+      {/* 提醒主要内容：固定高度容器内滑动，单条/多条窗口尺寸严格一致 */}
+      <div className="py-1.5 flex-1 min-h-0 overflow-hidden flex flex-col">
+        <div className="flex-1 min-h-0 bg-surface-bg/70 p-2 rounded-lg border border-border-subtle/70 overflow-y-auto pr-1 custom-reminder-scroll">
           {renderFormattedContent(currentItem.content)}
         </div>
       </div>
 
-      {/* 底部按钮：仅保留 延后10分钟 和 已完成 */}
-      <div className="flex items-center justify-between border-t border-border-subtle/80 pt-3 gap-2">
-        <button
-          type="button"
-          disabled={isProcessing}
-          onClick={handleSnooze}
-          className="flex-1 inline-flex items-center justify-center gap-1 rounded-lg border border-border-subtle bg-surface-bg px-3 py-2 text-body-sm font-semibold text-text-main hover:bg-surface-container hover:border-text-muted transition-colors disabled:opacity-50"
-        >
-          <span className="material-symbols-outlined text-[16px]">snooze</span>
-          延后 10 分钟
-        </button>
-        <button
-          type="button"
-          disabled={isProcessing}
-          onClick={handleDone}
-          className="flex-1 inline-flex items-center justify-center gap-1 rounded-lg bg-action-green px-3 py-2 text-body-sm font-semibold text-white shadow-sm hover:bg-action-green/90 transition-colors disabled:opacity-50"
-        >
-          <span className="material-symbols-outlined text-[16px]">check_circle</span>
-          已完成
-        </button>
+      {/* 底部按钮 */}
+      <div className="flex flex-col gap-1 border-t border-border-subtle/80 pt-1.5 shrink-0">
+        <div className="flex items-center justify-between gap-2">
+          <button
+            type="button"
+            disabled={isProcessing}
+            onClick={() => handleSnoozeItem(currentItem.id)}
+            className="flex-1 inline-flex items-center justify-center gap-1 rounded-lg border border-border-subtle bg-surface-bg px-2 py-1.5 text-[12px] font-semibold text-text-main hover:bg-surface-container hover:border-text-muted transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[14px]">snooze</span>
+            延后 10 分钟
+          </button>
+          <button
+            type="button"
+            disabled={isProcessing}
+            onClick={() => handleDoneItem(currentItem.id)}
+            className="flex-1 inline-flex items-center justify-center gap-1 rounded-lg bg-action-green px-2 py-1.5 text-[12px] font-semibold text-white shadow-sm hover:bg-action-green/90 transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[14px]">check_circle</span>
+            已完成
+          </button>
+        </div>
+
+        {totalCount > 1 && (
+          <div className="flex items-center justify-between text-[10.5px] text-text-muted px-0.5 pt-0.5">
+            <span>共有 <strong className="text-text-main font-semibold">{totalCount}</strong> 条提醒</span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setViewMode('list')}
+                className="text-primary hover:underline font-medium transition-colors cursor-pointer"
+              >
+                展开清单
+              </button>
+              <span className="text-border-subtle">·</span>
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={async () => {
+                  await handleSnoozeAll()
+                  setViewMode('card')
+                }}
+                className="text-text-muted hover:text-text-main transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                全部延后
+              </button>
+              <span className="text-border-subtle">·</span>
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={async () => {
+                  await handleDoneAll()
+                  setViewMode('card')
+                }}
+                className="text-action-green hover:underline font-medium transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                全部完成
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -312,7 +629,7 @@ function IconCopyButton({
       type="button"
       title={title}
       onClick={onClick}
-      className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-white/70 border border-border-subtle text-[#6f7f95] hover:bg-primary-fixed hover:text-primary hover:border-primary-fixed-dim transition-colors"
+      className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-white/70 border border-border-subtle text-[#6f7f95] hover:bg-primary-fixed hover:text-primary hover:border-primary-fixed-dim transition-colors cursor-pointer"
     >
       {copied ? (
         <span className="material-symbols-outlined text-action-green" style={{ fontSize: '12px' }}>

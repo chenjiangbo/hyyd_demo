@@ -50,7 +50,7 @@ export async function getSmsConfig(prisma?: PrismaClient, forceRefresh = false):
   }
 
   const merged: AliyunSmsConfig = {
-    enabled: dbConfig.enabled !== undefined ? Boolean(dbConfig.enabled) : true,
+    enabled: dbConfig.enabled !== undefined ? Boolean(dbConfig.enabled) : false,
     accessKeyId: dbConfig.accessKeyId !== undefined && dbConfig.accessKeyId !== '' ? dbConfig.accessKeyId : (env.aliyunSmsAccessKeyId || ''),
     accessKeySecret: dbConfig.accessKeySecret !== undefined && dbConfig.accessKeySecret !== '' ? dbConfig.accessKeySecret : (env.aliyunSmsAccessKeySecret || ''),
     signName: dbConfig.signName || env.aliyunSmsSignName || '寰宇医道',

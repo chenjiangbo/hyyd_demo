@@ -72,6 +72,8 @@ const api = {
   // 桌面右下角到期提醒原生浮窗
   showDesktopReminder: (data: unknown) => ipcRenderer.invoke('reminder:show', data),
   hideDesktopReminder: () => ipcRenderer.invoke('reminder:hide'),
+  resizeDesktopReminder: (dims: { width?: number; height?: number }) =>
+    ipcRenderer.invoke('reminder:resize', dims),
   getCurrentReminder: () => ipcRenderer.invoke('reminder:get-current'),
   openOrderFromReminder: (orderNo: string) => ipcRenderer.invoke('reminder:open-order', orderNo),
   onReminderData: (cb: (data: unknown) => void): (() => void) => {

@@ -162,6 +162,7 @@ declare global {
       // 桌面右下角到期提醒原生浮窗
       showDesktopReminder: (data: unknown) => Promise<{ ok: boolean }>
       hideDesktopReminder: () => Promise<{ ok: boolean }>
+      resizeDesktopReminder: (dims: { width?: number; height?: number }) => Promise<{ ok: boolean }>
       getCurrentReminder: () => Promise<unknown>
       openOrderFromReminder: (orderNo: string) => Promise<{ ok: boolean }>
       onReminderData: (cb: (data: unknown) => void) => () => void
