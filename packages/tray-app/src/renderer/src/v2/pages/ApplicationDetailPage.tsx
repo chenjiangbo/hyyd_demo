@@ -1544,7 +1544,7 @@ function HuanyuOrderForm({
   // 不允许客户端通过保存或推送隐式新建本地寰宇订单。
   const hasHuanyuOrderNo = Boolean(String(form.orderNo || '').trim())
   const advanceRegistrationFee = Number(String(form.advanceRegistrationFee || '').replace(/,/g, '').trim())
-  const registrationFee = Number(String(form.registrationFee || '').replace(/,/g, '').trim())
+  const registrationRefund = Number(String(form.registrationRefund || '').replace(/,/g, '').trim())
   const canRefundRegistrationFee = !isCreate && isTaikangRegistrationAssistance && hasHuanyuOrderNo &&
     Number.isFinite(advanceRegistrationFee) && advanceRegistrationFee > 0 &&
     String(form.advanceRecovered || '').trim() === '1'
@@ -1991,6 +1991,10 @@ function HuanyuOrderForm({
   }
 
   function openRefundModal(): void {
+    if (Number.isFinite(registrationRefund) && registrationRefund > 0) {
+      window.alert('已经退款，请勿二次操作，请确认！')
+      return
+    }
     setRefundAmount('')
     setRefundError(null)
     setRefundModalOpen(true)
@@ -2008,11 +2012,11 @@ function HuanyuOrderForm({
     if (!/^\d+(?:\.\d{1,2})?$/.test(value) || !Number.isFinite(amount) || amount <= 0) {
       return '退款金额必须是大于 0 的数值，且最多保留两位小数'
     }
-    if (!Number.isFinite(registrationFee) || registrationFee <= 0) {
-      return '挂号费金额无效，暂不能退款'
+    if (!Number.isFinite(advanceRegistrationFee) || advanceRegistrationFee <= 0) {
+      return '垫付挂号费金额无效，暂不能退款'
     }
-    if (amount > registrationFee) {
-      return `退款金额不能大于挂号费金额 ${registrationFee}`
+    if (amount > advanceRegistrationFee) {
+      return `退款金额不能大于垫付挂号费金额 ${advanceRegistrationFee}`
     }
     return null
   }
@@ -2967,7 +2971,7 @@ function HuanyuOrderForm({
                 <input
                   type="number"
                   min="0.01"
-                  max={Number.isFinite(registrationFee) && registrationFee > 0 ? registrationFee : undefined}
+                  max={Number.isFinite(advanceRegistrationFee) && advanceRegistrationFee > 0 ? advanceRegistrationFee : undefined}
                   step="0.01"
                   inputMode="decimal"
                   value={refundAmount}
@@ -2983,7 +2987,7 @@ function HuanyuOrderForm({
                 />
               </label>
               <p id="registration-refund-limit" className="mt-2 pl-[72px] text-xs text-text-muted">
-                可退款范围：大于 0，且不超过挂号费金额 {Number.isFinite(registrationFee) ? registrationFee : '—'}
+                可退款范围：大于 0，且不超过垫付挂号费金额 {Number.isFinite(advanceRegistrationFee) ? advanceRegistrationFee : '—'}
               </p>
               {refundError && <p className="mt-2 pl-[72px] text-xs text-error">{refundError}</p>}
             </div>

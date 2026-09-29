@@ -1743,21 +1743,24 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       DDBH: string
       registerAmount: unknown
       advanceRegisterAmount: unknown
+      refundCustAmount: unknown
       aliPayTradeNo: unknown
     }>>`
-      SELECT "DDBH", "registerAmount", "advanceRegisterAmount", "aliPayTradeNo"
+      SELECT "DDBH", "registerAmount", "advanceRegisterAmount", "refundCustAmount", "aliPayTradeNo"
       FROM "HY_FACT_DDCX_NEW" WHERE "DDBH" = ${String(ddbh)} LIMIT 1
     `
     const huanyuOrder = huanyuRows[0]
     if (!huanyuOrder) return reply.status(404).send({ error: '本地寰宇订单不存在，无法办理退款' })
+    const priorRefundAmount = parseRefundAmount(huanyuOrder.refundCustAmount)
+    if (priorRefundAmount != null && priorRefundAmount > 0) {
+      return reply.status(400).send({ error: '已经退款，请勿二次操作，请确认！' })
+    }
     const advanceRegistrationFee = parseRefundAmount(huanyuOrder.advanceRegisterAmount)
     if (advanceRegistrationFee == null) {
       return reply.status(400).send({ error: '垫付挂号费金额未大于 0，不能办理退款' })
     }
-    const registrationFee = parseRefundAmount(huanyuOrder.registerAmount)
-    if (registrationFee == null) return reply.status(400).send({ error: '挂号费金额无效，不能办理退款' })
-    if (refundAmount > registrationFee) {
-      return reply.status(400).send({ error: `退款金额不能大于挂号费金额 ${registrationFee}` })
+    if (refundAmount > advanceRegistrationFee) {
+      return reply.status(400).send({ error: `退款金额不能大于垫付挂号费金额 ${advanceRegistrationFee}` })
     }
     const aliTradeNo = typeof huanyuOrder.aliPayTradeNo === 'string' ? huanyuOrder.aliPayTradeNo.trim() : String(huanyuOrder.aliPayTradeNo ?? '').trim()
     if (!aliTradeNo) return reply.status(400).send({ error: '缺少支付宝支付账号，不能办理退款' })
