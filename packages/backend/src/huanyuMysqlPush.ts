@@ -96,11 +96,24 @@ function mysqlColumns(columns: readonly string[]): string {
   return columns.map((column) => `\`${column}\``).join(', ')
 }
 
+const POSTGRES_NUMERIC_COLUMNS = new Set([
+  'DDJE',
+  'JZR_NL',
+  'registerAmount',
+  'advanceRegisterAmount',
+  'refundCustAmount'
+])
+
 function postgresUpsertSql(table: string, columns: readonly string[], key: string): string {
   // 表名和列名都来自本文件的固定白名单，绝不接受外部输入。
   const quoted = (identifier: string) => `"${identifier.replace(/"/g, '""')}"`
   const columnSql = columns.map(quoted).join(', ')
-  const placeholders = columns.map((_, index) => `$${index + 1}`).join(', ')
+  const placeholders = columns.map((col, index) => {
+    if (table === 'HY_FACT_DDCX_NEW' && POSTGRES_NUMERIC_COLUMNS.has(col)) {
+      return `CASE WHEN $${index + 1}::text = '' THEN NULL ELSE $${index + 1}::numeric END`
+    }
+    return `$${index + 1}`
+  }).join(', ')
   const updates = columns
     .filter((column) => column !== key)
     .map((column) => `${quoted(column)} = EXCLUDED.${quoted(column)}`)
@@ -218,7 +231,12 @@ export async function refreshRegistrationAssistFieldsFromMysql(
     if (!remote) return false
 
     const assignments = REGISTRATION_ASSIST_REMOTE_AUTHORITATIVE_COLUMNS
-      .map((column, index) => `"${column}" = $${index + 1}`)
+      .map((column, index) => {
+        if (POSTGRES_NUMERIC_COLUMNS.has(column)) {
+          return `"${column}" = CASE WHEN $${index + 1}::text = '' THEN NULL ELSE $${index + 1}::numeric END`
+        }
+        return `"${column}" = $${index + 1}`
+      })
       .join(', ')
     await prisma.$executeRawUnsafe(
       `UPDATE "HY_FACT_DDCX_NEW"

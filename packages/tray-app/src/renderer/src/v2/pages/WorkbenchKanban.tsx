@@ -264,7 +264,7 @@ export function getServicesOfGroup(group: ApplicationGroup): FlattenedService[] 
 
   const result: FlattenedService[] = []
   for (const order of group.orders) {
-    const isSelfOperated = order.source === 'huanyu' || (typeof order.sourceOrderNo === 'string' && order.sourceOrderNo.startsWith('HYDD'))
+    const isSelfOperated = order.source === 'huanyu' || (typeof order.sourceOrderNo === 'string' && order.sourceOrderNo.startsWith('HYYD'))
     const effectiveOrderHospital = (!isInvalidHospital(order.hospital) ? order.hospital : '') || groupHospital
     if (order.huanyuOrders && order.huanyuOrders.length > 0) {
       for (const h of order.huanyuOrders) {
@@ -1469,7 +1469,7 @@ function ListView({
                     if (services.length <= 1) {
                       const isSingleSelfOperated =
                         group.primary.source === 'huanyu' ||
-                        (typeof group.primary.sourceOrderNo === 'string' && group.primary.sourceOrderNo.startsWith('HYDD'))
+                        (typeof group.primary.sourceOrderNo === 'string' && group.primary.sourceOrderNo.startsWith('HYYD'))
                       const singleService = services[0] || {
                         id: group.primary.id,
                         key: `order:${group.primary.id}`,

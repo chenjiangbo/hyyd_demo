@@ -113,9 +113,9 @@ function localDateYmd(date = new Date()): string {
   return `${part('year')}${part('month')}${part('day')}`
 }
 
-/** HYDD + YYYYMMDD + 8 位随机数，共 20 位。 */
+/** HYYD + YYYYMMDD + 8 位随机数，共 20 位。 */
 function generateDdbh(): string {
-  return `HYDD${localDateYmd()}${randomInt(0, 100_000_000).toString().padStart(8, '0')}`
+  return `HYYD${localDateYmd()}${randomInt(0, 100_000_000).toString().padStart(8, '0')}`
 }
 
 function ageFromBirthday(value: string | null): number | null {

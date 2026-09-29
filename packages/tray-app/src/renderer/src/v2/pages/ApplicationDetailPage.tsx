@@ -3004,7 +3004,7 @@ function HuanyuOrderForm({
 function generateHuanyuOrderNo(date = new Date()): string {
   const ymd = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`
   const random = Array.from({ length: 8 }, () => Math.floor(Math.random() * 10)).join('')
-  return `HYDD${ymd}${random}`
+  return `HYYD${ymd}${random}`
 }
 
 function buildEmptyHuanyuForm(): Record<string, string | boolean> {
@@ -3151,8 +3151,8 @@ function buildHuanyuForm(order: Order): Record<string, string | boolean> {
 
   const resolvedChannelOrderNo = (() => {
     const bNo = value(['bOrderNo', 'channelOrderNo', 'BDQD_DDBH'])
-    if (bNo && !bNo.startsWith('HYDD')) return bNo
-    if (order.sourceOrderNo && !order.sourceOrderNo.startsWith('HYDD') && order.source !== 'huanyu') {
+    if (bNo && !bNo.startsWith('HYYD')) return bNo
+    if (order.sourceOrderNo && !order.sourceOrderNo.startsWith('HYYD') && order.source !== 'huanyu') {
       return order.sourceOrderNo
     }
     return ''

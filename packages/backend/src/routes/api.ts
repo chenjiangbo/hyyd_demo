@@ -1146,7 +1146,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     }
     if (!orderNo && body.channelOrderNo) {
       const existing = await prisma.$queryRawUnsafe<Array<{ DDBH: string }>>(
-        `SELECT "DDBH" FROM "HY_FACT_DDCX_NEW" WHERE "BDQD_DDBH" = $1 AND "DDBH" LIKE 'HYDD%' LIMIT 1;`,
+        `SELECT "DDBH" FROM "HY_FACT_DDCX_NEW" WHERE "BDQD_DDBH" = $1 AND "DDBH" LIKE 'HYYD%' LIMIT 1;`,
         String(body.channelOrderNo).trim()
       )
       if (existing && existing.length > 0 && existing[0].DDBH) {
@@ -1156,7 +1156,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     if (!orderNo) {
       const ymd = new Date().toISOString().slice(0, 10).replace(/-/g, '')
       const rnd = Math.floor(10000000 + Math.random() * 90000000)
-      orderNo = `HYDD${ymd}${rnd}`
+      orderNo = `HYYD${ymd}${rnd}`
     }
     const patientName = String(body.patientName || '').trim()
     if (body.mode === 'create' && !patientName) {
@@ -1351,13 +1351,13 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       }
 
       // 3. 自建单原则：自建单不在 orders 表记录，绝对不查、不写、不碰 orders 表！
-      // 只有在明确存在第三方外部 B 端渠道工单号（且不是自建单、非 HYDD 自身单号）时，才同步原 B 端工单镜像
+      // 只有在明确存在第三方外部 B 端渠道工单号（且不是自建单、非 HYYD 自身单号）时，才同步原 B 端工单镜像
       const channelOrderNoStr = String(body.channelOrderNo || '').trim()
       const isPureSelfOperated = body.source === 'huanyu' || 
         body.isSelfOperated === true ||
         !channelOrderNoStr ||
-        channelOrderNoStr.startsWith('HYDD') ||
-        (orderNo.startsWith('HYDD') && (!channelOrderNoStr || channelOrderNoStr === orderNo))
+        channelOrderNoStr.startsWith('HYYD') ||
+        (orderNo.startsWith('HYYD') && (!channelOrderNoStr || channelOrderNoStr === orderNo))
 
       let resolvedHospitalName = body.hospital || null
       if (body.hospital) {
@@ -1506,7 +1506,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       for (let attempt = 0; attempt < 5; attempt++) {
         const ymd = new Date().toISOString().slice(0, 10).replace(/-/g, '')
         const rnd = Math.floor(10000000 + Math.random() * 90000000)
-        const candidate = `HYDD${ymd}${rnd}`
+        const candidate = `HYYD${ymd}${rnd}`
         const dup = await prisma.$queryRawUnsafe<any[]>(
           `SELECT "DDBH" FROM "HY_FACT_DDCX_NEW" WHERE "DDBH" = $1 LIMIT 1;`,
           candidate
@@ -1968,7 +1968,7 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
     const fProdIdSet = new Set(fProdIds)
 
     const sqlConditions: Prisma.Sql[] = [
-      Prisma.sql`"DDBH" LIKE 'HYDD%'`,
+      Prisma.sql`"DDBH" LIKE 'HYYD%'`,
       Prisma.sql`("BDQD_DDBH" IS NULL OR "BDQD_DDBH" = '')`
     ]
 
@@ -3197,7 +3197,7 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
             : (firstJe ?? computedPrice ?? (raw.orderAmount != null ? Number(raw.orderAmount) : null))
 
           // 区分自营订单（无B端单号，只有寰宇订单号）与外部渠道订单
-          const isSelfOperated = o.source === 'huanyu' || (typeof o.sourceOrderNo === 'string' && o.sourceOrderNo.startsWith('HYDD'))
+          const isSelfOperated = o.source === 'huanyu' || (typeof o.sourceOrderNo === 'string' && o.sourceOrderNo.startsWith('HYYD'))
           const huanyuOrderNoRow =
             o.huanyuOrderNo ??
             matchedHuanyuRows[0]?.DDBH ??
