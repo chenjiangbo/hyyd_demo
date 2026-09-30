@@ -1201,6 +1201,15 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     const fkTimeFormatted = toHuanyuStorageFormat(body.bookingFeedbackTime)
     const lastQueueFormatted = toHuanyuStorageFormat(body.lastQueuingTime || body.latestTicketTime)
 
+    const sanitizeVarchar2 = (val: unknown): string | null => {
+      if (val === undefined || val === null) return null
+      const s = String(val).trim()
+      if (!s) return null
+      if (s === '无医保' || s === '无' || s === '0') return '0'
+      if (s === '有医保' || s === '有' || s === '1') return '1'
+      return s.slice(0, 2)
+    }
+
     try {
       // 1. 保存/更新主表 HY_FACT_DDCX_NEW
       await prisma.$executeRawUnsafe(`
@@ -1268,11 +1277,6 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           "BDYH" = EXCLUDED."BDYH",
           "registerAmount" = EXCLUDED."registerAmount",
           "isAdvancePay" = EXCLUDED."isAdvancePay",
-          "advanceRegisterAmount" = EXCLUDED."advanceRegisterAmount",
-          "registerPayStatus" = EXCLUDED."registerPayStatus",
-          "refundCustAmount" = EXCLUDED."refundCustAmount",
-          "medicare" = EXCLUDED."medicare",
-          "medicareType" = EXCLUDED."medicareType",
           "isTaiKang" = EXCLUDED."isTaiKang",
           "expert_level" = EXCLUDED."expert_level",
           "lastQueuingTime" = EXCLUDED."lastQueuingTime",
@@ -1320,13 +1324,13 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         body.bookingChannelType || null,
         body.bd || null,
         body.registrationFee ? parseFloat(body.registrationFee) || null : null,
-        body.advancePayment || null,
+        sanitizeVarchar2(body.advancePayment),
         body.advanceRegistrationFee ? parseFloat(body.advanceRegistrationFee) || null : null,
-        body.advanceRecovered || null,
+        sanitizeVarchar2(body.advanceRecovered),
         body.registrationRefund ? parseFloat(body.registrationRefund) || null : null,
-        body.hasInsurance || null,
-        body.insuranceType || null,
-        body.isTaiKang || '0',
+        sanitizeVarchar2(body.hasInsurance),
+        sanitizeVarchar2(body.insuranceType),
+        sanitizeVarchar2(body.isTaiKang) || '0',
         body.expertLevel || null,
         lastQueueFormatted,
         nowStr

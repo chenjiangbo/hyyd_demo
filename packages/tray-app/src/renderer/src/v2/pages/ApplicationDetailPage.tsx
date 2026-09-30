@@ -1896,13 +1896,7 @@ function HuanyuOrderForm({
         latestTicketDefaultDate: huanyuDatePart(form.latestTicketTime),
         registrationFee: String(form.registrationFee || ''),
         advancePayment: String(form.advancePayment || ''),
-        advanceRegistrationFee: String(form.advanceRegistrationFee || ''),
-        advanceRecovered: String(form.advanceRecovered || ''),
-        registrationRefund: String(form.registrationRefund || ''),
-        alipayAccount: String(form.alipayAccount || ''),
-        hasInsurance: String(form.hasInsurance || ''),
         insuranceType: String(form.insuranceType || ''),
-        smsLink: String(form.smsLink || ''),
         escortSummary: String(form.escortSummary || ''),
         escortList: escortRows.map((r) => ({
           serviceDate: r.serviceDate,
@@ -4040,10 +4034,12 @@ function HuanyuSelect({
 }): React.JSX.Element {
   const currentValue = typeof value === 'string' ? value.trim() : (value != null ? String(value).trim() : '')
   const normalizedOptions = options.map((option) => typeof option === 'string' ? { value: option, label: option } : option)
-  const isMatched = normalizedOptions.some((option) => option.value === currentValue)
+  const hasEmptyOption = normalizedOptions.some((option) => option.value === '')
+  const baseOptions = !hasEmptyOption ? [{ value: '', label: '' }, ...normalizedOptions] : normalizedOptions
+  const isMatched = baseOptions.some((option) => option.value === currentValue)
   const visibleOptions = currentValue && !isMatched
-    ? [{ value: currentValue, label: currentValue }, ...normalizedOptions]
-    : normalizedOptions
+    ? [{ value: currentValue, label: currentValue }, ...baseOptions]
+    : baseOptions
   return (
     <label className="flex min-w-0 items-center gap-1.5">
       <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
