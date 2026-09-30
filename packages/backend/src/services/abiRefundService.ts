@@ -100,17 +100,24 @@ export async function requestAbiRefund(input: AbiRefundInput): Promise<AbiRefund
   const { accessToken, accessSign } = await obtainAbiAccessCredentials()
   const env = getEnv()
   const refundUrl = endpointUrl(env.abiRefundUrl, 'ABI_REFUND_URL')
+  // ABI 实际服务端通过 HttpServletRequest#getParameter 取值，不会解析 JSON 请求体。
+  // 因此按 application/x-www-form-urlencoded 发送，与服务端实现保持一致。
+  const form = new URLSearchParams({
+    orderNo,
+    aliTradeNo,
+    refundAmount: String(input.refundAmount)
+  })
   let response: Response
   try {
     response = await fetch(refundUrl, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
         access_token: accessToken,
         access_sign: accessSign
       },
-      body: JSON.stringify({ orderNo, aliTradeNo, refundAmount: input.refundAmount }),
+      body: form.toString(),
       signal: AbortSignal.timeout(ABI_REQUEST_TIMEOUT_MS)
     })
   } catch (error) {
