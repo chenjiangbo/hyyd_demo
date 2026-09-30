@@ -41,11 +41,14 @@ const ORDER_COLUMNS = [
   'medicareType', 'isTaiKang', 'aliPayTradeNo', 'expert_level'
 ] as const
 
-/** 泰康挂号协助详情页始终以远端 MySQL 为准、推送时也不得反向覆盖的字段。 */
+/**
+ * 泰康挂号协助详情页始终以远端 MySQL 为准、推送时也不得反向覆盖的字段。
+ * refundCustAmount 是 ABI 退款成功后先落本地 PostgreSQL、再由人工确认推送回远端的字段，
+ * 因此不在此远端权威字段集合中。
+ */
 export const REGISTRATION_ASSIST_REMOTE_AUTHORITATIVE_COLUMNS = [
   'advanceRegisterAmount',
   'registerPayStatus',
-  'refundCustAmount',
   'aliPayTradeNo',
   'medicare',
   'messageUrl'
@@ -207,7 +210,7 @@ export async function pullHuanyuOrderFromMysqlByChannelOrderNo(
 }
 
 /**
- * 挂号协助详情每次打开时，从远端主订单刷新六个远端权威字段到本地快照。
+ * 挂号协助详情每次打开时，从远端主订单刷新五个远端权威字段到本地快照。
  * 远端没有同一 DDBH 时保持本地值不变，以免远端暂不可用影响详情展示。
  */
 export async function refreshRegistrationAssistFieldsFromMysql(

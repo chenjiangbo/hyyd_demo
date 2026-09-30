@@ -466,8 +466,8 @@ export function refreshRegistrationAssistFields(orderId: number): Promise<{ ok: 
 }
 
 /** 泰康挂号协助的真实 ABI 退款。密钥和 ABI 鉴权仅由后端处理。 */
-export function refundHuanyuRegistrationFee(orderId: number, refundAmount: number): Promise<{ ok: boolean; ddbh: string; message: string; refreshed: boolean }> {
-  return authedSend<{ ok: boolean; ddbh: string; message: string; refreshed: boolean }>(`/api/v1/orders/${orderId}/huanyu/register-refund`, 'POST', { refundAmount })
+export function refundHuanyuRegistrationFee(orderId: number, refundAmount: number): Promise<{ ok: boolean; ddbh: string; message: string; localRecorded: boolean; refreshed: boolean }> {
+  return authedSend<{ ok: boolean; ddbh: string; message: string; localRecorded: boolean; refreshed: boolean }>(`/api/v1/orders/${orderId}/huanyu/register-refund`, 'POST', { refundAmount })
 }
 
 export function fetchOrderDetail(orderId: number): Promise<OrderDetailResponse> {

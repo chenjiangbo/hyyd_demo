@@ -2043,7 +2043,11 @@ function HuanyuOrderForm({
       }
       setSaveStatus({
         type: 'success',
-        message: result.refreshed ? `退款成功：${result.message}` : `退款成功：${result.message}；远端字段将在下次刷新时更新`
+        message: !result.localRecorded
+          ? `退款成功：${result.message}`
+          : result.refreshed
+            ? `退款成功：${result.message}`
+            : `退款成功：${result.message}；远端字段将在下次刷新时更新`
       })
     } catch (error) {
       setRefundError(error instanceof Error ? error.message : '退款失败')

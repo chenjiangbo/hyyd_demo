@@ -1774,14 +1774,39 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       return reply.status(502).send({ error: `退款失败：${message}` })
     }
 
-    // ABI 已明确成功后才刷新；远端写入若有延迟，不改变已退款的结论，详情下次加载会再次尝试刷新。
+    // ABI 本身不会回写寰宇订单表。退款成功后先写入本地 PostgreSQL，
+    // 页面即可显示；后续由“确认推送寰宇订单信息”将该字段写回远端 MySQL。
+    let localRecorded = false
+    try {
+      const updated = await prisma.$executeRaw`
+        UPDATE "HY_FACT_DDCX_NEW"
+        SET "refundCustAmount" = ${refundAmount}
+        WHERE "DDBH" = ${String(ddbh)}
+      `
+      if (updated !== 1) throw new Error('本地寰宇订单退款金额更新失败')
+      localRecorded = true
+    } catch (error) {
+      // 外部退款已经成功，绝不能将其误报为失败或让前端可再次发起退款。
+      fastify.log.error({ orderId, ddbh, refundAmount, err: error }, '退款成功后写入本地退款金额失败')
+      return reply.send({
+        data: {
+          ok: true,
+          ddbh: String(ddbh),
+          message: `${refundResult.message}；但本地退款金额保存失败，请勿重复退款并联系技术人员`,
+          localRecorded: false,
+          refreshed: false
+        }
+      })
+    }
+
+    // 仅刷新其余五项远端权威字段，不会覆盖刚落库的 refundCustAmount。
     let refreshed = false
     try {
       refreshed = await refreshRegistrationAssistFieldsFromMysql(prisma, String(ddbh))
     } catch (error) {
       fastify.log.warn({ orderId, ddbh, err: error }, '退款成功后的挂号协助字段刷新失败')
     }
-    return reply.send({ data: { ok: true, ddbh: String(ddbh), message: refundResult.message, refreshed } })
+    return reply.send({ data: { ok: true, ddbh: String(ddbh), message: refundResult.message, localRecorded, refreshed } })
   })
 
 function cleanHospitalName(val: unknown): string | null {
