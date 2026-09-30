@@ -1458,30 +1458,70 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       }
 
       // 4. 触发远程 MySQL 核心主数据（医院、院区、对外科室、医生、陪诊人员）查重与自动建档
-      void (async () => {
-        try {
-          await autoSyncOrderMasterData({
-            hospitalName: resolvedHospitalName || body.hospital,
-            hospitalAddress: body.hospitalAddress,
-            departmentName: resolvedDeptName || body.department,
-            doctorName: resolvedDoctorName || body.doctor,
-            expertLevel: body.expertLevel,
-            escortName: body.escortName,
-            escortPhone: body.escortPhone || (Array.isArray(body.escortList) ? body.escortList[0]?.phone : null)
-          })
-          if (Array.isArray(body.escortList)) {
-            for (const item of body.escortList) {
-              if (item?.escortName && item?.phone) {
-                await ensureRemoteEscort(item.escortName, item.phone)
-              }
+      try {
+        await autoSyncOrderMasterData({
+          hospitalName: resolvedHospitalName || body.hospital,
+          hospitalAddress: body.hospitalAddress,
+          departmentName: resolvedDeptName || body.department,
+          doctorName: resolvedDoctorName || body.doctor,
+          expertLevel: body.expertLevel,
+          escortName: body.escortName,
+          escortPhone: body.escortPhone || (Array.isArray(body.escortList) ? body.escortList[0]?.phone : null)
+        })
+        if (Array.isArray(body.escortList)) {
+          for (const item of body.escortList) {
+            if (item?.escortName && item?.phone) {
+              await ensureRemoteEscort(item.escortName, item.phone)
             }
           }
-        } catch (syncErr) {
-          fastify.log.warn({ err: syncErr }, '[master-data] 手工保存订单后触发主数据同步异常')
         }
-      })()
+      } catch (syncErr) {
+        fastify.log.warn({ err: syncErr }, '[master-data] 手工保存订单后触发主数据同步异常')
+      }
 
-      return reply.send({ ok: true, order: syncedOrder, message: '寰宇订单保存成功' })
+      // 5. 自动推送到远端 MySQL 目标库（不论新建订单还是更新订单均一键自动推送）
+      const isTaikangRegistrationAssistance = isTaikangRegistrationAssistanceOrder(
+        syncedOrder || {},
+        (syncedOrder?.rawJson || body) as Record<string, unknown>
+      )
+      let pushResult: { ok: boolean; escortCount: number; message?: string } = { ok: false, escortCount: 0 }
+      try {
+        const result = await pushHuanyuOrderToMysql(prisma, orderNo, {
+          excludeOrderUpdateColumns: isTaikangRegistrationAssistance
+            ? REGISTRATION_ASSIST_REMOTE_AUTHORITATIVE_COLUMNS
+            : []
+        })
+        pushResult = { ok: true, escortCount: result.escortCount }
+        if (syncedOrder?.id && typeof syncedOrder.id === 'number') {
+          await prisma.$executeRaw`
+            INSERT INTO b_order_huanyu_push_logs (order_id, huanyu_order_no, status, message, pushed_by_employee_id)
+            VALUES (${syncedOrder.id}, ${orderNo}, 'succeeded', ${isTaikangRegistrationAssistance
+              ? `已自动推送主订单、${result.escortCount} 条陪诊明细及附件快照；6 项挂号协助远端权威字段未覆盖`
+              : `已自动推送主订单、${result.escortCount} 条陪诊明细及附件快照`}, ${request.employee.id})
+          `.catch((logErr) => fastify.log.warn({ err: logErr }, '保存订单记录推送日志失败'))
+        }
+      } catch (pushErr) {
+        const pushErrMsg = pushErr instanceof Error ? pushErr.message : 'MySQL 推送失败'
+        fastify.log.error({ err: pushErr, orderNo }, '保存订单时自动推送 MySQL 失败')
+        pushResult = { ok: false, escortCount: 0, message: pushErrMsg }
+        if (syncedOrder?.id && typeof syncedOrder.id === 'number') {
+          await prisma.$executeRaw`
+            INSERT INTO b_order_huanyu_push_logs (order_id, huanyu_order_no, status, message, pushed_by_employee_id)
+            VALUES (${syncedOrder.id}, ${orderNo}, 'failed', ${pushErrMsg.slice(0, 4000)}, ${request.employee.id})
+          `.catch(() => undefined)
+        }
+      }
+
+      return reply.send({
+        ok: true,
+        order: syncedOrder,
+        pushed: pushResult.ok,
+        escortCount: pushResult.escortCount,
+        pushError: pushResult.ok ? null : pushResult.message,
+        message: pushResult.ok
+          ? `保存并推送成功（${pushResult.escortCount} 条陪诊明细）`
+          : `数据已保存至本地，但推送到远端系统失败：${pushResult.message}`
+      })
     } catch (err: any) {
       fastify.log.error('保存寰宇订单失败:', err)
       return reply.status(500).send({ ok: false, error: '保存寰宇订单失败: ' + err.message })
@@ -1622,51 +1662,71 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     }
   })
 
-  // 3.2 人工确认推送寰宇订单。只把本地 PostgreSQL 三张寰宇表的已保存快照写入 MySQL，
-  // 不会由抓单、AI 分析或定时任务自动调用。
+  // 3.2 手动触发/兜底推送寰宇订单。将本地 PostgreSQL 三张寰宇表的已保存快照写入 MySQL
   fastify.post<{ Params: { id: string } }>('/api/v1/orders/:id/huanyu/push', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-    const orderId = parseInt(request.params.id, 10)
-    if (!Number.isFinite(orderId)) return reply.status(400).send({ error: '订单ID非法' })
-    const order = await prisma.order.findUnique({
-      where: { id: orderId },
-      select: { id: true, source: true, sourceOrderNo: true, huanyuOrderNo: true, rawJson: true }
-    })
-    if (!order) return reply.status(404).send({ error: '订单不存在' })
-    let ddbh = order.huanyuOrderNo
+    const paramId = String(request.params.id || '').trim()
+    const orderId = parseInt(paramId, 10)
+    let order: any = null
+    let ddbh: string | null = null
+
+    if (Number.isFinite(orderId)) {
+      order = await prisma.order.findUnique({
+        where: { id: orderId },
+        select: { id: true, source: true, sourceOrderNo: true, huanyuOrderNo: true, rawJson: true }
+      })
+      if (order) {
+        ddbh = order.huanyuOrderNo
+        if (!ddbh) {
+          const rows = await prisma.$queryRaw<Array<{ DDBH: string }>>`
+            SELECT "DDBH" FROM "HY_FACT_DDCX_NEW"
+            WHERE "BDQD_DDBH" = ${order.sourceOrderNo} OR "DDBH" = ${order.sourceOrderNo}
+            ORDER BY "xtsj_" DESC NULLS LAST LIMIT 1
+          `
+          ddbh = rows[0]?.DDBH ?? null
+        }
+      }
+    }
+
+    // 支持以 DDBH (如 HYYD2026...) 或 'huanyu-HYYD...' 直接反查
     if (!ddbh) {
+      const cleanDdbh = paramId.startsWith('huanyu-') ? paramId.slice(7) : paramId
       const rows = await prisma.$queryRaw<Array<{ DDBH: string }>>`
-        SELECT "DDBH" FROM "HY_FACT_DDCX_NEW"
-        WHERE "BDQD_DDBH" = ${order.sourceOrderNo} OR "DDBH" = ${order.sourceOrderNo}
-        ORDER BY "xtsj_" DESC NULLS LAST LIMIT 1
+        SELECT "DDBH" FROM "HY_FACT_DDCX_NEW" WHERE "DDBH" = ${cleanDdbh} LIMIT 1
       `
       ddbh = rows[0]?.DDBH ?? null
     }
-    if (!ddbh) return reply.status(400).send({ error: '请先保存并创建本地寰宇订单后再推送' })
+
+    if (!ddbh) return reply.status(404).send({ error: '请先保存并创建本地寰宇订单后再推送' })
+
     try {
-      const raw = (order.rawJson && typeof order.rawJson === 'object' && !Array.isArray(order.rawJson))
+      const raw = (order?.rawJson && typeof order.rawJson === 'object' && !Array.isArray(order.rawJson))
         ? order.rawJson as Record<string, unknown>
         : {}
-      const isTaikangRegistrationAssistance = isTaikangRegistrationAssistanceOrder(order, raw)
+      const isTaikangRegistrationAssistance = order ? isTaikangRegistrationAssistanceOrder(order, raw) : false
       const result = await pushHuanyuOrderToMysql(prisma, ddbh, {
         excludeOrderUpdateColumns: isTaikangRegistrationAssistance
           ? REGISTRATION_ASSIST_REMOTE_AUTHORITATIVE_COLUMNS
           : []
       })
-      await prisma.$executeRaw`
-        INSERT INTO b_order_huanyu_push_logs (order_id, huanyu_order_no, status, message, pushed_by_employee_id)
-        VALUES (${orderId}, ${ddbh}, 'succeeded', ${isTaikangRegistrationAssistance
-          ? `已推送主订单、${result.escortCount} 条陪诊明细及附件快照；6 项挂号协助远端权威字段未覆盖`
-          : `已推送主订单、${result.escortCount} 条陪诊明细及附件快照`}, ${request.employee.id})
-      `
+      if (order?.id && typeof order.id === 'number') {
+        await prisma.$executeRaw`
+          INSERT INTO b_order_huanyu_push_logs (order_id, huanyu_order_no, status, message, pushed_by_employee_id)
+          VALUES (${order.id}, ${ddbh}, 'succeeded', ${isTaikangRegistrationAssistance
+            ? `已推送主订单、${result.escortCount} 条陪诊明细及附件快照；6 项挂号协助远端权威字段未覆盖`
+            : `已推送主订单、${result.escortCount} 条陪诊明细及附件快照`}, ${request.employee.id})
+        `.catch(() => undefined)
+      }
       return reply.send({ data: { ok: true, ddbh, escortCount: result.escortCount } })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'MySQL 推送失败'
-      await prisma.$executeRaw`
-        INSERT INTO b_order_huanyu_push_logs (order_id, huanyu_order_no, status, message, pushed_by_employee_id)
-        VALUES (${orderId}, ${ddbh}, 'failed', ${message.slice(0, 4000)}, ${request.employee.id})
-      `.catch(() => undefined)
-      fastify.log.error({ err: error, orderId, ddbh }, '推送寰宇订单到 MySQL 失败')
+      if (order?.id && typeof order.id === 'number') {
+        await prisma.$executeRaw`
+          INSERT INTO b_order_huanyu_push_logs (order_id, huanyu_order_no, status, message, pushed_by_employee_id)
+          VALUES (${order.id}, ${ddbh}, 'failed', ${message.slice(0, 4000)}, ${request.employee.id})
+        `.catch(() => undefined)
+      }
+      fastify.log.error({ err: error, paramId, ddbh }, '推送寰宇订单到 MySQL 失败')
       return reply.status(500).send({ error: `推送寰宇订单失败：${message}` })
     }
   })

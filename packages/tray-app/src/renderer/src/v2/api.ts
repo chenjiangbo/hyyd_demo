@@ -442,8 +442,22 @@ export interface SaveHuanyuOrderPayload {
   }>
 }
 
-export function saveHuanyuOrder(payload: SaveHuanyuOrderPayload): Promise<{ ok: boolean; order: Order; message?: string }> {
-  return authedSend<{ ok: boolean; order: Order; message?: string }>('/api/v1/orders/huanyu/save', 'POST', payload)
+export function saveHuanyuOrder(payload: SaveHuanyuOrderPayload): Promise<{
+  ok: boolean
+  order: Order
+  pushed?: boolean
+  escortCount?: number
+  pushError?: string | null
+  message?: string
+}> {
+  return authedSend<{
+    ok: boolean
+    order: Order
+    pushed?: boolean
+    escortCount?: number
+    pushError?: string | null
+    message?: string
+  }>('/api/v1/orders/huanyu/save', 'POST', payload)
 }
 
 export function copyHuanyuOrder(sourceOrderNo: string): Promise<{ ok: boolean; newOrderNo: string; order: Order; message?: string }> {

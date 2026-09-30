@@ -27,7 +27,6 @@ import {
   fetchHuanyuHospitals,
   fetchHuanyuHospitalById,
   fetchOrderAiFieldCandidates,
-  pushHuanyuOrder,
   refundHuanyuRegistrationFee,
   saveHuanyuOrder,
   copyHuanyuOrder,
@@ -1337,6 +1336,7 @@ function HuanyuOrderDetailPanel({
     <HuanyuOrderForm
       key={formKey}
       orderId={currentOrder.id}
+      order={currentOrder}
       initialForm={buildHuanyuForm(currentOrder)}
       initialEscorts={initialEscorts}
       isTaikangRegistrationAssistance={isTaikangRegistrationAssistance}
@@ -1379,11 +1379,18 @@ export function HuanyuOrderCreatePage({ onBack, onCreated }: { onBack: () => voi
         </div>
       </header>
       <div className="mx-auto flex w-full max-w-[1600px] min-h-0 flex-1">
-        <HuanyuOrderForm initialForm={initialForm} mode="create" onSaveSuccess={(order) => {
+        <HuanyuOrderForm initialForm={initialForm} mode="create" onSaveSuccess={(order, meta) => {
           if (onCreated) {
             onCreated(order)
           } else {
-            window.alert('寰宇订单创建成功！')
+            const no = order.huanyuOrderNo || (order.rawJson as any)?.orderNo || (order.rawJson as any)?.DDBH || ''
+            if (meta?.pushed) {
+              window.alert(`寰宇订单创建并推送成功！\n订单编号：${no}（${meta.escortCount ?? 0} 条陪诊明细）`)
+            } else if (meta?.pushError) {
+              window.alert(`寰宇订单已创建保存，但推送到远端系统失败：${meta.pushError}\n单据已在本地安全保存，可在列表中打开详情重新保存推送。`)
+            } else {
+              window.alert('寰宇订单创建成功！')
+            }
             onBack()
           }
         }} />
@@ -1396,6 +1403,7 @@ function HuanyuOrderForm({
   initialForm,
   initialEscorts,
   orderId,
+  order,
   mode = 'detail',
   isTaikangRegistrationAssistance = false,
   onRefundSucceeded,
@@ -1404,10 +1412,11 @@ function HuanyuOrderForm({
   initialForm: Record<string, string | boolean>
   initialEscorts?: HuanyuEscortRow[]
   orderId?: number
+  order?: Order
   mode?: 'detail' | 'create'
   isTaikangRegistrationAssistance?: boolean
   onRefundSucceeded?: () => Promise<void>
-  onSaveSuccess?: (order: Order) => void
+  onSaveSuccess?: (order: Order, meta?: { pushed?: boolean; pushError?: string | null; escortCount?: number }) => void
 }): React.JSX.Element {
   const currentAccountManager = getSession()?.displayName || getSession()?.employeeCode || ''
   const defaultedInitialForm: Record<string, any> = {
@@ -1420,6 +1429,14 @@ function HuanyuOrderForm({
 
   const aiCandidatesRef = useRef<OrderAiFieldCandidate[]>([])
   const hospitalOptionRef = useRef<HuanyuChannelOption | null>(null)
+
+  const [aiFilledFields, setAiFilledFields] = useState<Set<string>>(() => {
+    const s = new Set<string>()
+    if (order?.isAiHospital) s.add('hospital')
+    if (order?.isAiDept) s.add('department')
+    if (order?.isAiDoctor) s.add('doctor')
+    return s
+  })
 
   function mergeCandidatesIntoForm(
     currentForm: Record<string, any>,
@@ -1447,10 +1464,14 @@ function HuanyuOrderForm({
       inspection_booking_time: 'latestTicketTime',
       inspection_actual_time: 'latestTicketTime',
       hospitalization_appointment_time: 'bookingFeedbackTime',
-      caregiver_start_time: 'serviceStartTime'
+      caregiver_start_time: 'serviceStartTime',
+      diagnosis_result: 'disease',
+      mdt_diagnosis: 'disease',
+      mdt_disease_summary: 'patientRequest'
     }
 
     const next = { ...currentForm }
+    const filledKeys: string[] = []
     let extractedEscortName = candidates.find((c) => c.fieldCode === 'escort_name' && c.candidateType === 'new_or_confirmed')?.value
     let extractedEscortPhone = candidates.find((c) => c.fieldCode === 'escort_phone' && c.candidateType === 'new_or_confirmed')?.value
 
@@ -1478,22 +1499,32 @@ function HuanyuOrderForm({
             ? (toHuanyuDateTimeLocal(candidate.value) || candidate.value)
             : candidate.value
         }
+        filledKeys.push(key)
       }
     }
 
     // 需求时间与应答时间联动：保持两者一致
     if (next.requestTime && (!next.responseTime || !String(next.responseTime).trim())) {
       next.responseTime = next.requestTime
+      if (filledKeys.includes('requestTime')) filledKeys.push('responseTime')
     } else if (next.responseTime && (!next.requestTime || !String(next.requestTime).trim())) {
       next.requestTime = next.responseTime
+      if (filledKeys.includes('responseTime')) filledKeys.push('requestTime')
     }
 
     if (extractedEscortName && (!next.escortName || !String(next.escortName).trim())) {
       next.escortName = extractedEscortName
+      filledKeys.push('escortName')
     }
     if (extractedEscortPhone && (!next.escortPhone || !String(next.escortPhone).trim())) {
       next.escortPhone = extractedEscortPhone
+      filledKeys.push('escortPhone')
     }
+
+    if (filledKeys.length > 0) {
+      setAiFilledFields((prev) => new Set([...prev, ...filledKeys]))
+    }
+
     return next
   }
 
@@ -1532,7 +1563,6 @@ function HuanyuOrderForm({
     ]
   })
   const [isSaving, setIsSaving] = useState(false)
-  const [isPushing, setIsPushing] = useState(false)
   const [isCopying, setIsCopying] = useState(false)
   const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const [refundModalOpen, setRefundModalOpen] = useState(false)
@@ -1916,9 +1946,26 @@ function HuanyuOrderForm({
             setForm((current) => ({ ...current, orderNo: nextOrderNo }))
           }
         }
-        setSaveStatus({ type: 'success', message: '保存成功！' })
+        setAiFilledFields(new Set())
+        if (res.pushed) {
+          setSaveStatus({
+            type: 'success',
+            message: `保存并推送成功！（${res.escortCount ?? 0} 条陪诊明细）`
+          })
+        } else if (res.pushError) {
+          setSaveStatus({
+            type: 'error',
+            message: `已保存至本地，但推送到远端系统失败：${res.pushError}`
+          })
+        } else {
+          setSaveStatus({ type: 'success', message: res.message || '保存成功！' })
+        }
         if (onSaveSuccess) {
-          onSaveSuccess(res.order)
+          onSaveSuccess(res.order, {
+            pushed: res.pushed,
+            pushError: res.pushError,
+            escortCount: res.escortCount
+          })
         }
         return true
       } else {
@@ -1965,22 +2012,6 @@ function HuanyuOrderForm({
       setSaveStatus({ type: 'error', message: err instanceof Error ? err.message : '复制订单失败' })
     } finally {
       setIsCopying(false)
-    }
-  }
-
-  async function handlePush(): Promise<void> {
-    if (!orderId || !hasHuanyuOrderNo) return
-    if (!window.confirm('将当前已保存的寰宇订单信息推送到目标 MySQL，是否继续？')) return
-    const saved = await handleSave()
-    if (!saved) return
-    setIsPushing(true)
-    try {
-      const result = await pushHuanyuOrder(orderId)
-      setSaveStatus({ type: 'success', message: `已推送寰宇订单 ${result.ddbh}（${result.escortCount} 条陪诊明细）` })
-    } catch (error) {
-      setSaveStatus({ type: 'error', message: error instanceof Error ? error.message : '推送寰宇订单失败' })
-    } finally {
-      setIsPushing(false)
     }
   }
 
@@ -2722,23 +2753,21 @@ function HuanyuOrderForm({
                 className="rounded-md bg-action-green px-4 py-1.5 text-body-sm font-semibold text-white shadow-sm hover:bg-action-green/90 disabled:opacity-50 inline-flex items-center gap-1.5"
               >
                 <span className="material-symbols-outlined text-[16px]">save</span>
-                {isSaving ? '保存中…' : '保存'}
+                {isSaving ? '保存并推送中…' : '保存'}
               </button>
             ) : (
-              ['保存', '刷新预约模板信息', '数据留痕', '复制订单', '确认推送寰宇订单信息']
-                .filter((label) => hasHuanyuOrderNo || (label !== '保存' && label !== '确认推送寰宇订单信息' && label !== '复制订单'))
+              ['保存', '刷新预约模板信息', '数据留痕', '复制订单']
+                .filter((label) => hasHuanyuOrderNo || (label !== '保存' && label !== '复制订单'))
                 .map((label) => (
                   <Fragment key={label}>
                     <button
                       type="button"
                       disabled={
                         (label === '保存' && isSaving) ||
-                        (label === '确认推送寰宇订单信息' && (isSaving || isPushing)) ||
                         (label === '复制订单' && (isSaving || isCopying))
                       }
                       onClick={() => {
                         if (label === '保存') void handleSave()
-                        if (label === '确认推送寰宇订单信息') void handlePush()
                         if (label === '复制订单') void handleCopyOrder()
                         if (label === '刷新预约模板信息') {
                           setSaveStatus({ type: 'success', message: '预约模板信息已刷新' })
@@ -2747,20 +2776,16 @@ function HuanyuOrderForm({
                       }}
                       className={
                         'rounded-md px-3 py-1.5 text-body-sm font-semibold text-white shadow-sm disabled:opacity-50 transition-colors ' +
-                        (label === '确认推送寰宇订单信息'
-                          ? 'bg-primary hover:bg-primary/90'
-                          : label === '保存'
-                            ? 'bg-action-green hover:bg-action-green/90'
-                            : 'bg-action-green/90 hover:bg-action-green')
+                        (label === '保存'
+                          ? 'bg-action-green hover:bg-action-green/90'
+                          : 'bg-action-green/90 hover:bg-action-green')
                       }
                     >
                       {label === '保存' && isSaving
-                        ? '保存中…'
-                        : label === '确认推送寰宇订单信息' && isPushing
-                          ? '推送中…'
-                          : label === '复制订单' && isCopying
-                            ? '复制中…'
-                            : label}
+                        ? '保存并推送中…'
+                        : label === '复制订单' && isCopying
+                          ? '复制中…'
+                          : label}
                     </button>
                     {label === '保存' && canRefundRegistrationFee && (
                       <button
@@ -2811,6 +2836,7 @@ function HuanyuOrderForm({
                 <HuanyuSelect
                   label="订单状态"
                   value={f.orderStatus}
+                  isAi={aiFilledFields.has('orderStatus')}
                   options={orderStatusOptions.map((item) => ({ value: item.id, label: item.name }))}
                   onChange={(value) => changeField('orderStatus', value)}
                 />
@@ -2861,25 +2887,25 @@ function HuanyuOrderForm({
           <HuanyuInput label="家属姓名" value={f.familyName} onChange={(value) => changeField('familyName', value)} />
           <HuanyuInput label="家属关系" value={f.familyRelation} onChange={(value) => changeField('familyRelation', value)} />
           <HuanyuInput label="家属联系电话" value={f.familyPhone} onChange={(value) => changeField('familyPhone', value)} />
-          <HuanyuInput label="就诊人疾病" value={f.disease} onChange={(value) => changeField('disease', value)} />
+          <HuanyuInput label="就诊人疾病" value={f.disease} isAi={aiFilledFields.has('disease')} onChange={(value) => changeField('disease', value)} />
         </HuanyuFormGrid>
         <div className="mt-3">
-          <HuanyuTextarea label="客户就诊需求备注" value={f.patientRequest} onChange={(value) => changeField('patientRequest', value)} minHeight="min-h-16" />
+          <HuanyuTextarea label="客户就诊需求备注" value={f.patientRequest} isAi={aiFilledFields.has('patientRequest')} onChange={(value) => changeField('patientRequest', value)} minHeight="min-h-16" />
         </div>
       </HuanyuFormSection>
 
       <HuanyuFormSection title="医院信息">
         <HuanyuFormGrid>
-          <HuanyuSearchSelect label="医院" value={f.hospital} options={hospitalOptions} loading={hospitalLoading} error={hospitalError} onSearch={setHospitalSearch} onChange={selectHospital} />
-          <HuanyuSearchSelect label="医院地址" value={f.hospitalAddress} options={addressOptions} loading={addressLoading} error={addressError} disabled={!hospitalId} disabledPlaceholder="请先选择医院" onSearch={setAddressSearch} onChange={(value) => changeField('hospitalAddress', value)} />
-          <HuanyuSearchSelect label="科室" value={f.department} options={departmentOptions} loading={departmentLoading} error={departmentError} disabled={!hospitalId} disabledPlaceholder="请先选择医院" onSearch={setDepartmentSearch} onChange={selectHospitalDepartment} />
+          <HuanyuSearchSelect label="医院" value={f.hospital} isAi={aiFilledFields.has('hospital')} options={hospitalOptions} loading={hospitalLoading} error={hospitalError} onSearch={setHospitalSearch} onChange={selectHospital} />
+          <HuanyuSearchSelect label="医院地址" value={f.hospitalAddress} isAi={aiFilledFields.has('hospitalAddress')} options={addressOptions} loading={addressLoading} error={addressError} disabled={!hospitalId} disabledPlaceholder="请先选择医院" onSearch={setAddressSearch} onChange={(value) => changeField('hospitalAddress', value)} />
+          <HuanyuSearchSelect label="科室" value={f.department} isAi={aiFilledFields.has('department')} options={departmentOptions} loading={departmentLoading} error={departmentError} disabled={!hospitalId} disabledPlaceholder="请先选择医院" onSearch={setDepartmentSearch} onChange={selectHospitalDepartment} />
           <HuanyuInput label="内对一级" value={f.internalHospitalLevelOne} onChange={(value) => changeField('internalHospitalLevelOne', value)} disabled />
           <HuanyuInput label="内对二级" value={f.internalHospitalLevelTwo} onChange={(value) => changeField('internalHospitalLevelTwo', value)} disabled />
-          <HuanyuSearchSelect label="医生" value={f.doctor} options={doctorOptions} loading={doctorLoading} error={doctorError} disabled={!hospitalId || !departmentId} disabledPlaceholder={!hospitalId ? '请先选择医院' : '请先选择科室'} onSearch={setDoctorSearch} onChange={selectHospitalDoctor} />
+          <HuanyuSearchSelect label="医生" value={f.doctor} isAi={aiFilledFields.has('doctor')} options={doctorOptions} loading={doctorLoading} error={doctorError} disabled={!hospitalId || !departmentId} disabledPlaceholder={!hospitalId ? '请先选择医院' : '请先选择科室'} onSearch={setDoctorSearch} onChange={selectHospitalDoctor} />
           {doctorAllowsExpertSelection
-            ? <HuanyuSearchSelect label="专家级别" value={f.expertLevel} options={expertOptions} loading={false} error={null} onSearch={setExpertSearch} onChange={(value) => changeField('expertLevel', value)} />
-            : <HuanyuInput label="专家级别" value={f.expertLevel} onChange={(value) => changeField('expertLevel', value)} disabled />}
-          <HuanyuInput label="订单服务备注" value={f.serviceRemark} onChange={(value) => changeField('serviceRemark', value)} wide />
+            ? <HuanyuSearchSelect label="专家级别" value={f.expertLevel} isAi={aiFilledFields.has('expertLevel')} options={expertOptions} loading={false} error={null} onSearch={setExpertSearch} onChange={(value) => changeField('expertLevel', value)} />
+            : <HuanyuInput label="专家级别" value={f.expertLevel} isAi={aiFilledFields.has('expertLevel')} onChange={(value) => changeField('expertLevel', value)} disabled />}
+          <HuanyuInput label="订单服务备注" value={f.serviceRemark} isAi={aiFilledFields.has('serviceRemark')} onChange={(value) => changeField('serviceRemark', value)} wide />
           <HuanyuInput label="泰康医院" value={f.tkHospital} onChange={(value) => changeField('tkHospital', value)} disabled />
           <HuanyuInput label="泰康省份" value={f.tkProvince} onChange={(value) => changeField('tkProvince', value)} disabled />
           <HuanyuInput label="泰康城市" value={f.tkCity} onChange={(value) => changeField('tkCity', value)} disabled />
@@ -2888,7 +2914,7 @@ function HuanyuOrderForm({
       </HuanyuFormSection>
 
       <HuanyuFormSection title="时间信息">
-        <HuanyuTimeInformation form={f} onChange={changeField} />
+        <HuanyuTimeInformation form={f} onChange={changeField} aiFilledFields={aiFilledFields} />
       </HuanyuFormSection>
 
       {/* 陪诊信息 */}
@@ -2909,12 +2935,13 @@ function HuanyuOrderForm({
                 }}
                 rows={escortRows}
                 onChangeRows={setEscortRows}
+                aiFilledFields={aiFilledFields}
               />
             </HuanyuFormSection>
 
             <HuanyuFormSection title="挂号费及医保信息">
               <HuanyuFormGrid>
-                <HuanyuInput label="挂号费金额" value={f.registrationFee} onChange={(value) => changeField('registrationFee', value)} type="number" />
+                <HuanyuInput label="挂号费金额" value={f.registrationFee} isAi={aiFilledFields.has('registrationFee')} onChange={(value) => changeField('registrationFee', value)} type="number" />
                 <HuanyuSelect label="是否垫付" value={f.advancePayment} options={[{ value: '', label: '' }, { value: '0', label: '否' }, { value: '1', label: '是' }]} onChange={(value) => changeField('advancePayment', value)} />
                 <HuanyuInput label="垫付挂号费金额" value={f.advanceRegistrationFee} onChange={(value) => changeField('advanceRegistrationFee', value)} disabled />
                 <HuanyuInput label="垫付是否收回" value={huanyuYesNoLabel(f.advanceRecovered)} onChange={(value) => changeField('advanceRecovered', value)} disabled />
@@ -2937,7 +2964,7 @@ function HuanyuOrderForm({
             </div>
 
             <HuanyuFormSection title="陪诊服务小结">
-              <HuanyuTextarea label="服务小结" value={f.escortSummary} onChange={(value) => changeField('escortSummary', value)} placeholder="请输入陪诊服务小结" minHeight="min-h-44" />
+              <HuanyuTextarea label="服务小结" value={f.escortSummary} isAi={aiFilledFields.has('escortSummary')} onChange={(value) => changeField('escortSummary', value)} placeholder="请输入陪诊服务小结" minHeight="min-h-44" />
               <div className="mt-4 border-t border-border-subtle pt-4">
                 <div className="mb-3 text-body-sm font-semibold text-text-main">陪诊相关附件上传</div>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
@@ -3438,10 +3465,12 @@ function HuanyuFormGrid({ children }: { children: React.ReactNode }): React.JSX.
 
 function HuanyuTimeInformation({
   form,
-  onChange
+  onChange,
+  aiFilledFields
 }: {
   form: Record<string, string | boolean>
   onChange: (key: string, value: string | boolean) => void
+  aiFilledFields?: Set<string>
 }): React.JSX.Element {
   const rows = [
     { label: '需求时间', timeKey: 'requestTime', dateKey: 'requestDefaultDate', defaultTimeKey: 'requestDefaultTime' },
@@ -3457,28 +3486,39 @@ function HuanyuTimeInformation({
         const timeVal = typeof form[timeKey] === 'string' ? (form[timeKey] as string) : ''
         const dateVal = huanyuDatePart(timeVal) || (typeof form[dateKey] === 'string' ? (form[dateKey] as string) : '')
         const parsedTimeVal = huanyuTimePart(timeVal) || (typeof form[defaultTimeKey] === 'string' ? (form[defaultTimeKey] as string) : '')
+        const isAi = Boolean(aiFilledFields?.has(timeKey))
 
         return (
           <div key={timeKey} className="grid grid-cols-1 gap-x-3 gap-y-1.5 md:grid-cols-3">
             <label className="flex min-w-0 items-center gap-1.5">
               <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
-              <input
-                type="datetime-local"
-                step="1"
-                value={timeVal}
-                onChange={(event) => {
-                  const nextValue = event.target.value
-                  onChange(timeKey, nextValue)
-                  onChange(dateKey, huanyuDatePart(nextValue))
-                  onChange(defaultTimeKey, huanyuTimePart(nextValue))
-                  if (timeKey === 'requestTime' && (!form.responseTime || form.responseTime === timeVal)) {
-                    onChange('responseTime', nextValue)
-                    onChange('responseDefaultDate', huanyuDatePart(nextValue))
-                    onChange('responseDefaultTime', huanyuTimePart(nextValue))
+              <div className="relative flex min-w-0 flex-1 items-center">
+                <input
+                  type="datetime-local"
+                  step="1"
+                  value={timeVal}
+                  onChange={(event) => {
+                    const nextValue = event.target.value
+                    onChange(timeKey, nextValue)
+                    onChange(dateKey, huanyuDatePart(nextValue))
+                    onChange(defaultTimeKey, huanyuTimePart(nextValue))
+                    if (timeKey === 'requestTime' && (!form.responseTime || form.responseTime === timeVal)) {
+                      onChange('responseTime', nextValue)
+                      onChange('responseDefaultDate', huanyuDatePart(nextValue))
+                      onChange('responseDefaultTime', huanyuTimePart(nextValue))
+                    }
+                  }}
+                  className={
+                    'h-8 min-w-0 flex-1 rounded border border-border-subtle bg-white px-2.5 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary ' +
+                    (isAi ? 'pr-8' : '')
                   }
-                }}
-                className="h-8 min-w-0 flex-1 rounded border border-border-subtle bg-white px-2.5 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary"
-              />
+                />
+                {isAi && (
+                  <span className="absolute right-2 flex items-center">
+                    <AiBadge />
+                  </span>
+                )}
+              </div>
             </label>
             <HuanyuInput label="默认日期" value={dateVal} onChange={(value) => onChange(dateKey, value)} disabled />
             <HuanyuInput label="默认时间" value={parsedTimeVal} onChange={(value) => onChange(defaultTimeKey, value)} disabled />
@@ -3503,11 +3543,13 @@ interface HuanyuEscortRow {
 function HuanyuEscortInformationTable({
   initialRow,
   rows: externalRows,
-  onChangeRows
+  onChangeRows,
+  aiFilledFields
 }: {
   initialRow: Omit<HuanyuEscortRow, 'id'>
   rows?: HuanyuEscortRow[]
   onChangeRows?: (rows: HuanyuEscortRow[]) => void
+  aiFilledFields?: Set<string>
 }): React.JSX.Element {
   const [internalRows, setInternalRows] = useState<HuanyuEscortRow[]>(() => [{ id: 1, ...initialRow }])
   const rows = externalRows ?? internalRows
@@ -3705,13 +3747,56 @@ function HuanyuEscortInformationTable({
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
+          {rows.map((row, index) => (
             <tr key={row.id}>
               <td className="border border-border-subtle p-1.5"><input disabled value={row.orderNo} className="h-8 w-full border-0 bg-surface-container px-2 text-center text-text-muted outline-none" /></td>
-              <td className="border border-border-subtle p-1.5"><input type="date" value={row.serviceDate} onChange={(event) => changeRow(row.id, 'serviceDate', event.target.value)} className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary" /></td>
-              <td className="border border-border-subtle p-1.5"><HuanyuEscortSelectCell value={row.escortName} options={escortOptions} loading={escortLoading} error={escortError} onSearch={setEscortSearch} onChange={(value) => selectEscort(row.id, value)} /></td>
+              <td className="border border-border-subtle p-1.5">
+                <div className="relative flex items-center">
+                  <input
+                    type="date"
+                    value={row.serviceDate}
+                    onChange={(event) => changeRow(row.id, 'serviceDate', event.target.value)}
+                    className={
+                      'h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary ' +
+                      (index === 0 && aiFilledFields?.has('escortServiceDate') ? 'pr-7' : '')
+                    }
+                  />
+                  {index === 0 && aiFilledFields?.has('escortServiceDate') && (
+                    <span className="absolute right-1 top-1.5 flex items-center">
+                      <AiBadge />
+                    </span>
+                  )}
+                </div>
+              </td>
+              <td className="border border-border-subtle p-1.5">
+                <HuanyuEscortSelectCell
+                  value={row.escortName}
+                  options={escortOptions}
+                  loading={escortLoading}
+                  error={escortError}
+                  onSearch={setEscortSearch}
+                  onChange={(value) => selectEscort(row.id, value)}
+                  isAi={index === 0 && Boolean(aiFilledFields?.has('escortName'))}
+                />
+              </td>
               <td className="border border-border-subtle p-1.5"><input disabled value={row.escortType} className="h-8 w-full border-0 bg-surface-container px-2 text-center text-text-muted outline-none" /></td>
-              <td className="border border-border-subtle p-1.5"><input disabled value={row.phone} className="h-8 w-full border-0 bg-surface-container px-2 text-center text-text-muted outline-none" /></td>
+              <td className="border border-border-subtle p-1.5">
+                <div className="relative flex items-center">
+                  <input
+                    disabled
+                    value={row.phone}
+                    className={
+                      'h-8 w-full border-0 bg-surface-container px-2 text-center text-text-muted outline-none ' +
+                      (index === 0 && aiFilledFields?.has('escortPhone') ? 'pr-7' : '')
+                    }
+                  />
+                  {index === 0 && aiFilledFields?.has('escortPhone') && (
+                    <span className="absolute right-1 top-1.5 flex items-center">
+                      <AiBadge />
+                    </span>
+                  )}
+                </div>
+              </td>
               <td className="border border-border-subtle p-1.5"><input disabled value={row.area} className="h-8 w-full border-0 bg-surface-container px-2 text-center text-text-muted outline-none" /></td>
               <td className="border border-border-subtle p-1.5"><input value={row.sequence} onChange={(event) => changeRow(row.id, 'sequence', event.target.value)} className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary" /></td>
             </tr>
@@ -3734,7 +3819,8 @@ function HuanyuEscortSelectCell({
   loading,
   error,
   onSearch,
-  onChange
+  onChange,
+  isAi = false
 }: {
   value: string
   options: HuanyuEscortOption[]
@@ -3742,6 +3828,7 @@ function HuanyuEscortSelectCell({
   error: string | null
   onSearch: (value: string) => void
   onChange: (value: string) => void
+  isAi?: boolean
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
@@ -3804,8 +3891,16 @@ function HuanyuEscortSelectCell({
           setOpen(true)
           updatePosition()
         }}
-        className="h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary"
+        className={
+          'h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary ' +
+          (isAi ? 'pr-7' : '')
+        }
       />
+      {isAi && (
+        <span className="absolute right-1 top-1.5 flex items-center">
+          <AiBadge />
+        </span>
+      )}
       {open && (
         <div
           style={{
@@ -3841,6 +3936,17 @@ function HuanyuEscortSelectCell({
   )
 }
 
+function AiBadge(): React.JSX.Element {
+  return (
+    <span
+      className="shrink-0 text-[10px] px-1 py-0.2 bg-purple-50 text-purple-600 rounded border border-purple-200 font-medium select-none pointer-events-none"
+      title="由AI智能分析识别，点击保存后写入数据库"
+    >
+      AI
+    </span>
+  )
+}
+
 function HuanyuInput({
   label,
   value,
@@ -3849,7 +3955,8 @@ function HuanyuInput({
   disabled = false,
   type = 'text',
   required = false,
-  copyable = false
+  copyable = false,
+  isAi = false
 }: {
   label: string
   value: string | boolean
@@ -3859,6 +3966,7 @@ function HuanyuInput({
   type?: React.HTMLInputTypeAttribute
   required?: boolean
   copyable?: boolean
+  isAi?: boolean
 }): React.JSX.Element {
   const textValue = typeof value === 'string' ? value : (value != null ? String(value) : '')
   const [copied, setCopied] = useState(false)
@@ -3876,10 +3984,15 @@ function HuanyuInput({
           onChange={(event) => onChange(event.target.value)}
           className={
             'h-8 min-w-0 flex-1 rounded border border-border-subtle px-2.5 text-body-sm text-text-main outline-none transition-colors ' +
-            (copyable ? 'pr-8 ' : '') +
+            (copyable || isAi ? 'pr-8 ' : '') +
             (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary')
           }
         />
+        {isAi && !copyable && (
+          <span className="absolute right-2 flex items-center">
+            <AiBadge />
+          </span>
+        )}
         {copyable && textValue && (
           <button
             type="button"
@@ -3936,7 +4049,8 @@ function HuanyuSearchSelect({
   disabled = false,
   disabledPlaceholder = '请先选择上级字段',
   onSearch,
-  onChange
+  onChange,
+  isAi = false
 }: {
   label: string
   value: string | boolean
@@ -3947,6 +4061,7 @@ function HuanyuSearchSelect({
   disabledPlaceholder?: string
   onSearch: (value: string) => void
   onChange: (value: string) => void
+  isAi?: boolean
 }): React.JSX.Element {
   const currentValue = typeof value === 'string' ? value : ''
   const [open, setOpen] = useState(false)
@@ -3988,11 +4103,17 @@ function HuanyuSearchSelect({
           }}
           className={
             'h-8 min-w-0 w-full rounded border border-border-subtle px-2.5 text-body-sm text-text-main outline-none transition-colors ' +
+            (isAi ? 'pr-8 ' : '') +
             (disabled
               ? 'cursor-not-allowed bg-surface-container text-text-muted'
               : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary')
           }
         />
+        {isAi && (
+          <span className="absolute right-2 top-1.5 flex items-center">
+            <AiBadge />
+          </span>
+        )}
         {open && !disabled && (
           <div className="absolute z-20 mt-1 max-h-52 w-max min-w-full max-w-[calc(100vw-24px)] overflow-x-auto overflow-y-auto rounded-md border border-border-subtle bg-white py-1 shadow-lg">
             {loading && <div className="px-3 py-1.5 text-body-sm text-text-muted">加载中…</div>}
@@ -4025,12 +4146,14 @@ function HuanyuSelect({
   label,
   value,
   options = [],
-  onChange
+  onChange,
+  isAi = false
 }: {
   label: string
   value: string | boolean
   options?: Array<string | HuanyuSelectOption>
   onChange: (value: string) => void
+  isAi?: boolean
 }): React.JSX.Element {
   const currentValue = typeof value === 'string' ? value.trim() : (value != null ? String(value).trim() : '')
   const normalizedOptions = options.map((option) => typeof option === 'string' ? { value: option, label: option } : option)
@@ -4043,13 +4166,23 @@ function HuanyuSelect({
   return (
     <label className="flex min-w-0 items-center gap-1.5">
       <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
-      <select
-        value={currentValue}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-8 min-w-0 flex-1 rounded border border-border-subtle bg-white px-2.5 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary"
-      >
-        {visibleOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-      </select>
+      <div className="relative flex min-w-0 flex-1 items-center">
+        <select
+          value={currentValue}
+          onChange={(event) => onChange(event.target.value)}
+          className={
+            'h-8 min-w-0 flex-1 rounded border border-border-subtle bg-white px-2.5 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary ' +
+            (isAi ? 'pr-8 ' : '')
+          }
+        >
+          {visibleOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+        {isAi && (
+          <span className="absolute right-6 top-1.5 flex items-center">
+            <AiBadge />
+          </span>
+        )}
+      </div>
     </label>
   )
 }
@@ -4097,7 +4230,8 @@ function HuanyuTextarea({
   placeholder = '请输入内容',
   minHeight = 'min-h-24',
   disabled = false,
-  copyable = false
+  copyable = false,
+  isAi = false
 }: {
   label?: string
   value: string | boolean
@@ -4106,13 +4240,19 @@ function HuanyuTextarea({
   minHeight?: string
   disabled?: boolean
   copyable?: boolean
+  isAi?: boolean
 }): React.JSX.Element {
   const textValue = typeof value === 'string' ? value : ''
   const [copied, setCopied] = useState(false)
 
   return (
     <div className="flex min-w-0 items-start gap-1.5">
-      {label && <span className="w-28 shrink-0 pt-1.5 text-right text-body-sm font-medium text-text-muted">{label}：</span>}
+      {label && (
+        <span className="w-28 shrink-0 pt-1.5 text-right text-body-sm font-medium text-text-muted flex items-center justify-end">
+          <span>{label}：</span>
+          {isAi && <AiBadge />}
+        </span>
+      )}
       <div className="min-w-0 flex-1">
         <textarea
           disabled={disabled}
