@@ -11,6 +11,12 @@ interface AbiTokenResponse {
 }
 
 interface AbiRefundResponse {
+  status?: unknown
+  message?: unknown
+  data?: AbiRefundBusinessResponse | null
+}
+
+interface AbiRefundBusinessResponse {
   success?: unknown
   msg?: unknown
   data?: unknown
@@ -127,8 +133,12 @@ export async function requestAbiRefund(input: AbiRefundInput): Promise<AbiRefund
 
   const payload = await readJson(response, 'ABI 退款请求') as AbiRefundResponse
   console.log('[ABI退款返回数据]', JSON.stringify(payload))
-  if (payload.success !== true) {
-    throw new Error(textValue(payload.msg) || 'ABI 退款失败')
+  if (payload.status !== 200) {
+    throw new Error(textValue(payload.message) || 'ABI 退款接口未成功')
   }
-  return { message: textValue(payload.msg) || '退款成功', data: payload.data ?? null }
+  const refund = payload.data
+  if (refund?.success !== true) {
+    throw new Error(textValue(refund?.msg) || 'ABI 退款失败')
+  }
+  return { message: textValue(refund.msg) || '退款成功', data: refund.data ?? null }
 }
