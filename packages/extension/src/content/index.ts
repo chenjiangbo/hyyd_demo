@@ -914,14 +914,16 @@ type OpenTaikangOrderSearchPlan = 'register_personal' | 'green_then_case_service
 type OpenTaikangOrderRoute = {
   label: string;
   hash: string;
+  menuParentText: string;
+  menuItemText: string;
   requirePersonalPool?: boolean;
   entryButtonText: '操作' | '录入';
 };
 
 const OPEN_TAIKANG_ORDER_ROUTES: Record<'register' | 'green' | 'caseService', OpenTaikangOrderRoute> = {
-  register: { label: '挂号协助待办个人池', hash: '#/register/register', requirePersonalPool: true, entryButtonText: '操作' },
-  green: { label: '绿通服务待办个人池', hash: '#/medicalManager/medicalAgency', requirePersonalPool: true, entryButtonText: '操作' },
-  caseService: { label: '医学陪诊个案服务待办', hash: '#/caseManager/caseServiceAgency', entryButtonText: '录入' },
+  register: { label: '挂号协助待办个人池', hash: '#/register/register', menuParentText: '挂号协助', menuItemText: '挂号协助待办', requirePersonalPool: true, entryButtonText: '操作' },
+  green: { label: '绿通服务待办个人池', hash: '#/medicalManager/medicalAgency', menuParentText: '绿通服务', menuItemText: '绿通服务待办', requirePersonalPool: true, entryButtonText: '操作' },
+  caseService: { label: '医学陪诊个案服务待办', hash: '#/caseManager/caseServiceAgency', menuParentText: '医学陪诊', menuItemText: '个案服务待办', entryButtonText: '录入' },
 };
 
 class TaikangOrderNotFoundError extends Error {}
@@ -930,8 +932,43 @@ function isOpenTaikangOrderSearchPlan(value: unknown): value is OpenTaikangOrder
   return value === 'register_personal' || value === 'green_then_case_service';
 }
 
+function menuClickTargets(text: string): HTMLElement[] {
+  // 只读取 Element UI 左侧菜单项，避免把顶部面包屑中同名的文字当成导航入口。
+  const found = [...document.querySelectorAll<HTMLElement>('.el-menu-item,.el-submenu__title,[role="menuitem"]')]
+    .filter(isClickableVisible)
+    .filter((element) => clickableText(element) === text)
+    .map((element) => element.closest<HTMLElement>('.el-menu-item,.el-submenu__title,[role="menuitem"],a,button') || element)
+    .filter(isClickableVisible);
+  return [...new Set(found)];
+}
+
+async function clickOpenOrderMenu(route: OpenTaikangOrderRoute): Promise<void> {
+  let menuItems = menuClickTargets(route.menuItemText);
+  if (menuItems.length === 0) {
+    const parents = menuClickTargets(route.menuParentText);
+    if (parents.length !== 1) {
+      throw new Error(parents.length === 0
+        ? `未找到左侧菜单“${route.menuParentText}”，已停止`
+        : `找到多个左侧菜单“${route.menuParentText}”，无法安全判断，已停止`);
+    }
+    parents[0].click();
+    const started = Date.now();
+    while (Date.now() - started < 5_000) {
+      menuItems = menuClickTargets(route.menuItemText);
+      if (menuItems.length > 0) break;
+      await sleep(200);
+    }
+  }
+  if (menuItems.length !== 1) {
+    throw new Error(menuItems.length === 0
+      ? `未找到左侧菜单“${route.menuItemText}”，已停止`
+      : `找到多个左侧菜单“${route.menuItemText}”，无法安全判断，已停止`);
+  }
+  menuItems[0].click();
+}
+
 async function waitForOpenOrderRoute(route: OpenTaikangOrderRoute): Promise<void> {
-  if (!location.hash.startsWith(route.hash)) location.hash = route.hash;
+  await clickOpenOrderMenu(route);
   const started = Date.now();
   while (Date.now() - started < 12_000) {
     if (location.hash.startsWith(route.hash) && document.querySelector('.el-table,table')) {
@@ -1125,7 +1162,13 @@ function findExactRowEntryButton(mainRow: HTMLElement, expectedText: '操作' | 
   return candidates[0];
 }
 
-async function openOrderFromRoute(sourceOrderNo: string, route: OpenTaikangOrderRoute): Promise<{ route: string; entryButton: '操作' | '录入' }> {
+type OpenTaikangOrderEntryResult = {
+  sourceOrderNo: string;
+  route: string;
+  entryButton: '操作' | '录入';
+};
+
+async function openOrderFromRoute(sourceOrderNo: string, route: OpenTaikangOrderRoute): Promise<Omit<OpenTaikangOrderEntryResult, 'sourceOrderNo'>> {
   await waitForOpenOrderRoute(route);
   await ensureOpenOrderPersonalPool(route);
   const input = findOrderNoSearchInput();
@@ -1141,7 +1184,7 @@ async function openOrderFromRoute(sourceOrderNo: string, route: OpenTaikangOrder
 async function openTaikangOrderEntry(
   sourceOrderNo: string,
   searchPlan: OpenTaikangOrderSearchPlan
-): Promise<{ sourceOrderNo: string; route: string; entryButton: '操作' | '录入' }> {
+): Promise<OpenTaikangOrderEntryResult> {
   if (!sourceOrderNo.trim()) throw new Error('缺少泰康子订单号，无法定位');
   if (searchPlan === 'register_personal') {
     const result = await openOrderFromRoute(sourceOrderNo, OPEN_TAIKANG_ORDER_ROUTES.register);
