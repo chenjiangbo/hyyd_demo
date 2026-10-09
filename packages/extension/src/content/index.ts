@@ -907,6 +907,265 @@ async function ensurePersonalPool(targetLabel: string): Promise<void> {
   }
 }
 
+// ─── 客户端“确认推送B端”：仅定位并打开泰康订单 ───────────────────────
+// 此段逻辑与编辑页探测器隔离。它只会：切换指定列表、输入子订单号、点击查询，
+// 再点击精确匹配行的“操作”或“录入”。不会触碰订单表单、保存或提交按钮。
+type OpenTaikangOrderSearchPlan = 'register_personal' | 'green_then_case_service';
+type OpenTaikangOrderRoute = {
+  label: string;
+  hash: string;
+  requirePersonalPool?: boolean;
+  entryButtonText: '操作' | '录入';
+};
+
+const OPEN_TAIKANG_ORDER_ROUTES: Record<'register' | 'green' | 'caseService', OpenTaikangOrderRoute> = {
+  register: { label: '挂号协助待办个人池', hash: '#/register/register', requirePersonalPool: true, entryButtonText: '操作' },
+  green: { label: '绿通服务待办个人池', hash: '#/medicalManager/medicalAgency', requirePersonalPool: true, entryButtonText: '操作' },
+  caseService: { label: '医学陪诊个案服务待办', hash: '#/caseManager/caseServiceAgency', entryButtonText: '录入' },
+};
+
+class TaikangOrderNotFoundError extends Error {}
+
+function isOpenTaikangOrderSearchPlan(value: unknown): value is OpenTaikangOrderSearchPlan {
+  return value === 'register_personal' || value === 'green_then_case_service';
+}
+
+async function waitForOpenOrderRoute(route: OpenTaikangOrderRoute): Promise<void> {
+  if (!location.hash.startsWith(route.hash)) location.hash = route.hash;
+  const started = Date.now();
+  while (Date.now() - started < 12_000) {
+    if (location.hash.startsWith(route.hash) && document.querySelector('.el-table,table')) {
+      await waitForUiSettle();
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`进入${route.label}超时`);
+}
+
+async function ensureOpenOrderPersonalPool(route: OpenTaikangOrderRoute): Promise<void> {
+  if (!route.requirePersonalPool) return;
+  const tab = findPersonalPoolTab();
+  if (!tab) throw new Error(`${route.label}未找到“个人池”标签，已停止以避免在其他池操作`);
+  if (activePoolTabText() !== '个人池') {
+    tab.click();
+    const started = Date.now();
+    while (Date.now() - started < 8_000) {
+      if (activePoolTabText() === '个人池') {
+        await waitForUiSettle();
+        return;
+      }
+      await sleep(250);
+    }
+  }
+  if (activePoolTabText() !== '个人池') {
+    throw new Error(`${route.label}未能确认已进入“个人池”，已停止以避免在其他池操作`);
+  }
+}
+
+function findOrderNoSearchInput(): HTMLInputElement {
+  const inputs = [...document.querySelectorAll<HTMLInputElement>('input')]
+    .filter((input) => visible(input) && !input.disabled && !input.readOnly && (input.type === 'text' || input.type === 'search' || !input.type));
+  const candidates = inputs.filter((input) => {
+    const label = (labelFor(input) || '').replace(/\s+/g, '');
+    const placeholder = (input.placeholder || '').replace(/\s+/g, '');
+    return /子订单号|订单号/.test(label) || /子订单号|订单号/.test(placeholder);
+  });
+  if (candidates.length !== 1) {
+    throw new Error(candidates.length === 0
+      ? '未找到“子订单号/订单号”查询输入框，已停止'
+      : '找到多个“子订单号/订单号”查询输入框，无法安全判断，已停止');
+  }
+  return candidates[0];
+}
+
+function setSearchInputValue(input: HTMLInputElement, value: string): void {
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  if (!valueSetter) throw new Error('无法写入查询输入框');
+  valueSetter.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function findExactSearchButton(): HTMLElement {
+  const candidates = [...document.querySelectorAll<HTMLElement>('button,a,.el-button,[role="button"]')]
+    .filter(isClickableVisible)
+    .filter((element) => clickableText(element) === '查询');
+  if (candidates.length !== 1) {
+    throw new Error(candidates.length === 0
+      ? '未找到“查询”按钮，已停止'
+      : '找到多个“查询”按钮，无法安全判断，已停止');
+  }
+  return candidates[0];
+}
+
+function mainTableRows(): HTMLElement[] {
+  // 只读主表的 body，不能使用宽泛的 `table tbody tr`：
+  // Element UI 固定列会再渲染一到两份克隆表，视觉上一条记录会变成多个 tr。
+  return [...document.querySelectorAll<HTMLElement>('.el-table__body-wrapper tbody tr')]
+    .filter((row) => isClickableVisible(row) && !row.closest('.el-table__fixed,.el-table__fixed-right,.el-table__fixed-body-wrapper'));
+}
+
+function matchingOrderRows(sourceOrderNo: string): HTMLElement[] {
+  const rows = mainTableRows();
+  return rows.filter((row) => [...row.querySelectorAll<HTMLElement>('td,.el-table__cell')]
+    .some((cell) => textOf(cell) === sourceOrderNo));
+}
+
+function visiblePaginationTotal(): number | null {
+  const totals = [...document.querySelectorAll<HTMLElement>('.el-pagination__total')]
+    .filter(isClickableVisible)
+    .map((element) => {
+      const match = textOf(element).match(/^共\s*(\d+)\s*条$/);
+      return match ? Number(match[1]) : null;
+    })
+    .filter((value): value is number => value !== null && Number.isSafeInteger(value));
+  const distinctTotals = [...new Set(totals)];
+  return distinctTotals.length === 1 ? distinctTotals[0] : null;
+}
+
+type ListQuerySnapshot = {
+  total: number;
+};
+
+async function waitForStablePaginationTotal(): Promise<ListQuerySnapshot> {
+  const started = Date.now();
+  while (Date.now() - started < 8_000) {
+    const total = visiblePaginationTotal();
+    if (total !== null) {
+      // 路由刚切换时，列表会先后替换行和分页；连续两次一致才把它作为查询前基线。
+      await sleep(400);
+      if (visiblePaginationTotal() === total) return { total };
+    }
+    await sleep(200);
+  }
+  throw new Error('查询前无法读取稳定的“共 N 条”分页信息，已停止');
+}
+
+function isExactUniqueResult(sourceOrderNo: string): boolean {
+  return visiblePaginationTotal() === 1 && matchingOrderRows(sourceOrderNo).length === 1;
+}
+
+/**
+ * 点击查询后，不能立刻把页面上原有的“共 N 条”当作本次结果。
+ * 先等分页总数变化且稳定；不能把路由加载过程中的行 DOM 变化误判为查询完成。
+ * 若当前页面本来已经是该子订单的唯一结果，也可安全复用。
+ */
+async function waitForQueryResultRefresh(before: ListQuerySnapshot, sourceOrderNo: string): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < 10_000) {
+    if (isExactUniqueResult(sourceOrderNo)) return;
+    const total = visiblePaginationTotal();
+    if (total !== null && total !== before.total) {
+      // 分页数字变化后再确认一次，避免先写入过渡值就继续执行。
+      await sleep(400);
+      if (visiblePaginationTotal() === total) return;
+    }
+    await sleep(200);
+  }
+  throw new Error('泰康查询结果未刷新，未使用查询前的列表数据，已停止');
+}
+
+async function waitForExactOrderRow(sourceOrderNo: string): Promise<HTMLElement> {
+  const started = Date.now();
+  let sawUnambiguousPagination = false;
+  while (Date.now() - started < 10_000) {
+    const total = visiblePaginationTotal();
+    const matches = matchingOrderRows(sourceOrderNo);
+    if (total === null) {
+      await sleep(300);
+      continue;
+    }
+    sawUnambiguousPagination = true;
+    if (total === 0) throw new TaikangOrderNotFoundError(`当前列表未找到子订单号 ${sourceOrderNo}`);
+    if (total > 1) throw new Error(`查询结果共 ${total} 条，非唯一结果，已停止以避免误操作`);
+    // 只有“共 1 条”且主表中恰好命中该子订单号的一行，才允许点入口。
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) throw new Error(`主表中出现 ${matches.length} 条相同子订单号，已停止以避免误操作`);
+    await sleep(300);
+  }
+  if (!sawUnambiguousPagination) {
+    throw new Error('无法唯一读取当前列表的“共 N 条”分页信息，已停止以避免误操作');
+  }
+  throw new TaikangOrderNotFoundError(`未在当前列表找到子订单号 ${sourceOrderNo}`);
+}
+
+function rowIndexInBody(row: HTMLElement): number {
+  const body = row.parentElement;
+  return body ? [...body.querySelectorAll<HTMLElement>(':scope > tr')].indexOf(row) : -1;
+}
+
+function logicalRowsForEntryButton(mainRow: HTMLElement): HTMLElement[] {
+  const rowIndex = rowIndexInBody(mainRow);
+  if (rowIndex < 0) throw new Error('无法确认目标订单在主表中的行序号，已停止');
+
+  // Element UI 的“操作”列经常被固定在右侧；它与主表数据行是同一行序号的克隆。
+  // 只取右固定列同序行，不会扫描或点击其它订单的按钮。
+  const rows = [mainRow];
+  const fixedBodies = [...document.querySelectorAll<HTMLElement>(
+    '.el-table__fixed-right .el-table__fixed-body-wrapper tbody, .el-table__fixed-right tbody'
+  )];
+  for (const body of fixedBodies) {
+    const fixedRow = [...body.querySelectorAll<HTMLElement>(':scope > tr')][rowIndex];
+    if (fixedRow && isClickableVisible(fixedRow)) rows.push(fixedRow);
+  }
+  return [...new Set(rows)];
+}
+
+function findExactRowEntryButton(mainRow: HTMLElement, expectedText: '操作' | '录入'): HTMLElement {
+  const candidates = logicalRowsForEntryButton(mainRow)
+    .flatMap((row) => [...row.querySelectorAll<HTMLElement>('button,a,.el-button,[role="button"]')])
+    .filter(isClickableVisible)
+    .filter((element) => clickableText(element) === expectedText);
+  if (candidates.length !== 1) {
+    throw new Error(candidates.length === 0
+      ? `目标订单行未找到“${expectedText}”按钮，已停止`
+      : `目标订单行找到多个“${expectedText}”按钮，无法安全判断，已停止`);
+  }
+  return candidates[0];
+}
+
+async function openOrderFromRoute(sourceOrderNo: string, route: OpenTaikangOrderRoute): Promise<{ route: string; entryButton: '操作' | '录入' }> {
+  await waitForOpenOrderRoute(route);
+  await ensureOpenOrderPersonalPool(route);
+  const input = findOrderNoSearchInput();
+  const beforeQuery = await waitForStablePaginationTotal();
+  setSearchInputValue(input, sourceOrderNo);
+  findExactSearchButton().click();
+  await waitForQueryResultRefresh(beforeQuery, sourceOrderNo);
+  const row = await waitForExactOrderRow(sourceOrderNo);
+  findExactRowEntryButton(row, route.entryButtonText).click();
+  return { route: route.label, entryButton: route.entryButtonText };
+}
+
+async function openTaikangOrderEntry(
+  sourceOrderNo: string,
+  searchPlan: OpenTaikangOrderSearchPlan
+): Promise<{ sourceOrderNo: string; route: string; entryButton: '操作' | '录入' }> {
+  if (!sourceOrderNo.trim()) throw new Error('缺少泰康子订单号，无法定位');
+  if (searchPlan === 'register_personal') {
+    const result = await openOrderFromRoute(sourceOrderNo, OPEN_TAIKANG_ORDER_ROUTES.register);
+    return { sourceOrderNo, ...result };
+  }
+  try {
+    const result = await openOrderFromRoute(sourceOrderNo, OPEN_TAIKANG_ORDER_ROUTES.green);
+    return { sourceOrderNo, ...result };
+  } catch (error) {
+    if (!(error instanceof TaikangOrderNotFoundError)) throw error;
+  }
+  try {
+    const result = await openOrderFromRoute(sourceOrderNo, OPEN_TAIKANG_ORDER_ROUTES.caseService);
+    return { sourceOrderNo, ...result };
+  } catch (error) {
+    if (error instanceof TaikangOrderNotFoundError) {
+      throw new TaikangOrderNotFoundError(
+        `绿通服务待办个人池和医学陪诊个案服务待办均未找到子订单号 ${sourceOrderNo}`
+      );
+    }
+    throw error;
+  }
+}
+
 async function scanEditStagesAndDynamic(triggerPrefix: string): Promise<void> {
   const tabs = findSafeStageTabs();
   for (const tab of tabs) {
@@ -1995,6 +2254,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'GET_TAIKANG_USER') {
     void getUser()
       .then((user) => sendResponse?.(user ? { ok: true, user } : { ok: false, error: '未获取到泰康登录账号' }))
+      .catch((error) => sendResponse?.({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
+
+  if (msg?.type === 'OPEN_TAIKANG_ORDER_ENTRY') {
+    const sourceOrderNo = typeof msg.sourceOrderNo === 'string' ? msg.sourceOrderNo.trim() : '';
+    if (!sourceOrderNo || !isOpenTaikangOrderSearchPlan(msg.searchPlan)) {
+      sendResponse?.({ ok: false, error: '泰康订单定位指令参数无效' });
+      return false;
+    }
+    void openTaikangOrderEntry(sourceOrderNo, msg.searchPlan)
+      .then((result) => sendResponse?.({ ok: true, result }))
       .catch((error) => sendResponse?.({ ok: false, error: error instanceof Error ? error.message : String(error) }));
     return true;
   }

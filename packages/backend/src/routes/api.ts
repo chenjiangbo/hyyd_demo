@@ -5142,6 +5142,110 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
     }
   })
 
+  // 10a. 仅定位并打开泰康订单，不填写、不保存、不提交。
+  // 绿通先查绿通服务待办个人池，未找到才查医学陪诊个案服务待办；
+  // 挂号协助只查挂号协助待办个人池。
+  fastify.post<{ Params: { id: string } }>('/api/v1/orders/:id/open-taikang-entry', async (request, reply) => {
+    const orderId = parseInt(request.params.id, 10)
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    if (!Number.isInteger(orderId) || orderId <= 0) return reply.status(400).send({ error: '订单编号无效' })
+
+    try {
+      const order = await prisma.order.findUnique({ where: { id: orderId } })
+      if (!order) return reply.status(404).send({ error: '订单不存在' })
+      if (order.source !== 'taikang') return reply.status(400).send({ error: '仅支持定位泰康订单' })
+      if (order.assignedEmployeeId && order.assignedEmployeeId !== request.employee.id) {
+        return reply.status(403).send({ error: '无权操作其他员工申领的订单' })
+      }
+
+      const rawJson = order.rawJson && typeof order.rawJson === 'object' && !Array.isArray(order.rawJson)
+        ? order.rawJson as Record<string, unknown>
+        : {}
+      const sourceOrderNo = typeof order.sourceOrderNo === 'string' && order.sourceOrderNo.trim()
+        ? order.sourceOrderNo.trim()
+        : typeof rawJson.subOrderNo === 'string' && rawJson.subOrderNo.trim()
+          ? rawJson.subOrderNo.trim()
+          : ''
+      if (!sourceOrderNo) return reply.status(400).send({ error: '订单缺少泰康子订单号，无法定位' })
+
+      const targetEmployeeId = order.assignedEmployeeId ?? request.employee.id
+      const conn = activeConnections.get(targetEmployeeId)
+      if (!conn?.ext || conn.ext.readyState !== 1) {
+        return reply.status(409).send({ error: '当前员工的泰康浏览器插件未连接，请先登录泰康并确认插件连接同一后端服务' })
+      }
+
+      const searchPlan = isTaikangRegistrationAssistanceOrder(order, rawJson)
+        ? 'register_personal' as const
+        : 'green_then_case_service' as const
+      const command = await prisma.command.create({
+        data: {
+          target: 'ext',
+          action: 'open_taikang_order',
+          payloadJson: { orderId: order.id, sourceOrderNo, searchPlan },
+          status: 'pending'
+        }
+      })
+
+      conn.ext.send(JSON.stringify({
+        type: 'command',
+        commandId: command.id,
+        action: command.action,
+        payload: command.payloadJson
+      }))
+      fastify.log.info({ orderId: order.id, sourceOrderNo, searchPlan, commandId: command.id }, '已下发泰康订单定位指令')
+
+      return reply.send({ data: { commandId: command.id, sourceOrderNo, searchPlan } })
+    } catch (err: any) {
+      fastify.log.error('下发泰康订单定位指令失败:', err)
+      return reply.status(500).send({ error: '下发泰康订单定位指令失败: ' + err.message })
+    }
+  })
+
+  // 查询“定位并打开泰康订单”指令的最终结果，供托盘在等待期间轮询。
+  // 命令与订单双重校验，避免员工读取不属于自己的指令结果。
+  fastify.get<{ Params: { id: string; commandId: string } }>('/api/v1/orders/:id/open-taikang-entry/:commandId', async (request, reply) => {
+    const orderId = parseInt(request.params.id, 10)
+    const commandId = parseInt(request.params.commandId, 10)
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    if (!Number.isInteger(orderId) || orderId <= 0 || !Number.isInteger(commandId) || commandId <= 0) {
+      return reply.status(400).send({ error: '订单或指令编号无效' })
+    }
+
+    try {
+      const order = await prisma.order.findUnique({
+        where: { id: orderId },
+        select: { id: true, assignedEmployeeId: true }
+      })
+      if (!order) return reply.status(404).send({ error: '订单不存在' })
+      if (order.assignedEmployeeId && order.assignedEmployeeId !== request.employee.id) {
+        return reply.status(403).send({ error: '无权查看其他员工订单的定位结果' })
+      }
+      const command = await prisma.command.findUnique({ where: { id: commandId } })
+      if (!command || command.target !== 'ext' || command.action !== 'open_taikang_order') {
+        return reply.status(404).send({ error: '定位指令不存在' })
+      }
+      const payload = command.payloadJson && typeof command.payloadJson === 'object' && !Array.isArray(command.payloadJson)
+        ? command.payloadJson as Record<string, unknown>
+        : {}
+      if (payload.orderId !== order.id) return reply.status(404).send({ error: '定位指令不属于该订单' })
+      const executionResult = payload.executionResult && typeof payload.executionResult === 'object' && !Array.isArray(payload.executionResult)
+        ? payload.executionResult as Record<string, unknown>
+        : null
+      return reply.send({
+        data: {
+          status: command.status,
+          result: command.status === 'done' ? executionResult : null,
+          error: command.status === 'failed' && typeof executionResult?.error === 'string'
+            ? executionResult.error
+            : null
+        }
+      })
+    } catch (err: any) {
+      fastify.log.error('读取泰康订单定位结果失败:', err)
+      return reply.status(500).send({ error: '读取泰康订单定位结果失败: ' + err.message })
+    }
+  })
+
   // ── AI 摘要路由 ────────────────────────────────────────────────────────────
 
   // 11b. 通话摘要 POST /api/v1/calls/:id/summarize

@@ -748,6 +748,31 @@ export function deleteMaterial(id: number): Promise<unknown> {
   return authedSend(`/api/v1/materials/${id}`, 'DELETE')
 }
 
+/**
+ * 仅让泰康插件定位并打开对应订单的录入页面。
+ * 本接口不携带服务表单数据，也不会触发保存或提交。
+ */
+export function openTaikangOrderEntry(orderId: number): Promise<{
+  commandId: number
+  sourceOrderNo: string
+  searchPlan: 'register_personal' | 'green_then_case_service'
+}> {
+  return authedSend(`/api/v1/orders/${orderId}/open-taikang-entry`, 'POST', {})
+}
+
+export interface TaikangOrderEntryCommandResult {
+  status: 'pending' | 'done' | 'failed' | string
+  result: { route?: string; entryButton?: string } | null
+  error: string | null
+}
+
+export function fetchTaikangOrderEntryCommandResult(
+  orderId: number,
+  commandId: number
+): Promise<TaikangOrderEntryCommandResult> {
+  return authedGet(`/api/v1/orders/${orderId}/open-taikang-entry/${commandId}`)
+}
+
 // ─── 订单号待确认（右上角铃铛通知）──────────────────────────
 // 采集到的会话识别出了订单号/短尾号，但后端仍匹配不到真实订单 → 异常，需人工确认。
 export interface UnmatchedOrderRef {

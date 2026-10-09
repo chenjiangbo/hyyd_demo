@@ -109,8 +109,11 @@ async function connectWebSocket() {
         forwardBaselineToTabs(data.payload || {});
       }
 
-      // 插件纯只读自动采集：个人池列表 + 订单详情都由 content script 定时
-      // 轮询抓取并主动上报，后端无需下发任何指令。这里只处理后端的状态消息。
+      // 仅支持这一条显式白名单指令：按子订单号定位并打开订单。
+      // 不携带表单字段，content script 也不会保存或提交。
+      if (data.type === 'command' && data.action === 'open_taikang_order') {
+        void forwardOpenTaikangOrderCommand(data);
+      }
     } catch (e) {
       console.error('[寰宇探针] 解析后端消息失败', e);
     }
@@ -219,6 +222,58 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
   }
 });
+
+type OpenTaikangOrderSearchPlan = 'register_personal' | 'green_then_case_service';
+
+function isOpenTaikangOrderSearchPlan(value: unknown): value is OpenTaikangOrderSearchPlan {
+  return value === 'register_personal' || value === 'green_then_case_service';
+}
+
+async function forwardOpenTaikangOrderCommand(data: unknown): Promise<void> {
+  const command = data && typeof data === 'object' ? data as Record<string, unknown> : {};
+  const commandId = Number(command.commandId);
+  const payload = command.payload && typeof command.payload === 'object'
+    ? command.payload as Record<string, unknown>
+    : {};
+  const sourceOrderNo = typeof payload.sourceOrderNo === 'string' ? payload.sourceOrderNo.trim() : '';
+  const searchPlan = payload.searchPlan;
+  if (!Number.isInteger(commandId) || commandId <= 0 || !sourceOrderNo || !isOpenTaikangOrderSearchPlan(searchPlan)) {
+    console.error('[寰宇探针] 忽略格式无效的泰康订单定位指令', data);
+    return;
+  }
+
+  let ok = false;
+  let result: unknown = undefined;
+  let error: string | null = null;
+  try {
+    const tabs = await chrome.tabs.query({ url: '*://ccm.taikang.com/*' });
+    const tab = tabs.find((item) => item.active && item.id) || tabs.find((item) => item.id);
+    if (!tab?.id) throw new Error('未检测到已打开的泰康系统页面');
+    const response = await chrome.tabs.sendMessage(tab.id, {
+      type: 'OPEN_TAIKANG_ORDER_ENTRY',
+      sourceOrderNo,
+      searchPlan,
+    });
+    if (!response?.ok) throw new Error(typeof response?.error === 'string' ? response.error : '泰康页面未能定位订单');
+    ok = true;
+    result = response.result;
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+    console.error('[寰宇探针] 泰康订单定位失败', { commandId, sourceOrderNo, error });
+  }
+
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'TAIKANG_ORDER_OPEN_RESULT',
+      commandId,
+      ok,
+      result,
+      error,
+    }));
+  } else {
+    console.warn('[寰宇探针] 泰康订单定位已结束但后端连接断开，结果未上报', { commandId, ok });
+  }
+}
 
 // ─── 指纹基线（增量起点） ────────────────────────────────────
 function requestFingerprintBaseline() {

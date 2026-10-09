@@ -32,6 +32,8 @@ import {
   copyHuanyuOrder,
   getSession,
   getSessionDisplayName,
+  fetchTaikangOrderEntryCommandResult,
+  openTaikangOrderEntry,
   refreshOrderBrief,
   type Material,
   type Order,
@@ -5234,6 +5236,9 @@ function CheckCompanionInformationPanel(): React.JSX.Element {
 
 function ServiceInformationFlow({ order, onEscortEntryActiveChange }: { order: Order; onEscortEntryActiveChange?: (active: boolean) => void }): React.JSX.Element {
   const [open, setOpen] = useState(true)
+  const [openingTaikangOrder, setOpeningTaikangOrder] = useState(false)
+  const [openTaikangOrderMessage, setOpenTaikangOrderMessage] = useState<string | null>(null)
+  const openingTaikangOrderRef = useRef(false)
   const serviceType = bizType(order).trim()
   const tabs = serviceFlowTabsFor(serviceType)
   // 开发和录入时允许直接查看、填写所有后续阶段。
@@ -5265,6 +5270,36 @@ function ServiceInformationFlow({ order, onEscortEntryActiveChange }: { order: O
     )
   }
 
+  async function openTaikangOrder(): Promise<void> {
+    // state 渲染前再点一次时，也必须阻止重复下发指令。
+    if (openingTaikangOrderRef.current) return
+    openingTaikangOrderRef.current = true
+    setOpeningTaikangOrder(true)
+    setOpenTaikangOrderMessage(null)
+    try {
+      const command = await openTaikangOrderEntry(order.id)
+      setOpenTaikangOrderMessage('正在 Chrome 的泰康系统中定位订单，请勿重复点击…')
+      const deadline = Date.now() + 35_000
+      while (Date.now() < deadline) {
+        const result = await fetchTaikangOrderEntryCommandResult(order.id, command.commandId)
+        if (result.status === 'done') {
+          const route = result.result?.route ? `（${result.result.route}）` : ''
+          setOpenTaikangOrderMessage(`已定位并打开泰康订单${route}。未填写、保存或提交任何字段。`)
+          return
+        }
+        if (result.status === 'failed') {
+          throw new Error(result.error || '泰康系统未能定位该订单')
+        }
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 800))
+      }
+      throw new Error('等待泰康订单定位结果超时，请确认插件仍连接本地后端后重试')
+    } catch (error) {
+      setOpenTaikangOrderMessage(error instanceof Error ? error.message : '发送泰康订单定位指令失败')
+    } finally {
+      openingTaikangOrderRef.current = false
+      setOpeningTaikangOrder(false)
+    }
+  }
   return (
     <section className="overflow-hidden rounded-lg border border-border-subtle bg-white">
       <button
@@ -5366,14 +5401,16 @@ function ServiceInformationFlow({ order, onEscortEntryActiveChange }: { order: O
 
           <div className="flex items-center justify-between gap-3 border-t border-border-subtle pt-4">
             <span className="text-[12px] text-text-muted">
-              确认推送 B 端功能暂未接入
+              {openTaikangOrderMessage ?? '仅定位并打开泰康订单，不填写、不保存、不提交'}
             </span>
             <button
               type="button"
-              title="确认推送 B 端功能暂未接入"
-              className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white hover:bg-[#06786c]"
+              disabled={openingTaikangOrder}
+              onClick={() => void openTaikangOrder()}
+              title="仅定位并打开泰康订单；不会填写、保存或提交"
+              className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white hover:bg-[#06786c] disabled:cursor-not-allowed disabled:opacity-60"
             >
-              确认推送B端
+              {openingTaikangOrder ? '正在定位…' : '确认推送B端'}
             </button>
           </div>
         </div>

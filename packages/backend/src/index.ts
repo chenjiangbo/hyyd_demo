@@ -347,6 +347,42 @@ async function start() {
                   }
                 }
               }
+            } else if (message.type === 'TAIKANG_ORDER_OPEN_RESULT') {
+              // 只接收插件对“定位并打开泰康订单”指令的结果；不涉及任何表单写入。
+              if (client !== 'ext') {
+                server.log.warn({ employeeId }, '忽略非插件上报的泰康订单定位结果')
+                return
+              }
+              const commandId = Number(message.commandId)
+              if (!Number.isInteger(commandId) || commandId <= 0) {
+                server.log.warn({ employeeId, commandId: message.commandId }, '泰康订单定位结果缺少有效 commandId')
+                return
+              }
+              const command = await prisma.command.findUnique({ where: { id: commandId } })
+              if (!command || command.target !== 'ext' || command.action !== 'open_taikang_order') {
+                server.log.warn({ employeeId, commandId }, '泰康订单定位结果未找到匹配指令')
+                return
+              }
+              const commandPayload = command.payloadJson && typeof command.payloadJson === 'object' && !Array.isArray(command.payloadJson)
+                ? command.payloadJson as Record<string, unknown>
+                : {}
+              const result = message.result && typeof message.result === 'object' && !Array.isArray(message.result)
+                ? message.result as Record<string, unknown>
+                : {}
+              const ok = message.ok === true
+              const error = typeof message.error === 'string' ? message.error.slice(0, 500) : null
+              await prisma.command.update({
+                where: { id: commandId },
+                data: {
+                  status: ok ? 'done' : 'failed',
+                  executedAt: new Date(),
+                  payloadJson: {
+                    ...commandPayload,
+                    executionResult: ok ? result : { error }
+                  } as any
+                }
+              })
+              server.log.info({ employeeId, commandId, ok, error }, '泰康订单定位指令已返回结果')
             } else if (message.type === 'TAIKANG_TOKEN_STATUS') {
               // 插件保活探测结果：更新 presenceMap 给托盘读
               if (client === 'ext' && extInstanceId) {
