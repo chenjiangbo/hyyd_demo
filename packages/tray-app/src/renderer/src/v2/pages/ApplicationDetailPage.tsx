@@ -31,6 +31,7 @@ import {
   saveHuanyuOrder,
   copyHuanyuOrder,
   getSession,
+  getSessionDisplayName,
   refreshOrderBrief,
   type Material,
   type Order,
@@ -4938,7 +4939,7 @@ function BOrderDetailRow({ row }: { row: DetailRowData }): React.JSX.Element {
   )
 }
 
-type CommunicationResult = '成功' | '未接通' | '待跟进' | '其他'
+type CommunicationResult = '致电成功' | '致电失败'
 
 interface LocalCommunicationRecord {
   id: number
@@ -5023,10 +5024,8 @@ function CommunicationRecordPanel(): React.JSX.Element {
                 className={inputClass(Boolean(errors.result))}
               >
                 <option value="">请选择</option>
-                <option value="成功">成功</option>
-                <option value="未接通">未接通</option>
-                <option value="待跟进">待跟进</option>
-                <option value="其他">其他</option>
+                <option value="致电成功">致电成功</option>
+                <option value="致电失败">致电失败</option>
               </select>
             </CommunicationField>
             <button
@@ -5237,9 +5236,8 @@ function ServiceInformationFlow({ order, onEscortEntryActiveChange }: { order: O
   const [open, setOpen] = useState(true)
   const serviceType = bizType(order).trim()
   const tabs = serviceFlowTabsFor(serviceType)
-  // 订单进入本页面时已经完成申领，因此从第二个 Tab 开始办理。
+  // 开发和录入时允许直接查看、填写所有后续阶段。
   const [activeTabIndex, setActiveTabIndex] = useState(() => tabs.length > 1 ? 1 : 0)
-  const completedTabKeys = tabs[0] ? [tabs[0].key] : []
   const activeTab = tabs[activeTabIndex]
 
   useEffect(() => {
@@ -5267,13 +5265,6 @@ function ServiceInformationFlow({ order, onEscortEntryActiveChange }: { order: O
     )
   }
 
-  const isComplete = completedTabKeys.includes(activeTab.key)
-  const isReadOnly = isComplete
-
-  function isUnlocked(index: number): boolean {
-    return index === 0 || completedTabKeys.includes(tabs[index - 1].key)
-  }
-
   return (
     <section className="overflow-hidden rounded-lg border border-border-subtle bg-white">
       <button
@@ -5292,26 +5283,21 @@ function ServiceInformationFlow({ order, onEscortEntryActiveChange }: { order: O
         <div className="border-t border-border-subtle px-4 py-4">
           <div className="flex overflow-x-auto border-b border-border-subtle">
             {tabs.map((tab, index) => {
-              const complete = completedTabKeys.includes(tab.key)
-              const unlocked = isUnlocked(index)
               const active = activeTabIndex === index
               return (
                 <button
                   key={tab.key}
                   type="button"
-                  disabled={!unlocked}
                   onClick={() => setActiveTabIndex(index)}
                   className={
                     'relative shrink-0 px-5 py-3 text-body-sm font-semibold transition-colors ' +
                     (active
                       ? 'border-b-2 border-primary text-primary'
-                      : unlocked
-                        ? 'text-text-main hover:bg-surface-bg'
-                        : 'cursor-not-allowed text-text-muted/60')
+                      : 'text-text-main hover:bg-surface-bg')
                   }
                 >
                   <span className="mr-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full border text-[11px]">
-                    {complete ? <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>check</span> : index + 1}
+                    {index + 1}
                   </span>
                   {tab.label}
                 </button>
@@ -5326,53 +5312,52 @@ function ServiceInformationFlow({ order, onEscortEntryActiveChange }: { order: O
                 {tab.key === 'claim' ? (
                   <ClaimInformationView order={order} />
                 ) : ['全程门诊', '全流程', '单次门诊', '电话问诊'].includes(serviceType) && tab.key === 'plan' ? (
-                  <OutpatientPlanConfirmationForm readOnly={completedTabKeys.includes(tab.key)} />
+                  <OutpatientPlanConfirmationForm readOnly={false} />
                 ) : serviceType === '全流程' && tab.key === 'assignment' ? (
-                  <FullProcessAssignmentForm order={order} readOnly={completedTabKeys.includes(tab.key)} />
+                  <FullProcessAssignmentForm order={order} readOnly={false} />
                 ) : serviceType === '全流程' && tab.key === 'service-record' ? (
-                  <FullProcessEscortEntryForm order={order} readOnly={completedTabKeys.includes(tab.key)} />
+                  <FullProcessEscortEntryForm order={order} readOnly={false} />
                 ) : serviceType === '单次门诊' && tab.key === 'service-record' ? (
-                  <OutpatientEscortEntryForm order={order} readOnly={completedTabKeys.includes(tab.key)} showRevisit={false} showSubmit={false} />
+                  <OutpatientEscortEntryForm order={order} readOnly={false} showRevisit={false} showSubmit={false} />
                 ) : serviceType === '电话问诊' && tab.key === 'service-record' ? (
-                  <PhoneConsultationEscortEntryForm order={order} readOnly={completedTabKeys.includes(tab.key)} />
+                  <PhoneConsultationEscortEntryForm order={order} readOnly={false} />
                 ) : serviceType === '单次门诊' && tab.key === 'assignment' ? (
-                  <SingleOutpatientAssignmentForm order={order} readOnly={completedTabKeys.includes(tab.key)} />
+                  <SingleOutpatientAssignmentForm order={order} readOnly={false} />
                 ) : serviceType === '电话问诊' && tab.key === 'assignment' ? (
-                  <PhoneConsultationAssignmentForm order={order} readOnly={completedTabKeys.includes(tab.key)} />
+                  <PhoneConsultationAssignmentForm order={order} readOnly={false} />
                 ) : ['全程门诊', '全流程', '单次门诊', '电话问诊'].includes(serviceType) && tab.key === 'assignment' ? (
-                  <OutpatientAssignmentForm order={order} readOnly={completedTabKeys.includes(tab.key)} />
+                  <OutpatientAssignmentForm order={order} readOnly={false} />
                 ) : ['全程门诊', '全流程', '单次门诊', '电话问诊'].includes(serviceType) && tab.key === 'service-record' ? (
-                  <OutpatientEscortEntryForm order={order} readOnly={completedTabKeys.includes(tab.key)} />
+                  <OutpatientEscortEntryForm order={order} readOnly={false} />
                 ) : serviceType === 'MDT服务' && tab.key === 'plan' ? (
-                  <MdtPlanConfirmationForm readOnly={completedTabKeys.includes(tab.key)} />
+                  <MdtPlanConfirmationForm readOnly={false} />
                 ) : serviceType === 'MDT服务' && tab.key === 'service-record' ? (
-                  <MdtServiceEntryForm order={order} readOnly={completedTabKeys.includes(tab.key)} />
+                  <MdtServiceEntryForm order={order} readOnly={false} />
                 ) : serviceType === '挂号协助' && tab.key === 'plan' ? (
-                  <RegistrationAssistancePlanView order={order} readOnly={completedTabKeys.includes(tab.key)} />
+                  <RegistrationAssistancePlanView order={order} readOnly={false} />
                 ) : serviceType === '挂号协助' && tab.key === 'service-record' ? (
-                  <RegistrationAssistanceServiceEntryForm order={order} readOnly={completedTabKeys.includes(tab.key)} />
+                  <RegistrationAssistanceServiceEntryForm order={order} readOnly={false} />
                 ) : serviceType === '就医接送' && tab.key === 'service-record' ? (
-                  <MedicalTransportServiceEntryForm readOnly={completedTabKeys.includes(tab.key)} />
+                  <MedicalTransportServiceEntryForm readOnly={false} />
                 ) : serviceType === '共享流程' && tab.key === 'service-record' ? (
-                  <SharedServiceEntryForm readOnly={completedTabKeys.includes(tab.key)} />
+                  <SharedServiceEntryForm readOnly={false} />
                 ) : serviceType === '住院护工协助' && tab.key === 'service-record' ? (
-                  <HospitalCareEscortEntryForm order={order} readOnly={completedTabKeys.includes(tab.key)} />
+                  <HospitalCareEscortEntryForm order={order} readOnly={false} />
                 ) : serviceType === '住院护工协助' && tab.key === 'assignment' ? (
-                  <HospitalCareAssignmentForm order={order} readOnly={completedTabKeys.includes(tab.key)} />
+                  <HospitalCareAssignmentForm order={order} readOnly={false} />
                 ) : serviceType === '住院' && tab.key === 'assignment' ? (
-                  <HospitalAssignmentForm order={order} readOnly={completedTabKeys.includes(tab.key)} />
+                  <HospitalAssignmentForm order={order} readOnly={false} />
                 ) : serviceType === '住院' && tab.key === 'service-record' ? (
-                  <HospitalEscortEntryForm order={order} readOnly={completedTabKeys.includes(tab.key)} />
+                  <HospitalEscortEntryForm order={order} readOnly={false} />
                 ) : serviceType.includes('检查加急') && tab.key === 'assignment' ? (
-                  <UrgentCheckAssignmentForm order={order} readOnly={completedTabKeys.includes(tab.key)} />
+                  <UrgentCheckAssignmentForm order={order} readOnly={false} />
                 ) : serviceType.includes('检查加急') && tab.key === 'service-record' ? (
-                  <UrgentCheckEscortEntryForm order={order} readOnly={completedTabKeys.includes(tab.key)} />
+                  <UrgentCheckEscortEntryForm order={order} readOnly={false} />
                 ) : (
                   <>
                     <p className="mt-2 text-body-sm text-text-muted">
                       当前为流程轮廓，待补充“{tab.label}”的表单字段与说明后在此展示。
                     </p>
-                    {completedTabKeys.includes(tab.key) && <p className="mt-2 text-body-sm text-text-muted">查看模式：已完成环节仅可查看，不能修改。</p>}
                   </>
                 )}
               </div>
@@ -5381,7 +5366,7 @@ function ServiceInformationFlow({ order, onEscortEntryActiveChange }: { order: O
 
           <div className="flex items-center justify-between gap-3 border-t border-border-subtle pt-4">
             <span className="text-[12px] text-text-muted">
-              {isReadOnly ? '已完成环节仅可查看' : '确认推送 B 端功能暂未接入'}
+              确认推送 B 端功能暂未接入
             </span>
             <button
               type="button"
@@ -5471,7 +5456,7 @@ function UrgentCheckAssignmentForm({ order, readOnly }: { order: Order; readOnly
   const [specialForm, setSpecialForm] = useState<UrgentSpecialCheckFormValue>(EMPTY_URGENT_SPECIAL_CHECK)
   const [specialErrors, setSpecialErrors] = useState<Partial<Record<keyof UrgentSpecialCheckFormValue, string>>>({})
   const [specialRecords, setSpecialRecords] = useState<UrgentSpecialCheckRecord[]>([])
-  const [assignmentForm, setAssignmentForm] = useState<UrgentAssignmentFormValue>(EMPTY_URGENT_ASSIGNMENT)
+  const [assignmentForm, setAssignmentForm] = useState<UrgentAssignmentFormValue>(() => ({ ...EMPTY_URGENT_ASSIGNMENT, escort: getSessionDisplayName() }))
   const [assignmentErrors, setAssignmentErrors] = useState<Partial<Record<keyof UrgentAssignmentFormValue, string>>>({})
   const [assignmentValidated, setAssignmentValidated] = useState(false)
 
@@ -5535,7 +5520,7 @@ function UrgentCheckAssignmentForm({ order, readOnly }: { order: Order; readOnly
 
   return (
     <div className="mt-4 space-y-6">
-      <label className="inline-flex items-center gap-2 text-body-sm font-bold text-[#dc2626]">
+      <label className="flex w-fit items-center gap-2 text-body-sm font-bold text-[#dc2626]">
         <input
           type="checkbox"
           checked={specialEnabled}
@@ -5549,14 +5534,14 @@ function UrgentCheckAssignmentForm({ order, readOnly }: { order: Order; readOnly
       {specialEnabled && (
         <div className="rounded-md border-2 border-[#fb5b5b] p-4">
           <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-5">
-            <UrgentSelectField label="省" required value={specialForm.province} error={specialErrors.province} disabled={readOnly} onChange={(value) => changeSpecial('province', value)} />
-            <UrgentSelectField label="市" required value={specialForm.city} error={specialErrors.city} disabled={readOnly || !specialForm.province} onChange={(value) => changeSpecial('city', value)} />
-            <UrgentSelectField label="选择医院" required value={specialForm.hospital} error={specialErrors.hospital} disabled={readOnly || !specialForm.city} onChange={(value) => changeSpecial('hospital', value)} />
-            <UrgentSelectField label="特殊检查项目" required value={specialForm.item} error={specialErrors.item} disabled={readOnly || !specialForm.hospital} onChange={(value) => changeSpecial('item', value)} />
+            <UrgentInputField label="省" required value={specialForm.province} error={specialErrors.province} disabled={readOnly} onChange={(value) => changeSpecial('province', value)} />
+            <UrgentInputField label="市" required value={specialForm.city} error={specialErrors.city} disabled={readOnly} onChange={(value) => changeSpecial('city', value)} />
+            <UrgentInputField label="选择医院" required value={specialForm.hospital} error={specialErrors.hospital} disabled={readOnly} onChange={(value) => changeSpecial('hospital', value)} />
+            <UrgentInputField label="特殊检查项目" required value={specialForm.item} error={specialErrors.item} disabled={readOnly || !specialForm.hospital} onChange={(value) => changeSpecial('item', value)} />
             <CommunicationField label="特殊项目价格(元)" required error={specialErrors.price}>
               <input type="number" min="0" value={specialForm.price} disabled={readOnly || !specialForm.item} onChange={(event) => changeSpecial('price', event.target.value)} placeholder="请输入价格" className={inputClass(Boolean(specialErrors.price)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
             </CommunicationField>
-            <UrgentSelectField label="特殊情况" required value={specialForm.situation} error={specialErrors.situation} disabled={readOnly || !specialForm.item} onChange={(value) => changeSpecial('situation', value)} />
+            <UrgentSelectField label="特殊情况" required value={specialForm.situation} error={specialErrors.situation} disabled={readOnly || !specialForm.item} options={SPECIAL_CHECK_SITUATION_OPTIONS} onChange={(value) => changeSpecial('situation', value)} />
           </div>
           {!readOnly && (
             <button type="button" onClick={submitSpecialCheck} className="mt-4 h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white hover:bg-[#06786c]">
@@ -5596,7 +5581,7 @@ function UrgentCheckAssignmentForm({ order, readOnly }: { order: Order; readOnly
         </div>
       )}
 
-      <label className="inline-flex items-center gap-2 text-body-sm text-text-main">
+      <label className="flex w-fit items-center gap-2 text-body-sm text-text-main">
         <input type="checkbox" disabled={readOnly} className="h-4 w-4 accent-primary" />
         已与客户电话沟通，客户可就诊
       </label>
@@ -5604,12 +5589,12 @@ function UrgentCheckAssignmentForm({ order, readOnly }: { order: Order; readOnly
       <div>
         <h4 className="mb-3 text-[16px] font-bold text-text-main">分配陪诊人员</h4>
         <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-4">
-          <UrgentSelectField label="省" required value={assignmentForm.province} error={assignmentErrors.province} disabled={readOnly} onChange={(value) => changeAssignment('province', value)} />
-          <UrgentSelectField label="市" required value={assignmentForm.city} error={assignmentErrors.city} disabled={readOnly || !assignmentForm.province} onChange={(value) => changeAssignment('city', value)} />
-          <UrgentSelectField label="选择医院" required value={assignmentForm.hospital} error={assignmentErrors.hospital} disabled={readOnly || !assignmentForm.city} onChange={(value) => changeAssignment('hospital', value)} />
-          <UrgentSelectField label="医院地址" required value={assignmentForm.hospitalAddress} error={assignmentErrors.hospitalAddress} disabled={readOnly || !assignmentForm.hospital} onChange={(value) => changeAssignment('hospitalAddress', value)} />
-          <UrgentSelectField label="检查项目" required value={assignmentForm.item} error={assignmentErrors.item} disabled={readOnly || !assignmentForm.hospital} onChange={(value) => changeAssignment('item', value)} />
-          <UrgentSelectField label="选择陪诊人员" required value={assignmentForm.escort} error={assignmentErrors.escort} disabled={readOnly || !assignmentForm.hospital} onChange={(value) => changeAssignment('escort', value)} />
+          <UrgentInputField label="省" required value={assignmentForm.province} error={assignmentErrors.province} disabled={readOnly} onChange={(value) => changeAssignment('province', value)} />
+          <UrgentInputField label="市" required value={assignmentForm.city} error={assignmentErrors.city} disabled={readOnly} onChange={(value) => changeAssignment('city', value)} />
+          <UrgentInputField label="选择医院" required value={assignmentForm.hospital} error={assignmentErrors.hospital} disabled={readOnly} onChange={(value) => changeAssignment('hospital', value)} />
+          <UrgentInputField label="医院地址" required value={assignmentForm.hospitalAddress} error={assignmentErrors.hospitalAddress} disabled={readOnly} onChange={(value) => changeAssignment('hospitalAddress', value)} />
+          <UrgentSelectField label="检查项目" required value={assignmentForm.item} error={assignmentErrors.item} disabled={readOnly} options={URGENT_CHECK_ITEM_OPTIONS} onChange={(value) => changeAssignment('item', value)} />
+          <UrgentInputField label="陪诊人员" required value={assignmentForm.escort} error={assignmentErrors.escort} disabled={readOnly} onChange={(value) => changeAssignment('escort', value)} />
           <CommunicationField label="陪诊人员联系方式" error={assignmentErrors.contact}>
             <input value={assignmentForm.contact} disabled={readOnly} onChange={(event) => changeAssignment('contact', event.target.value)} placeholder="请输入联系方式" className={inputClass(Boolean(assignmentErrors.contact)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
           </CommunicationField>
@@ -5640,7 +5625,8 @@ function UrgentSelectField({
   value,
   error,
   disabled,
-  onChange
+  onChange,
+  options = []
 }: {
   label: string
   required?: boolean
@@ -5648,12 +5634,65 @@ function UrgentSelectField({
   error?: string
   disabled?: boolean
   onChange: (value: string) => void
+  options?: string[]
 }): React.JSX.Element {
   return (
     <CommunicationField label={label} required={required} error={error}>
       <select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} className={inputClass(Boolean(error)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'}>
         <option value="">请选择</option>
+        {options.map((option) => <option key={option} value={option}>{option}</option>)}
       </select>
+    </CommunicationField>
+  )
+}
+
+const EXPERT_TYPE_OPTIONS = ['普通专家', '特殊专家']
+const DOCTOR_TITLE_OPTIONS = ['主任医师', '副主任医师']
+const SPECIAL_CHECK_SITUATION_OPTIONS = ['特殊医院', '非常规项目', '其他']
+const URGENT_CHECK_ITEM_OPTIONS = [
+  'B超',
+  '彩超',
+  'CT（除外PET-CT、SPECT）',
+  '核磁（除外PET-MRI）',
+  '超声心动',
+  '普通胃镜',
+  '普通肠镜',
+  '普通胃肠镜',
+  '无痛胃镜',
+  '无痛肠镜',
+  '无痛胃肠镜',
+  '肾脏穿刺',
+  '腰椎穿刺'
+]
+const EXPERT_SITUATION_OPTIONS = [
+  '客户首诊点名',
+  '非我司安排的首诊，需复诊',
+  '非我司安排的手术；需复诊',
+  '特殊疾病，仅此专家对症',
+  '我司安排的专家推荐的专家',
+  '其他'
+]
+
+function UrgentInputField({
+  label,
+  required,
+  value,
+  error,
+  disabled,
+  onChange,
+  placeholder
+}: {
+  label: string
+  required?: boolean
+  value: string
+  error?: string
+  disabled?: boolean
+  onChange: (value: string) => void
+  placeholder?: string
+}): React.JSX.Element {
+  return (
+    <CommunicationField label={label} required={required} error={error}>
+      <input value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} placeholder={placeholder ?? (label ? `请输入${label}` : '请输入')} className={inputClass(Boolean(error)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
     </CommunicationField>
   )
 }
@@ -5755,7 +5794,7 @@ interface HospitalExpertRecord extends HospitalExpertFormValue {
 }
 
 const EMPTY_HOSPITAL_EXPERT: HospitalExpertFormValue = {
-  expertType: '', province: '', city: '', hospital: '', department: '', doctor: '', title: '', price: '', situation: ''
+  expertType: '普通专家', province: '', city: '', hospital: '', department: '', doctor: '', title: '', price: '', situation: ''
 }
 
 const EMPTY_HOSPITAL_ASSIGNMENT: HospitalAssignmentFormValue = {
@@ -5790,7 +5829,7 @@ function HospitalAssignmentForm({ order, readOnly }: { order: Order; readOnly: b
   const [expertForm, setExpertForm] = useState<HospitalExpertFormValue>(EMPTY_HOSPITAL_EXPERT)
   const [expertErrors, setExpertErrors] = useState<Partial<Record<keyof HospitalExpertFormValue, string>>>({})
   const [expertRecords, setExpertRecords] = useState<HospitalExpertRecord[]>([])
-  const [assignmentForm, setAssignmentForm] = useState<HospitalAssignmentFormValue>(EMPTY_HOSPITAL_ASSIGNMENT)
+  const [assignmentForm, setAssignmentForm] = useState<HospitalAssignmentFormValue>(() => ({ ...EMPTY_HOSPITAL_ASSIGNMENT, escort: getSessionDisplayName() }))
   const [assignmentErrors, setAssignmentErrors] = useState<Partial<Record<keyof HospitalAssignmentFormValue, string>>>({})
   const [assignmentValidated, setAssignmentValidated] = useState(false)
 
@@ -5868,24 +5907,23 @@ function HospitalAssignmentForm({ order, readOnly }: { order: Order; readOnly: b
       {expertEnabled && (
         <div className="rounded-md border-2 border-[#fb5b5b] p-4">
           <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-4">
-            <UrgentSelectField label="点名专家类型" required value={expertForm.expertType} error={expertErrors.expertType} disabled={readOnly} onChange={(value) => changeExpert('expertType', value)} />
-            <UrgentSelectField label="省" required value={expertForm.province} error={expertErrors.province} disabled={readOnly} onChange={(value) => changeExpert('province', value)} />
-            <UrgentSelectField label="市" required value={expertForm.city} error={expertErrors.city} disabled={readOnly || !expertForm.province} onChange={(value) => changeExpert('city', value)} />
-            <UrgentSelectField label="选择医院" required value={expertForm.hospital} error={expertErrors.hospital} disabled={readOnly || !expertForm.city} onChange={(value) => changeExpert('hospital', value)} />
-            <UrgentSelectField label="科室名称" required value={expertForm.department} error={expertErrors.department} disabled={readOnly || !expertForm.hospital} onChange={(value) => changeExpert('department', value)} />
-            <UrgentSelectField label="医生姓名" required value={expertForm.doctor} error={expertErrors.doctor} disabled={readOnly || !expertForm.department} onChange={(value) => changeExpert('doctor', value)} />
-            <UrgentSelectField label="医生职称" required value={expertForm.title} error={expertErrors.title} disabled={readOnly || !expertForm.doctor} onChange={(value) => changeExpert('title', value)} />
+            <UrgentSelectField label="点名专家类型" required value={expertForm.expertType} error={expertErrors.expertType} disabled={readOnly} options={EXPERT_TYPE_OPTIONS} onChange={(value) => changeExpert('expertType', value)} />
+            <UrgentInputField label="省" required value={expertForm.province} error={expertErrors.province} disabled={readOnly} onChange={(value) => changeExpert('province', value)} />
+            <UrgentInputField label="市" required value={expertForm.city} error={expertErrors.city} disabled={readOnly} onChange={(value) => changeExpert('city', value)} />
+            <UrgentInputField label="选择医院" required value={expertForm.hospital} error={expertErrors.hospital} disabled={readOnly} onChange={(value) => changeExpert('hospital', value)} />
+            <UrgentInputField label="科室名称" required value={expertForm.department} error={expertErrors.department} disabled={readOnly} onChange={(value) => changeExpert('department', value)} />
+            <UrgentInputField label="医生姓名" required value={expertForm.doctor} error={expertErrors.doctor} disabled={readOnly} onChange={(value) => changeExpert('doctor', value)} />
+            <UrgentSelectField label="医生职称" required value={expertForm.title} error={expertErrors.title} disabled={readOnly || !expertForm.doctor} options={DOCTOR_TITLE_OPTIONS} onChange={(value) => changeExpert('title', value)} />
             <CommunicationField label="点名专家价格" required error={expertErrors.price}>
               <input type="number" min="0" value={expertForm.price} disabled={readOnly || !expertForm.doctor} onChange={(event) => changeExpert('price', event.target.value)} placeholder="请输入价格" className={inputClass(Boolean(expertErrors.price)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
             </CommunicationField>
-            <UrgentSelectField label="点名情况" required value={expertForm.situation} error={expertErrors.situation} disabled={readOnly || !expertForm.doctor} onChange={(value) => changeExpert('situation', value)} />
+            <UrgentSelectField label="点名情况" required value={expertForm.situation} error={expertErrors.situation} disabled={readOnly} options={EXPERT_SITUATION_OPTIONS} onChange={(value) => changeExpert('situation', value)} />
           </div>
           {!readOnly && <button type="button" onClick={submitExpert} className="mt-4 h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white hover:bg-[#06786c]">提交运营审批</button>}
         </div>
       )}
 
-      {expertRecords.length > 0 && (
-        <div>
+      <div>
           <h4 className="mb-3 text-[16px] font-bold text-text-main">点名专家列表</h4>
           <div className="overflow-x-auto rounded-md border border-border-subtle">
             <table className="min-w-[1350px] w-full text-left text-body-sm">
@@ -5895,7 +5933,9 @@ function HospitalAssignmentForm({ order, readOnly }: { order: Order; readOnly: b
                 </tr>
               </thead>
               <tbody>
-                {expertRecords.map((record, index) => (
+                {expertRecords.length === 0 ? (
+                  <tr><td colSpan={12} className="px-3 py-8 text-center text-text-muted">暂无点名专家数据</td></tr>
+                ) : expertRecords.map((record, index) => (
                   <tr key={record.id} className="border-b border-border-subtle last:border-0">
                     <td className="px-3 py-3">{index + 1}</td>
                     <td className="px-3 py-3">{record.expertType}</td>
@@ -5915,7 +5955,6 @@ function HospitalAssignmentForm({ order, readOnly }: { order: Order; readOnly: b
             </table>
           </div>
         </div>
-      )}
 
       <label className="inline-flex items-center gap-2 text-body-sm text-text-main">
         <input type="checkbox" disabled={readOnly} className="h-4 w-4 accent-primary" />
@@ -5925,21 +5964,24 @@ function HospitalAssignmentForm({ order, readOnly }: { order: Order; readOnly: b
       <div>
         <h4 className="mb-3 text-[16px] font-bold text-text-main">分配陪诊人员</h4>
         <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-4">
-          <UrgentSelectField label="省" required value={assignmentForm.province} error={assignmentErrors.province} disabled={readOnly} onChange={(value) => changeAssignment('province', value)} />
-          <UrgentSelectField label="市" required value={assignmentForm.city} error={assignmentErrors.city} disabled={readOnly || !assignmentForm.province} onChange={(value) => changeAssignment('city', value)} />
-          <UrgentSelectField label="医院" required value={assignmentForm.hospital} error={assignmentErrors.hospital} disabled={readOnly || !assignmentForm.city} onChange={(value) => changeAssignment('hospital', value)} />
-          <UrgentSelectField label="医院地址" required value={assignmentForm.hospitalAddress} error={assignmentErrors.hospitalAddress} disabled={readOnly || !assignmentForm.hospital} onChange={(value) => changeAssignment('hospitalAddress', value)} />
-          <UrgentSelectField label="选择陪诊人员" required value={assignmentForm.escort} error={assignmentErrors.escort} disabled={readOnly || !assignmentForm.hospital} onChange={(value) => changeAssignment('escort', value)} />
+          <UrgentInputField label="省" required value={assignmentForm.province} error={assignmentErrors.province} disabled={readOnly} onChange={(value) => changeAssignment('province', value)} />
+          <UrgentInputField label="市" required value={assignmentForm.city} error={assignmentErrors.city} disabled={readOnly} onChange={(value) => changeAssignment('city', value)} />
+          <UrgentInputField label="医院" required value={assignmentForm.hospital} error={assignmentErrors.hospital} disabled={readOnly} onChange={(value) => changeAssignment('hospital', value)} />
+          <UrgentInputField label="医院地址" required value={assignmentForm.hospitalAddress} error={assignmentErrors.hospitalAddress} disabled={readOnly} onChange={(value) => changeAssignment('hospitalAddress', value)} />
+          <UrgentInputField label="陪诊人员" required value={assignmentForm.escort} error={assignmentErrors.escort} disabled={readOnly} onChange={(value) => changeAssignment('escort', value)} />
           <CommunicationField label="陪诊人员联系方式">
             <input value={assignmentForm.contact} disabled={readOnly} onChange={(event) => changeAssignment('contact', event.target.value)} placeholder="请输入联系方式" className={inputClass(false) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
           </CommunicationField>
           <CommunicationField label="发起住院时间" required>
             <input value={formatClaimedTime(order.createdAt ?? order.updatedAt)} readOnly className={inputClass(false) + ' cursor-not-allowed bg-surface-bg'} />
           </CommunicationField>
-          <UrgentSelectField label="科室" required value={assignmentForm.department} error={assignmentErrors.department} disabled={readOnly || !assignmentForm.hospital} onChange={(value) => changeAssignment('department', value)} />
-          <UrgentSelectField label="医生姓名" required value={assignmentForm.doctor} error={assignmentErrors.doctor} disabled={readOnly || !assignmentForm.department} onChange={(value) => changeAssignment('doctor', value)} />
+          <UrgentInputField label="科室" required value={assignmentForm.department} error={assignmentErrors.department} disabled={readOnly} onChange={(value) => changeAssignment('department', value)} />
+          <UrgentInputField label="医生姓名" required value={assignmentForm.doctor} error={assignmentErrors.doctor} disabled={readOnly} onChange={(value) => changeAssignment('doctor', value)} />
           <CommunicationField label="医生职称" required error={assignmentErrors.doctorTitle}>
-            <input value={assignmentForm.doctorTitle} disabled={readOnly || !assignmentForm.doctor} onChange={(event) => changeAssignment('doctorTitle', event.target.value)} placeholder="请输入医生职称" className={inputClass(Boolean(assignmentErrors.doctorTitle)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
+            <select value={assignmentForm.doctorTitle} disabled={readOnly || !assignmentForm.doctor} onChange={(event) => changeAssignment('doctorTitle', event.target.value)} className={inputClass(Boolean(assignmentErrors.doctorTitle)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'}>
+              <option value="">请选择</option>
+              {DOCTOR_TITLE_OPTIONS.map((title) => <option key={title} value={title}>{title}</option>)}
+            </select>
           </CommunicationField>
           <div className="md:col-span-2 xl:col-span-4">
             <CommunicationField label="意见/建议" required error={assignmentErrors.suggestion}>
@@ -6026,17 +6068,17 @@ function OutpatientPlanConfirmationForm({ readOnly }: { readOnly: boolean }): Re
       {expertEnabled && (
         <div className="rounded-md border-2 border-[#fb5b5b] p-4">
           <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-4">
-            <UrgentSelectField label="点名专家类型" required value={expertForm.expertType} error={expertErrors.expertType} disabled={readOnly} onChange={(value) => changeExpert('expertType', value)} />
-            <UrgentSelectField label="省" required value={expertForm.province} error={expertErrors.province} disabled={readOnly} onChange={(value) => changeExpert('province', value)} />
-            <UrgentSelectField label="市" required value={expertForm.city} error={expertErrors.city} disabled={readOnly || !expertForm.province} onChange={(value) => changeExpert('city', value)} />
-            <UrgentSelectField label="选择医院" required value={expertForm.hospital} error={expertErrors.hospital} disabled={readOnly || !expertForm.city} onChange={(value) => changeExpert('hospital', value)} />
-            <UrgentSelectField label="科室名称" required value={expertForm.department} error={expertErrors.department} disabled={readOnly || !expertForm.hospital} onChange={(value) => changeExpert('department', value)} />
-            <UrgentSelectField label="医生姓名" required value={expertForm.doctor} error={expertErrors.doctor} disabled={readOnly || !expertForm.department} onChange={(value) => changeExpert('doctor', value)} />
-            <UrgentSelectField label="医生职称" required value={expertForm.title} error={expertErrors.title} disabled={readOnly || !expertForm.doctor} onChange={(value) => changeExpert('title', value)} />
+            <UrgentSelectField label="点名专家类型" required value={expertForm.expertType} error={expertErrors.expertType} disabled={readOnly} options={EXPERT_TYPE_OPTIONS} onChange={(value) => changeExpert('expertType', value)} />
+            <UrgentInputField label="省" required value={expertForm.province} error={expertErrors.province} disabled={readOnly} onChange={(value) => changeExpert('province', value)} />
+            <UrgentInputField label="市" required value={expertForm.city} error={expertErrors.city} disabled={readOnly} onChange={(value) => changeExpert('city', value)} />
+            <UrgentInputField label="选择医院" required value={expertForm.hospital} error={expertErrors.hospital} disabled={readOnly} onChange={(value) => changeExpert('hospital', value)} />
+            <UrgentInputField label="科室名称" required value={expertForm.department} error={expertErrors.department} disabled={readOnly} onChange={(value) => changeExpert('department', value)} />
+            <UrgentInputField label="医生姓名" required value={expertForm.doctor} error={expertErrors.doctor} disabled={readOnly} onChange={(value) => changeExpert('doctor', value)} />
+            <UrgentSelectField label="医生职称" required value={expertForm.title} error={expertErrors.title} disabled={readOnly || !expertForm.doctor} options={DOCTOR_TITLE_OPTIONS} onChange={(value) => changeExpert('title', value)} />
             <CommunicationField label="点名专家价格" required error={expertErrors.price}>
               <input type="number" min="0" value={expertForm.price} disabled={readOnly || !expertForm.doctor} onChange={(event) => changeExpert('price', event.target.value)} placeholder="请输入价格" className={inputClass(Boolean(expertErrors.price)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
             </CommunicationField>
-            <UrgentSelectField label="点名情况" required value={expertForm.situation} error={expertErrors.situation} disabled={readOnly || !expertForm.doctor} onChange={(value) => changeExpert('situation', value)} />
+            <UrgentSelectField label="点名情况" required value={expertForm.situation} error={expertErrors.situation} disabled={readOnly} options={EXPERT_SITUATION_OPTIONS} onChange={(value) => changeExpert('situation', value)} />
           </div>
           {!readOnly && <button type="button" onClick={submitExpert} className="mt-4 h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white hover:bg-[#06786c]">提交运营审批</button>}
         </div>
@@ -6045,13 +6087,13 @@ function OutpatientPlanConfirmationForm({ readOnly }: { readOnly: boolean }): Re
       <div>
         <h4 className="mb-3 text-[16px] font-bold text-text-main">方案选择</h4>
         <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-5">
-          <UrgentSelectField label="省" value={planForm.province} disabled={readOnly} onChange={(value) => changePlan('province', value)} />
-          <UrgentSelectField label="市" value={planForm.city} disabled={readOnly || !planForm.province} onChange={(value) => changePlan('city', value)} />
-          <UrgentSelectField label="医院" value={planForm.hospital} disabled={readOnly || !planForm.city} onChange={(value) => changePlan('hospital', value)} />
-          <UrgentSelectField label="科室" value={planForm.department} disabled={readOnly || !planForm.hospital} onChange={(value) => changePlan('department', value)} />
-          <UrgentSelectField label="医生姓名" value={planForm.doctor} disabled={readOnly || !planForm.department} onChange={(value) => changePlan('doctor', value)} />
+          <UrgentInputField label="省" value={planForm.province} disabled={readOnly} onChange={(value) => changePlan('province', value)} />
+          <UrgentInputField label="市" value={planForm.city} disabled={readOnly} onChange={(value) => changePlan('city', value)} />
+          <UrgentInputField label="医院" value={planForm.hospital} disabled={readOnly} onChange={(value) => changePlan('hospital', value)} />
+          <UrgentInputField label="科室" value={planForm.department} disabled={readOnly} onChange={(value) => changePlan('department', value)} />
+          <UrgentInputField label="医生姓名" value={planForm.doctor} disabled={readOnly} onChange={(value) => changePlan('doctor', value)} />
         </div>
-        <p className="mt-2 text-[12px] text-text-muted">下拉选项待接入；已按省、市、医院、科室、医生姓名的顺序限制选择。</p>
+        <p className="mt-2 text-[12px] text-text-muted">省、市、医院、科室、医生姓名均可直接输入。</p>
       </div>
 
       <div>
@@ -6095,7 +6137,7 @@ function OutpatientPlanConfirmationForm({ readOnly }: { readOnly: boolean }): Re
  * 当前根据已完成后的查看页面反向生成，选项和提交接口待后续接入。
  */
 function OutpatientAssignmentForm({ order, readOnly }: { order: Order; readOnly: boolean }): React.JSX.Element {
-  const [form, setForm] = useState<OutpatientAssignmentFormValue>(EMPTY_OUTPATIENT_ASSIGNMENT)
+  const [form, setForm] = useState<OutpatientAssignmentFormValue>(() => ({ ...EMPTY_OUTPATIENT_ASSIGNMENT, escort: getSessionDisplayName() }))
   const [errors, setErrors] = useState<Partial<Record<keyof OutpatientAssignmentFormValue, string>>>({})
   const [validated, setValidated] = useState(false)
 
@@ -6132,14 +6174,14 @@ function OutpatientAssignmentForm({ order, readOnly }: { order: Order; readOnly:
       <div>
         <h4 className="mb-3 text-[16px] font-bold text-text-main">分配陪诊人员</h4>
         <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-4">
-          <UrgentSelectField label="省" required value={form.province} error={errors.province} disabled={readOnly} onChange={(value) => changeField('province', value)} />
-          <UrgentSelectField label="市" required value={form.city} error={errors.city} disabled={readOnly || !form.province} onChange={(value) => changeField('city', value)} />
-          <UrgentSelectField label="就诊医院" required value={form.hospital} error={errors.hospital} disabled={readOnly || !form.city} onChange={(value) => changeField('hospital', value)} />
-          <UrgentSelectField label="医院地址" required value={form.hospitalAddress} error={errors.hospitalAddress} disabled={readOnly || !form.hospital} onChange={(value) => changeField('hospitalAddress', value)} />
+          <UrgentInputField label="省" required value={form.province} error={errors.province} disabled={readOnly} onChange={(value) => changeField('province', value)} />
+          <UrgentInputField label="市" required value={form.city} error={errors.city} disabled={readOnly} onChange={(value) => changeField('city', value)} />
+          <UrgentInputField label="就诊医院" required value={form.hospital} error={errors.hospital} disabled={readOnly} onChange={(value) => changeField('hospital', value)} />
+          <UrgentInputField label="医院地址" required value={form.hospitalAddress} error={errors.hospitalAddress} disabled={readOnly} onChange={(value) => changeField('hospitalAddress', value)} />
           <CommunicationField label="候诊地址" required error={errors.waitingAddress}>
             <input value={form.waitingAddress} disabled={readOnly} onChange={(event) => changeField('waitingAddress', event.target.value)} placeholder="请输入候诊地址" className={inputClass(Boolean(errors.waitingAddress)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
           </CommunicationField>
-          <UrgentSelectField label="陪诊人员" required value={form.escort} error={errors.escort} disabled={readOnly || !form.hospital} onChange={(value) => changeField('escort', value)} />
+          <UrgentInputField label="陪诊人员" required value={form.escort} error={errors.escort} disabled={readOnly} onChange={(value) => changeField('escort', value)} />
           <CommunicationField label="陪诊人员联系方式" required error={errors.contact}>
             <input value={form.contact} disabled={readOnly} onChange={(event) => changeField('contact', event.target.value)} placeholder="请输入联系方式" className={inputClass(Boolean(errors.contact)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
           </CommunicationField>
@@ -6192,7 +6234,7 @@ interface FullProcessAssignmentRecord extends OutpatientAssignmentFormValue {
 
 /** 全流程门诊的分配陪诊支持同一订单下多条就诊安排。 */
 function FullProcessAssignmentForm({ order, readOnly }: { order: Order; readOnly: boolean }): React.JSX.Element {
-  const [draft, setDraft] = useState<OutpatientAssignmentFormValue>(EMPTY_OUTPATIENT_ASSIGNMENT)
+  const [draft, setDraft] = useState<OutpatientAssignmentFormValue>(() => ({ ...EMPTY_OUTPATIENT_ASSIGNMENT, escort: getSessionDisplayName() }))
   const [errors, setErrors] = useState<Partial<Record<keyof OutpatientAssignmentFormValue, string>>>({})
   const [records, setRecords] = useState<FullProcessAssignmentRecord[]>([])
   const [validated, setValidated] = useState(false)
@@ -6222,7 +6264,7 @@ function FullProcessAssignmentForm({ order, readOnly }: { order: Order; readOnly
     setErrors(nextErrors)
     if (Object.keys(nextErrors).length > 0) return
     setRecords((current) => [...current, { ...draft, id: Date.now() }])
-    setDraft(EMPTY_OUTPATIENT_ASSIGNMENT)
+    setDraft({ ...EMPTY_OUTPATIENT_ASSIGNMENT, escort: getSessionDisplayName() })
     setValidated(false)
   }
 
@@ -6244,12 +6286,12 @@ function FullProcessAssignmentForm({ order, readOnly }: { order: Order; readOnly
       <div className="rounded-md border border-border-subtle bg-surface-bg p-4">
         <div className="mb-3 flex items-center justify-between"><h4 className="text-[16px] font-bold text-text-main">分配陪诊人员</h4><span className="text-[12px] text-text-muted">可添加多条就诊安排</span></div>
         <div className="grid grid-cols-1 gap-x-4 gap-y-4 md:grid-cols-2 xl:grid-cols-4">
-          <UrgentSelectField label="省" required value={draft.province} error={errors.province} disabled={readOnly} onChange={(value) => updateField('province', value)} />
-          <UrgentSelectField label="市" required value={draft.city} error={errors.city} disabled={readOnly || !draft.province} onChange={(value) => updateField('city', value)} />
-          <UrgentSelectField label="就诊医院" required value={draft.hospital} error={errors.hospital} disabled={readOnly || !draft.city} onChange={(value) => updateField('hospital', value)} />
-          <UrgentSelectField label="医院地址" required value={draft.hospitalAddress} error={errors.hospitalAddress} disabled={readOnly || !draft.hospital} onChange={(value) => updateField('hospitalAddress', value)} />
+          <UrgentInputField label="省" required value={draft.province} error={errors.province} disabled={readOnly} onChange={(value) => updateField('province', value)} />
+          <UrgentInputField label="市" required value={draft.city} error={errors.city} disabled={readOnly} onChange={(value) => updateField('city', value)} />
+          <UrgentInputField label="就诊医院" required value={draft.hospital} error={errors.hospital} disabled={readOnly} onChange={(value) => updateField('hospital', value)} />
+          <UrgentInputField label="医院地址" required value={draft.hospitalAddress} error={errors.hospitalAddress} disabled={readOnly} onChange={(value) => updateField('hospitalAddress', value)} />
           <CommunicationField label="候诊地址" required error={errors.waitingAddress}><input value={draft.waitingAddress} disabled={readOnly} onChange={(event) => updateField('waitingAddress', event.target.value)} placeholder="请输入候诊地址" className={inputClass(Boolean(errors.waitingAddress)) + disabledClass} /></CommunicationField>
-          <UrgentSelectField label="陪诊人员" required value={draft.escort} error={errors.escort} disabled={readOnly || !draft.hospital} onChange={(value) => updateField('escort', value)} />
+          <UrgentInputField label="陪诊人员" required value={draft.escort} error={errors.escort} disabled={readOnly} onChange={(value) => updateField('escort', value)} />
           <CommunicationField label="陪诊人员联系方式" required error={errors.contact}><input value={draft.contact} disabled={readOnly} onChange={(event) => updateField('contact', event.target.value)} placeholder="请输入联系方式" className={inputClass(Boolean(errors.contact)) + disabledClass} /></CommunicationField>
           <CommunicationField label="发起门诊时间"><input value={formatClaimedTime(createdAt)} readOnly className={inputClass(false) + ' cursor-not-allowed bg-white'} /></CommunicationField>
           <CommunicationField label="预约就诊时间" required error={errors.appointmentAt}><input type="datetime-local" step="1" value={draft.appointmentAt} disabled={readOnly} onChange={(event) => updateField('appointmentAt', event.target.value)} className={inputClass(Boolean(errors.appointmentAt)) + disabledClass} /></CommunicationField>
@@ -6449,13 +6491,14 @@ function OutpatientEscortEntryForm({ order, readOnly, showRevisit = true, showSu
               <div className="grid grid-cols-1 gap-x-4 gap-y-4 md:grid-cols-2 xl:grid-cols-3">
                 {(['province', 'city', 'hospital'] as const).map((field) => {
                   const labels = { province: '地域选择：省', city: '市', hospital: '选择医院' }
-                  return <CommunicationField key={field} label={labels[field]} error={revisitErrors[field]}><select value={revisitForm[field]} onChange={(event) => updateRevisit(field, event.target.value)} className={selectClass(revisitErrors[field])}><option value="">请选择</option>{revisitForm[field] && <option value={revisitForm[field]}>{revisitForm[field]}</option>}</select></CommunicationField>
+                  return <CommunicationField key={field} label={labels[field]} error={revisitErrors[field]}><input value={revisitForm[field]} onChange={(event) => updateRevisit(field, event.target.value)} placeholder={`请输入${labels[field]}`} className={inputClass(Boolean(revisitErrors[field]))} /></CommunicationField>
                 })}
-                {(['department', 'doctor', 'title'] as const).map((field) => {
-                  const labels = { department: '科室', doctor: '医生', title: '职称' }
-                  return <CommunicationField key={field} label={labels[field]}><select value={revisitForm[field]} disabled className={selectClass()}><option value="">请选择</option>{revisitForm[field] && <option value={revisitForm[field]}>{revisitForm[field]}</option>}</select></CommunicationField>
+                {(['department', 'doctor'] as const).map((field) => {
+                  const labels = { department: '科室', doctor: '医生' }
+                  return <CommunicationField key={field} label={labels[field]}><input value={revisitForm[field]} onChange={(event) => updateRevisit(field, event.target.value)} placeholder={`请输入${labels[field]}`} className={inputClass(false)} /></CommunicationField>
                 })}
-                <UrgentSelectField label="医院地址" required value={revisitForm.hospitalAddress} error={revisitErrors.hospitalAddress} onChange={(value) => updateRevisit('hospitalAddress', value)} />
+                <CommunicationField label="职称"><select value={revisitForm.title} onChange={(event) => updateRevisit('title', event.target.value)} className={selectClass()}><option value="">请选择</option>{DOCTOR_TITLE_OPTIONS.map((title) => <option key={title} value={title}>{title}</option>)}</select></CommunicationField>
+                <UrgentInputField label="医院地址" required value={revisitForm.hospitalAddress} error={revisitErrors.hospitalAddress} onChange={(value) => updateRevisit('hospitalAddress', value)} />
                 <CommunicationField label="候诊地址" required error={revisitErrors.waitingAddress}><input value={revisitForm.waitingAddress} onChange={(event) => updateRevisit('waitingAddress', event.target.value)} placeholder="请输入候诊地址" className={inputClass(Boolean(revisitErrors.waitingAddress))} /></CommunicationField>
                 <CommunicationField label="陪诊人员"><input value={revisitForm.escort} onChange={(event) => updateRevisit('escort', event.target.value)} placeholder="请输入陪诊人员" className={inputClass(false)} /></CommunicationField>
                 <CommunicationField label="陪诊人员联系方式"><input value={revisitForm.contact} onChange={(event) => updateRevisit('contact', event.target.value)} placeholder="请输入联系方式" className={inputClass(false)} /></CommunicationField>
@@ -6505,12 +6548,11 @@ function FullProcessInpatientEntryForm({ order, readOnly }: { order: Order; read
   const [expertEnabled, setExpertEnabled] = useState(false)
   const [expertForm, setExpertForm] = useState<HospitalExpertFormValue>(EMPTY_HOSPITAL_EXPERT)
   const [expertErrors, setExpertErrors] = useState<Partial<Record<keyof HospitalExpertFormValue, string>>>({})
-  const [expertSubmitted, setExpertSubmitted] = useState(false)
+  const [expertRecords, setExpertRecords] = useState<HospitalExpertRecord[]>([])
 
   function updateExpert(field: keyof HospitalExpertFormValue, value: string): void {
     setExpertForm((current) => ({ ...current, [field]: value }))
     setExpertErrors((current) => ({ ...current, [field]: undefined }))
-    setExpertSubmitted(false)
   }
 
   function submitExpert(): void {
@@ -6521,7 +6563,15 @@ function FullProcessInpatientEntryForm({ order, readOnly }: { order: Order; read
     const nextErrors: Partial<Record<keyof HospitalExpertFormValue, string>> = {}
     for (const [field, message] of required) if (!expertForm[field].trim()) nextErrors[field] = message
     setExpertErrors(nextErrors)
-    setExpertSubmitted(Object.keys(nextErrors).length === 0)
+    if (Object.keys(nextErrors).length > 0) return
+    setExpertRecords((current) => [...current, {
+      ...expertForm,
+      id: Date.now(),
+      approvalResult: '待审批',
+      approvalRemark: ''
+    }])
+    setExpertForm(EMPTY_HOSPITAL_EXPERT)
+    setExpertEnabled(false)
   }
 
   return (
@@ -6529,16 +6579,48 @@ function FullProcessInpatientEntryForm({ order, readOnly }: { order: Order; read
       <div className="rounded-md border border-error/20 bg-error/10 px-4 py-3 text-body-sm text-error">*如医生职称为主任/副主任医师，需先向运营反馈，获批后再行服务，同时，在意见/建议栏留存备注说明</div>
       <label className="inline-flex items-center gap-2 text-body-sm font-bold text-[#dc2626]"><input type="checkbox" checked={expertEnabled} disabled={readOnly} onChange={(event) => setExpertEnabled(event.target.checked)} className="h-4 w-4 accent-primary" />点名专家</label>
       {expertEnabled && <div className="rounded-md border-2 border-[#fb5b5b] p-4"><div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-4">
-        <UrgentSelectField label="点名专家类型" required value={expertForm.expertType} error={expertErrors.expertType} disabled={readOnly} onChange={(value) => updateExpert('expertType', value)} />
-        <UrgentSelectField label="省" required value={expertForm.province} error={expertErrors.province} disabled={readOnly} onChange={(value) => updateExpert('province', value)} />
-        <UrgentSelectField label="市" required value={expertForm.city} error={expertErrors.city} disabled={readOnly || !expertForm.province} onChange={(value) => updateExpert('city', value)} />
-        <UrgentSelectField label="医院名称" required value={expertForm.hospital} error={expertErrors.hospital} disabled={readOnly || !expertForm.city} onChange={(value) => updateExpert('hospital', value)} />
-        <UrgentSelectField label="科室名称" required value={expertForm.department} error={expertErrors.department} disabled={readOnly || !expertForm.hospital} onChange={(value) => updateExpert('department', value)} />
-        <UrgentSelectField label="医生姓名" required value={expertForm.doctor} error={expertErrors.doctor} disabled={readOnly || !expertForm.department} onChange={(value) => updateExpert('doctor', value)} />
-        <UrgentSelectField label="医生职称" required value={expertForm.title} error={expertErrors.title} disabled={readOnly || !expertForm.doctor} onChange={(value) => updateExpert('title', value)} />
+        <UrgentSelectField label="点名专家类型" required value={expertForm.expertType} error={expertErrors.expertType} disabled={readOnly} options={EXPERT_TYPE_OPTIONS} onChange={(value) => updateExpert('expertType', value)} />
+        <UrgentInputField label="省" required value={expertForm.province} error={expertErrors.province} disabled={readOnly} onChange={(value) => updateExpert('province', value)} />
+        <UrgentInputField label="市" required value={expertForm.city} error={expertErrors.city} disabled={readOnly} onChange={(value) => updateExpert('city', value)} />
+        <UrgentInputField label="医院名称" required value={expertForm.hospital} error={expertErrors.hospital} disabled={readOnly} onChange={(value) => updateExpert('hospital', value)} />
+        <UrgentInputField label="科室名称" required value={expertForm.department} error={expertErrors.department} disabled={readOnly} onChange={(value) => updateExpert('department', value)} />
+        <UrgentInputField label="医生姓名" required value={expertForm.doctor} error={expertErrors.doctor} disabled={readOnly} onChange={(value) => updateExpert('doctor', value)} />
+        <UrgentSelectField label="医生职称" required value={expertForm.title} error={expertErrors.title} disabled={readOnly || !expertForm.doctor} options={DOCTOR_TITLE_OPTIONS} onChange={(value) => updateExpert('title', value)} />
         <CommunicationField label="点名专家价格" required error={expertErrors.price}><input type="number" min="0" value={expertForm.price} disabled={readOnly || !expertForm.doctor} onChange={(event) => updateExpert('price', event.target.value)} placeholder="请输入价格" className={inputClass(Boolean(expertErrors.price)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} /></CommunicationField>
-        <UrgentSelectField label="点名情况" required value={expertForm.situation} error={expertErrors.situation} disabled={readOnly || !expertForm.doctor} onChange={(value) => updateExpert('situation', value)} />
-      </div>{!readOnly && <div className="mt-4 flex items-center gap-3"><button type="button" onClick={submitExpert} className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white hover:bg-[#06786c]">提交运营审批</button>{expertSubmitted && <span className="text-body-sm text-status-success">已记录为待审批</span>}</div>}</div>}
+        <UrgentSelectField label="点名情况" required value={expertForm.situation} error={expertErrors.situation} disabled={readOnly} options={EXPERT_SITUATION_OPTIONS} onChange={(value) => updateExpert('situation', value)} />
+      </div>{!readOnly && <div className="mt-4 flex items-center gap-3"><button type="button" onClick={submitExpert} className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white hover:bg-[#06786c]">提交运营审批</button></div>}</div>}
+      <div>
+        <h4 className="mb-3 text-[16px] font-bold text-text-main">点名专家列表</h4>
+        <div className="overflow-x-auto rounded-md border border-border-subtle">
+          <table className="min-w-[1350px] w-full text-left text-body-sm">
+            <thead className="bg-surface-bg text-text-muted">
+              <tr>
+                {['序号', '点名专家类型', '省/市', '医院名称', '科室名称', '医生姓名', '医生职称', '点名专家价格', '点名情况', '备注', '审批结果', '审批备注'].map((title) => <th key={title} className="whitespace-nowrap border-b border-border-subtle px-3 py-2.5 font-semibold">{title}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {expertRecords.length === 0 ? (
+                <tr><td colSpan={12} className="px-3 py-8 text-center text-text-muted">暂无点名专家数据</td></tr>
+              ) : expertRecords.map((record, index) => (
+                <tr key={record.id} className="border-b border-border-subtle last:border-0">
+                  <td className="px-3 py-3">{index + 1}</td>
+                  <td className="px-3 py-3">{record.expertType}</td>
+                  <td className="px-3 py-3">{record.province}/{record.city}</td>
+                  <td className="px-3 py-3">{record.hospital}</td>
+                  <td className="px-3 py-3">{record.department}</td>
+                  <td className="px-3 py-3">{record.doctor}</td>
+                  <td className="px-3 py-3">{record.title}</td>
+                  <td className="px-3 py-3">{record.price}</td>
+                  <td className="px-3 py-3">{record.situation}</td>
+                  <td className="px-3 py-3">—</td>
+                  <td className="px-3 py-3 font-semibold text-status-urgent">{record.approvalResult}</td>
+                  <td className="px-3 py-3">{record.approvalRemark || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
       <HospitalEscortEntryForm order={order} readOnly={readOnly} />
     </div>
   )
@@ -6586,8 +6668,9 @@ function FullProcessNewOutpatientModal({ order, onClose, onSubmitted }: { order:
             <CommunicationField label="地域选择：省" required error={errors.province}><input value={form.province} onChange={(event) => updateField('province', event.target.value)} placeholder="请输入省" className={inputClass(Boolean(errors.province))} /></CommunicationField>
             <CommunicationField label="市" required error={errors.city}><input value={form.city} onChange={(event) => updateField('city', event.target.value)} placeholder="请输入市" className={inputClass(Boolean(errors.city))} /></CommunicationField>
             <CommunicationField label="选择医院" required error={errors.hospital}><input value={form.hospital} onChange={(event) => updateField('hospital', event.target.value)} placeholder="请输入医院" className={inputClass(Boolean(errors.hospital))} /></CommunicationField>
-            {(['department', 'doctor', 'title'] as const).map((field) => { const labels = { department: '科室', doctor: '医生', title: '职称' }; return <CommunicationField key={field} label={labels[field]} required error={errors[field]}><select value={form[field]} onChange={(event) => updateField(field, event.target.value)} className={selectClass(errors[field])}><option value="">请选择</option>{form[field] && <option value={form[field]}>{form[field]}</option>}</select></CommunicationField> })}
-            <div className="md:col-span-2 xl:col-span-3"><UrgentSelectField label="医院地址" required value={form.hospitalAddress} error={errors.hospitalAddress} onChange={(value) => updateField('hospitalAddress', value)} /></div>
+            {(['department', 'doctor'] as const).map((field) => { const labels = { department: '科室', doctor: '医生' }; return <CommunicationField key={field} label={labels[field]} required error={errors[field]}><input value={form[field]} onChange={(event) => updateField(field, event.target.value)} placeholder={`请输入${labels[field]}`} className={inputClass(Boolean(errors[field]))} /></CommunicationField> })}
+            <CommunicationField label="职称" required error={errors.title}><select value={form.title} onChange={(event) => updateField('title', event.target.value)} className={selectClass(errors.title)}><option value="">请选择</option>{DOCTOR_TITLE_OPTIONS.map((title) => <option key={title} value={title}>{title}</option>)}</select></CommunicationField>
+            <div className="md:col-span-2 xl:col-span-3"><UrgentInputField label="医院地址" required value={form.hospitalAddress} error={errors.hospitalAddress} onChange={(value) => updateField('hospitalAddress', value)} /></div>
             <CommunicationField label="候诊地址" required error={errors.waitingAddress}><input value={form.waitingAddress} onChange={(event) => updateField('waitingAddress', event.target.value)} placeholder="请输入候诊地址" className={inputClass(Boolean(errors.waitingAddress))} /></CommunicationField>
             <CommunicationField label="陪诊人员"><input value={form.escort} onChange={(event) => updateField('escort', event.target.value)} placeholder="请输入陪诊人员" className={inputClass(false)} /></CommunicationField>
             <CommunicationField label="联系方式"><input value={form.contact} onChange={(event) => updateField('contact', event.target.value)} placeholder="请输入联系方式" className={inputClass(false)} /></CommunicationField>
@@ -6623,6 +6706,11 @@ interface MedicalTransportFormValue {
   ticketAmount: string
   illnessRemark: string
 }
+
+const MEDICAL_TRANSPORT_DISTANCE_OPTIONS = ['100-200Km', '50-100Km', '30-50Km', '20-30Km', '10-20Km', '5-10Km', '0-5Km']
+const MEDICAL_TRANSPORT_OPTIONS = ['火车', '飞机', '其他']
+const MEDICAL_TRANSPORT_VEHICLE_OPTIONS = ['商务车', '救护车']
+const SAME_CITY_OPTIONS = ['是', '否']
 
 const EMPTY_MEDICAL_TRANSPORT: MedicalTransportFormValue = {
   originProvince: '', originCity: '', originDistrict: '', originAddress: '',
@@ -6663,36 +6751,56 @@ function MedicalTransportServiceEntryForm({ readOnly }: { readOnly: boolean }): 
         <div className="xl:col-span-3">
           <p className="mb-1.5 text-body-sm text-text-muted">实际出发地 <span className="text-error">*</span></p>
           <div className="grid grid-cols-3 gap-3">
-            <UrgentSelectField label="" required value={form.originProvince} error={errors.originProvince} disabled={readOnly} onChange={(value) => changeField('originProvince', value)} />
-            <UrgentSelectField label="" required value={form.originCity} error={errors.originCity} disabled={readOnly || !form.originProvince} onChange={(value) => changeField('originCity', value)} />
-            <UrgentSelectField label="" required value={form.originDistrict} error={errors.originDistrict} disabled={readOnly || !form.originCity} onChange={(value) => changeField('originDistrict', value)} />
+            <div className="min-w-0">
+              <input value={form.originProvince} disabled={readOnly} onChange={(event) => changeField('originProvince', event.target.value)} placeholder="请输入省" className={inputClass(Boolean(errors.originProvince)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
+              {errors.originProvince && <p className="mt-1 text-[11px] text-error">{errors.originProvince}</p>}
+            </div>
+            <div className="min-w-0">
+              <input value={form.originCity} disabled={readOnly} onChange={(event) => changeField('originCity', event.target.value)} placeholder="请输入市" className={inputClass(Boolean(errors.originCity)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
+              {errors.originCity && <p className="mt-1 text-[11px] text-error">{errors.originCity}</p>}
+            </div>
+            <div className="min-w-0">
+              <input value={form.originDistrict} disabled={readOnly} onChange={(event) => changeField('originDistrict', event.target.value)} placeholder="请输入区" className={inputClass(Boolean(errors.originDistrict)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
+              {errors.originDistrict && <p className="mt-1 text-[11px] text-error">{errors.originDistrict}</p>}
+            </div>
           </div>
         </div>
         <div className="xl:col-span-5">
           <CommunicationField label="详细地址" required error={errors.originAddress}>
-            <input value={form.originAddress} disabled={readOnly || !form.originDistrict} onChange={(event) => changeField('originAddress', event.target.value)} placeholder="请输入详细地址" className={inputClass(Boolean(errors.originAddress)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
+            <input value={form.originAddress} disabled={readOnly} onChange={(event) => changeField('originAddress', event.target.value)} placeholder="请输入详细地址" className={inputClass(Boolean(errors.originAddress)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
           </CommunicationField>
         </div>
 
         <div className="xl:col-span-3">
           <p className="mb-1.5 text-body-sm text-text-muted">实际到达地 <span className="text-error">*</span></p>
           <div className="grid grid-cols-3 gap-3">
-            <UrgentSelectField label="" required value={form.destinationProvince} error={errors.destinationProvince} disabled={readOnly} onChange={(value) => changeField('destinationProvince', value)} />
-            <UrgentSelectField label="" required value={form.destinationCity} error={errors.destinationCity} disabled={readOnly || !form.destinationProvince} onChange={(value) => changeField('destinationCity', value)} />
-            <UrgentSelectField label="" required value={form.destinationDistrict} error={errors.destinationDistrict} disabled={readOnly || !form.destinationCity} onChange={(value) => changeField('destinationDistrict', value)} />
+            <div className="min-w-0">
+              <input value={form.destinationProvince} disabled={readOnly} onChange={(event) => changeField('destinationProvince', event.target.value)} placeholder="请输入省" className={inputClass(Boolean(errors.destinationProvince)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
+              {errors.destinationProvince && <p className="mt-1 text-[11px] text-error">{errors.destinationProvince}</p>}
+            </div>
+            <div className="min-w-0">
+              <input value={form.destinationCity} disabled={readOnly} onChange={(event) => changeField('destinationCity', event.target.value)} placeholder="请输入市" className={inputClass(Boolean(errors.destinationCity)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
+              {errors.destinationCity && <p className="mt-1 text-[11px] text-error">{errors.destinationCity}</p>}
+            </div>
+            <div className="min-w-0">
+              <input value={form.destinationDistrict} disabled={readOnly} onChange={(event) => changeField('destinationDistrict', event.target.value)} placeholder="请输入区" className={inputClass(Boolean(errors.destinationDistrict)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
+              {errors.destinationDistrict && <p className="mt-1 text-[11px] text-error">{errors.destinationDistrict}</p>}
+            </div>
           </div>
         </div>
         <div className="xl:col-span-5">
           <CommunicationField label="详细地址" required error={errors.destinationAddress}>
-            <input value={form.destinationAddress} disabled={readOnly || !form.destinationDistrict} onChange={(event) => changeField('destinationAddress', event.target.value)} placeholder="请输入详细地址" className={inputClass(Boolean(errors.destinationAddress)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
+            <input value={form.destinationAddress} disabled={readOnly} onChange={(event) => changeField('destinationAddress', event.target.value)} placeholder="请输入详细地址" className={inputClass(Boolean(errors.destinationAddress)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
           </CommunicationField>
         </div>
+      </div>
 
+      <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-4">
         <HospitalDateTimeField label="实际服务时间" required value={form.serviceTime} error={errors.serviceTime} disabled={readOnly} onChange={(value) => changeField('serviceTime', value)} />
-        <UrgentSelectField label="起止距离（公里）" required value={form.distance} error={errors.distance} disabled={readOnly} onChange={(value) => changeField('distance', value)} />
-        <UrgentSelectField label="是否同城" required value={form.sameCity} error={errors.sameCity} disabled={readOnly} onChange={(value) => changeField('sameCity', value)} />
-        <UrgentSelectField label="交通工具" required value={form.transport} error={errors.transport} disabled={readOnly} onChange={(value) => changeField('transport', value)} />
-        <UrgentSelectField label="车型" required value={form.vehicle} error={errors.vehicle} disabled={readOnly} onChange={(value) => changeField('vehicle', value)} />
+        <UrgentSelectField label="起止距离（公里）" required value={form.distance} error={errors.distance} disabled={readOnly} options={MEDICAL_TRANSPORT_DISTANCE_OPTIONS} onChange={(value) => changeField('distance', value)} />
+        <UrgentSelectField label="是否同城" required value={form.sameCity} error={errors.sameCity} disabled={readOnly} options={SAME_CITY_OPTIONS} onChange={(value) => changeField('sameCity', value)} />
+        <UrgentSelectField label="交通工具" required value={form.transport} error={errors.transport} disabled={readOnly} options={MEDICAL_TRANSPORT_OPTIONS} onChange={(value) => changeField('transport', value)} />
+        <UrgentSelectField label="车型" required value={form.vehicle} error={errors.vehicle} disabled={readOnly} options={MEDICAL_TRANSPORT_VEHICLE_OPTIONS} onChange={(value) => changeField('vehicle', value)} />
         <CommunicationField label="陪诊姓名" required error={errors.escortName}>
           <input value={form.escortName} disabled={readOnly} onChange={(event) => changeField('escortName', event.target.value)} placeholder="请输入陪诊姓名" className={inputClass(Boolean(errors.escortName)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
         </CommunicationField>
@@ -6702,6 +6810,9 @@ function MedicalTransportServiceEntryForm({ readOnly }: { readOnly: boolean }): 
         <CommunicationField label="返程人数（人）">
           <input type="number" min="0" value={form.returnPassengers} disabled={readOnly} onChange={(event) => changeField('returnPassengers', event.target.value)} placeholder="请输入返程人数" className={inputClass(false) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
         </CommunicationField>
+      </div>
+
+      <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-4">
         <CommunicationField label="累计购票金额（元）">
           <input type="number" min="0" value={form.ticketAmount} disabled={readOnly} onChange={(event) => changeField('ticketAmount', event.target.value)} placeholder="请输入金额" className={inputClass(false) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
         </CommunicationField>
@@ -6776,8 +6887,8 @@ function SharedServiceEntryForm({ readOnly }: { readOnly: boolean }): React.JSX.
         <div>
           <p className="mb-1.5 text-body-sm text-text-muted">地域选择</p>
           <div className="grid grid-cols-2 gap-3">
-            <UrgentSelectField label="" value={form.province} disabled={readOnly} onChange={(value) => changeField('province', value)} />
-            <UrgentSelectField label="" value={form.city} disabled={readOnly || !form.province} onChange={(value) => changeField('city', value)} />
+            <UrgentInputField label="" value={form.province} disabled={readOnly} onChange={(value) => changeField('province', value)} />
+            <UrgentInputField label="" value={form.city} disabled={readOnly} onChange={(value) => changeField('city', value)} />
           </div>
         </div>
         <CommunicationField label="就诊医院">
@@ -6964,7 +7075,7 @@ function RegistrationAssistanceServiceEntryForm({ order, readOnly }: { order: Or
   return (
     <div className="mt-4 space-y-5">
       <div className="rounded-md border border-border-subtle bg-surface-bg p-4"><h4 className="mb-4 text-[16px] font-bold text-text-main">挂号信息</h4><div className="grid grid-cols-1 gap-x-8 gap-y-4 md:grid-cols-2 xl:grid-cols-4"><HeaderFact label="就诊地区" value="—" /><HeaderFact label="医院名称" value={order.hospital || '—'} /><HeaderFact label="科室" value={order.dept || '—'} /><HeaderFact label="意向就诊时间" value={formatClaimedTime(order.intendDate)} /></div></div>
-      <div className="rounded-md border-2 border-[#fb5b5b] bg-white p-4"><div className="grid grid-cols-1 gap-x-4 gap-y-4 md:grid-cols-2 xl:grid-cols-4"><CommunicationField label="医院地址" required error={errors.hospitalAddress}><input value={form.hospitalAddress} disabled={readOnly} onChange={(event) => updateField('hospitalAddress', event.target.value)} placeholder="请输入医院地址" className={inputClass(Boolean(errors.hospitalAddress)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} /></CommunicationField><CommunicationField label="实际就诊时间" required error={errors.actualVisitAt}><input type="datetime-local" step="1" value={form.actualVisitAt} disabled={readOnly} onChange={(event) => updateField('actualVisitAt', event.target.value)} className={inputClass(Boolean(errors.actualVisitAt)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} /></CommunicationField><CommunicationField label="最晚取号时间" required error={errors.latestTicketAt}><input type="datetime-local" step="1" value={form.latestTicketAt} disabled={readOnly} onChange={(event) => updateField('latestTicketAt', event.target.value)} className={inputClass(Boolean(errors.latestTicketAt)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} /></CommunicationField><CommunicationField label="医生姓名"><input value={form.doctorName} disabled={readOnly} onChange={(event) => updateField('doctorName', event.target.value)} placeholder="请输入医生姓名" className={inputClass(false) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} /></CommunicationField><CommunicationField label="医生级别"><input value={form.doctorLevel} disabled={readOnly} onChange={(event) => updateField('doctorLevel', event.target.value)} placeholder="请输入医生级别" className={inputClass(false) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} /></CommunicationField><CommunicationField label="是否点名专家"><select value={form.expert} disabled={readOnly} onChange={(event) => updateField('expert', event.target.value)} className={selectClass()}><option value="0">否</option><option value="1">是</option></select></CommunicationField><CommunicationField label="是否支付挂号费"><select value={form.registrationFeePaid} disabled={readOnly} onChange={(event) => updateField('registrationFeePaid', event.target.value)} className={selectClass()}><option value="0">否</option><option value="1">是</option></select></CommunicationField></div><div className="mt-6"><CareImageSection title="影像信息" subtitle="可上传多个影像" /></div>{!readOnly && <div className="mt-5 flex items-center justify-end gap-3">{validated && <span className="text-body-sm text-status-success">必填字段校验通过</span>}<button type="button" title="爽约功能暂未接入" className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white">爽约</button><button type="button" onClick={submit} className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white">提交</button></div>}</div>
+      <div className="rounded-md border-2 border-[#fb5b5b] bg-white p-4"><div className="grid grid-cols-1 gap-x-4 gap-y-4 md:grid-cols-2 xl:grid-cols-4"><CommunicationField label="医院地址" required error={errors.hospitalAddress}><input value={form.hospitalAddress} disabled={readOnly} onChange={(event) => updateField('hospitalAddress', event.target.value)} placeholder="请输入医院地址" className={inputClass(Boolean(errors.hospitalAddress)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} /></CommunicationField><CommunicationField label="实际就诊时间" required error={errors.actualVisitAt}><input type="datetime-local" step="1" value={form.actualVisitAt} disabled={readOnly} onChange={(event) => updateField('actualVisitAt', event.target.value)} className={inputClass(Boolean(errors.actualVisitAt)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} /></CommunicationField><CommunicationField label="最晚取号时间" required error={errors.latestTicketAt}><input type="datetime-local" step="1" value={form.latestTicketAt} disabled={readOnly} onChange={(event) => updateField('latestTicketAt', event.target.value)} className={inputClass(Boolean(errors.latestTicketAt)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} /></CommunicationField><CommunicationField label="医生姓名"><input value={form.doctorName} disabled={readOnly} onChange={(event) => updateField('doctorName', event.target.value)} placeholder="请输入医生姓名" className={inputClass(false) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} /></CommunicationField><CommunicationField label="医生级别"><select value={form.doctorLevel} disabled={readOnly} onChange={(event) => updateField('doctorLevel', event.target.value)} className={selectClass()}><option value="">请选择</option>{DOCTOR_TITLE_OPTIONS.map((title) => <option key={title} value={title}>{title}</option>)}</select></CommunicationField><CommunicationField label="是否点名专家"><select value={form.expert} disabled={readOnly} onChange={(event) => updateField('expert', event.target.value)} className={selectClass()}><option value="0">否</option><option value="1">是</option></select></CommunicationField><CommunicationField label="是否支付挂号费"><select value={form.registrationFeePaid} disabled={readOnly} onChange={(event) => updateField('registrationFeePaid', event.target.value)} className={selectClass()}><option value="0">否</option><option value="1">是</option></select></CommunicationField></div><div className="mt-6"><CareImageSection title="影像信息" subtitle="可上传多个影像" /></div>{!readOnly && <div className="mt-5 flex items-center justify-end gap-3">{validated && <span className="text-body-sm text-status-success">必填字段校验通过</span>}<button type="button" title="爽约功能暂未接入" className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white">爽约</button><button type="button" onClick={submit} className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white">提交</button></div>}</div>
     </div>
   )
 }
@@ -7052,7 +7163,7 @@ function MdtServiceEntryForm({ order, readOnly }: { order: Order; readOnly: bool
 
       <div>
         <h4 className="mb-3 text-[16px] font-bold text-text-main">服务方案列表</h4>
-        {!readOnly && <div className="grid grid-cols-1 items-end gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-[1.1fr_1.1fr_1.1fr_1fr_1.5fr_auto]"><CommunicationField label="医院名称" required error={planErrors.hospital}><input value={plan.hospital} onChange={(event) => updatePlan('hospital', event.target.value)} placeholder="请输入医院名称" className={inputClass(Boolean(planErrors.hospital))} /></CommunicationField><CommunicationField label="就诊科室" required error={planErrors.department}><input value={plan.department} onChange={(event) => updatePlan('department', event.target.value)} placeholder="请输入就诊科室" className={inputClass(Boolean(planErrors.department))} /></CommunicationField><CommunicationField label="就诊医生" required error={planErrors.doctor}><input value={plan.doctor} onChange={(event) => updatePlan('doctor', event.target.value)} placeholder="请输入就诊医生" className={inputClass(Boolean(planErrors.doctor))} /></CommunicationField><CommunicationField label="医生职称" required error={planErrors.title}><input value={plan.title} onChange={(event) => updatePlan('title', event.target.value)} placeholder="请输入医生职称" className={inputClass(Boolean(planErrors.title))} /></CommunicationField><CommunicationField label="医生简介"><input value={plan.doctorSummary} onChange={(event) => updatePlan('doctorSummary', event.target.value)} placeholder="请输入医生简介" className={inputClass(false)} /></CommunicationField><button type="button" onClick={addPlan} className="h-9 rounded-md bg-[#078b7c] px-6 text-body-sm font-bold text-white hover:bg-[#06786c]">新增方案</button></div>}
+        {!readOnly && <div className="grid grid-cols-1 items-end gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-[1.1fr_1.1fr_1.1fr_1fr_1.5fr_auto]"><CommunicationField label="医院名称" required error={planErrors.hospital}><input value={plan.hospital} onChange={(event) => updatePlan('hospital', event.target.value)} placeholder="请输入医院名称" className={inputClass(Boolean(planErrors.hospital))} /></CommunicationField><CommunicationField label="就诊科室" required error={planErrors.department}><input value={plan.department} onChange={(event) => updatePlan('department', event.target.value)} placeholder="请输入就诊科室" className={inputClass(Boolean(planErrors.department))} /></CommunicationField><CommunicationField label="就诊医生" required error={planErrors.doctor}><input value={plan.doctor} onChange={(event) => updatePlan('doctor', event.target.value)} placeholder="请输入就诊医生" className={inputClass(Boolean(planErrors.doctor))} /></CommunicationField><CommunicationField label="医生职称" required error={planErrors.title}><select value={plan.title} onChange={(event) => updatePlan('title', event.target.value)} className={selectClass(planErrors.title)}><option value="">请选择</option>{DOCTOR_TITLE_OPTIONS.map((title) => <option key={title} value={title}>{title}</option>)}</select></CommunicationField><CommunicationField label="医生简介"><input value={plan.doctorSummary} onChange={(event) => updatePlan('doctorSummary', event.target.value)} placeholder="请输入医生简介" className={inputClass(false)} /></CommunicationField><button type="button" onClick={addPlan} className="h-9 rounded-md bg-[#078b7c] px-6 text-body-sm font-bold text-white hover:bg-[#06786c]">新增方案</button></div>}
         <div className="mt-4 space-y-2">{plans.length === 0 ? <div className="rounded-md border border-border-subtle bg-surface-bg px-4 py-8 text-center text-body-sm text-text-muted">暂无服务方案数据</div> : plans.map((item, index) => <div key={item.id} className="grid grid-cols-1 gap-x-6 gap-y-2 rounded-md border border-border-subtle bg-surface-bg px-4 py-3 text-body-sm md:grid-cols-2 xl:grid-cols-[0.5fr_1.5fr_1.2fr_1.2fr_1fr_2fr_auto]"><span className="font-semibold text-text-muted">{index + 1}</span><HeaderFact label="医院名称" value={item.hospital} /><HeaderFact label="就诊科室" value={item.department} /><HeaderFact label="就诊医生" value={item.doctor} /><HeaderFact label="医生职称" value={item.title} /><HeaderFact label="医生简介" value={item.doctorSummary || '—'} />{!readOnly && <button type="button" onClick={() => setPlans((current) => current.filter((record) => record.id !== item.id))} className="text-error hover:underline">移除</button>}</div>)}</div>
       </div>
 
@@ -7108,7 +7219,7 @@ function RegistrationAssistancePlanView({ order, readOnly }: { order: Order; rea
         {status && <p className="mt-3 text-right text-body-sm text-status-success">{status}</p>}
       </div>
 
-      {changeOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"><div className="w-full max-w-4xl overflow-hidden rounded-md bg-white shadow-xl"><div className="flex items-center justify-between bg-[#079d8a] px-5 py-3 text-white"><h3 className="text-[16px] font-bold">变更挂号信息</h3><button type="button" onClick={() => setChangeOpen(false)} aria-label="关闭" className="text-2xl leading-none">×</button></div><div className="space-y-5 p-5"><div className="grid grid-cols-1 gap-x-4 gap-y-4 md:grid-cols-2 xl:grid-cols-3"><CommunicationField label="省" required error={errors.province}><select value={changeForm.province} onChange={(event) => updateField('province', event.target.value)} className={inputClass(Boolean(errors.province))}><option value="">请选择</option>{changeForm.province && <option value={changeForm.province}>{changeForm.province}</option>}</select></CommunicationField><CommunicationField label="市" required error={errors.city}><select value={changeForm.city} onChange={(event) => updateField('city', event.target.value)} className={inputClass(Boolean(errors.city))}><option value="">请选择</option>{changeForm.city && <option value={changeForm.city}>{changeForm.city}</option>}</select></CommunicationField><CommunicationField label="医院" required error={errors.hospital}><select value={changeForm.hospital} onChange={(event) => updateField('hospital', event.target.value)} className={inputClass(Boolean(errors.hospital))}><option value="">请选择</option>{changeForm.hospital && <option value={changeForm.hospital}>{changeForm.hospital}</option>}</select></CommunicationField><CommunicationField label="科室" required error={errors.department}><input value={changeForm.department} onChange={(event) => updateField('department', event.target.value)} placeholder="请输入科室" className={inputClass(Boolean(errors.department))} /></CommunicationField><CommunicationField label="意向就诊时间" required error={errors.visitDate}><input type="date" value={changeForm.visitDate} onChange={(event) => updateField('visitDate', event.target.value)} className={inputClass(Boolean(errors.visitDate))} /></CommunicationField><CommunicationField label="时段" required error={errors.visitPeriod}><select value={changeForm.visitPeriod} onChange={(event) => updateField('visitPeriod', event.target.value)} className={inputClass(Boolean(errors.visitPeriod))}><option value="">请选择</option><option value="上午">上午</option><option value="下午">下午</option></select></CommunicationField></div><div className="flex justify-end gap-3"><button type="button" onClick={() => setChangeOpen(false)} className="h-9 rounded-md border border-border-subtle bg-[#e4f5f2] px-6 text-body-sm text-[#078b7c]">关闭</button><button type="button" onClick={confirmChange} className="h-9 rounded-md bg-[#078b7c] px-6 text-body-sm font-bold text-white hover:bg-[#06786c]">确认变更</button></div></div></div></div>}
+      {changeOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"><div className="w-full max-w-4xl overflow-hidden rounded-md bg-white shadow-xl"><div className="flex items-center justify-between bg-[#079d8a] px-5 py-3 text-white"><h3 className="text-[16px] font-bold">变更挂号信息</h3><button type="button" onClick={() => setChangeOpen(false)} aria-label="关闭" className="text-2xl leading-none">×</button></div><div className="space-y-5 p-5"><div className="grid grid-cols-1 gap-x-4 gap-y-4 md:grid-cols-2 xl:grid-cols-3"><CommunicationField label="省" required error={errors.province}><input value={changeForm.province} onChange={(event) => updateField('province', event.target.value)} placeholder="请输入省" className={inputClass(Boolean(errors.province))} /></CommunicationField><CommunicationField label="市" required error={errors.city}><input value={changeForm.city} onChange={(event) => updateField('city', event.target.value)} placeholder="请输入市" className={inputClass(Boolean(errors.city))} /></CommunicationField><CommunicationField label="医院" required error={errors.hospital}><input value={changeForm.hospital} onChange={(event) => updateField('hospital', event.target.value)} placeholder="请输入医院" className={inputClass(Boolean(errors.hospital))} /></CommunicationField><CommunicationField label="科室" required error={errors.department}><input value={changeForm.department} onChange={(event) => updateField('department', event.target.value)} placeholder="请输入科室" className={inputClass(Boolean(errors.department))} /></CommunicationField><CommunicationField label="意向就诊时间" required error={errors.visitDate}><input type="date" value={changeForm.visitDate} onChange={(event) => updateField('visitDate', event.target.value)} className={inputClass(Boolean(errors.visitDate))} /></CommunicationField><CommunicationField label="时段" required error={errors.visitPeriod}><select value={changeForm.visitPeriod} onChange={(event) => updateField('visitPeriod', event.target.value)} className={inputClass(Boolean(errors.visitPeriod))}><option value="">请选择</option><option value="上午">上午</option><option value="下午">下午</option></select></CommunicationField></div><div className="flex justify-end gap-3"><button type="button" onClick={() => setChangeOpen(false)} className="h-9 rounded-md border border-border-subtle bg-[#e4f5f2] px-6 text-body-sm text-[#078b7c]">关闭</button><button type="button" onClick={confirmChange} className="h-9 rounded-md bg-[#078b7c] px-6 text-body-sm font-bold text-white hover:bg-[#06786c]">确认变更</button></div></div></div></div>}
     </div>
   )
 }
@@ -7130,7 +7241,7 @@ const EMPTY_HOSPITAL_CARE_ASSIGNMENT: HospitalCareAssignmentFormValue = {
 }
 
 function HospitalCareAssignmentForm({ order, readOnly }: { order: Order; readOnly: boolean }): React.JSX.Element {
-  const [form, setForm] = useState<HospitalCareAssignmentFormValue>(EMPTY_HOSPITAL_CARE_ASSIGNMENT)
+  const [form, setForm] = useState<HospitalCareAssignmentFormValue>(() => ({ ...EMPTY_HOSPITAL_CARE_ASSIGNMENT, escort: getSessionDisplayName() }))
   const [errors, setErrors] = useState<Partial<Record<keyof HospitalCareAssignmentFormValue, string>>>({})
   const [validated, setValidated] = useState(false)
 
@@ -7169,18 +7280,18 @@ function HospitalCareAssignmentForm({ order, readOnly }: { order: Order; readOnl
       <div>
         <h4 className="mb-3 text-[16px] font-bold text-text-main">分配陪诊人员</h4>
         <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-4">
-          <UrgentSelectField label="省" required value={form.province} error={errors.province} disabled={readOnly} onChange={(value) => updateField('province', value)} />
-          <UrgentSelectField label="市" required value={form.city} error={errors.city} disabled={readOnly || !form.province} onChange={(value) => updateField('city', value)} />
-          <UrgentSelectField label="医院" required value={form.hospital} error={errors.hospital} disabled={readOnly || !form.city} onChange={(value) => updateField('hospital', value)} />
-          <UrgentSelectField label="医院地址" required value={form.hospitalAddress} error={errors.hospitalAddress} disabled={readOnly || !form.hospital} onChange={(value) => updateField('hospitalAddress', value)} />
-          <UrgentSelectField label="选择陪诊人员" required value={form.escort} error={errors.escort} disabled={readOnly || !form.hospital} onChange={(value) => updateField('escort', value)} />
+          <UrgentInputField label="省" required value={form.province} error={errors.province} disabled={readOnly} onChange={(value) => updateField('province', value)} />
+          <UrgentInputField label="市" required value={form.city} error={errors.city} disabled={readOnly} onChange={(value) => updateField('city', value)} />
+          <UrgentInputField label="医院" required value={form.hospital} error={errors.hospital} disabled={readOnly} onChange={(value) => updateField('hospital', value)} />
+          <UrgentInputField label="医院地址" required value={form.hospitalAddress} error={errors.hospitalAddress} disabled={readOnly} onChange={(value) => updateField('hospitalAddress', value)} />
+          <UrgentInputField label="陪诊人员" required value={form.escort} error={errors.escort} disabled={readOnly} onChange={(value) => updateField('escort', value)} />
           <CommunicationField label="陪诊人员联系方式">
             <input value={form.contact} disabled={readOnly} onChange={(event) => updateField('contact', event.target.value)} placeholder="请输入联系方式" className={inputClass(false) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
           </CommunicationField>
           <CommunicationField label="发起护工时间">
             <input value={formatClaimedTime(order.createdAt ?? order.updatedAt)} readOnly className={inputClass(false) + ' cursor-not-allowed bg-surface-bg'} />
           </CommunicationField>
-          <UrgentSelectField label="科室" required value={form.department} error={errors.department} disabled={readOnly || !form.hospital} onChange={(value) => updateField('department', value)} />
+          <UrgentInputField label="科室" required value={form.department} error={errors.department} disabled={readOnly} onChange={(value) => updateField('department', value)} />
           <CommunicationField label="预计护工开启时间" required error={errors.careStartDate}>
             <input type="date" value={form.careStartDate} disabled={readOnly} onChange={(event) => updateField('careStartDate', event.target.value)} className={inputClass(Boolean(errors.careStartDate)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
           </CommunicationField>
@@ -7604,7 +7715,7 @@ function HospitalEscortEntryForm({ order, readOnly }: { order: Order; readOnly: 
               </CommunicationField>
             </div>
             <HospitalDateTimeField label="复诊时间" value={form.revisitTime} disabled={readOnly} onChange={(value) => updateField('revisitTime', value)} />
-            <UrgentSelectField label="住院类型" required value={form.admissionType} error={errors.admissionType} disabled={readOnly} onChange={(value) => updateField('admissionType', value)} />
+            <UrgentInputField label="住院类型" required value={form.admissionType} error={errors.admissionType} disabled={readOnly} onChange={(value) => updateField('admissionType', value)} />
             <div className="md:col-span-2 xl:col-span-4">
               <CommunicationField label="住院总结" required error={errors.admissionSummary}>
                 <textarea value={form.admissionSummary} disabled={readOnly} onChange={(event) => updateField('admissionSummary', event.target.value)} maxLength={1000} placeholder="请输入内容" className={'min-h-28 w-full rounded-md border bg-white px-2.5 py-2 text-body-sm text-text-main outline-none disabled:cursor-not-allowed disabled:bg-surface-bg ' + (errors.admissionSummary ? 'border-error focus:ring-1 focus:ring-error' : 'border-border-subtle focus:border-primary focus:ring-1 focus:ring-primary')} />

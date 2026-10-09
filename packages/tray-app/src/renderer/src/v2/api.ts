@@ -56,6 +56,10 @@ export function getSession(): Session | null {
   return { employeeCode: code, displayName: localStorage.getItem(LS_DISPLAYNAME) || code }
 }
 
+export function getSessionDisplayName(): string {
+  return localStorage.getItem(LS_DISPLAYNAME)?.trim() || ''
+}
+
 export function saveSession(s: Session): void {
   localStorage.setItem(LS_EMPLOYEE, s.employeeCode)
   localStorage.setItem(LS_DISPLAYNAME, s.displayName)
@@ -104,6 +108,7 @@ export interface Order {
   accountManager?: string | null
   orderAmount?: number | null
   serviceType?: string | null
+  serviceItemName?: string | null
   huanyuOrderNo?: string | null
   bOrderNo?: string | null
   isAiHospital?: boolean

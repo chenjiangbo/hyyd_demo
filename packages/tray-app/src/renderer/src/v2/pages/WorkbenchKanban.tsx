@@ -181,10 +181,14 @@ function groupLaneOf(group: ApplicationGroup): LaneKey | null {
   return null
 }
 
+function settlementUnitItem(order: Order): string {
+  return order.serviceItemName ?? ''
+}
+
 function dedupeServices(orders: Order[]): Array<{ label: string; count: number; order: Order }> {
   const map = new Map<string, { label: string; count: number; order: Order }>()
   for (const order of orders) {
-    const label = bizType(order)
+    const label = settlementUnitItem(order)
     const existing = map.get(label)
     if (existing) existing.count += 1
     else map.set(label, { label, count: 1, order })
@@ -280,7 +284,7 @@ export function getServicesOfGroup(group: ApplicationGroup): FlattenedService[] 
           applicationNo: order.applicationNo || applicationNoOf(order),
           sourceOrderNo: bNo,
           huanyuOrderNo: hNo,
-          serviceType: (h.serviceName && !/^\d+$/.test(h.serviceName.trim()) ? h.serviceName : null) || (order.serviceType && !/^\d+$/.test(order.serviceType.trim()) ? order.serviceType : null) || bizType(order),
+          serviceType: settlementUnitItem(order),
           customerName: h.patientName || displayCustomerNameOf(order),
           status: h.status || order.huanyuOrderStatus || order.status,
           accountManager: h.accountManager || order.accountManager || '—',
@@ -312,7 +316,7 @@ export function getServicesOfGroup(group: ApplicationGroup): FlattenedService[] 
         applicationNo: order.applicationNo || applicationNoOf(order),
         sourceOrderNo: bNo,
         huanyuOrderNo: hNo,
-        serviceType: order.serviceType || bizType(order),
+        serviceType: settlementUnitItem(order),
         customerName: displayCustomerNameOf(order),
         status: order.huanyuOrderStatus || order.status,
         accountManager: order.accountManager || '—',
@@ -1479,7 +1483,7 @@ function ListView({
                         applicationNo: group.applicationNo,
                         sourceOrderNo: isSingleSelfOperated ? '' : (group.primary.bOrderNo || group.primary.sourceOrderNo),
                         huanyuOrderNo: group.primary.huanyuOrderNo || (isSingleSelfOperated ? group.primary.sourceOrderNo : null),
-                        serviceType: group.primary.serviceType || bizType(group.primary),
+                        serviceType: settlementUnitItem(group.primary),
                         customerName: group.customerName,
                         status: group.primary.huanyuOrderStatus || group.primary.status,
                         accountManager: group.primary.accountManager || '—',
@@ -1846,9 +1850,7 @@ function ServiceRow({
           >
             {service.serviceType}
           </span>
-        ) : (
-          <span className="text-text-muted font-mono-data">—</span>
-        )}
+        ) : null}
       </td>
 
       {/* 4. 客户 (纯姓名，无电话) */}
@@ -1951,7 +1953,7 @@ function ServiceRow({
 function ServiceChips({ services }: { services: Array<{ label: string; count: number; order: Order }> }): React.JSX.Element {
   const nonEmpty = services.filter((s) => s.label.trim())
   if (nonEmpty.length === 0) {
-    return <span className="text-text-muted font-mono-data">—</span>
+    return <></>
   }
   return (
     <div className="flex flex-wrap gap-1 max-w-[160px]">
@@ -2027,4 +2029,3 @@ function LaneBadge({ order, customLabel }: { order: Order; customLabel?: string 
     </span>
   )
 }
-

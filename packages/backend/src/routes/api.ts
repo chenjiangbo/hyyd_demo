@@ -3263,6 +3263,7 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
             stringOrNull(raw.serviceType) ??
             stringOrNull(raw.serviceName) ??
             null
+          const serviceItemNameRow = stringOrNull(rec.serviceItemName) ?? stringOrNull(raw.serviceItemName)
 
           // 6. 订单金额：优先取 HY_FACT_DDCX_NEW.DDJE；当没有的时候，按照订单B端渠道服务项目计算出来
           const isCancelled = isCancelledOrderText(o.status) || isCancelledOrderText(huanyuOrderStatus)
@@ -3383,6 +3384,7 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
             doctor: doctorRow,
             orderAmount: orderAmountRow,
             serviceType: serviceTypeRow,
+            serviceItemName: serviceItemNameRow,
             huanyuOrders,
             isAiHospital: Boolean(!hNameRaw && aiHospital),
             isAiDept: Boolean(!hKsRaw && aiDept),
