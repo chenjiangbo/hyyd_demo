@@ -1049,7 +1049,8 @@ function OrderInfoPanel({
   const raw = order.rawJson ?? {}
   const rec = (detailResp?.detail?.recommendations ?? {}) as Record<string, unknown>
   const attachments = detailResp?.attachments ?? []
-  const groups = buildDetailGroups(order, raw, rec)
+  const huanyuRaw = (detailResp?.order?.rawJson ?? {}) as Record<string, unknown>
+  const groups = buildDetailGroups(order, raw, rec, huanyuRaw)
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
@@ -1092,14 +1093,21 @@ interface DetailField {
   value: React.ReactNode
   keys?: string[]
   mono?: boolean
+  copyValue?: string
 }
 
 function buildDetailGroups(
   order: Order,
   raw: Record<string, unknown>,
-  rec: Record<string, unknown>
+  rec: Record<string, unknown>,
+  huanyuRaw: Record<string, unknown> = {}
 ): DetailGroupData[] {
   const cardId = pickPreferUnmasked(rec, raw, ['cardId'])
+  const huanyuCardId = String(huanyuRaw.documentNo ?? '').trim()
+  const fullCardId = /^\d{17}[\dXx]$/.test(huanyuCardId) ? huanyuCardId : ''
+  const displayCardId = /^\d{17}[\dXx]$/.test(fullCardId || cardId)
+    ? `${(fullCardId || cardId).slice(0, 6)}********${(fullCardId || cardId).slice(-4)}`
+    : cardId
   const socSecNo = pickPreferUnmasked(rec, raw, SOCIAL_SECURITY_KEYS)
 
   return [
@@ -1113,7 +1121,7 @@ function buildDetailGroups(
         field('性别', pick(rec, raw, ['sex']), ['sex']),
         field('生日', pick(rec, raw, ['birthday']), ['birthday']),
         field('证件类型', pick(rec, raw, ['cardType']), ['cardType']),
-        field('证件号码', cardId, ['cardId'], true),
+        { ...field('证件号码', displayCardId, ['cardId'], true), copyValue: fullCardId },
         field('联系电话', pick(rec, raw, ['paMobile', 'patientMobile', 'patientPhone'], order.customerPhone), ['paMobile', 'patientMobile', 'patientPhone']),
         field('客户等级', pick(rec, raw, ['cusLevel']), ['cusLevel']),
         field('客户关系', pick(rec, raw, ['relationship']), ['relationship']),
@@ -1225,7 +1233,7 @@ function CopyTextButton({
   return (
     <button
       type="button"
-      title={`复制 ${value}`}
+      title="复制内容"
       onClick={(e) => {
         e.stopPropagation()
         navigator.clipboard?.writeText(value)
@@ -1270,7 +1278,7 @@ function DetailGroup({
 }
 
 function DetailRow({ row, dense }: { row: DetailField; dense: boolean }): React.JSX.Element {
-  const copyValue = copyValueOf(row.value)
+  const copyValue = row.copyValue === '' ? null : row.copyValue ?? copyValueOf(row.value)
   const valueClass = (dense ? 'text-[12px]' : 'text-body-sm') + ' mt-0.5 text-text-main break-words ' + (row.mono ? 'font-mono-data' : '')
   return (
     <div className="min-w-0 border-b border-border-subtle/70 pb-1.5">

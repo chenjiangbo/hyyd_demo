@@ -56,6 +56,7 @@ model Order {
   calls                   Call[]
   aiSummaries             AiSummary[]
   attachments             OrderAttachment[]
+  idCardOcrAttempt         OrderIdCardOcrAttempt?
   materials               Material[]
   statusHistory           OrderStatusHistory[]
 
@@ -107,6 +108,16 @@ model OrderAttachment {
   @@unique([orderId, fileId])
   @@index([orderId])
   @@map("order_attachments")
+}
+
+// 一单最多自动调用一次身份证视觉识别；号码仅存本地 HY_FACT_DDCX_NEW.JZR_ZJHM。
+model OrderIdCardOcrAttempt {
+  orderId     Int      @id @map("order_id")
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  attemptedAt DateTime @default(now()) @map("attempted_at") @db.Timestamptz(6)
+  result      String   @default("pending") @db.VarChar(24)
+
+  @@map("order_id_card_ocr_attempts")
 }
 
 // 现场采集版的核心数据：员工从微信/企微复制粘贴进来的素材。

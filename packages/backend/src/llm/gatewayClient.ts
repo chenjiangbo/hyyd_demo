@@ -101,14 +101,16 @@ export async function chat(
 // ── 多模态（图片理解）─────────────────────────────────────────────────────
 // 用百炼 qwen-vl 模型对图片做"看图 + 提取"。图片以 data URL(base64) 传入
 // （MinIO 在内网，DashScope 抓不到 presigned URL，必须 base64 内联）。
-// 模型经 HYYD_VLM_MODEL 覆盖，默认 qwen-vl-max（已验证该 key 可用）。
+// 地址、密钥、模型可由 HYYD_VLM_* 单独配置；未配置时沿用 DashScope 地址/密钥。
 export async function visionChat(
   systemPrompt: string,
   userText: string,
-  imageDataUrl: string,
+  imageDataUrl: string | string[],
   options: ChatOptions = {}
 ): Promise<ChatResult> {
-  const apiKey = getDashscopeApiKey()
+  const apiKey = process.env.HYYD_VLM_API_KEY?.trim() || getDashscopeApiKey()
+  const baseUrl = process.env.HYYD_VLM_BASE_URL?.trim().replace(/\/+$/, '')
+  const endpoint = baseUrl ? `${baseUrl}/chat/completions` : DASHSCOPE_CHAT_URL
   const model = options.model ?? process.env.HYYD_VLM_MODEL ?? 'qwen-vl-max'
 
   const body: Record<string, unknown> = {
@@ -120,7 +122,9 @@ export async function visionChat(
         role: 'user',
         content: [
           { type: 'text', text: userText },
-          { type: 'image_url', image_url: { url: imageDataUrl } }
+          ...(Array.isArray(imageDataUrl) ? imageDataUrl : [imageDataUrl]).map((url) => (
+            { type: 'image_url', image_url: { url } }
+          ))
         ]
       }
     ]
@@ -128,7 +132,7 @@ export async function visionChat(
   if (options.maxTokens) body.max_tokens = options.maxTokens
   if (options.temperature !== undefined) body.temperature = options.temperature
 
-  const res = await fetch(DASHSCOPE_CHAT_URL, {
+  const res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify(body)

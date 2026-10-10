@@ -1262,7 +1262,8 @@ function OrderDetailPanel({
 }): React.JSX.Element {
   const raw = (order.rawJson ?? {}) as Record<string, unknown>
   const rec = (detailResp?.detail?.recommendations ?? {}) as Record<string, unknown>
-  const groups = buildDetailGroups(order, raw, rec)
+  const huanyuRaw = (detailResp?.order?.rawJson ?? {}) as Record<string, unknown>
+  const groups = buildDetailGroups(order, raw, rec, huanyuRaw)
   const attachments = detailResp?.attachments ?? []
   const [escortEntryActive, setEscortEntryActive] = useState(false)
   const hasEscortEntryTab = serviceFlowTabsFor(bizType(order).trim()).some((tab) => tab.key === 'service-record' && tab.label === '陪诊录入')
@@ -1370,6 +1371,7 @@ function HuanyuOrderDetailPanel({
         clearOrdersCache()
         window.dispatchEvent(new CustomEvent('huanyu-orders-updated'))
         onOrderUpdated?.(savedOrder)
+        void onReloadDetail?.()
       }}
     />
   )
@@ -2901,7 +2903,7 @@ function HuanyuOrderForm({
         <HuanyuFormGrid>
           <HuanyuInput label="就诊人姓名" required={isCreate} value={f.patientName} onChange={(value) => changeField('patientName', value)} disabled={!isCreate} />
           <HuanyuSelect label="证件类型" value={f.documentType} options={documentTypeOptions.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => changeField('documentType', value)} />
-          <HuanyuInput label="证件号码" value={f.documentNo} onChange={(value) => changeField('documentNo', value)} />
+          <HuanyuInput label="证件号码" value={f.documentNo} onChange={(value) => changeField('documentNo', value)} copyable />
           <HuanyuSelect label="就诊人性别" value={f.patientGender} options={['男', '女']} onChange={(value) => changeField('patientGender', value)} />
           <HuanyuInput label="就诊人年龄" value={f.patientAge} onChange={(value) => changeField('patientAge', value)} />
           <HuanyuInput label="就诊人联系电话" value={f.patientPhone} onChange={(value) => changeField('patientPhone', value)} />
@@ -4849,6 +4851,7 @@ interface DetailRowData {
   label: string
   value: string
   mono?: boolean
+  copyValue?: string
 }
 
 interface DetailGroupData {
@@ -4859,9 +4862,13 @@ interface DetailGroupData {
 function buildDetailGroups(
   order: Order,
   raw: Record<string, unknown>,
-  rec: Record<string, unknown>
+  rec: Record<string, unknown>,
+  huanyuRaw: Record<string, unknown> = {}
 ): DetailGroupData[] {
   const cardId = pickPreferUnmasked(rec, raw, ['cardId'])
+  const huanyuCardId = String(huanyuRaw.documentNo ?? '').trim()
+  const fullCardId = /^\d{17}[\dXx]$/.test(huanyuCardId) ? huanyuCardId : ''
+  const displayedCardId = maskIdentityNumber(fullCardId || cardId)
   const socSecNo = pickPreferUnmasked(rec, raw, SOCIAL_SECURITY_KEYS)
   return [
     {
@@ -4886,7 +4893,7 @@ function buildDetailGroups(
         detailRow('性别', pick(rec, raw, ['sex'])),
         detailRow('就诊人出生日期', pick(rec, raw, ['birthday'])),
         detailRow('就诊人证件类型', pick(rec, raw, ['cardType'])),
-        detailRow('就诊人证件号码', cardId, true),
+        { ...detailRow('就诊人证件号码', displayedCardId, true), copyValue: fullCardId },
         detailRow('保单号', pickPreferUnmasked(rec, raw, ['insurNo']), true),
         detailRow('客户等级', pick(rec, raw, ['cusLevel'])),
         detailRow('是否医保', formatYesNo(pick(rec, raw, ['isSocSec']))),
@@ -4928,6 +4935,12 @@ function detailRow(label: string, value: unknown, mono = false): DetailRowData {
   return { label, value: normalizeValue(value), mono }
 }
 
+function maskIdentityNumber(value: string): string {
+  const normalized = value.trim()
+  if (/^\d{17}[\dXx]$/.test(normalized)) return `${normalized.slice(0, 6)}********${normalized.slice(-4)}`
+  return normalized
+}
+
 function BOrderDetailGroup({ title, rows }: { title: string; rows: DetailRowData[] }): React.JSX.Element {
   const [open, setOpen] = useState(true)
   return (
@@ -4959,7 +4972,8 @@ function BOrderDetailRow({ row }: { row: DetailRowData }): React.JSX.Element {
     <div className="flex min-w-0 items-baseline gap-2 text-body-sm">
       <span className="shrink-0 text-text-muted">{row.label}：</span>
       {row.value ? (
-        <CopyText value={row.value} className={'min-w-0 max-w-full font-semibold text-text-main ' + (row.mono ? 'font-mono-data' : '')}>
+        row.copyValue === '' ? <span className="min-w-0 max-w-full break-words font-semibold text-text-main">{row.value}</span> :
+        <CopyText value={row.copyValue ?? row.value} className={'min-w-0 max-w-full font-semibold text-text-main ' + (row.mono ? 'font-mono-data' : '')}>
           <span className="break-words">{row.value}</span>
         </CopyText>
       ) : (
@@ -5293,6 +5307,9 @@ function CheckCompanionInformationPanel(): React.JSX.Element {
   )
 }
 
+// 暂停从 B 端详情按钮发起泰康订单定位；保留实现以便确认后恢复。
+const ENABLE_TAIKANG_ORDER_OPEN_BUTTON = false
+
 function ServiceInformationFlow({ order, onEscortEntryActiveChange }: { order: Order; onEscortEntryActiveChange?: (active: boolean) => void }): React.JSX.Element {
   const [open, setOpen] = useState(true)
   const [openingTaikangOrder, setOpeningTaikangOrder] = useState(false)
@@ -5354,6 +5371,7 @@ function ServiceInformationFlow({ order, onEscortEntryActiveChange }: { order: O
   }
 
   async function openTaikangOrder(): Promise<void> {
+    if (!ENABLE_TAIKANG_ORDER_OPEN_BUTTON) return
     // state 渲染前再点一次时，也必须阻止重复下发指令。
     if (openingTaikangOrderRef.current) return
     openingTaikangOrderRef.current = true
@@ -5486,18 +5504,20 @@ function ServiceInformationFlow({ order, onEscortEntryActiveChange }: { order: O
 
           <div className="flex items-center justify-between gap-3 border-t border-border-subtle pt-4">
             <span className="text-[12px] text-text-muted">
-              {openTaikangOrderMessage ?? '仅定位并打开泰康订单，不填写、不保存、不提交'}
+              {ENABLE_TAIKANG_ORDER_OPEN_BUTTON
+                ? (openTaikangOrderMessage ?? '仅定位并打开泰康订单，不填写、不保存、不提交')
+                : '泰康订单定位功能暂时停用'}
             </span>
             <div className="flex items-center gap-3">
               <button type="button" onClick={() => saveHandlersRef.current.get(activeTab?.key ?? '')?.()} className="h-9 rounded-md border border-[#078b7c] px-5 text-body-sm font-bold text-[#078b7c] hover:bg-[#078b7c]/5">保存</button>
               <button
                 type="button"
-                disabled={openingTaikangOrder}
+                disabled={!ENABLE_TAIKANG_ORDER_OPEN_BUTTON || openingTaikangOrder}
                 onClick={() => void openTaikangOrder()}
-                title="仅定位并打开泰康订单；不会填写、保存或提交"
+                title={ENABLE_TAIKANG_ORDER_OPEN_BUTTON ? '仅定位并打开泰康订单；不会填写、保存或提交' : '泰康订单定位功能暂时停用'}
                 className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white hover:bg-[#06786c] disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {openingTaikangOrder ? '正在定位…' : '确认推送B端'}
+                {openingTaikangOrder ? '正在定位…' : '确认推送B端（暂停）'}
               </button>
             </div>
           </div>
@@ -8543,7 +8563,7 @@ function CopyText({
   return (
     <button
       type="button"
-      title={`复制 ${value}`}
+      title="复制内容"
       onClick={(event) => {
         event.stopPropagation()
         void navigator.clipboard?.writeText(value)

@@ -24,6 +24,7 @@ import { startOrderReminderSchedule } from './jobs/orderReminderSchedule.js'
 import { registerAdminRoutes, ADMIN_COOKIE, verifyAdminToken } from './routes/admin.js'
 import { addAdminSocket, removeAdminSocket } from './routes/adminBus.js'
 import { saveOrderDetailBundle } from './orderDetail.js'
+import { ensureOrderIdCardOcrTable, scheduleOrderIdCardOcr } from './services/orderIdCardOcr.js'
 import { initScheduler } from './asr/transcribeScheduler.js'
 import fastifyStatic from '@fastify/static'
 import fastifyMultipart from '@fastify/multipart'
@@ -135,6 +136,7 @@ async function start() {
     // 先确保寰宇订单与 B 端运营表单相关业务表存在，再注册路由和启动服务。
     // 该检查幂等，已有表不会被修改。
     await ensureHuanyuTables(prisma)
+    await ensureOrderIdCardOcrTable(prisma)
     await ensureBOrderFormTables(prisma)
     await ensureReminderTables(prisma, server.log)
     await ensureSysSettingsTable(prisma, server.log)
@@ -464,6 +466,9 @@ async function start() {
                       server.log.error(error, `泰康订单 ${orderForHuanyu.sourceOrderNo} 同步寰宇订单失败，将在下次同步时重试`)
                     }
                   }
+                  void scheduleOrderIdCardOcr(prisma, minioClient, result.orderId).catch(() => {
+                    server.log.warn({ orderId: result.orderId }, '身份证附件自动识别未完成')
+                  })
                   server.log.info(`订单详情入库成功: orderId=${result.orderId} 附件=${result.attachmentCount} 跳过=${result.skipped}`)
                   // 注：原本要把对应的 pending command mark done，但插件
                   // 已不再消费 command，没有指令补推回路，无需 mark。

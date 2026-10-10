@@ -49,6 +49,7 @@ import {
 } from '../huanyuMysqlPush.js'
 import { autoSyncOrderMasterData, ensureRemoteEscort } from '../services/masterDataAutoSync.js'
 import { requestAbiRefund } from '../services/abiRefundService.js'
+import { scheduleOrderIdCardOcr } from '../services/orderIdCardOcr.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   CreateOrderPayload,
@@ -1289,6 +1290,11 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       displayDoctor = doc?.name || h.H_YS
     }
 
+    // 挂号协助订单首次从远端回拉成功后才具备本地寰宇行；此时可进行一次附件 OCR。
+    // 后台执行，不阻塞详情打开；识别状态表保证重复打开不会重复调用模型。
+    void scheduleOrderIdCardOcr(prisma, minioClient, linkedOrder.id).catch(() => {
+      fastify.log.warn({ orderId: linkedOrder.id }, '身份证附件自动识别未完成')
+    })
     return {
       ...linkedOrder,
       customerName: h.JZR_XM || linkedOrder.customerName,
@@ -1310,7 +1316,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
     const body = (request.body as any) || {}
     // 内部一级/二级是 B 端服务项目的维表衍生展示字段，不应写回 orders.raw_json。
-    const { internalLevelOne: _internalLevelOne, internalLevelTwo: _internalLevelTwo, ...orderRawBody } = body
+    const { internalLevelOne: _internalLevelOne, internalLevelTwo: _internalLevelTwo, documentNo: _documentNo, ...orderRawBody } = body
     let orderNo = String(body.orderNo || '').trim()
     if (body.mode === 'update' && !orderNo) {
       return reply.status(400).send({ ok: false, error: '当前订单尚无寰宇订单编号，不能保存或创建本地寰宇订单' })
@@ -1681,6 +1687,11 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         }
       }
 
+      if (syncedOrder?.id && typeof syncedOrder.id === 'number' && syncedOrder.source === 'taikang') {
+        void scheduleOrderIdCardOcr(prisma, minioClient, syncedOrder.id).catch(() => {
+          fastify.log.warn({ orderId: syncedOrder.id }, '身份证附件自动识别未完成')
+        })
+      }
       return reply.send({
         ok: true,
         order: syncedOrder,
