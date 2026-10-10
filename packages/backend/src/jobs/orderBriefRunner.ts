@@ -153,15 +153,12 @@ async function persistFieldCandidates(
       ) RETURNING id
     `
     const runId = runs[0]!.id
+    // 本轮使用完整沟通历史重新提取：上一轮未再次出现的候选也必须退出当前补位。
+    await tx.$executeRaw`
+      UPDATE b_order_ai_field_candidates SET status = 'superseded'
+      WHERE order_id = ${input.orderId} AND status = 'pending'
+    `
     for (const candidate of input.candidates) {
-      // 同字段新一轮候选到来时，只淘汰尚未采用的旧候选；已被人工采用的记录保留审计。
-      await tx.$executeRaw`
-        UPDATE b_order_ai_field_candidates
-        SET status = 'superseded'
-        WHERE order_id = ${input.orderId}
-          AND field_code = ${candidate.fieldCode}
-          AND status = 'pending'
-      `
       await tx.$executeRaw`
         INSERT INTO b_order_ai_field_candidates (
           run_id, order_id, field_code, field_label, value_text, normalized_value_json,
@@ -291,6 +288,31 @@ export async function refreshOrderBrief(
   // 面向展示的普通简报事件。
   let extractionEvents: typeof res.workflowEvents = []
   try {
+    // 用 B 端已经保存的事实帮助模型识别“新增”与“变更”，不让模型照搬成候选。
+    let bFormSaved: Record<string, Record<string, string>> = {}
+    try {
+      const formRows = await prisma.$queryRaw<Array<{ tab_code: string; data_json: Record<string, unknown> }>>`
+        SELECT d.tab_code, d.data_json
+        FROM b_order_form_tab_data d
+        JOIN b_order_form_instances i ON i.id = d.form_instance_id
+        JOIN b_order_operations o ON o.id = i.operation_id
+        WHERE o.order_id = ${orderId} AND i.status <> 'void'
+        ORDER BY i.updated_at DESC, i.id DESC
+      `
+      for (const row of formRows) {
+        if (bFormSaved[row.tab_code]) continue
+        const fields: Record<string, string> = {}
+        for (const [key, value] of Object.entries(row.data_json ?? {})) {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+          for (const [property, saved] of Object.entries(value)) {
+            if (typeof saved === 'string' && saved.trim() && saved.length <= 200) fields[`${key}.${property}`] = saved
+          }
+        }
+        bFormSaved[row.tab_code] = fields
+      }
+    } catch (error) {
+      console.warn(`[order-ai] 订单 ${orderId} 读取 B 端正式表单值失败:`, (error as Error).message)
+    }
     const extraction = await extractOrderServiceFields({
       orderId,
       applicationNo,
@@ -299,7 +321,8 @@ export async function refreshOrderBrief(
         hospital: order.hospital,
         department: order.dept,
         doctor: order.doctor,
-        serviceRemark: raw.comments ?? raw.comment ?? null
+        serviceRemark: raw.comments ?? raw.comment ?? null,
+        bFormSaved
       },
       messages: [
         ...msgs.map((m) => ({

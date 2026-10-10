@@ -77,6 +77,31 @@ export async function summarizeCall(input: CallSummaryInput): Promise<SummaryRes
   return { content: result.content, model: result.model }
 }
 
+/** B 端沟通记录使用的单通电话小结：内容应简短、客观，直接放入沟通内容字段。 */
+export async function summarizeCallCommunication(input: CallSummaryInput): Promise<SummaryResult> {
+  const directionLabel = input.direction === 'inbound' ? '来电' : '去电'
+  const duration = input.durationSec ? `，通话时长 ${input.durationSec} 秒` : ''
+  const result = await chat(
+    [
+      {
+        role: 'system',
+        content: [
+          '你负责为医疗服务专员整理一通电话的沟通记录。',
+          '请只输出一段简短、客观的中文小结，控制在 1 至 3 句话，可概括客户诉求、双方确认事项和明确的后续安排。',
+          '只根据转写内容总结，不补造医院、时间、承诺或跟进事项；听不清或没有提到的内容不要猜。',
+          '不要输出标题、字段名、Markdown、通话结果或建议。'
+        ].join('\n')
+      },
+      {
+        role: 'user',
+        content: `以下是${directionLabel}${duration}的录音转写，请整理成沟通记录小结：\n\n${input.transcript}`
+      }
+    ],
+    { temperature: 0 }
+  )
+  return { content: result.content.trim(), model: result.model }
+}
+
 // ── 微信消息摘要 ──────────────────────────────────────────────────────────────
 
 export async function summarizeMessages(input: MessageSummaryInput): Promise<SummaryResult> {

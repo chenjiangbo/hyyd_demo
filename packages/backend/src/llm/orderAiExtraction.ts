@@ -1,7 +1,7 @@
 import { chat } from './gatewayClient.js'
 import { WORKFLOW_EVENT_CODES, type WorkflowAnalysisEvent } from './orderBriefService.js'
 
-export const ORDER_AI_FIELD_PROMPT_VERSION = 'order-fields-v1'
+export const ORDER_AI_FIELD_PROMPT_VERSION = 'order-fields-v3-b-plan-suggestions'
 
 export type OrderAiSourceMessage = {
   id: number
@@ -51,7 +51,14 @@ export const ORDER_AI_FIELD_DEFINITIONS: readonly OrderAiFieldDefinition[] = [
   { code: 'hospital_address', label: '医院地址/院区/候诊地址' },
   { code: 'department', label: '最终确认科室' },
   { code: 'doctor', label: '最终确认医生' },
+  { code: 'recommended_schemes', label: '专员沟通中推荐的医院/医生备选方案列表', services: ['全流程', '全程门诊', '单次门诊', '电话问诊'] },
   { code: 'expert_level', label: '医生职称/专家级别' },
+  { code: 'doctor_title', label: '沟通中明确提及的医生职称（主任医师/副主任医师）', services: ['全流程', '全程门诊', '单次门诊', '电话问诊', '住院', '挂号协助', 'MDT服务'] },
+  { code: 'service_province', label: '服务就诊省份（明确提及时）' },
+  { code: 'service_city', label: '服务就诊城市（明确提及时）' },
+  { code: 'expert_type', label: '点名专家类型（普通专家/特殊专家）', services: ['全流程', '全程门诊', '单次门诊', '电话问诊', '住院'] },
+  { code: 'special_expert_price', label: '点名专家价格', requiresConfirmation: true, services: ['全流程', '全程门诊', '单次门诊', '电话问诊', '住院'] },
+  { code: 'special_expert_situation', label: '点名情况枚举', services: ['全流程', '全程门诊', '单次门诊', '电话问诊', '住院'] },
   { code: 'service_remark', label: '订单服务备注/注意事项' },
   { code: 'request_time', label: '需求时间（初次联系客户时间，无论接通与否）' },
   { code: 'response_time', label: '应答时间（与需求时间一致）' },
@@ -70,6 +77,11 @@ export const ORDER_AI_FIELD_DEFINITIONS: readonly OrderAiFieldDefinition[] = [
   { code: 'inspection_actual_time', label: '实际检查时间', services: ['检查加急'] },
   { code: 'inspection_location', label: '检查地点/候诊地址', services: ['检查加急'] },
   { code: 'inspection_notes', label: '检查注意事项/备注', services: ['检查加急'] },
+  { code: 'inspection_appointment_success_time', label: '检查预约实际成功时间', services: ['检查加急'] },
+  { code: 'special_inspection_situation', label: '特殊检查情况（特殊医院/非常规项目/其他）', services: ['检查加急'] },
+  { code: 'special_inspection_price', label: '特殊检查项目价格', requiresConfirmation: true, services: ['检查加急'] },
+  { code: 'outpatient_appointment_time', label: '门诊实际预约就诊时间', services: ['全流程', '全程门诊', '单次门诊', '电话问诊'] },
+  { code: 'outpatient_booking_success_time', label: '门诊预约实际成功时间', services: ['全流程', '全程门诊', '单次门诊', '电话问诊'] },
   { code: 'hospitalization_appointment_time', label: '约住院时间', services: ['住院', '全流程'] },
   { code: 'admission_no', label: '住院单号', services: ['住院', '全流程'] },
   { code: 'actual_admission_time', label: '实际住院时间', services: ['住院', '全流程'] },
@@ -84,8 +96,22 @@ export const ORDER_AI_FIELD_DEFINITIONS: readonly OrderAiFieldDefinition[] = [
   { code: 'transport_origin', label: '接送出发地', services: ['就医接送'] },
   { code: 'transport_destination', label: '接送目的地', services: ['就医接送'] },
   { code: 'transport_service_time', label: '接送实际服务时间', services: ['就医接送'] },
-  { code: 'transport_mode', label: '接送交通工具/车型', services: ['就医接送'] },
+  { code: 'transport_mode', label: '接送交通工具（火车/飞机/其他）', services: ['就医接送'] },
   { code: 'transport_summary', label: '接送服务备注', services: ['就医接送'] },
+  { code: 'transport_origin_province', label: '实际出发地省', services: ['就医接送'] },
+  { code: 'transport_origin_city', label: '实际出发地市', services: ['就医接送'] },
+  { code: 'transport_origin_district', label: '实际出发地区', services: ['就医接送'] },
+  { code: 'transport_origin_address', label: '实际出发地详细地址', services: ['就医接送'] },
+  { code: 'transport_destination_province', label: '实际到达地省', services: ['就医接送'] },
+  { code: 'transport_destination_city', label: '实际到达地市', services: ['就医接送'] },
+  { code: 'transport_destination_district', label: '实际到达地区', services: ['就医接送'] },
+  { code: 'transport_destination_address', label: '实际到达地详细地址', services: ['就医接送'] },
+  { code: 'transport_distance', label: '接送起止距离档位', services: ['就医接送'] },
+  { code: 'transport_same_city', label: '接送是否同城', services: ['就医接送'] },
+  { code: 'transport_vehicle', label: '接送车型（商务车/救护车）', services: ['就医接送'] },
+  { code: 'transport_escort_name', label: '接送陪诊人员姓名', services: ['就医接送'] },
+  { code: 'transport_escort_phone', label: '接送陪诊联系电话', services: ['就医接送'] },
+  { code: 'transport_ticket_amount', label: '接送累计购票金额', requiresConfirmation: true, services: ['就医接送'] },
   { code: 'mdt_diagnosis', label: '疾病诊断', services: ['MDT服务'], requiresConfirmation: true },
   { code: 'mdt_disease_summary', label: '疾病简介', services: ['MDT服务'] },
   { code: 'mdt_expert_advice', label: '专家咨询建议', services: ['MDT服务'] },
@@ -131,13 +157,19 @@ export const ORDER_AI_PROMPT_RULES = [
   '若信息不能确定属于当前服务类型，返回 ambiguous 字段候选且 requires_confirmation=true；不得输出自动流转事件。',
   '金额、诊断、ICD10 必须 requires_confirmation=true。',
   '【医院、科室、医生提取与缺失规范（极其重要）】：',
-  '1. 缺失与未定信息全量置空原则：若沟通记录中未提及、或者处于“未定、待商量、不知道去哪、不确定挂哪个、随便哪个医生都行”等状态，绝不要生成该字段候选！严禁输出任何“未明确”、“未知”、“暂无”、“待定”、“无”、“待确认”、“不详”、“/”等占位词。',
-  '2. 最终确认医院(hospital)：必须结合就医城市与上下文，直接输出在中国国家卫健委官方注册挂牌的标准官方全称（例：客户说“北京协和/协和医院”，必须规范输出为“中国医学科学院北京协和医院”；说“北医三院”，输出为“北京大学第三医院”；说“宣武医院”，输出为“首都医科大学宣武医院”；说“301医院”，输出为“中国人民解放军总医院”）。绝对不得输出口语简称或未带官方前缀的简写。',
-  '3. 最终确认科室(department)：必须输出正规医学临床二级学科名称（例：“心内”输出为“心血管内科”；“消化”输出为“消化内科”；“皮科”输出为“皮肤科”）。若仅提及“大夫科室”或不明确具体专科，严禁输出，保持不提取。',
-  '4. 最终确认医生(doctor)：仅提取医生的纯真实姓名（包括普通中文名、少数民族多字或带间隔号姓名如“买买提·艾力”、以及外籍/合资医院的外文名如“Smith”或“大卫”等），自动剥离前缀后缀称谓（如“李医生/张主任/王大夫”只提取“李XX”、“张XX”）。未明确具体医生姓名时（如仅提及“找专家挂号”），严禁输出“专家”、“主任”或“未明确”，医生字段必须保持不提取。',
-  '5. 医生多点执业/外院坐诊地点锚定：若专家来自外院但本次在另一家医院特需坐诊（如“协和张主任在天坛普华医院坐诊”），【最终确认医院(hospital)】必须提取本次实际就诊履约的物理医院（如“北京天坛普华医院”），绝不得填错为专家的原编制医院；医生提取真实姓名，并在【服务备注(service_remark)】中载明坐诊背景。',
-  '6. 专家级别(expert_level)是医生的档案属性由医生主档联动带出，若已有明确具体医生，不要单独提取专家级别；仅未提及具体医生时才可提取标准枚举之一（知名专家、主任医师、副主任医师、主治医师、住院医师），绝不得包含“教授/博士”等非标教学称谓。',
+  '1. 多个备选方案(recommended_schemes)：仅当服务专员在沟通中明确向客户推荐/提出了一个或多个医院、科室、医生组合时提取；客户单方面表达的偏好、尚未确定的讨论以及模型自行推荐都不算专员推荐。normalized_value 必须是数组，每项为 { province, city, hospital, department, doctor, evidence_source_id, evidence_quote }，没有明确提到的字段填空字符串。不同医院或不同医生的方案分别成项，不要合并；每项都必须有对应原文证据，候选的 evidence 也引用推荐原文。若没有明确推荐，绝不输出该候选。',
+  '2. 缺失与未定信息全量置空原则：若沟通记录中未提及、或者处于“未定、待商量、不知道去哪、不确定挂哪个、随便哪个医生都行”等状态，绝不要生成该字段候选！严禁输出任何“未明确”、“未知”、“暂无”、“待定”、“无”、“待确认”、“不详”、“/”等占位词。',
+  '3. 最终确认医院(hospital)：必须结合就医城市与上下文，直接输出在中国国家卫健委官方注册挂牌的标准官方全称（例：客户说“北京协和/协和医院”，必须规范输出为“中国医学科学院北京协和医院”；说“北医三院”，输出为“北京大学第三医院”；说“宣武医院”，输出为“首都医科大学宣武医院”；说“301医院”，输出为“中国人民解放军总医院”）。绝对不得输出口语简称或未带官方前缀的简写。',
+  '4. 最终确认科室(department)：必须输出正规医学临床二级学科名称（例：“心内”输出为“心血管内科”；“消化”输出为“消化内科”；“皮科”输出为“皮肤科”）。若仅提及“大夫科室”或不明确具体专科，严禁输出，保持不提取。',
+  '5. 最终确认医生(doctor)：仅提取医生的纯真实姓名（包括普通中文名、少数民族多字或带间隔号姓名如“买买提·艾力”、以及外籍/合资医院的外文名如“Smith”或“大卫”等），自动剥离前缀后缀称谓（如“李医生/张主任/王大夫”只提取“李XX”、“张XX”）。未明确具体医生姓名时（如仅提及“找专家挂号”），严禁输出“专家”、“主任”或“未明确”，医生字段必须保持不提取。',
+  '6. 医生多点执业/外院坐诊地点锚定：若专家来自外院但本次在另一家医院特需坐诊（如“协和张主任在天坛普华医院坐诊”），【最终确认医院(hospital)】必须提取本次实际就诊履约的物理医院（如“北京天坛普华医院”），绝不得填错为专家的原编制医院；医生提取真实姓名，并在【服务备注(service_remark)】中载明坐诊背景。',
+  '7. 专家级别(expert_level)是医生的档案属性由医生主档联动带出，若已有明确具体医生，不要单独提取专家级别；仅未提及具体医生时才可提取标准枚举之一（知名专家、主任医师、副主任医师、主治医师、住院医师），绝不得包含“教授/博士”等非标教学称谓。',
   '日期能精确时输出 YYYY-MM-DD HH:mm:ss；不能精确时保留原文，不要编造。没有明确值的字段不要输出。',
+  'B端预约字段严格区分：appointment_success_time 是成功后通知客户的反馈时间；outpatient_booking_success_time 与 inspection_appointment_success_time 是预约实际成功的时间。没有明确发生时间时不要互相代填。',
+  'B端接送字段严格区分实际出发地与实际到达地、交通工具与车型。transport_mode 只能取火车/飞机/其他，transport_vehicle 只能取商务车/救护车；transport_distance 只能取 100-200Km、50-100Km、30-50Km、20-30Km、10-20Km、5-10Km、0-5Km；transport_same_city 只能取是/否。地址、省市区仅在原文明确时提取。',
+  'special_inspection_situation 只取特殊医院、非常规项目、其他；没有明确特殊情况时不要输出。人员姓名和电话必须有明确指派证据，不能由当前登录人或订单联系人推断。',
+  '点名专家字段只接受明确提到的类型、价格和点名原因；expert_type 只取普通专家/特殊专家，special_expert_situation 只取表单已有枚举。价格必须保留原金额并要求人工确认。service_province/service_city 只提取本次就医服务地点，不得把客户居住地当作服务地点。',
+  'doctor_title 与 expert_level 含义不同：doctor_title 只提取沟通原文明说的主任医师或副主任医师，即使同时提到了医生姓名也要提取；不得由医生姓名推断。',
   '每个候选都必须引用消息#ID或通话#ID及其原文短句；只输出合法 JSON。',
   '【建议订单状态(order_status)识别准则（输出为候选建议，必须人工确认）】：',
   '1. 适用状态枚举仅限：已完成、待跟进、待预约、待交付、预约完成待支付、已取消。',
@@ -225,12 +257,26 @@ function normalizeCandidates(raw: unknown, allowed: Map<string, OrderAiFieldDefi
     if (evidence.length === 0) continue
 
     let normalizedValue = record.normalized_value ?? value
-    if (fieldCode === 'escort_records' && typeof normalizedValue === 'string') {
+    if (['escort_records', 'recommended_schemes'].includes(fieldCode!) && typeof normalizedValue === 'string') {
       try {
         normalizedValue = JSON.parse(normalizedValue)
       } catch {
         // ignore
       }
+    }
+    if (fieldCode === 'recommended_schemes') {
+      if (!Array.isArray(normalizedValue)) continue
+      const normalizedSchemes = (normalizedValue as unknown[]).flatMap((entry): Array<Record<string, string>> => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return []
+        const scheme = entry as Record<string, unknown>
+        const normalized = Object.fromEntries(['province', 'city', 'hospital', 'department', 'doctor'].map((key) => [key, stringValue(scheme[key]) ?? ''])) as Record<string, string>
+        normalized.evidence_source_id = stringValue(scheme.evidence_source_id) ?? ''
+        normalized.evidence_quote = (stringValue(scheme.evidence_quote) ?? '').slice(0, 500)
+        if (!normalized.hospital && !normalized.doctor) return []
+        return [normalized]
+      })
+      if (!normalizedSchemes.length) continue
+      normalizedValue = normalizedSchemes
     }
 
     latest.set(fieldCode!, {
@@ -348,6 +394,7 @@ export async function extractOrderServiceFields(input: {
     JSON.stringify({
       field_candidates: [
         { field_code: '白名单字段', value: '候选值', normalized_value: '可选标准化值', candidate_type: 'new_or_confirmed | change_candidate | ambiguous', confidence: 0.0, requires_confirmation: false, evidence: [{ source_id: '消息#123 或 通话#456', quote: '原文短句' }] },
+        { field_code: 'recommended_schemes', value: '识别到2条专员推荐方案', normalized_value: [{ province: '北京市', city: '北京市', hospital: '北京协和医院', department: '心内科', doctor: '张医生', evidence_source_id: '通话#456', evidence_quote: '专员推荐北京协和医院张医生' }, { province: '上海市', city: '上海市', hospital: '瑞金医院', department: '心内科', doctor: '李医生', evidence_source_id: '消息#123', evidence_quote: '专员推荐上海瑞金医院李医生' }], candidate_type: 'new_or_confirmed', confidence: 0.9, requires_confirmation: true, evidence: [{ source_id: '通话#456', quote: '专员明确向客户推荐的医院和医生' }] },
         { field_code: 'escort_records', value: '共识别到2次陪诊：1. 2026-09-28 张三(门诊陪诊)；2. 2026-09-29 李四(检查陪诊)', normalized_value: [{ sequence: '1', service_date: '2026-09-28', escort_name: '张三', escort_phone: '13800000001', service_scene: '门诊陪诊' }, { sequence: '2', service_date: '2026-09-29', escort_name: '李四', escort_phone: '13900000002', service_scene: '检查陪诊' }], candidate_type: 'new_or_confirmed', confidence: 0.95, requires_confirmation: false, evidence: [{ source_id: '消息#123', quote: '原文短句' }] }
       ],
       workflow_events: [{ code: WORKFLOW_EVENT_CODES.join(' | '), evidence: '明确完成或确认的原文事实' }]

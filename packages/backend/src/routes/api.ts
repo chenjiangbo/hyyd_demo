@@ -3,7 +3,7 @@ import { PrismaClient, Prisma } from '@prisma/client'
 import * as Minio from 'minio'
 import { scheduleTranscription } from '../asr/transcribeScheduler.js'
 import { broadcastAdmin } from './adminBus.js'
-import { summarizeCall, summarizeMessages, summarizeFull } from '../llm/summaryService.js'
+import { summarizeCallCommunication, summarizeMessages, summarizeFull } from '../llm/summaryService.js'
 import { getEnv } from '../env.js'
 import { extractOrderCandidate, resolveOrder, type OrderNoEntry } from '../lib/orderNoMatch.js'
 import { parseEscortDispatchTemplate } from '../lib/escortTemplateMatch.js'
@@ -12,6 +12,8 @@ import { extractKeyInfo, type KeyInfoMessage, type KeyInfoContext } from '../llm
 import { structureMessages, type StructInput } from '../lib/messageStructure.js'
 import { refreshApplicationBrief, refreshOrderBrief } from '../jobs/orderBriefRunner.js'
 import { getRecordingPlaybackInfo } from '../audioTranscode.js'
+import { ensureBOrderFormInstance } from '../bOrderForms.js'
+import { resolveCallBOrderId, saveCallAsBOrderCommunication } from '../callCommunicationRecord.js'
 import {
   findHuanyuChannelProductById,
   findHuanyuChannelProductsByIds,
@@ -610,6 +612,173 @@ export function registerApiRoutes(
     const workflow = await getOrderWorkflow(prisma, orderId)
     if (!workflow) return reply.status(404).send({ error: '订单不存在' })
     return reply.send({ data: workflow })
+  })
+
+  // B 端阶段表单：每个订单按服务类型绑定一个不可变模板快照，阶段数据按 Tab 独立存入 JSONB。
+  fastify.get<{ Params: { id: string } }>('/api/v1/orders/:id/forms', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const orderId = Number(request.params.id)
+    if (!Number.isInteger(orderId) || orderId <= 0) return reply.status(400).send({ error: '订单 ID 无效' })
+    const workflow = await getOrderWorkflow(prisma, orderId)
+    if (!workflow) return reply.status(404).send({ error: '订单不存在' })
+    const formInstance = await ensureBOrderFormInstance(prisma, workflow, request.employee.id)
+    if (!formInstance) return reply.send({ data: { operationId: workflow.operationId, templateId: null, tabs: [] } })
+    const tabData = await prisma.$queryRaw<Array<{ tab_code: string; tab_name: string; data_json: unknown; status: string; updated_at: Date }>>`
+      SELECT tab_code, tab_name, data_json, status, updated_at
+      FROM b_order_form_tab_data WHERE form_instance_id = ${formInstance.instanceId} ORDER BY id
+    `
+    return reply.send({ data: { operationId: workflow.operationId, templateId: Number(formInstance.templateId), instanceId: Number(formInstance.instanceId), tabs: tabData } })
+  })
+
+  fastify.get<{ Params: { id: string } }>('/api/v1/orders/:id/forms/communication', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const orderId = Number(request.params.id)
+    if (!Number.isInteger(orderId) || orderId <= 0) return reply.status(400).send({ error: '订单 ID 无效' })
+    const order = await prisma.order.findUnique({ where: { id: orderId }, select: { id: true } })
+    if (!order) return reply.status(404).send({ error: '订单不存在' })
+    const rows = await prisma.$queryRaw<Array<{ records: unknown }>>`
+      SELECT d.data_json->'communication.records' AS records
+      FROM b_order_operations o
+      JOIN b_order_form_instances i ON i.operation_id = o.id AND i.status <> 'void'
+      JOIN b_order_form_tab_data d ON d.form_instance_id = i.id AND d.tab_code = 'communication'
+      WHERE o.order_id = ${orderId}
+      ORDER BY i.updated_at DESC, i.id DESC
+      LIMIT 1
+    `
+    return reply.send({ data: Array.isArray(rows[0]?.records) ? rows[0]!.records : [] })
+  })
+
+  fastify.patch<{ Params: { id: string }; Body: { tabCode?: string; data?: Record<string, unknown>; action?: 'save' | 'submit' } }>('/api/v1/orders/:id/forms', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const orderId = Number(request.params.id)
+    const { tabCode, data, action = 'save' } = request.body ?? {}
+    if (!Number.isInteger(orderId) || orderId <= 0) return reply.status(400).send({ error: '订单 ID 无效' })
+    if (!tabCode || !data || typeof data !== 'object' || Array.isArray(data)) return reply.status(400).send({ error: '表单阶段数据无效' })
+    if (!['save', 'submit'].includes(action)) return reply.status(400).send({ error: '保存操作无效' })
+    const workflow = await getOrderWorkflow(prisma, orderId)
+    if (!workflow) return reply.status(404).send({ error: '订单不存在' })
+    const instanceRows = await prisma.$queryRaw<Array<{ instance_id: bigint }>>`
+      SELECT i.id AS instance_id
+      FROM b_order_form_instances i
+      WHERE i.operation_id = ${workflow.operationId} AND i.status <> 'void'
+      ORDER BY i.updated_at DESC, i.id DESC LIMIT 1
+    `
+    if (!instanceRows.length) return reply.status(409).send({ error: '表单实例尚未初始化，请重新打开订单后再保存' })
+    const formInstanceId = instanceRows[0]!.instance_id
+    const tabRows = await prisma.$queryRaw<Array<{ id: bigint }>>`
+      SELECT id FROM b_order_form_tab_data WHERE form_instance_id = ${formInstanceId} AND tab_code = ${tabCode}
+    `
+    if (!tabRows.length) return reply.status(400).send({ error: '当前服务类型没有此表单阶段' })
+    const result = await prisma.$transaction(async (tx) => {
+      const current = await tx.$queryRaw<Array<{ id: bigint }>>`
+        SELECT id FROM b_order_form_instances WHERE id = ${formInstanceId} FOR UPDATE
+      `
+      if (!current.length) throw new Error('表单实例不存在')
+      let dataToSave = data
+      if (tabCode === 'communication' && Array.isArray(data['communication.records'])) {
+        const currentTab = await tx.$queryRaw<Array<{ data_json: Record<string, unknown> }>>`
+          SELECT data_json FROM b_order_form_tab_data
+          WHERE form_instance_id = ${formInstanceId} AND tab_code = 'communication' FOR UPDATE
+        `
+        const currentRecords = currentTab[0]?.data_json?.['communication.records']
+        const submittedRecords = data['communication.records'] as Array<Record<string, unknown>>
+        const mergedByCallId = new Map<number, Record<string, unknown>>()
+        for (const record of submittedRecords) {
+          const callId = Number(record.sourceCallId)
+          if (callId > 0) mergedByCallId.set(callId, record)
+        }
+        if (Array.isArray(currentRecords)) {
+          for (const record of currentRecords as Array<Record<string, unknown>>) {
+            const callId = Number(record.sourceCallId)
+            if (callId > 0 && record.aiGenerated === true) mergedByCallId.set(callId, record)
+          }
+        }
+        const manualRecords = submittedRecords.filter((record) => {
+          const callId = Number(record.sourceCallId)
+          return !Number.isFinite(callId) || callId <= 0
+        })
+        const mergedRecords = [...manualRecords, ...mergedByCallId.values()]
+          .sort((a, b) => String(a.time ?? '').localeCompare(String(b.time ?? '')))
+        dataToSave = { ...data, 'communication.records': mergedRecords }
+      }
+      const savedRows = await tx.$queryRaw<Array<{ id: bigint; tab_data_id: bigint; data_json: Record<string, unknown> }>>`
+        UPDATE b_order_form_tab_data
+        SET data_json = data_json || ${JSON.stringify(dataToSave)}::jsonb,
+            status = ${action === 'submit' ? 'completed' : 'draft'},
+            last_edited_by_employee_id = ${request.employee!.id}, updated_at = now()
+        WHERE form_instance_id = ${formInstanceId} AND tab_code = ${tabCode}
+        RETURNING id, id AS tab_data_id, data_json
+      `
+      if (!savedRows.length) return null
+      const savedData = savedRows[0]!.data_json
+      const tabMetaRows = await tx.$queryRaw<Array<{ id: bigint; template_id: bigint }>>`
+        SELECT t.id, t.template_id FROM b_order_form_tabs t
+        JOIN b_order_form_instances i ON i.template_id = t.template_id
+        WHERE i.id = ${formInstanceId} AND t.code = ${tabCode}
+      `
+      for (const [fieldCode, fieldValue] of Object.entries(dataToSave)) {
+        const isRows = Array.isArray(fieldValue)
+        await tx.$executeRaw`
+          INSERT INTO b_order_form_fields (tab_id, code, label, data_type, storage_kind, sort_order, status)
+          VALUES (${tabMetaRows[0]!.id}, ${fieldCode}, ${fieldCode}, ${isRows ? 'json' : 'json'}, ${isRows ? 'row_group' : 'scalar'}, 10, 'active')
+          ON CONFLICT (tab_id, code) DO UPDATE SET storage_kind = EXCLUDED.storage_kind, data_type = EXCLUDED.data_type
+        `
+        if (isRows) {
+          const rows = fieldValue as unknown[]
+          await tx.$executeRaw`
+            UPDATE b_order_form_rows SET row_status = 'void', updated_by_employee_id = ${request.employee!.id}, updated_at = now()
+            WHERE tab_data_id = ${savedRows[0]!.tab_data_id} AND row_group_code = ${fieldCode} AND row_no > ${rows.length}
+          `
+          for (let index = 0; index < rows.length; index += 1) {
+            await tx.$executeRaw`
+              INSERT INTO b_order_form_rows (tab_data_id, row_group_code, row_no, row_status, row_data_json, created_by_employee_id, updated_by_employee_id)
+              VALUES (${savedRows[0]!.tab_data_id}, ${fieldCode}, ${index + 1}, 'active', ${JSON.stringify(rows[index])}::jsonb, ${request.employee!.id}, ${request.employee!.id})
+              ON CONFLICT (tab_data_id, row_group_code, row_no) DO UPDATE
+                SET row_status = 'active', row_data_json = EXCLUDED.row_data_json,
+                    updated_by_employee_id = EXCLUDED.updated_by_employee_id, updated_at = now()
+            `
+          }
+        }
+      }
+      const revisionRows = await tx.$queryRaw<Array<{ next_no: number }>>`
+        SELECT COALESCE(MAX(revision_no), 0)::int + 1 AS next_no
+        FROM b_order_form_revisions WHERE form_instance_id = ${formInstanceId}
+      `
+      const snapshotRows = await tx.$queryRaw<Array<{ tab_code: string; data_json: Record<string, unknown> }>>`
+        SELECT tab_code, data_json FROM b_order_form_tab_data
+        WHERE form_instance_id = ${formInstanceId} ORDER BY id
+      `
+      const snapshot = Object.fromEntries(snapshotRows.map((row) => [row.tab_code, row.data_json]))
+      await tx.$executeRaw`
+        INSERT INTO b_order_form_revisions (form_instance_id, revision_no, action, snapshot_json, changed_fields_json, operated_by_employee_id)
+        VALUES (${formInstanceId}, ${revisionRows[0]!.next_no}, ${action}, ${JSON.stringify(snapshot)}::jsonb,
+                ${JSON.stringify(Object.keys(data))}::jsonb, ${request.employee!.id})
+      `
+      if (action === 'submit') {
+        const incompleteRows = await tx.$queryRaw<Array<{ has_incomplete: boolean }>>`
+          SELECT EXISTS (
+            SELECT 1 FROM b_order_form_tab_data d
+            JOIN b_order_form_tabs t ON t.id = d.tab_id
+            WHERE d.form_instance_id = ${formInstanceId}
+              AND t.is_required = true AND d.status <> 'completed'
+          ) AS has_incomplete
+        `
+        if (!incompleteRows[0]!.has_incomplete) {
+          await tx.$executeRaw`
+            UPDATE b_order_form_instances SET status = 'submitted', submitted_by_employee_id = ${request.employee!.id}, submitted_at = now(), updated_at = now()
+            WHERE id = ${formInstanceId}
+          `
+        }
+      } else {
+        await tx.$executeRaw`
+          UPDATE b_order_form_instances SET status = 'draft', submitted_by_employee_id = NULL, submitted_at = NULL, updated_at = now()
+          WHERE id = ${formInstanceId}
+        `
+      }
+      return savedData
+    })
+    if (!result) return reply.status(404).send({ error: '表单阶段不存在' })
+    return reply.send({ data: { tabCode, data: result, status: action === 'submit' ? 'completed' : 'draft' } })
   })
 
   // 仅接收已被表单、AI 或人工确认的事实事件；不允许客户端直接创建任意服务包。
@@ -4727,6 +4896,11 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
               }
             })
           : existingCall
+        if (idempotentCall.callStatus !== 'answered') {
+          await saveCallAsBOrderCommunication(prisma, idempotentCall).catch((error) => {
+            fastify.log.warn({ err: error, callId: idempotentCall.id }, '补写未接通电话沟通记录失败')
+          })
+        }
         return reply.send({ data: idempotentCall })
       }
 
@@ -4744,6 +4918,12 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
           asrStatus: 'no_recording'
         }
       })
+
+      if (call.callStatus !== 'answered') {
+        await saveCallAsBOrderCommunication(prisma, call).catch((error) => {
+          fastify.log.warn({ err: error, callId: call.id }, '未接通电话写入 B 端沟通记录失败')
+        })
+      }
 
       // 推送给在线管理后台
       broadcastAdmin({
@@ -5258,8 +5438,10 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
       const call = await prisma.call.findUnique({ where: { id: callId } })
       if (!call) return reply.status(404).send({ error: '通话记录不存在' })
       if (!call.asrText) return reply.status(400).send({ error: '该通话尚无 ASR 文字，无法摘要' })
+      const orderId = await resolveCallBOrderId(prisma, call)
+      if (!orderId) return reply.status(409).send({ error: '该通话未能唯一匹配到订单，无法生成订单沟通记录' })
 
-      const { content, model } = await summarizeCall({
+      const { content, model } = await summarizeCallCommunication({
         transcript: call.asrText,
         direction: call.direction as 'inbound' | 'outbound',
         durationSec: call.durationSec ?? undefined,
@@ -5267,11 +5449,16 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
 
       const summary = await prisma.aiSummary.create({
         data: {
-          orderId: call.orderId!,
+          orderId,
+          callId: call.id,
           type: 'call',
           content,
           model,
         },
+      })
+
+      await saveCallAsBOrderCommunication(prisma, call, { summary: content }).catch((error) => {
+        fastify.log.warn({ err: error, callId: call.id }, '通话 AI 摘要写入 B 端沟通记录失败')
       })
 
       fastify.log.info(`通话 ${callId} 摘要已生成，summaryId=${summary.id}`)

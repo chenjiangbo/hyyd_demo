@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Children, Fragment, createContext, isValidElement, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import {
   addImageMaterial,
   addTextMaterial,
@@ -9,6 +9,8 @@ import {
   fetchOrderBrief,
   fetchOrderDetail,
   fetchOrderWorkflow,
+  fetchBOrderForms,
+  saveBOrderFormTab,
   fetchHuanyuChannelProducts,
   fetchHuanyuChannels,
   fetchHuanyuBookingChannelTypes,
@@ -52,8 +54,10 @@ import {
   type OrderMessage,
   type OrderWorkflow,
   type OrderWorkflowStep,
+  type BOrderFormData,
 } from '../api'
 import { bizChipClass, bizType, sourceStyle } from '../lib/orderMapping'
+import { bOrderAiCandidateForLabel, bOrderAiKeysForServiceTab, bOrderAiKeysForSubmit, bOrderAiRules, overlayBOrderAi } from '../lib/bOrderAiFields'
 import { clearOrdersCache, type ApplicationGroup } from './WorkbenchKanban'
 
 type RightTab = 'taikang-detail' | 'huanyu-detail' | 'entry' | 'ai'
@@ -1062,13 +1066,12 @@ function OrderExecutionPanel({
   onSelect: (id: number) => void
 }): React.JSX.Element {
   const isSelfOperated = selectedOrder.source === 'huanyu' || String(selectedOrder.id).startsWith('huanyu-')
-  const [tab, setTab] = useState<RightTab>(() => isSelfOperated ? 'huanyu-detail' : 'taikang-detail')
+  const [tab, setTab] = useState<RightTab>('huanyu-detail')
   const [detailResp, setDetailResp] = useState<OrderDetailResponse | null>(null)
   const [detailLoading, setDetailLoading] = useState(() => !isSelfOperated)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [aggregate, setAggregate] = useState<OrderAggregateResponse | null>(null)
   const [materials, setMaterials] = useState<Material[]>([])
-  const selectedIndex = Math.max(0, orders.findIndex((order) => order.id === selectedOrder.id))
 
   const reloadMaterials = useCallback(async () => {
     if (isSelfOperated) return
@@ -1117,7 +1120,7 @@ function OrderExecutionPanel({
   return (
     <aside className="w-full min-h-0 bg-white border-border-subtle flex flex-col">
       <div className="shrink-0 border-b border-border-subtle bg-[#fafafa] px-3 py-2">
-        <div className="mb-1 flex items-center gap-2">
+        <div className="flex items-center gap-2">
           <span className="inline-flex items-center gap-1.5 rounded border border-border-subtle bg-white px-2 py-0.5 text-[11px] font-bold text-text-main">
             <span className="material-symbols-outlined text-primary" style={{ fontSize: '14px' }}>inventory_2</span>
             {orders.length} 个订单
@@ -1132,7 +1135,10 @@ function OrderExecutionPanel({
                   type="button"
                   role="tab"
                   aria-selected={active}
-                  onClick={() => onSelect(order.id)}
+                  onClick={() => {
+                    setTab('huanyu-detail')
+                    onSelect(order.id)
+                  }}
                   title={`${displayOrderNo} · ${bizType(order)}`}
                   className={
                     'shrink-0 rounded-t-md border border-b-2 px-2.5 py-0.5 text-left text-[11px] transition-colors ' +
@@ -1148,89 +1154,97 @@ function OrderExecutionPanel({
             })}
           </div>
         </div>
-        <div className="bg-white border-l-2 border-primary border-y border-r border-border-subtle px-3 py-2 rounded-r shadow-sm">
-          <div className="flex items-center justify-between gap-2">
-            <CopyText value={selectedOrder.sourceOrderNo || selectedOrder.huanyuOrderNo || ''} className="font-mono-data text-[16px] font-bold text-text-main">
-              <span>{selectedOrder.sourceOrderNo || selectedOrder.huanyuOrderNo || '自营订单'}</span>
-            </CopyText>
-            <span className="shrink-0 text-[10px] text-text-muted">第 {selectedIndex + 1}/{orders.length} 个</span>
-          </div>
-        </div>
       </div>
 
-      {/* 主工作区（自建自营单：全量展示寰宇详情，无需Tab切换；B端单：保留Tab栏与右侧流程） */}
+      {/* 订单内容与导航共用一个工作区；自营订单沿用原有详情展示 */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
-        {/* 左侧主表单区 */}
-        <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
-          {isSelfOperated ? (
-            <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-              <div className="shrink-0 flex items-center px-4 py-2 border-b border-border-subtle bg-[#fafafa]">
-                <span className="text-body-sm font-semibold text-text-main flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-primary text-[18px]">assignment</span>
-                  寰宇订单详情
-                </span>
-              </div>
-              <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-                <HuanyuOrderDetailPanel
-                  key={selectedOrder.id}
-                  order={selectedOrder}
-                  detailResp={null}
-                  onReloadDetail={async () => {}}
-                />
-              </div>
+        {isSelfOperated ? (
+          <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
+            <div className="shrink-0 flex items-center px-4 py-2 border-b border-border-subtle bg-[#fafafa]">
+              <span className="text-body-sm font-semibold text-text-main flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-primary text-[18px]">assignment</span>
+                寰宇订单详情
+              </span>
             </div>
-          ) : (
-            <>
-              {/* Tab 栏只位于左侧表单顶部 */}
-              <div className="shrink-0 flex border-b border-border-subtle bg-[#fafafa]">
-                <PanelTab label="B端订单详情" active={tab === 'taikang-detail'} onClick={() => setTab('taikang-detail')} />
-                <PanelTab label="寰宇订单详情" active={tab === 'huanyu-detail'} onClick={() => setTab('huanyu-detail')} />
-                <PanelTab label="数据补录" active={tab === 'entry'} onClick={() => setTab('entry')} />
-                <PanelTab label="AI 任务" active={tab === 'ai'} onClick={() => setTab('ai')} />
+            <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+              <HuanyuOrderDetailPanel
+                key={selectedOrder.id}
+                order={selectedOrder}
+                detailResp={null}
+                onReloadDetail={async () => {}}
+              />
+            </div>
+          </div>
+        ) : (
+          <>
+            <aside className="w-[226px] shrink-0 border-r border-border-subtle bg-surface-bg flex flex-col min-h-0">
+              <nav
+                className="shrink-0 flex flex-col gap-3 border-b border-border-subtle py-3 pl-3"
+                role="tablist"
+                aria-label="订单详情页签"
+                aria-orientation="vertical"
+                onKeyDown={(event) => {
+                  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+                  event.preventDefault()
+                  const tabs: RightTab[] = ['taikang-detail', 'huanyu-detail', 'entry']
+                  const currentIndex = Math.max(0, tabs.indexOf(tab))
+                  const nextIndex = event.key === 'Home' ? 0
+                    : event.key === 'End' ? tabs.length - 1
+                      : (currentIndex + (event.key === 'ArrowDown' ? 1 : -1) + tabs.length) % tabs.length
+                  const nextTab = tabs[nextIndex]
+                  if (!nextTab) return
+                  setTab(nextTab)
+                  event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[nextIndex]?.focus()
+                }}
+              >
+                <PanelTab id="order-tab-b" label="B端订单详情" active={tab === 'taikang-detail'} onClick={() => setTab('taikang-detail')} />
+                <PanelTab id="order-tab-huanyu" label="寰宇订单详情" active={tab === 'huanyu-detail'} onClick={() => setTab('huanyu-detail')} />
+                <PanelTab id="order-tab-entry" label="数据补录" active={tab === 'entry'} onClick={() => setTab('entry')} />
+              </nav>
+              <div className="min-h-0 flex-1 overflow-y-auto bg-white">
+                <VerticalWorkflowTimeline order={selectedOrder} />
               </div>
+            </aside>
 
-              <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-                {detailLoading ? (
-                  <div className="flex-1 min-h-0 flex flex-col items-center justify-center p-12 text-text-muted gap-3">
-                    <div className="w-8 h-8 border-3 border-primary/25 border-t-primary rounded-full animate-spin" />
-                    <span className="text-body-sm font-medium">正在拉取最新订单数据…</span>
-                  </div>
-                ) : detailError ? (
-                  <div className="p-6 m-4 rounded-lg bg-red-50 border border-error/25 text-error text-body-sm flex items-center gap-2">
-                    <span className="material-symbols-outlined text-error">error</span>
-                    <span>{detailError}</span>
-                  </div>
-                ) : (
-                  <>
-                    {tab === 'taikang-detail' && (
-                      <OrderDetailPanel order={selectedOrder} detailResp={detailResp} error={detailError} />
-                    )}
-                    {tab === 'huanyu-detail' && (
-                      <HuanyuOrderDetailPanel
-                        key={selectedOrder.id}
-                        order={selectedOrder}
-                        detailResp={detailResp}
-                        onReloadDetail={reloadDetail}
-                      />
-                    )}
-                    {tab === 'entry' && (
-                      <OrderDataEntryPanel order={selectedOrder} materials={materials} onReload={reloadMaterials} />
-                    )}
-                    {tab === 'ai' && (
-                      <OrderAiTaskPanel order={selectedOrder} aggregate={aggregate} />
-                    )}
-                  </>
-                )}
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* 右侧独立垂直步骤栏（仅第三方B端工单展示；自建单隐藏） */}
-        {!isSelfOperated && (
-          <aside className="w-[230px] shrink-0 border-l border-border-subtle bg-[#fafafa]/80 flex flex-col overflow-y-auto">
-            <VerticalWorkflowTimeline order={selectedOrder} />
-          </aside>
+            <div
+              id="order-detail-tabpanel"
+              role="tabpanel"
+              aria-labelledby={tab === 'huanyu-detail' ? 'order-tab-huanyu' : tab === 'entry' ? 'order-tab-entry' : 'order-tab-b'}
+              className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden"
+            >
+              {detailLoading ? (
+                <div className="flex-1 min-h-0 flex flex-col items-center justify-center p-12 text-text-muted gap-3">
+                  <div className="w-8 h-8 border-3 border-primary/25 border-t-primary rounded-full animate-spin" />
+                  <span className="text-body-sm font-medium">正在拉取最新订单数据…</span>
+                </div>
+              ) : detailError ? (
+                <div className="p-6 m-4 rounded-lg bg-red-50 border border-error/25 text-error text-body-sm flex items-center gap-2">
+                  <span className="material-symbols-outlined text-error">error</span>
+                  <span>{detailError}</span>
+                </div>
+              ) : (
+                <>
+                  {tab === 'taikang-detail' && (
+                    <OrderDetailPanel order={selectedOrder} detailResp={detailResp} error={detailError} />
+                  )}
+                  {tab === 'huanyu-detail' && (
+                    <HuanyuOrderDetailPanel
+                      key={selectedOrder.id}
+                      order={selectedOrder}
+                      detailResp={detailResp}
+                      onReloadDetail={reloadDetail}
+                    />
+                  )}
+                  {tab === 'entry' && (
+                    <OrderDataEntryPanel order={selectedOrder} materials={materials} onReload={reloadMaterials} />
+                  )}
+                  {tab === 'ai' && (
+                    <OrderAiTaskPanel order={selectedOrder} aggregate={aggregate} />
+                  )}
+                </>
+              )}
+            </div>
+          </>
         )}
       </div>
     </aside>
@@ -1269,11 +1283,15 @@ function OrderDetailPanel({
       ))}
       {/* 两个同级组件必须使用不同的 key。订单详情首屏会在多个请求回填后重渲染，
           相同 key 会让 React 的节点协调失去确定性，从而可能重复保留沟通记录区域。 */}
-      <CommunicationRecordPanel key={`communication-${order.id}`} />
+      <PersistedFormBoundary key={`communication-${order.id}`} orderId={order.id} tabCode="communication">
+        <CommunicationRecordPanel />
+      </PersistedFormBoundary>
       <ServiceInformationFlow key={`service-flow-${order.id}`} order={order} onEscortEntryActiveChange={setEscortEntryActive} />
       {hasEscortEntryTab && (
         <div hidden={!escortEntryActive}>
-          <CheckCompanionInformationPanel key={`check-companion-${order.id}`} />
+          <PersistedFormBoundary key={`check-companion-${order.id}`} orderId={order.id} tabCode="check-companion">
+            <CheckCompanionInformationPanel />
+          </PersistedFormBoundary>
         </div>
       )}
     </div>
@@ -4210,17 +4228,18 @@ function HuanyuAmountField({
         type="number"
         inputMode="decimal"
         step="0.01"
+        aria-label="订单金额"
         disabled={locked || !editable}
         value={typeof value === 'string' ? value : ''}
         onChange={(event) => onChange(event.target.value)}
         className={
-          'h-8 w-24 shrink-0 rounded border border-border-subtle px-2.5 text-body-sm text-text-main outline-none transition-colors ' +
+          'h-8 min-w-[76px] flex-1 rounded border border-border-subtle px-2.5 text-body-sm text-text-main outline-none transition-colors ' +
           (!locked && editable ? 'bg-white focus:border-primary focus:ring-1 focus:ring-primary' : 'cursor-not-allowed bg-surface-container text-text-muted')
         }
       />
-      <label className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-body-sm text-text-main">
-        <input type="checkbox" checked={editable} disabled={locked} onChange={(event) => onEditableChange(event.target.checked)} className="h-4 w-4 accent-primary disabled:cursor-not-allowed" />
-        金额修改
+      <label className="flex h-8 w-[74px] min-w-[44px] shrink items-center gap-1 text-body-sm text-text-main">
+        <input type="checkbox" checked={editable} disabled={locked} onChange={(event) => onEditableChange(event.target.checked)} className="h-4 w-4 shrink-0 accent-primary disabled:cursor-not-allowed" />
+        <span className="flex min-w-0 flex-wrap text-[12px] leading-4"><span className="whitespace-nowrap">金额</span><span className="whitespace-nowrap">修改</span></span>
       </label>
     </div>
   )
@@ -4335,7 +4354,7 @@ function VerticalWorkflowTimeline({ order }: { order: Order }): React.JSX.Elemen
 
   return (
     <div className="p-4 flex flex-col h-full">
-      <div className="mb-4 pb-2.5 border-b border-border-subtle flex items-center justify-between">
+      <div className="mb-3 flex items-center justify-between">
         <span className="text-[13px] font-bold text-text-main flex items-center gap-1.5">
           <span className="material-symbols-outlined text-primary text-[16px]">timeline</span>
           服务步骤
@@ -4803,13 +4822,22 @@ function OrderDataEntryPanel({
   )
 }
 
-function PanelTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }): React.JSX.Element {
+function PanelTab({ id, label, active, onClick }: { id: string; label: string; active: boolean; onClick: () => void }): React.JSX.Element {
   return (
     <button
+      id={id}
+      type="button"
+      role="tab"
+      aria-controls="order-detail-tabpanel"
+      aria-selected={active}
+      tabIndex={active ? 0 : -1}
       onClick={onClick}
+      style={{ width: active ? 'calc(100% + 1px)' : '100%' }}
       className={
-        "flex-1 py-2 text-[13px] border-b-2 transition-colors whitespace-nowrap font-['Noto_Sans_SC'] font-black tracking-wide " +
-        (active ? 'text-primary border-primary bg-white' : 'text-text-muted border-transparent hover:bg-white')
+        'relative rounded-l-md rounded-r-none border px-3 py-2.5 text-left text-[13px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ' +
+        (active
+          ? 'z-10 border-border-subtle border-l-[3px] border-l-primary border-r-white bg-white pl-[10px] text-primary'
+          : 'border-border-subtle bg-surface-container-low text-text-main hover:bg-white hover:text-primary')
       }
     >
       {label}
@@ -4951,14 +4979,16 @@ interface LocalCommunicationRecord {
 }
 
 function CommunicationRecordPanel(): React.JSX.Element {
+  const persistedForm = useContext(PersistedFormContext)
   const [open, setOpen] = useState(true)
-  const [time, setTime] = useState('')
-  const [content, setContent] = useState('')
-  const [result, setResult] = useState<CommunicationResult | ''>('')
+  const [time, setTime] = usePersistedFormState('communication.time', '')
+  const [content, setContent] = usePersistedFormState('communication.content', '')
+  const [result, setResult] = usePersistedFormState<CommunicationResult | ''>('communication.result', '')
   const [errors, setErrors] = useState<{ time?: string; content?: string; result?: string }>({})
-  const [records, setRecords] = useState<LocalCommunicationRecord[]>([])
+  const [records, setRecords] = usePersistedFormState<LocalCommunicationRecord[]>('communication.records', [])
+  const [recordSaveError, setRecordSaveError] = useState('')
 
-  function addRecord(): void {
+  async function addRecord(): Promise<void> {
     const nextErrors = {
       time: time ? undefined : '请选择沟通时间',
       content: content.trim() ? undefined : '请填写沟通内容',
@@ -4967,14 +4997,32 @@ function CommunicationRecordPanel(): React.JSX.Element {
     setErrors(nextErrors)
     if (nextErrors.time || nextErrors.content || nextErrors.result || !result) return
 
-    setRecords((current) => [
-      ...current,
+    const nextRecords = [
+      ...records,
       { id: Date.now(), time, content: content.trim(), result }
-    ])
+    ]
+    setRecordSaveError('')
+    setRecords(nextRecords)
     setTime('')
     setContent('')
     setResult('')
     setErrors({})
+    try {
+      if (!persistedForm) throw new Error('表单保存上下文未初始化，请刷新订单后重试')
+      await persistedForm.saveImmediately({
+        'communication.records': nextRecords,
+        'communication.time': '',
+        'communication.content': '',
+        'communication.result': ''
+      })
+    } catch (error) {
+      setRecords(records)
+      setTime(time)
+      setContent(content)
+      setResult(result)
+      setRecordSaveError(error instanceof Error ? error.message : '保存沟通记录失败，请重试')
+      return
+    }
   }
 
   return (
@@ -5038,6 +5086,7 @@ function CommunicationRecordPanel(): React.JSX.Element {
               新增
             </button>
           </div>
+          {recordSaveError && <div role="alert" className="mt-2 text-right text-[12px] text-error">沟通记录保存失败：{recordSaveError}</div>}
 
           {records.length > 0 && (
             <div className="mt-4 space-y-2">
@@ -5068,16 +5117,24 @@ function CommunicationField({
   label,
   required,
   error,
+  aiField,
   children
 }: {
   label: string
   required?: boolean
   error?: string
+  aiField?: { key: string; property: string }
   children: React.ReactNode
 }): React.JSX.Element {
+  const persistedForm = useContext(PersistedFormContext)
+  const fieldValue = Children.toArray(children).find((child) => isValidElement(child) && typeof (child.props as { value?: unknown }).value === 'string')
+  const visibleValue = fieldValue && isValidElement(fieldValue) ? (fieldValue.props as { value: string }).value : ''
+  const aiSource = visibleValue
+    ? aiField ? persistedForm?.aiSourceForField(aiField.key, aiField.property, visibleValue) : persistedForm?.aiSourceFor(label, visibleValue)
+    : null
   return (
     <label className="block min-w-0 text-body-sm text-text-muted">
-      <span className="mb-1 block">{label}{required && <span className="ml-0.5 text-error">*</span>}</span>
+      <span className="mb-1 flex items-center gap-1">{label}{required && <span className="text-error">*</span>}{aiSource && <span title={`AI 依据：${aiSource.evidence?.[0]?.quote ?? ''}`}><AiBadge /></span>}{aiSource?.requiresConfirmation && <span className="rounded border border-amber-200 bg-amber-50 px-1 text-[10px] text-amber-700">需确认</span>}</span>
       {children}
       {error && <span className="mt-1 block text-[11px] text-error">{error}</span>}
     </label>
@@ -5103,13 +5160,14 @@ interface CheckCompanionRecord {
 }
 
 function CheckCompanionInformationPanel(): React.JSX.Element {
+  const persistedForm = useContext(PersistedFormContext)
   const [open, setOpen] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
-  const [startedAt, setStartedAt] = useState('')
-  const [endedAt, setEndedAt] = useState('')
-  const [content, setContent] = useState('')
+  const [startedAt, setStartedAt] = usePersistedFormState('checkCompanion.startedAt', '')
+  const [endedAt, setEndedAt] = usePersistedFormState('checkCompanion.endedAt', '')
+  const [content, setContent] = usePersistedFormState('checkCompanion.content', '')
   const [errors, setErrors] = useState<{ startedAt?: string; endedAt?: string; content?: string }>({})
-  const [records, setRecords] = useState<CheckCompanionRecord[]>([])
+  const [records, setRecords] = usePersistedFormState<CheckCompanionRecord[]>('checkCompanion.records', [])
 
   function resetForm(): void {
     setStartedAt('')
@@ -5142,6 +5200,7 @@ function CheckCompanionInformationPanel(): React.JSX.Element {
       content: content.trim()
     }])
     closeModal()
+    void persistedForm?.saveImmediately({}).catch(() => undefined)
   }
 
   function durationInHours(record: CheckCompanionRecord): string {
@@ -5194,7 +5253,7 @@ function CheckCompanionInformationPanel(): React.JSX.Element {
                     <td className="border-t border-r border-border-subtle px-3 py-3 text-text-main">{formatCommunicationTime(record.endedAt)}</td>
                     <td className="border-t border-r border-border-subtle px-3 py-3 text-text-main">{durationInHours(record)}</td>
                     <td className="border-t border-r border-border-subtle px-3 py-3 text-text-main">{record.content}</td>
-                    <td className="border-t border-border-subtle px-3 py-3 text-center"><button type="button" onClick={() => setRecords((current) => current.filter((item) => item.id !== record.id))} className="text-error hover:underline">删除</button></td>
+                    <td className="border-t border-border-subtle px-3 py-3 text-center"><button type="button" onClick={() => { setRecords((current) => current.filter((item) => item.id !== record.id)); void persistedForm?.saveImmediately({}).catch(() => undefined) }} className="text-error hover:underline">删除</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -5239,11 +5298,35 @@ function ServiceInformationFlow({ order, onEscortEntryActiveChange }: { order: O
   const [openingTaikangOrder, setOpeningTaikangOrder] = useState(false)
   const [openTaikangOrderMessage, setOpenTaikangOrderMessage] = useState<string | null>(null)
   const openingTaikangOrderRef = useRef(false)
+  const [formData, setFormData] = useState<BOrderFormData | null>(null)
+  const [formDataOrderId, setFormDataOrderId] = useState<number | null>(null)
+  const [formsLoaded, setFormsLoaded] = useState(false)
+  const [aiCandidates, setAiCandidates] = useState<OrderAiFieldCandidate[]>([])
+  const saveHandlersRef = useRef(new Map<string, () => void>())
+  const registerSaveHandler = useCallback((tabCode: string, handler: (() => void) | null) => {
+    if (handler) saveHandlersRef.current.set(tabCode, handler)
+    else saveHandlersRef.current.delete(tabCode)
+  }, [])
   const serviceType = bizType(order).trim()
   const tabs = serviceFlowTabsFor(serviceType)
   // 开发和录入时允许直接查看、填写所有后续阶段。
   const [activeTabIndex, setActiveTabIndex] = useState(() => tabs.length > 1 ? 1 : 0)
   const activeTab = tabs[activeTabIndex]
+
+  useEffect(() => {
+    let cancelled = false
+    setFormsLoaded(false)
+    void Promise.allSettled([fetchBOrderForms(order.id), fetchOrderAiFieldCandidates(order.id)]).then(([forms, candidates]) => {
+      if (!cancelled) {
+        setFormData(forms.status === 'fulfilled' ? forms.value : null)
+        setAiCandidates(candidates.status === 'fulfilled' ? candidates.value : [])
+        setFormDataOrderId(order.id)
+      }
+    }).finally(() => {
+      if (!cancelled) setFormsLoaded(true)
+    })
+    return () => { cancelled = true }
+  }, [order.id])
 
   useEffect(() => {
     onEscortEntryActiveChange?.(activeTab?.key === 'service-record' && activeTab.label === '陪诊录入')
@@ -5343,6 +5426,7 @@ function ServiceInformationFlow({ order, onEscortEntryActiveChange }: { order: O
           <div className="min-h-36 py-5">
             {tabs.map((tab, index) => (
               <div key={tab.key} hidden={activeTabIndex !== index}>
+                <PersistedFormScope key={`${order.id}-${tab.key}`} orderId={order.id} tabCode={tab.key} serviceType={serviceType} formData={formDataOrderId === order.id ? formData : null} aiCandidates={aiCandidates} loaded={formsLoaded && formDataOrderId === order.id} onRegisterSaveHandler={registerSaveHandler}>
                 <div className="text-body-sm font-semibold text-text-main">{tab.label}</div>
                 {tab.key === 'claim' ? (
                   <ClaimInformationView order={order} />
@@ -5395,6 +5479,7 @@ function ServiceInformationFlow({ order, onEscortEntryActiveChange }: { order: O
                     </p>
                   </>
                 )}
+                </PersistedFormScope>
               </div>
             ))}
           </div>
@@ -5403,15 +5488,18 @@ function ServiceInformationFlow({ order, onEscortEntryActiveChange }: { order: O
             <span className="text-[12px] text-text-muted">
               {openTaikangOrderMessage ?? '仅定位并打开泰康订单，不填写、不保存、不提交'}
             </span>
-            <button
-              type="button"
-              disabled={openingTaikangOrder}
-              onClick={() => void openTaikangOrder()}
-              title="仅定位并打开泰康订单；不会填写、保存或提交"
-              className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white hover:bg-[#06786c] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {openingTaikangOrder ? '正在定位…' : '确认推送B端'}
-            </button>
+            <div className="flex items-center gap-3">
+              <button type="button" onClick={() => saveHandlersRef.current.get(activeTab?.key ?? '')?.()} className="h-9 rounded-md border border-[#078b7c] px-5 text-body-sm font-bold text-[#078b7c] hover:bg-[#078b7c]/5">保存</button>
+              <button
+                type="button"
+                disabled={openingTaikangOrder}
+                onClick={() => void openTaikangOrder()}
+                title="仅定位并打开泰康订单；不会填写、保存或提交"
+                className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white hover:bg-[#06786c] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {openingTaikangOrder ? '正在定位…' : '确认推送B端'}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -5489,13 +5577,14 @@ const EMPTY_URGENT_ASSIGNMENT: UrgentAssignmentFormValue = {
 }
 
 function UrgentCheckAssignmentForm({ order, readOnly }: { order: Order; readOnly: boolean }): React.JSX.Element {
-  const [specialEnabled, setSpecialEnabled] = useState(false)
-  const [specialForm, setSpecialForm] = useState<UrgentSpecialCheckFormValue>(EMPTY_URGENT_SPECIAL_CHECK)
+  const persistedForm = useContext(PersistedFormContext)
+  const [specialEnabled, setSpecialEnabled] = usePersistedFormState('urgent.specialEnabled', false)
+  const [specialForm, setSpecialForm] = usePersistedFormState<UrgentSpecialCheckFormValue>('urgent.specialForm', EMPTY_URGENT_SPECIAL_CHECK)
   const [specialErrors, setSpecialErrors] = useState<Partial<Record<keyof UrgentSpecialCheckFormValue, string>>>({})
-  const [specialRecords, setSpecialRecords] = useState<UrgentSpecialCheckRecord[]>([])
-  const [assignmentForm, setAssignmentForm] = useState<UrgentAssignmentFormValue>(() => ({ ...EMPTY_URGENT_ASSIGNMENT, escort: getSessionDisplayName() }))
+  const [specialRecords, setSpecialRecords] = usePersistedFormState<UrgentSpecialCheckRecord[]>('urgent.specialRecords', [])
+  const [assignmentForm, setAssignmentForm] = usePersistedFormState<UrgentAssignmentFormValue>('urgent.assignmentForm', () => ({ ...EMPTY_URGENT_ASSIGNMENT, escort: getSessionDisplayName() }))
   const [assignmentErrors, setAssignmentErrors] = useState<Partial<Record<keyof UrgentAssignmentFormValue, string>>>({})
-  const [assignmentValidated, setAssignmentValidated] = useState(false)
+  const [assignmentValidated, setAssignmentValidated] = usePersistedFormState('urgent.assignment.validated', false)
 
   const changeSpecial = (field: keyof UrgentSpecialCheckFormValue, value: string): void => {
     setSpecialForm((current) => ({ ...current, [field]: value }))
@@ -5535,6 +5624,7 @@ function UrgentCheckAssignmentForm({ order, readOnly }: { order: Order; readOnly
     ])
     setSpecialForm(EMPTY_URGENT_SPECIAL_CHECK)
     setSpecialEnabled(false)
+    void persistedForm?.saveImmediately({}).catch(() => undefined)
   }
 
   function submitAssignment(): void {
@@ -5681,6 +5771,238 @@ function UrgentSelectField({
       </select>
     </CommunicationField>
   )
+}
+
+interface PersistedFormContextValue {
+  orderId: number
+  tabCode: string
+  loaded: boolean
+  tabData: Record<string, unknown>
+  aiCandidates: OrderAiFieldCandidate[]
+  aiSourceFor: (label: string, visibleValue: string) => OrderAiFieldCandidate | null
+  aiSourceForField: (key: string, property: string, visibleValue: string) => OrderAiFieldCandidate | null
+  registerAiCommit: (key: string, callback: () => unknown | null) => () => void
+  saveField: (key: string, value: unknown) => void
+  saveImmediately: (data: Record<string, unknown>) => Promise<void>
+  submitTab: (validationKey: string) => void
+}
+
+const PersistedFormContext = createContext<PersistedFormContextValue | null>(null)
+
+function PersistedFormScope({
+  orderId,
+  tabCode,
+  serviceType = '',
+  formData,
+  aiCandidates = [],
+  loaded,
+  onRegisterSaveHandler,
+  children
+}: {
+  orderId: number
+  tabCode: string
+  serviceType?: string
+  formData: BOrderFormData | null
+  aiCandidates?: OrderAiFieldCandidate[]
+  loaded: boolean
+  onRegisterSaveHandler?: (tabCode: string, handler: (() => void) | null) => void
+  children: React.ReactNode
+}): React.JSX.Element {
+  const pendingRef = useRef<Record<string, unknown>>({})
+  const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve())
+  const aiCommittersRef = useRef(new Map<string, () => unknown | null>())
+  const [saveStatus, setSaveStatus] = useState<'dirty' | 'saving' | 'saved' | 'error' | ''>('')
+  const [savedOverrides, setSavedOverrides] = useState<Record<string, unknown>>({})
+  const tabData = formData?.tabs.find((tab) => tab.tab_code === tabCode)?.data_json ?? {}
+  const currentTabData = { ...tabData, ...savedOverrides }
+  const registerAiCommit = useCallback((key: string, callback: () => unknown | null) => {
+    aiCommittersRef.current.set(key, callback)
+    return () => { if (aiCommittersRef.current.get(key) === callback) aiCommittersRef.current.delete(key) }
+  }, [])
+  const aiSourceFor = useCallback((label: string, visibleValue: string): OrderAiFieldCandidate | null => {
+    for (const key of bOrderAiKeysForServiceTab(serviceType, tabCode)) {
+      const stored = currentTabData[key] ?? {}
+      const { value, filled } = overlayBOrderAi(key, stored, aiCandidates)
+      for (const [property, candidate] of Object.entries(filled)) {
+        const shown = property === '$value' ? value : (value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>)[property] : undefined)
+        const actual = property === '$value' ? stored : (stored && typeof stored === 'object' && !Array.isArray(stored) ? (stored as Record<string, unknown>)[property] : undefined)
+        if (String(actual ?? '').trim()) continue
+        if (String(shown ?? '') === visibleValue && bOrderAiCandidateForLabel(key, property, candidate).includes(label)) return candidate
+      }
+    }
+    return null
+  }, [formData, savedOverrides, aiCandidates, serviceType, tabCode])
+  const aiSourceForField = useCallback((key: string, property: string, visibleValue: string): OrderAiFieldCandidate | null => {
+    if (!visibleValue) return null
+    const stored = currentTabData[key] ?? {}
+    const actual = property === '$value' ? stored : (stored && typeof stored === 'object' && !Array.isArray(stored) ? (stored as Record<string, unknown>)[property] : undefined)
+    if (String(actual ?? '').trim()) return null
+    const rule = bOrderAiRules(key).find((item) => item.property === property)
+    if (!rule) return null
+    const candidate = aiCandidates.find((item) => item.fieldCode === rule.candidate)
+    if (!candidate) return null
+    const { value, filled } = overlayBOrderAi(key, stored, aiCandidates)
+    const shown = property === '$value' ? value : (value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>)[property] : undefined)
+    return filled[property] === candidate && String(shown ?? '') === visibleValue ? candidate : null
+  }, [currentTabData, aiCandidates])
+  const persistPatch = useCallback((patch: Record<string, unknown>): Promise<void> => {
+    if (!Object.keys(patch).length) return Promise.resolve()
+    const save = saveQueueRef.current.catch(() => undefined).then(() => saveBOrderFormTab(orderId, tabCode, patch))
+    saveQueueRef.current = save
+    return save.then(() => { setSavedOverrides((current) => ({ ...current, ...patch })); setSaveStatus('saved') }).catch((error) => {
+      setSaveStatus('error')
+      console.error('[BOrderForms] 保存阶段表单失败', error)
+      throw error
+    })
+  }, [orderId, tabCode])
+  const saveField = useCallback((key: string, value: unknown) => {
+    pendingRef.current = { ...pendingRef.current, [key]: value }
+    setSaveStatus('dirty')
+  }, [])
+  const saveImmediately = useCallback((data: Record<string, unknown>): Promise<void> => {
+    const patch = { ...pendingRef.current, ...data }
+    pendingRef.current = {}
+    if (!Object.keys(patch).length) {
+      setSaveStatus('saved')
+      return Promise.resolve()
+    }
+    setSaveStatus('saving')
+    return persistPatch(patch)
+  }, [persistPatch])
+  const saveDraft = useCallback(() => {
+    const saveKeys = new Set(bOrderAiKeysForServiceTab(serviceType, tabCode))
+    const aiValues = Object.fromEntries([...aiCommittersRef.current].flatMap(([key, commit]) => {
+      if (!saveKeys.has(key)) return []
+      const value = commit()
+      return value == null ? [] : [[key, value]]
+    }))
+    const patch = { ...pendingRef.current, ...aiValues }
+    pendingRef.current = {}
+    if (!Object.keys(patch).length) {
+      setSaveStatus('saved')
+      return
+    }
+    setSaveStatus('saving')
+    const save = saveQueueRef.current.catch(() => undefined).then(() => saveBOrderFormTab(orderId, tabCode, patch, 'save'))
+    saveQueueRef.current = save
+    void save.then(() => { setSavedOverrides((current) => ({ ...current, ...patch })); setSaveStatus('saved') }).catch((error) => {
+      setSaveStatus('error')
+      console.error('[BOrderForms] 保存阶段表单失败', error)
+    })
+  }, [orderId, serviceType, tabCode])
+  useEffect(() => {
+    if (!onRegisterSaveHandler) return
+    onRegisterSaveHandler(tabCode, saveDraft)
+    return () => onRegisterSaveHandler(tabCode, null)
+  }, [onRegisterSaveHandler, saveDraft, tabCode])
+  const submitTab = useCallback((validationKey: string) => {
+    const submitKeys = bOrderAiKeysForSubmit(serviceType, tabCode, validationKey)
+    const aiValues = Object.fromEntries([...aiCommittersRef.current].flatMap(([key, commit]) => {
+      if (!submitKeys.includes(key)) return []
+      const value = commit()
+      return value == null ? [] : [[key, value]]
+    }))
+    const patch = { ...pendingRef.current, ...aiValues }
+    pendingRef.current = {}
+    setSaveStatus('saving')
+    const save = saveQueueRef.current.catch(() => undefined).then(() => saveBOrderFormTab(orderId, tabCode, patch, 'submit'))
+    saveQueueRef.current = save
+    void save.then(() => { setSavedOverrides((current) => ({ ...current, ...patch })); setSaveStatus('saved') }).catch((error) => {
+      setSaveStatus('error')
+      console.error('[BOrderForms] 提交阶段表单失败', error)
+    })
+  }, [orderId, tabCode, serviceType])
+
+  return (
+    <PersistedFormContext.Provider value={{ orderId, tabCode, loaded, tabData: currentTabData, aiCandidates, aiSourceFor, aiSourceForField, registerAiCommit, saveField, saveImmediately, submitTab }}>
+      {children}
+      {saveStatus && <div role="status" className={'mt-2 text-right text-[11px] ' + (saveStatus === 'error' ? 'text-error' : 'text-text-muted')}>
+        {saveStatus === 'dirty' ? '有未保存的修改' : saveStatus === 'saving' ? '保存中…' : saveStatus === 'saved' ? '已保存' : '保存失败，请重试'}
+      </div>}
+    </PersistedFormContext.Provider>
+  )
+}
+
+function PersistedFormBoundary({ orderId, tabCode, children }: { orderId: number; tabCode: string; children: React.ReactNode }): React.JSX.Element {
+  const [formData, setFormData] = useState<BOrderFormData | null>(null)
+  const [loaded, setLoaded] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    setLoaded(false)
+    void fetchBOrderForms(orderId).then((result) => {
+      if (!cancelled) setFormData(result)
+    }).catch((error) => {
+      console.error('[BOrderForms] 读取订单表单失败', error)
+      if (!cancelled) setFormData(null)
+    }).finally(() => {
+      if (!cancelled) setLoaded(true)
+    })
+    return () => { cancelled = true }
+  }, [orderId])
+  return <PersistedFormScope orderId={orderId} tabCode={tabCode} formData={formData} loaded={loaded}>{children}</PersistedFormScope>
+}
+
+function usePersistedFormState<T>(key: string, initialValue: T | (() => T)): [T, React.Dispatch<React.SetStateAction<T>>] {
+  const context = useContext(PersistedFormContext)
+  const [value, setValue] = useState<T>(initialValue)
+  const hydrated = useRef(false)
+  const dirty = useRef(false)
+  const valueRef = useRef(value)
+  const dismissedAiIdsRef = useRef(new Set<number>())
+  const overlay = overlayBOrderAi(key, value, context?.aiCandidates ?? [], dismissedAiIdsRef.current)
+  const visibleRef = useRef(overlay.value)
+  const filledRef = useRef(overlay.filled)
+  visibleRef.current = overlay.value
+  filledRef.current = overlay.filled
+  useEffect(() => {
+    if (!context?.loaded || hydrated.current) return
+    if (!dirty.current && Object.prototype.hasOwnProperty.call(context.tabData, key)) {
+      const restored = context.tabData[key] as T
+      valueRef.current = restored
+      setValue(restored)
+    }
+    hydrated.current = true
+  }, [context?.loaded, context?.tabCode, context?.tabData, key])
+  useEffect(() => { valueRef.current = value }, [value])
+  useEffect(() => context?.registerAiCommit(key, () => {
+    if (!Object.keys(filledRef.current).length) return null
+    const accepted = visibleRef.current
+    valueRef.current = accepted
+    setValue(accepted)
+    return accepted
+  }), [context?.registerAiCommit, key])
+  const setPersistedValue = useCallback<React.Dispatch<React.SetStateAction<T>>>((next) => {
+    const visible = visibleRef.current
+    const resolved = typeof next === 'function' ? (next as (previous: T) => T)(visible) : next
+    const visibleObject = visible && typeof visible === 'object' && !Array.isArray(visible) ? visible as Record<string, unknown> : null
+    const resolvedObject = resolved && typeof resolved === 'object' && !Array.isArray(resolved) ? resolved as Record<string, unknown> : null
+    for (const [property, candidate] of Object.entries(filledRef.current)) {
+      const before = property === '$value' ? visible : visibleObject?.[property]
+      const after = property === '$value' ? resolved : resolvedObject?.[property]
+      if (!Object.is(before, after)) dismissedAiIdsRef.current.add(candidate.id)
+    }
+    let formal = resolved
+    if (resolved && visible && typeof resolved === 'object' && typeof visible === 'object' && !Array.isArray(resolved) && !Array.isArray(visible)) {
+      const current = valueRef.current as Record<string, unknown>
+      const shown = visible as Record<string, unknown>
+      const updated = resolved as Record<string, unknown>
+      formal = { ...current, ...updated } as T
+      for (const property of Object.keys(filledRef.current)) {
+        if (Object.is(updated[property], shown[property])) {
+          (formal as Record<string, unknown>)[property] = current[property]
+        }
+      }
+    }
+    valueRef.current = formal
+    setValue(formal)
+    if (key.endsWith('.validated') || key === 'form.validated') {
+      if (resolved === true) context?.submitTab(key)
+    } else {
+      dirty.current = true
+      context?.saveField(key, formal)
+    }
+  }, [context, key])
+  return [overlay.value, setPersistedValue]
 }
 
 const EXPERT_TYPE_OPTIONS = ['普通专家', '特殊专家']
@@ -5862,13 +6184,14 @@ const EMPTY_FULL_PROCESS_NEW_OUTPATIENT: FullProcessNewOutpatientFormValue = {
 }
 
 function HospitalAssignmentForm({ order, readOnly }: { order: Order; readOnly: boolean }): React.JSX.Element {
-  const [expertEnabled, setExpertEnabled] = useState(false)
-  const [expertForm, setExpertForm] = useState<HospitalExpertFormValue>(EMPTY_HOSPITAL_EXPERT)
+  const persistedForm = useContext(PersistedFormContext)
+  const [expertEnabled, setExpertEnabled] = usePersistedFormState('hospital.expertEnabled', false)
+  const [expertForm, setExpertForm] = usePersistedFormState<HospitalExpertFormValue>('hospital.expertForm', EMPTY_HOSPITAL_EXPERT)
   const [expertErrors, setExpertErrors] = useState<Partial<Record<keyof HospitalExpertFormValue, string>>>({})
-  const [expertRecords, setExpertRecords] = useState<HospitalExpertRecord[]>([])
-  const [assignmentForm, setAssignmentForm] = useState<HospitalAssignmentFormValue>(() => ({ ...EMPTY_HOSPITAL_ASSIGNMENT, escort: getSessionDisplayName() }))
+  const [expertRecords, setExpertRecords] = usePersistedFormState<HospitalExpertRecord[]>('hospital.expertRecords', [])
+  const [assignmentForm, setAssignmentForm] = usePersistedFormState<HospitalAssignmentFormValue>('hospital.assignmentForm', () => ({ ...EMPTY_HOSPITAL_ASSIGNMENT, escort: getSessionDisplayName() }))
   const [assignmentErrors, setAssignmentErrors] = useState<Partial<Record<keyof HospitalAssignmentFormValue, string>>>({})
-  const [assignmentValidated, setAssignmentValidated] = useState(false)
+  const [assignmentValidated, setAssignmentValidated] = usePersistedFormState('hospital.assignment.validated', false)
 
   function changeExpert(field: keyof HospitalExpertFormValue, value: string): void {
     setExpertForm((current) => ({ ...current, [field]: value }))
@@ -5908,6 +6231,7 @@ function HospitalAssignmentForm({ order, readOnly }: { order: Order; readOnly: b
     }])
     setExpertForm(EMPTY_HOSPITAL_EXPERT)
     setExpertEnabled(false)
+    void persistedForm?.saveImmediately({}).catch(() => undefined)
   }
 
   function submitAssignment(): void {
@@ -6046,16 +6370,56 @@ interface OutpatientPlanFormValue {
   doctor: string
 }
 
+interface OutpatientPlanScheme extends OutpatientPlanFormValue {
+  id: string
+}
+
+interface OutpatientPlanSuggestion extends OutpatientPlanFormValue {
+  evidenceSourceId: string
+  evidenceQuote: string
+}
+
 const EMPTY_OUTPATIENT_PLAN: OutpatientPlanFormValue = {
   province: '', city: '', hospital: '', department: '', doctor: ''
 }
 
+function parseOutpatientPlanSuggestions(candidate: OrderAiFieldCandidate | undefined): OutpatientPlanSuggestion[] {
+  if (!candidate || !Array.isArray(candidate.normalizedValue)) return []
+  return candidate.normalizedValue.flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return []
+    const row = item as Record<string, unknown>
+    const scheme: OutpatientPlanSuggestion = {
+      province: String(row.province ?? '').trim(),
+      city: String(row.city ?? '').trim(),
+      hospital: String(row.hospital ?? '').trim(),
+      department: String(row.department ?? '').trim(),
+      doctor: String(row.doctor ?? '').trim(),
+      evidenceSourceId: String(row.evidence_source_id ?? '').trim(),
+      evidenceQuote: String(row.evidence_quote ?? '').trim()
+    }
+    return scheme.hospital || scheme.doctor ? [scheme] : []
+  })
+}
+
+function outpatientPlanFingerprint(scheme: OutpatientPlanFormValue): string {
+  return [scheme.province, scheme.city, scheme.hospital, scheme.department, scheme.doctor]
+    .map((value) => value.trim().toLocaleLowerCase())
+    .join('|')
+}
+
 function OutpatientPlanConfirmationForm({ readOnly }: { readOnly: boolean }): React.JSX.Element {
-  const [expertEnabled, setExpertEnabled] = useState(false)
-  const [expertForm, setExpertForm] = useState<HospitalExpertFormValue>(EMPTY_HOSPITAL_EXPERT)
+  const persistedForm = useContext(PersistedFormContext)
+  const [expertEnabled, setExpertEnabled] = usePersistedFormState('outpatientPlan.expertEnabled', false)
+  const [expertForm, setExpertForm] = usePersistedFormState<HospitalExpertFormValue>('outpatientPlan.expertForm', EMPTY_HOSPITAL_EXPERT)
   const [expertErrors, setExpertErrors] = useState<Partial<Record<keyof HospitalExpertFormValue, string>>>({})
-  const [expertRecords, setExpertRecords] = useState<HospitalExpertRecord[]>([])
-  const [planForm, setPlanForm] = useState<OutpatientPlanFormValue>(EMPTY_OUTPATIENT_PLAN)
+  const [expertRecords, setExpertRecords] = usePersistedFormState<HospitalExpertRecord[]>('outpatientPlan.expertRecords', [])
+  const [planForm, setPlanForm] = usePersistedFormState<OutpatientPlanFormValue>('outpatientPlan.planForm', EMPTY_OUTPATIENT_PLAN)
+  const [planErrors, setPlanErrors] = useState<Partial<Record<keyof OutpatientPlanFormValue, string>>>({})
+  const [schemes, setSchemes] = usePersistedFormState<OutpatientPlanScheme[]>('outpatientPlan.schemes', [])
+  const [selectedSchemeId, setSelectedSchemeId] = usePersistedFormState<string>('outpatientPlan.selectedSchemeId', '')
+  const [schemeMessage, setSchemeMessage] = useState('')
+  const aiSchemeCandidate = persistedForm?.aiCandidates.find((candidate) => candidate.fieldCode === 'recommended_schemes')
+  const aiSchemes = parseOutpatientPlanSuggestions(aiSchemeCandidate)
 
   function changeExpert(field: keyof HospitalExpertFormValue, value: string): void {
     setExpertForm((current) => ({ ...current, [field]: value }))
@@ -6064,6 +6428,47 @@ function OutpatientPlanConfirmationForm({ readOnly }: { readOnly: boolean }): Re
 
   function changePlan(field: keyof OutpatientPlanFormValue, value: string): void {
     setPlanForm((current) => ({ ...current, [field]: value }))
+    setPlanErrors((current) => ({ ...current, [field]: undefined }))
+    setSchemeMessage('')
+  }
+
+  function addPlanScheme(scheme: OutpatientPlanFormValue, source: 'manual' | 'ai'): void {
+    const values: OutpatientPlanFormValue = {
+      province: scheme.province,
+      city: scheme.city,
+      hospital: scheme.hospital,
+      department: scheme.department,
+      doctor: scheme.doctor
+    }
+    const missing = (Object.keys(EMPTY_OUTPATIENT_PLAN) as Array<keyof OutpatientPlanFormValue>)
+      .filter((field) => !values[field].trim())
+    if (missing.length) {
+      setPlanForm(values)
+      setPlanErrors(Object.fromEntries(missing.map((field) => [field, `请填写${({ province: '省', city: '市', hospital: '医院', department: '科室', doctor: '医生姓名' })[field]}`])))
+      setSchemeMessage(source === 'ai' ? '这条 AI 建议信息不完整，已带入上方输入框，请补充后添加。' : '请补全方案信息后再添加。')
+      return
+    }
+
+    const fingerprint = outpatientPlanFingerprint(values)
+    if (schemes.some((item) => outpatientPlanFingerprint(item) === fingerprint)) {
+      setSchemeMessage('该方案已在列表中，无需重复添加。')
+      return
+    }
+
+    const record: OutpatientPlanScheme = {
+      ...values,
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    }
+    setSchemes((current) => [...current, record])
+    setPlanForm(EMPTY_OUTPATIENT_PLAN)
+    setPlanErrors({})
+    setSchemeMessage('方案已添加，请点击页面底部“保存”保存本阶段。')
+  }
+
+  function removePlanScheme(id: string): void {
+    setSchemes((current) => current.filter((item) => item.id !== id))
+    if (selectedSchemeId === id) setSelectedSchemeId('')
+    setSchemeMessage('')
   }
 
   function submitExpert(): void {
@@ -6093,6 +6498,7 @@ function OutpatientPlanConfirmationForm({ readOnly }: { readOnly: boolean }): Re
     }])
     setExpertForm(EMPTY_HOSPITAL_EXPERT)
     setExpertEnabled(false)
+    void persistedForm?.saveImmediately({}).catch(() => undefined)
   }
 
   return (
@@ -6123,14 +6529,101 @@ function OutpatientPlanConfirmationForm({ readOnly }: { readOnly: boolean }): Re
 
       <div>
         <h4 className="mb-3 text-[16px] font-bold text-text-main">方案选择</h4>
-        <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-5">
-          <UrgentInputField label="省" value={planForm.province} disabled={readOnly} onChange={(value) => changePlan('province', value)} />
-          <UrgentInputField label="市" value={planForm.city} disabled={readOnly} onChange={(value) => changePlan('city', value)} />
-          <UrgentInputField label="医院" value={planForm.hospital} disabled={readOnly} onChange={(value) => changePlan('hospital', value)} />
-          <UrgentInputField label="科室" value={planForm.department} disabled={readOnly} onChange={(value) => changePlan('department', value)} />
-          <UrgentInputField label="医生姓名" value={planForm.doctor} disabled={readOnly} onChange={(value) => changePlan('doctor', value)} />
+        <div className="space-y-4">
+          <div className="rounded-md border border-[#cfe4ff] bg-[#f6f9ff] p-4">
+            <div className="mb-3 flex items-center gap-2">
+              <span className="material-symbols-outlined text-[18px] text-primary">auto_awesome</span>
+              <h5 className="text-body-sm font-bold text-primary">AI建议方案（{aiSchemes.length}条）</h5>
+            </div>
+            {aiSchemes.length === 0 ? (
+              <p className="text-body-sm text-text-muted">暂未从已分析的沟通内容中识别到专员推荐方案。</p>
+            ) : (
+              <div className="space-y-2">
+                {aiSchemes.map((scheme, index) => {
+                  const complete = (Object.keys(EMPTY_OUTPATIENT_PLAN) as Array<keyof OutpatientPlanFormValue>).every((field) => scheme[field].trim())
+                  const alreadyAdded = complete && schemes.some((item) => outpatientPlanFingerprint(item) === outpatientPlanFingerprint(scheme))
+                  return (
+                    <div key={`${outpatientPlanFingerprint(scheme)}-${index}`} className="rounded-md bg-white px-3 py-3 text-body-sm">
+                      <div className="grid grid-cols-1 items-center gap-3 md:grid-cols-5 xl:grid-cols-[1fr_1fr_1.5fr_1.2fr_1fr_auto]">
+                        <span><span className="text-text-muted">省：</span>{scheme.province || '—'}</span>
+                        <span><span className="text-text-muted">市：</span>{scheme.city || '—'}</span>
+                        <span className="min-w-0 break-words"><span className="text-text-muted">医院：</span>{scheme.hospital || '—'}</span>
+                        <span className="min-w-0 break-words"><span className="text-text-muted">科室：</span>{scheme.department || '—'}</span>
+                        <span className="min-w-0 break-words"><span className="text-text-muted">医生：</span>{scheme.doctor || '—'}</span>
+                        <button
+                          type="button"
+                          disabled={readOnly || alreadyAdded}
+                          onClick={() => addPlanScheme(scheme, 'ai')}
+                          className="h-8 whitespace-nowrap rounded-md border border-primary px-3 font-semibold text-primary hover:bg-primary/5 disabled:cursor-not-allowed disabled:border-border-subtle disabled:text-text-muted"
+                        >
+                          {alreadyAdded ? '已加入方案' : complete ? '加入方案' : '带入填写'}
+                        </button>
+                      </div>
+                      {(scheme.evidenceQuote || scheme.evidenceSourceId) && (
+                        <p className="mt-2 border-t border-border-subtle pt-2 text-[12px] text-text-muted">
+                          依据：{scheme.evidenceQuote || '沟通内容'}{scheme.evidenceSourceId ? `（${scheme.evidenceSourceId}）` : ''}
+                        </p>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {!readOnly && (
+            <div>
+              <div className="grid grid-cols-1 items-end gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1.5fr_1.2fr_1fr_auto]">
+                <UrgentInputField label="省" required value={planForm.province} error={planErrors.province} onChange={(value) => changePlan('province', value)} />
+                <UrgentInputField label="市" required value={planForm.city} error={planErrors.city} onChange={(value) => changePlan('city', value)} />
+                <UrgentInputField label="医院" required value={planForm.hospital} error={planErrors.hospital} onChange={(value) => changePlan('hospital', value)} />
+                <UrgentInputField label="科室" required value={planForm.department} error={planErrors.department} onChange={(value) => changePlan('department', value)} />
+                <UrgentInputField label="医生姓名" required value={planForm.doctor} error={planErrors.doctor} onChange={(value) => changePlan('doctor', value)} />
+                <button type="button" onClick={() => addPlanScheme(planForm, 'manual')} className="h-9 whitespace-nowrap rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white hover:bg-[#06786c]">添加方案</button>
+              </div>
+              {schemeMessage && <p className="mt-2 text-[12px] text-text-muted">{schemeMessage}</p>}
+            </div>
+          )}
         </div>
-        <p className="mt-2 text-[12px] text-text-muted">省、市、医院、科室、医生姓名均可直接输入。</p>
+      </div>
+
+      <div>
+        <h4 className="mb-3 text-[16px] font-bold text-text-main">方案列表</h4>
+        <div className="overflow-x-auto rounded-md border border-border-subtle">
+          <table className="min-w-[900px] w-full text-left text-body-sm">
+            <thead className="bg-surface-bg text-text-muted">
+              <tr>
+                {['省', '市', '医院', '科室', '医生', '方案选择', '操作'].map((title) => <th key={title} className="whitespace-nowrap border-b border-border-subtle px-3 py-2.5 font-semibold">{title}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {schemes.length === 0 ? (
+                <tr><td colSpan={7} className="px-3 py-8 text-center text-text-muted">暂无方案，请填写后添加</td></tr>
+              ) : schemes.map((scheme) => (
+                <tr key={scheme.id} className="border-b border-border-subtle last:border-0">
+                  <td className="px-3 py-3">{scheme.province}</td>
+                  <td className="px-3 py-3">{scheme.city}</td>
+                  <td className="px-3 py-3">{scheme.hospital}</td>
+                  <td className="px-3 py-3">{scheme.department}</td>
+                  <td className="px-3 py-3">{scheme.doctor}</td>
+                  <td className="px-3 py-3">
+                    <input
+                      type="checkbox"
+                      checked={selectedSchemeId === scheme.id}
+                      disabled={readOnly}
+                      onChange={(event) => setSelectedSchemeId(event.target.checked ? scheme.id : '')}
+                      aria-label={`选择方案：${scheme.hospital} ${scheme.department} ${scheme.doctor}`}
+                      className="h-4 w-4 accent-primary disabled:cursor-not-allowed"
+                    />
+                  </td>
+                  <td className="px-3 py-3">
+                    {!readOnly && <button type="button" onClick={() => removePlanScheme(scheme.id)} className="text-error hover:underline">移除</button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div>
@@ -6174,9 +6667,9 @@ function OutpatientPlanConfirmationForm({ readOnly }: { readOnly: boolean }): Re
  * 当前根据已完成后的查看页面反向生成，选项和提交接口待后续接入。
  */
 function OutpatientAssignmentForm({ order, readOnly }: { order: Order; readOnly: boolean }): React.JSX.Element {
-  const [form, setForm] = useState<OutpatientAssignmentFormValue>(() => ({ ...EMPTY_OUTPATIENT_ASSIGNMENT, escort: getSessionDisplayName() }))
+  const [form, setForm] = usePersistedFormState<OutpatientAssignmentFormValue>('outpatientAssignment.form', () => ({ ...EMPTY_OUTPATIENT_ASSIGNMENT, escort: getSessionDisplayName() }))
   const [errors, setErrors] = useState<Partial<Record<keyof OutpatientAssignmentFormValue, string>>>({})
-  const [validated, setValidated] = useState(false)
+  const [validated, setValidated] = usePersistedFormState('form.validated', false)
 
   function changeField(field: keyof OutpatientAssignmentFormValue, value: string): void {
     setForm((current) => ({ ...current, [field]: value }))
@@ -6271,10 +6764,11 @@ interface FullProcessAssignmentRecord extends OutpatientAssignmentFormValue {
 
 /** 全流程门诊的分配陪诊支持同一订单下多条就诊安排。 */
 function FullProcessAssignmentForm({ order, readOnly }: { order: Order; readOnly: boolean }): React.JSX.Element {
-  const [draft, setDraft] = useState<OutpatientAssignmentFormValue>(() => ({ ...EMPTY_OUTPATIENT_ASSIGNMENT, escort: getSessionDisplayName() }))
+  const persistedForm = useContext(PersistedFormContext)
+  const [draft, setDraft] = usePersistedFormState<OutpatientAssignmentFormValue>('fullProcessAssignment.draft', () => ({ ...EMPTY_OUTPATIENT_ASSIGNMENT, escort: getSessionDisplayName() }))
   const [errors, setErrors] = useState<Partial<Record<keyof OutpatientAssignmentFormValue, string>>>({})
-  const [records, setRecords] = useState<FullProcessAssignmentRecord[]>([])
-  const [validated, setValidated] = useState(false)
+  const [records, setRecords] = usePersistedFormState<FullProcessAssignmentRecord[]>('fullProcessAssignment.records', [])
+  const [validated, setValidated] = usePersistedFormState('form.validated', false)
 
   function updateField(field: keyof OutpatientAssignmentFormValue, value: string): void {
     setDraft((current) => ({ ...current, [field]: value }))
@@ -6303,6 +6797,7 @@ function FullProcessAssignmentForm({ order, readOnly }: { order: Order; readOnly
     setRecords((current) => [...current, { ...draft, id: Date.now() }])
     setDraft({ ...EMPTY_OUTPATIENT_ASSIGNMENT, escort: getSessionDisplayName() })
     setValidated(false)
+    void persistedForm?.saveImmediately({}).catch(() => undefined)
   }
 
   function submit(): void {
@@ -6349,16 +6844,16 @@ function FullProcessAssignmentForm({ order, readOnly }: { order: Order; readOnly
  * 当前仅实现截图中的页面交互，保存、发送和提交接口留待后续接入。
  */
 function OutpatientEscortEntryForm({ order, readOnly, showRevisit = true, showSubmit = true, showCoordinationName = false }: { order: Order; readOnly: boolean; showRevisit?: boolean; showSubmit?: boolean; showCoordinationName?: boolean }): React.JSX.Element {
-  const [form, setForm] = useState<OutpatientEscortEntryFormValue>(EMPTY_OUTPATIENT_ESCORT_ENTRY)
+  const persistedForm = useContext(PersistedFormContext)
+  const [form, setForm] = usePersistedFormState<OutpatientEscortEntryFormValue>('outpatientEscort.form', EMPTY_OUTPATIENT_ESCORT_ENTRY)
   const [errors, setErrors] = useState<Partial<Record<keyof OutpatientEscortEntryFormValue, string>>>({})
-  const [guideForm, setGuideForm] = useState<OutpatientGuideFormValue>(EMPTY_OUTPATIENT_GUIDE)
+  const [guideForm, setGuideForm] = usePersistedFormState<OutpatientGuideFormValue>('outpatientEscort.guideForm', EMPTY_OUTPATIENT_GUIDE)
   const [guideErrors, setGuideErrors] = useState<Partial<Record<keyof OutpatientGuideFormValue, string>>>({})
-  const [guideRecords, setGuideRecords] = useState<OutpatientGuideRecord[]>([])
+  const [guideRecords, setGuideRecords] = usePersistedFormState<OutpatientGuideRecord[]>('outpatientEscort.guideRecords', [])
   const [guideStatus, setGuideStatus] = useState('')
-  const [validated, setValidated] = useState(false)
-  const [saved, setSaved] = useState(false)
+  const [validated, setValidated] = usePersistedFormState('form.validated', false)
   const [revisitOpen, setRevisitOpen] = useState(false)
-  const [revisitForm, setRevisitForm] = useState<OutpatientRevisitFormValue>(() => ({
+  const [revisitForm, setRevisitForm] = usePersistedFormState<OutpatientRevisitFormValue>('outpatientEscort.revisitForm', () => ({
     ...EMPTY_OUTPATIENT_REVISIT,
     hospital: order.hospital || '',
     department: order.dept || '',
@@ -6371,7 +6866,6 @@ function OutpatientEscortEntryForm({ order, readOnly, showRevisit = true, showSu
     setForm((current) => ({ ...current, [field]: value }))
     setErrors((current) => ({ ...current, [field]: undefined }))
     setValidated(false)
-    setSaved(false)
   }
 
   function updateGuide(field: keyof OutpatientGuideFormValue, value: string): void {
@@ -6395,6 +6889,7 @@ function OutpatientEscortEntryForm({ order, readOnly, showRevisit = true, showSu
     if (Object.keys(nextErrors).length > 0) return
     setGuideRecords((current) => [...current, { ...guideForm, id: Date.now() }])
     setGuideForm(EMPTY_OUTPATIENT_GUIDE)
+    void persistedForm?.saveImmediately({}).catch(() => undefined)
   }
 
   function submit(): void {
@@ -6514,7 +7009,7 @@ function OutpatientEscortEntryForm({ order, readOnly, showRevisit = true, showSu
           </CommunicationField>
         </div>
 
-        {!readOnly && <div className="mt-4 flex items-center justify-end gap-3">{validated && <span className="text-body-sm text-status-success">必填字段校验通过</span>}{saved && <span className="text-body-sm text-status-success">已记录本地保存状态</span>}<button type="button" onClick={() => setSaved(true)} className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white hover:bg-[#06786c]">保存</button><button type="button" title="爽约处理功能暂未接入" className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white">爽约</button>{showSubmit && <button type="button" onClick={submit} className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white hover:bg-[#06786c]">提交</button>}</div>}
+        {!readOnly && <div className="mt-4 flex items-center justify-end gap-3">{validated && <span className="text-body-sm text-status-success">必填字段校验通过</span>}<button type="button" title="爽约处理功能暂未接入" className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white">爽约</button>{showSubmit && <button type="button" onClick={submit} className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white hover:bg-[#06786c]">提交</button>}</div>}
       </div>
 
       {showRevisit && <button type="button" onClick={() => !readOnly && setRevisitOpen(true)} className="flex w-full items-center justify-center rounded-md border border-dashed border-border-subtle bg-surface-bg py-5 text-body-sm font-semibold text-text-muted hover:border-primary hover:text-primary">复诊</button>}
@@ -6555,9 +7050,10 @@ function OutpatientEscortEntryForm({ order, readOnly, showRevisit = true, showSu
 
 /** 全流程陪诊录入包含门诊信息和住院信息两个子 Tab。 */
 function FullProcessEscortEntryForm({ order, readOnly }: { order: Order; readOnly: boolean }): React.JSX.Element {
+  const persistedForm = useContext(PersistedFormContext)
   const [activeTab, setActiveTab] = useState<'outpatient' | 'inpatient'>('outpatient')
   const [newOutpatientOpen, setNewOutpatientOpen] = useState(false)
-  const [newOutpatientRecords, setNewOutpatientRecords] = useState<FullProcessNewOutpatientFormValue[]>([])
+  const [newOutpatientRecords, setNewOutpatientRecords] = usePersistedFormState<FullProcessNewOutpatientFormValue[]>('fullProcess.newOutpatientRecords', [])
 
   return (
     <div className="mt-4 space-y-5">
@@ -6576,16 +7072,17 @@ function FullProcessEscortEntryForm({ order, readOnly }: { order: Order; readOnl
         <FullProcessInpatientEntryForm order={order} readOnly={readOnly} />
       )}
 
-      {newOutpatientOpen && <FullProcessNewOutpatientModal order={order} onClose={() => setNewOutpatientOpen(false)} onSubmitted={(record) => { setNewOutpatientRecords((current) => [...current, record]); setNewOutpatientOpen(false) }} />}
+      {newOutpatientOpen && <FullProcessNewOutpatientModal order={order} onClose={() => setNewOutpatientOpen(false)} onSubmitted={(record) => { setNewOutpatientRecords((current) => [...current, record]); setNewOutpatientOpen(false); void persistedForm?.saveImmediately({}).catch(() => undefined) }} />}
     </div>
   )
 }
 
 function FullProcessInpatientEntryForm({ order, readOnly }: { order: Order; readOnly: boolean }): React.JSX.Element {
-  const [expertEnabled, setExpertEnabled] = useState(false)
-  const [expertForm, setExpertForm] = useState<HospitalExpertFormValue>(EMPTY_HOSPITAL_EXPERT)
+  const persistedForm = useContext(PersistedFormContext)
+  const [expertEnabled, setExpertEnabled] = usePersistedFormState('inpatient.expertEnabled', false)
+  const [expertForm, setExpertForm] = usePersistedFormState<HospitalExpertFormValue>('inpatient.expertForm', EMPTY_HOSPITAL_EXPERT)
   const [expertErrors, setExpertErrors] = useState<Partial<Record<keyof HospitalExpertFormValue, string>>>({})
-  const [expertRecords, setExpertRecords] = useState<HospitalExpertRecord[]>([])
+  const [expertRecords, setExpertRecords] = usePersistedFormState<HospitalExpertRecord[]>('inpatient.expertRecords', [])
 
   function updateExpert(field: keyof HospitalExpertFormValue, value: string): void {
     setExpertForm((current) => ({ ...current, [field]: value }))
@@ -6609,6 +7106,7 @@ function FullProcessInpatientEntryForm({ order, readOnly }: { order: Order; read
     }])
     setExpertForm(EMPTY_HOSPITAL_EXPERT)
     setExpertEnabled(false)
+    void persistedForm?.saveImmediately({}).catch(() => undefined)
   }
 
   return (
@@ -6665,14 +7163,14 @@ function FullProcessInpatientEntryForm({ order, readOnly }: { order: Order; read
 
 function FullProcessNewOutpatientModal({ order, onClose, onSubmitted }: { order: Order; onClose: () => void; onSubmitted: (record: FullProcessNewOutpatientFormValue) => void }): React.JSX.Element {
   const createdAt = order.createdAt ?? order.updatedAt
-  const [form, setForm] = useState<FullProcessNewOutpatientFormValue>(() => ({
+  const [form, setForm] = usePersistedFormState<FullProcessNewOutpatientFormValue>('fullProcess.newOutpatientModal.form', () => ({
     ...EMPTY_FULL_PROCESS_NEW_OUTPATIENT,
     hospital: order.hospital || '',
     department: order.dept || '',
     doctor: order.doctor || '',
     startedAt: toDateTimeLocal(createdAt)
   }))
-  const [expertEnabled, setExpertEnabled] = useState(false)
+  const [expertEnabled, setExpertEnabled] = usePersistedFormState('fullProcess.newOutpatientModal.expertEnabled', false)
   const [errors, setErrors] = useState<Partial<Record<keyof FullProcessNewOutpatientFormValue, string>>>({})
 
   function updateField(field: keyof FullProcessNewOutpatientFormValue, value: string): void {
@@ -6757,9 +7255,16 @@ const EMPTY_MEDICAL_TRANSPORT: MedicalTransportFormValue = {
 }
 
 function MedicalTransportServiceEntryForm({ readOnly }: { readOnly: boolean }): React.JSX.Element {
-  const [form, setForm] = useState<MedicalTransportFormValue>(EMPTY_MEDICAL_TRANSPORT)
+  const [form, setForm] = usePersistedFormState<MedicalTransportFormValue>('medicalTransport.form', EMPTY_MEDICAL_TRANSPORT)
+  const persistedForm = useContext(PersistedFormContext)
   const [errors, setErrors] = useState<Partial<Record<keyof MedicalTransportFormValue, string>>>({})
-  const [validated, setValidated] = useState(false)
+  const [validated, setValidated] = usePersistedFormState('form.validated', false)
+  const originAiSources = (['originProvince', 'originCity', 'originDistrict'] as const)
+    .map((property) => persistedForm?.aiSourceForField('medicalTransport.form', property, form[property]))
+    .filter((candidate): candidate is OrderAiFieldCandidate => Boolean(candidate))
+  const destinationAiSources = (['destinationProvince', 'destinationCity', 'destinationDistrict'] as const)
+    .map((property) => persistedForm?.aiSourceForField('medicalTransport.form', property, form[property]))
+    .filter((candidate): candidate is OrderAiFieldCandidate => Boolean(candidate))
 
   function changeField(field: keyof MedicalTransportFormValue, value: string): void {
     setForm((current) => ({ ...current, [field]: value }))
@@ -6786,7 +7291,7 @@ function MedicalTransportServiceEntryForm({ readOnly }: { readOnly: boolean }): 
     <div className="mt-4 space-y-5">
       <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-8">
         <div className="xl:col-span-3">
-          <p className="mb-1.5 text-body-sm text-text-muted">实际出发地 <span className="text-error">*</span></p>
+          <p className="mb-1.5 flex items-center gap-1 text-body-sm text-text-muted">实际出发地 <span className="text-error">*</span>{originAiSources.map((candidate) => <span key={candidate.id} title={`AI 依据：${candidate.evidence?.[0]?.quote ?? ''}`}><AiBadge /></span>)}</p>
           <div className="grid grid-cols-3 gap-3">
             <div className="min-w-0">
               <input value={form.originProvince} disabled={readOnly} onChange={(event) => changeField('originProvince', event.target.value)} placeholder="请输入省" className={inputClass(Boolean(errors.originProvince)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
@@ -6803,13 +7308,13 @@ function MedicalTransportServiceEntryForm({ readOnly }: { readOnly: boolean }): 
           </div>
         </div>
         <div className="xl:col-span-5">
-          <CommunicationField label="详细地址" required error={errors.originAddress}>
+          <CommunicationField label="详细地址" required error={errors.originAddress} aiField={{ key: 'medicalTransport.form', property: 'originAddress' }}>
             <input value={form.originAddress} disabled={readOnly} onChange={(event) => changeField('originAddress', event.target.value)} placeholder="请输入详细地址" className={inputClass(Boolean(errors.originAddress)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
           </CommunicationField>
         </div>
 
         <div className="xl:col-span-3">
-          <p className="mb-1.5 text-body-sm text-text-muted">实际到达地 <span className="text-error">*</span></p>
+          <p className="mb-1.5 flex items-center gap-1 text-body-sm text-text-muted">实际到达地 <span className="text-error">*</span>{destinationAiSources.map((candidate) => <span key={candidate.id} title={`AI 依据：${candidate.evidence?.[0]?.quote ?? ''}`}><AiBadge /></span>)}</p>
           <div className="grid grid-cols-3 gap-3">
             <div className="min-w-0">
               <input value={form.destinationProvince} disabled={readOnly} onChange={(event) => changeField('destinationProvince', event.target.value)} placeholder="请输入省" className={inputClass(Boolean(errors.destinationProvince)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
@@ -6826,7 +7331,7 @@ function MedicalTransportServiceEntryForm({ readOnly }: { readOnly: boolean }): 
           </div>
         </div>
         <div className="xl:col-span-5">
-          <CommunicationField label="详细地址" required error={errors.destinationAddress}>
+          <CommunicationField label="详细地址" required error={errors.destinationAddress} aiField={{ key: 'medicalTransport.form', property: 'destinationAddress' }}>
             <input value={form.destinationAddress} disabled={readOnly} onChange={(event) => changeField('destinationAddress', event.target.value)} placeholder="请输入详细地址" className={inputClass(Boolean(errors.destinationAddress)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
           </CommunicationField>
         </div>
@@ -6863,7 +7368,6 @@ function MedicalTransportServiceEntryForm({ readOnly }: { readOnly: boolean }): 
       {!readOnly && (
         <div className="flex flex-wrap items-center justify-end gap-3">
           {validated && <span className="mr-auto text-body-sm text-status-success">必填字段校验通过</span>}
-          <button type="button" title="保存功能暂未接入" className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white">保存</button>
           <button type="button" title="发送服务信息功能暂未接入" className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white">发送服务信息</button>
           <button type="button" title="爽约功能暂未接入" className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white">爽约</button>
           <button type="button" onClick={submit} className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white hover:bg-[#06786c]">提交</button>
@@ -6894,9 +7398,9 @@ const EMPTY_SHARED_SERVICE: SharedServiceFormValue = {
 }
 
 function SharedServiceEntryForm({ readOnly }: { readOnly: boolean }): React.JSX.Element {
-  const [form, setForm] = useState<SharedServiceFormValue>(EMPTY_SHARED_SERVICE)
+  const [form, setForm] = usePersistedFormState<SharedServiceFormValue>('sharedService.form', EMPTY_SHARED_SERVICE)
   const [errors, setErrors] = useState<Partial<Record<keyof SharedServiceFormValue, string>>>({})
-  const [validated, setValidated] = useState(false)
+  const [validated, setValidated] = usePersistedFormState('form.validated', false)
 
   function changeField(field: keyof SharedServiceFormValue, value: string): void {
     setForm((current) => ({ ...current, [field]: value }))
@@ -6980,7 +7484,7 @@ function SharedServiceEntryForm({ readOnly }: { readOnly: boolean }): React.JSX.
 function MdtPlanConfirmationForm({ readOnly }: { readOnly: boolean }): React.JSX.Element {
   const [materialModalOpen, setMaterialModalOpen] = useState(false)
   const [materialType, setMaterialType] = useState<'identity' | 'medical'>('identity')
-  const [appointmentAt, setAppointmentAt] = useState('')
+  const [appointmentAt, setAppointmentAt] = usePersistedFormState('mdtPlan.appointmentAt', '')
   const [appointmentError, setAppointmentError] = useState('')
   const [appointmentChecked, setAppointmentChecked] = useState(false)
 
@@ -7088,9 +7592,9 @@ const EMPTY_REGISTRATION_SERVICE_ENTRY: RegistrationAssistanceServiceEntryValue 
 }
 
 function RegistrationAssistanceServiceEntryForm({ order, readOnly }: { order: Order; readOnly: boolean }): React.JSX.Element {
-  const [form, setForm] = useState<RegistrationAssistanceServiceEntryValue>(EMPTY_REGISTRATION_SERVICE_ENTRY)
+  const [form, setForm] = usePersistedFormState<RegistrationAssistanceServiceEntryValue>('registrationService.form', EMPTY_REGISTRATION_SERVICE_ENTRY)
   const [errors, setErrors] = useState<Partial<Record<keyof RegistrationAssistanceServiceEntryValue, string>>>({})
-  const [validated, setValidated] = useState(false)
+  const [validated, setValidated] = usePersistedFormState('form.validated', false)
 
   function updateField(field: keyof RegistrationAssistanceServiceEntryValue, value: string): void {
     setForm((current) => ({ ...current, [field]: value }))
@@ -7142,12 +7646,14 @@ const EMPTY_MDT_SERVICE_PLAN: MdtServicePlanFormValue = {
 }
 
 function MdtServiceEntryForm({ order, readOnly }: { order: Order; readOnly: boolean }): React.JSX.Element {
-  const [form, setForm] = useState<MdtServiceEntryFormValue>(EMPTY_MDT_SERVICE_ENTRY)
-  const [plan, setPlan] = useState<MdtServicePlanFormValue>(EMPTY_MDT_SERVICE_PLAN)
-  const [plans, setPlans] = useState<Array<MdtServicePlanFormValue & { id: number }>>([])
+  const persistedForm = useContext(PersistedFormContext)
+  const [form, setForm] = usePersistedFormState<MdtServiceEntryFormValue>('mdtService.form', EMPTY_MDT_SERVICE_ENTRY)
+  const [plan, setPlan] = usePersistedFormState<MdtServicePlanFormValue>('mdtService.planDraft', EMPTY_MDT_SERVICE_PLAN)
+  const [plans, setPlans] = usePersistedFormState<Array<MdtServicePlanFormValue & { id: number }>>('mdtService.plans', [])
   const [errors, setErrors] = useState<Partial<Record<keyof MdtServiceEntryFormValue, string>>>({})
   const [planErrors, setPlanErrors] = useState<Partial<Record<keyof MdtServicePlanFormValue, string>>>({})
-  const [validated, setValidated] = useState(false)
+  const [validated, setValidated] = usePersistedFormState('form.validated', false)
+  const selectClass = (error?: string): string => inputClass(Boolean(error)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'
 
   function updateField(field: keyof MdtServiceEntryFormValue, value: string): void {
     setForm((current) => ({ ...current, [field]: value }))
@@ -7170,6 +7676,7 @@ function MdtServiceEntryForm({ order, readOnly }: { order: Order; readOnly: bool
     if (Object.keys(nextErrors).length > 0) return
     setPlans((current) => [...current, { ...plan, id: Date.now() }])
     setPlan(EMPTY_MDT_SERVICE_PLAN)
+    void persistedForm?.saveImmediately({}).catch(() => undefined)
   }
 
   function submit(): void {
@@ -7225,7 +7732,7 @@ const EMPTY_REGISTRATION_CHANGE: RegistrationChangeFormValue = {
 
 function RegistrationAssistancePlanView({ order, readOnly }: { order: Order; readOnly: boolean }): React.JSX.Element {
   const [changeOpen, setChangeOpen] = useState(false)
-  const [changeForm, setChangeForm] = useState<RegistrationChangeFormValue>(() => ({ ...EMPTY_REGISTRATION_CHANGE, hospital: order.hospital || '', department: order.dept || '' }))
+  const [changeForm, setChangeForm] = usePersistedFormState<RegistrationChangeFormValue>('registrationPlan.changeForm', () => ({ ...EMPTY_REGISTRATION_CHANGE, hospital: order.hospital || '', department: order.dept || '' }))
   const [errors, setErrors] = useState<Partial<Record<keyof RegistrationChangeFormValue, string>>>({})
   const [status, setStatus] = useState('')
 
@@ -7278,9 +7785,9 @@ const EMPTY_HOSPITAL_CARE_ASSIGNMENT: HospitalCareAssignmentFormValue = {
 }
 
 function HospitalCareAssignmentForm({ order, readOnly }: { order: Order; readOnly: boolean }): React.JSX.Element {
-  const [form, setForm] = useState<HospitalCareAssignmentFormValue>(() => ({ ...EMPTY_HOSPITAL_CARE_ASSIGNMENT, escort: getSessionDisplayName() }))
+  const [form, setForm] = usePersistedFormState<HospitalCareAssignmentFormValue>('hospitalCareAssignment.form', () => ({ ...EMPTY_HOSPITAL_CARE_ASSIGNMENT, escort: getSessionDisplayName() }))
   const [errors, setErrors] = useState<Partial<Record<keyof HospitalCareAssignmentFormValue, string>>>({})
-  const [validated, setValidated] = useState(false)
+  const [validated, setValidated] = usePersistedFormState('form.validated', false)
 
   function updateField(field: keyof HospitalCareAssignmentFormValue, value: string): void {
     setForm((current) => ({ ...current, [field]: value }))
@@ -7363,9 +7870,9 @@ const EMPTY_URGENT_ESCORT_ENTRY: UrgentEscortEntryFormValue = {
 }
 
 function UrgentCheckEscortEntryForm({ order, readOnly }: { order: Order; readOnly: boolean }): React.JSX.Element {
-  const [form, setForm] = useState<UrgentEscortEntryFormValue>(EMPTY_URGENT_ESCORT_ENTRY)
+  const [form, setForm] = usePersistedFormState<UrgentEscortEntryFormValue>('urgentEscort.form', EMPTY_URGENT_ESCORT_ENTRY)
   const [errors, setErrors] = useState<Partial<Record<keyof UrgentEscortEntryFormValue, string>>>({})
-  const [validated, setValidated] = useState(false)
+  const [validated, setValidated] = usePersistedFormState('form.validated', false)
 
   function updateField(field: keyof UrgentEscortEntryFormValue, value: string): void {
     setForm((current) => ({ ...current, [field]: value }))
@@ -7477,20 +7984,21 @@ const EMPTY_HOSPITAL_CARE_ESCORT: HospitalCareEscortFormValue = {
 }
 
 function HospitalCareEscortEntryForm({ order, readOnly }: { order: Order; readOnly: boolean }): React.JSX.Element {
-  const [serviceStart, setServiceStart] = useState('')
-  const [serviceEnd, setServiceEnd] = useState('')
-  const [nurseName, setNurseName] = useState('')
+  const persistedForm = useContext(PersistedFormContext)
+  const [serviceStart, setServiceStart] = usePersistedFormState('hospitalCareEscort.serviceStart', '')
+  const [serviceEnd, setServiceEnd] = usePersistedFormState('hospitalCareEscort.serviceEnd', '')
+  const [nurseName, setNurseName] = usePersistedFormState('hospitalCareEscort.nurseName', '')
   const [serviceErrors, setServiceErrors] = useState<{ start?: string; end?: string; nurse?: string }>({})
-  const [serviceRecords, setServiceRecords] = useState<CareServiceRecord[]>([])
-  const [feedback, setFeedback] = useState('')
+  const [serviceRecords, setServiceRecords] = usePersistedFormState<CareServiceRecord[]>('hospitalCareEscort.serviceRecords', [])
+  const [feedback, setFeedback] = usePersistedFormState('hospitalCareEscort.feedback', '')
   const [feedbackError, setFeedbackError] = useState('')
-  const [feedbackRecords, setFeedbackRecords] = useState<Array<{ id: number; content: string }>>([])
-  const [form, setForm] = useState<HospitalCareEscortFormValue>({
+  const [feedbackRecords, setFeedbackRecords] = usePersistedFormState<Array<{ id: number; content: string }>>('hospitalCareEscort.feedbackRecords', [])
+  const [form, setForm] = usePersistedFormState<HospitalCareEscortFormValue>('hospitalCareEscort.form', {
     ...EMPTY_HOSPITAL_CARE_ESCORT,
     admissionHandledAt: toDateTimeLocal(order.createdAt ?? order.updatedAt)
   })
   const [submitErrors, setSubmitErrors] = useState<{ service?: string; feedback?: string }>({})
-  const [validated, setValidated] = useState(false)
+  const [validated, setValidated] = usePersistedFormState('form.validated', false)
 
   function addService(): void {
     const errors = {
@@ -7506,6 +8014,7 @@ function HospitalCareEscortEntryForm({ order, readOnly }: { order: Order; readOn
     setNurseName('')
     setSubmitErrors((current) => ({ ...current, service: undefined }))
     setValidated(false)
+    void persistedForm?.saveImmediately({}).catch(() => undefined)
   }
 
   function addFeedback(): void {
@@ -7518,6 +8027,7 @@ function HospitalCareEscortEntryForm({ order, readOnly }: { order: Order; readOn
     setFeedbackError('')
     setSubmitErrors((current) => ({ ...current, feedback: undefined }))
     setValidated(false)
+    void persistedForm?.saveImmediately({}).catch(() => undefined)
   }
 
   function updateField(field: keyof HospitalCareEscortFormValue, value: string): void {
@@ -7620,7 +8130,7 @@ function HospitalCareEscortEntryForm({ order, readOnly }: { order: Order; readOn
           <CommunicationField label="服务小结"><textarea value={form.serviceSummary} disabled={readOnly} onChange={(event) => updateField('serviceSummary', event.target.value)} maxLength={1000} placeholder="请输入内容" className="min-h-24 w-full rounded-md border border-border-subtle bg-white px-2.5 py-2 text-body-sm text-text-main outline-none disabled:cursor-not-allowed disabled:bg-surface-bg" /></CommunicationField>
         </div>
 
-        {!readOnly && <div className="flex items-center justify-end gap-3">{validated && <span className="text-body-sm text-status-success">必填字段校验通过</span>}<button type="button" title="爽约处理功能暂未接入" className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white">爽约</button><button type="button" title="保存功能暂未接入" className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white">保存</button><button type="button" onClick={submit} className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white hover:bg-[#06786c]">提交</button></div>}
+        {!readOnly && <div className="flex items-center justify-end gap-3">{validated && <span className="text-body-sm text-status-success">必填字段校验通过</span>}<button type="button" title="爽约处理功能暂未接入" className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white">爽约</button><button type="button" onClick={submit} className="h-9 rounded-md bg-[#078b7c] px-5 text-body-sm font-bold text-white hover:bg-[#06786c]">提交</button></div>}
       </div>
     </div>
   )
@@ -7664,9 +8174,9 @@ const EMPTY_HOSPITAL_ESCORT_ENTRY: HospitalEscortEntryFormValue = {
 }
 
 function HospitalEscortEntryForm({ order, readOnly }: { order: Order; readOnly: boolean }): React.JSX.Element {
-  const [form, setForm] = useState<HospitalEscortEntryFormValue>(EMPTY_HOSPITAL_ESCORT_ENTRY)
+  const [form, setForm] = usePersistedFormState<HospitalEscortEntryFormValue>('hospitalEscort.form', EMPTY_HOSPITAL_ESCORT_ENTRY)
   const [errors, setErrors] = useState<Partial<Record<keyof HospitalEscortEntryFormValue, string>>>({})
-  const [validated, setValidated] = useState(false)
+  const [validated, setValidated] = usePersistedFormState('form.validated', false)
 
   function updateField(field: keyof HospitalEscortEntryFormValue, value: string): void {
     setForm((current) => ({ ...current, [field]: value }))

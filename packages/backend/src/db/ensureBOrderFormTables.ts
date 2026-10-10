@@ -11,7 +11,7 @@ import { DEFAULT_WORKFLOW_TEMPLATES } from '../workflow/defaultWorkflowConfig.js
  *   导致历史订单无法正确展示；
  * - 单值字段保存在 Tab 级 JSONB，多行数据、附件关联和每次修改的审计记录各自独立落表。
  *
- * 这些表暂由启动检查创建，等表单读写 API 开始接入时再按需要补 Prisma model / migration。
+ * 这些运营表单数据由 API 使用参数化 SQL 读写；不修改 B 端原始抓取快照。
  */
 const CREATE_STATEMENTS = [
   // 模板及其版本。code + version 是稳定的业务标识，历史版本不应原地修改。
@@ -438,7 +438,7 @@ const CREATE_STATEMENTS = [
   `
 ]
 
-/** 在后端启动时幂等创建运营表单存储表；数据库异常必须上抛，避免服务带着半初始化结构运行。 */
+/** 在后端启动时幂等创建运营表单存储表；模板目录由表单 API 按订单服务类型懒初始化。 */
 export async function ensureBOrderFormTables(prisma: PrismaClient): Promise<void> {
   await prisma.$transaction(CREATE_STATEMENTS.map((statement) => prisma.$executeRawUnsafe(statement)))
   // 默认配置只在首次缺失时写入；管理员后续在后台维护的配置不会被启动过程覆盖。

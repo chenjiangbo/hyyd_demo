@@ -198,7 +198,7 @@ async function pollTask(callId: number, taskId: string): Promise<void> {
       }
       // 只按 speaker_id 区分说话人（说话人 0 / 1 / …），不臆测身份（谁是员工、谁是客户）
       const text = renderTranscriptText(doc)
-      await prisma.call.update({
+      const completedCall = await prisma.call.update({
         where: { id: callId },
         data: {
           asrStatus: 'done',
@@ -208,7 +208,6 @@ async function pollTask(callId: number, taskId: string): Promise<void> {
         }
       })
       log('info', `callId=${callId} ✅ 转写完成，文本 ${text.length} 字`)
-      // 转写只负责沉淀文本。订单 AI 分析由每日定时任务或页面手动刷新触发。
       return
     }
 

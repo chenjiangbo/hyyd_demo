@@ -144,7 +144,8 @@ export interface HuanyuMysqlPushOptions {
  */
 export async function pullHuanyuOrderFromMysqlByChannelOrderNo(
   prisma: PrismaClient,
-  channelOrderNo: string
+  channelOrderNo: string,
+  orderIdToLink?: number
 ): Promise<HuanyuMysqlPullResult> {
   const lookupNo = channelOrderNo.trim()
   if (!lookupNo) return { found: false, ddbh: null, escortCount: 0, attachmentFound: false }
@@ -195,6 +196,15 @@ export async function pullHuanyuOrderFromMysqlByChannelOrderNo(
           postgresUpsertSql('hy_d_tp', ATTACHMENT_COLUMNS, 'DDBH'),
           ...values(attachment as Record<string, unknown>, ATTACHMENT_COLUMNS)
         )
+      }
+      if (orderIdToLink != null) {
+        const linked = await tx.order.updateMany({
+          where: { id: orderIdToLink, huanyuOrderNo: null },
+          data: { huanyuOrderNo: ddbh }
+        })
+        if (linked.count !== 1) {
+          throw new Error(`B 端订单 ${orderIdToLink} 已关联寰宇订单，无法回拉 ${ddbh}`)
+        }
       }
     })
 

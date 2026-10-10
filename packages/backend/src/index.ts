@@ -35,7 +35,8 @@ import { ensureBOrderFormTables } from './db/ensureBOrderFormTables.js'
 import { ensureReminderTables } from './db/ensureReminderTables.js'
 import { ensureSysSettingsTable } from './db/ensureSysSettingsTable.js'
 import { ensureTaikangHuanyuChannelMappingTable } from './db/ensureTaikangHuanyuChannelMappingTable.js'
-import { syncHuanyuOrderFromTaikang } from './huanyuOrderSync.js'
+import { syncHuanyuOrderFromTaikang, type HuanyuSourceOrder } from './huanyuOrderSync.js'
+import { pullHuanyuOrderFromMysqlByChannelOrderNo } from './huanyuMysqlPush.js'
 import { initializeOrderWorkflow } from './workflow/serviceWorkflow.js'
 
 function isTaikangRegistrationAssistance(rawJson: unknown): boolean {
@@ -63,6 +64,28 @@ const server = fastify({
 })
 
 const prisma = new PrismaClient()
+
+async function syncGreenPassHuanyuOrder(
+  order: HuanyuSourceOrder,
+  taikangAccount?: string | null,
+  employeeName?: string | null
+): Promise<void> {
+  if (!order.huanyuOrderNo) {
+    const pulled = await pullHuanyuOrderFromMysqlByChannelOrderNo(prisma, order.sourceOrderNo, order.id)
+    if (pulled.found) {
+      server.log.info(`已从 MySQL 回拉寰宇订单 ${pulled.ddbh}（泰康订单 ${order.sourceOrderNo}）`)
+      return
+    }
+  }
+
+  const result = await syncHuanyuOrderFromTaikang(prisma, order, taikangAccount, employeeName)
+  if (result.created) {
+    server.log.info(`已创建寰宇订单 ${result.ddbh}（泰康订单 ${order.sourceOrderNo}）`)
+  }
+  if (!result.channelFound || !result.productFound) {
+    server.log.warn(`寰宇订单 ${result.ddbh} 字典映射不完整：渠道=${result.channelFound}，服务项目=${result.productFound}`)
+  }
+}
 
 // 初始化 MinIO 客户端
 // endPoint 是 backend → MinIO 内部访问（同机走 localhost 最稳）。
@@ -122,7 +145,7 @@ async function start() {
     await server.register(cors, {
       origin: true, // 允许所有来源，方便开发联调
       credentials: true, // 允许携带 cookie（管理后台 admin JWT cookie 用）
-      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'X-Employee-Code']
     })
 
@@ -329,18 +352,12 @@ async function start() {
                     }
                   }
 
-                  // 挂号协助由远端寰宇订单回拉，不再随泰康采集自动创建；其他绿通业务维持原逻辑。
+                  // 挂号协助仍在打开详情时回拉；绿通仅在首次创建寰宇订单前查询 MySQL。
                   if (isTaikangRegistrationAssistance(saved.rawJson)) {
                     server.log.info(`泰康挂号协助订单 ${orderData.orderId} 已入库，跳过自动创建寰宇订单`)
                   } else {
                     try {
-                      const result = await syncHuanyuOrderFromTaikang(prisma, saved, taikangAccount, employee.name)
-                      if (result.created) {
-                        server.log.info(`已创建寰宇订单 ${result.ddbh}（泰康订单 ${orderData.orderId}）`)
-                      }
-                      if (!result.channelFound || !result.productFound) {
-                        server.log.warn(`寰宇订单 ${result.ddbh} 字典映射不完整：渠道=${result.channelFound}，服务项目=${result.productFound}`)
-                      }
+                      await syncGreenPassHuanyuOrder(saved, taikangAccount, employee.name)
                     } catch (error) {
                       server.log.error(error, `泰康订单 ${orderData.orderId} 同步寰宇订单失败，将在下次同步/回填时重试`)
                     }
@@ -441,12 +458,11 @@ async function start() {
                     }
                   })
                   if (orderForHuanyu && !isTaikangRegistrationAssistance(orderForHuanyu.rawJson)) {
-                    await syncHuanyuOrderFromTaikang(
-                      prisma,
-                      orderForHuanyu,
-                      employee.taikangAccount,
-                      employee.name
-                    )
+                    try {
+                      await syncGreenPassHuanyuOrder(orderForHuanyu, employee.taikangAccount, employee.name)
+                    } catch (error) {
+                      server.log.error(error, `泰康订单 ${orderForHuanyu.sourceOrderNo} 同步寰宇订单失败，将在下次同步时重试`)
+                    }
                   }
                   server.log.info(`订单详情入库成功: orderId=${result.orderId} 附件=${result.attachmentCount} 跳过=${result.skipped}`)
                   // 注：原本要把对应的 pending command mark done，但插件

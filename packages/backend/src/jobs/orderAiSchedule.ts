@@ -10,6 +10,7 @@ import type { PrismaClient } from '@prisma/client'
 import type * as Minio from 'minio'
 import { refreshOrderBrief } from './orderBriefRunner.js'
 import { applyOrderWorkflowEvent } from '../workflow/serviceWorkflow.js'
+import { summarizeCallIntoBOrderCommunication, type CallForCommunication } from '../callCommunicationRecord.js'
 
 export interface OrderAiScheduleConfig {
   enabled: boolean
@@ -159,6 +160,37 @@ async function processOrder(prisma: PrismaClient, minio: Minio.Client, orderId: 
   // 不使用 force：即使候选筛选与水位在并发时出现短暂差异，也绝不对无新增内容的订单调用模型。
   const result = await refreshOrderBrief(prisma, minio, orderId)
   if (!result?.brief) return false
+
+  // 电话沟通小结遵循同一套 sys_settings.order_ai_schedule 配置，不在 ASR 完成时抢跑。
+  const orderRows = await prisma.$queryRaw<Array<{ application_no: string | null }>>`
+    SELECT raw_json->>'crmApplyNo' AS application_no FROM orders WHERE id = ${orderId} LIMIT 1
+  `
+  const applicationNo = orderRows[0]?.application_no ?? null
+  const calls = await prisma.call.findMany({
+    where: {
+      asrStatus: 'done',
+      asrText: { not: null },
+      OR: [
+        { orderId },
+        ...(applicationNo ? [{ applicationNo }] : [])
+      ]
+    },
+    orderBy: { startedAt: 'asc' }
+  })
+  for (const call of calls) {
+    try {
+      const written = await summarizeCallIntoBOrderCommunication(
+        prisma,
+        call as CallForCommunication,
+        orderId
+      )
+      if (written) console.log(`[order-ai-schedule] 通话 ${call.id} 沟通小结已写入 B 端订单 ${orderId}`)
+    } catch (error) {
+      // 电话小结失败不撤销本轮订单简报，也不阻断同批订单。
+      console.warn(`[order-ai-schedule] 通话 ${call.id} 沟通小结失败:`, (error as Error).message)
+    }
+  }
+
   for (const event of result.brief.workflowEvents) {
     // 同一事实的证据文本产生同一来源引用，定时任务重跑不会重复新建复诊/住院服务包。
     const fingerprint = createHash('sha256').update(`${orderId}:${event.code}:${event.evidence}`).digest('hex').slice(0, 32)

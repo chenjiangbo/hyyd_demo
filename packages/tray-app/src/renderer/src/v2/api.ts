@@ -341,6 +341,48 @@ export function fetchOrderWorkflow(orderId: number): Promise<OrderWorkflow> {
   return authedGet<OrderWorkflow>(`/api/v1/orders/${orderId}/workflow`)
 }
 
+export interface BOrderFormTabData {
+  tab_code: string
+  tab_name: string
+  data_json: Record<string, unknown>
+  status: 'draft' | 'completed' | 'not_applicable'
+  updated_at: string
+}
+
+export interface BOrderFormData {
+  operationId: number
+  templateId: number | null
+  instanceId?: number
+  tabs: BOrderFormTabData[]
+}
+
+export interface BOrderCommunicationRecord {
+  id: number
+  time: string
+  content: string
+  result: '致电成功' | '致电失败'
+  /** 技术去重字段，不在沟通记录界面显示。 */
+  sourceCallId?: number
+  aiGenerated?: boolean
+}
+
+export function fetchBOrderForms(orderId: number): Promise<BOrderFormData> {
+  return authedGet<BOrderFormData>(`/api/v1/orders/${orderId}/forms`)
+}
+
+export function fetchBOrderCommunicationRecords(orderId: number): Promise<BOrderCommunicationRecord[]> {
+  return authedGet<BOrderCommunicationRecord[]>(`/api/v1/orders/${orderId}/forms/communication`)
+}
+
+export function saveBOrderFormTab(
+  orderId: number,
+  tabCode: string,
+  data: Record<string, unknown>,
+  action: 'save' | 'submit' = 'save'
+): Promise<{ tabCode: string; data: Record<string, unknown>; status: 'draft' | 'completed' }> {
+  return authedSend(`/api/v1/orders/${orderId}/forms`, 'PATCH', { tabCode, data, action })
+}
+
 /** 待申领池：泰康公共池订单（任何员工可申领） */
 export function fetchClaimableOrders(): Promise<Order[]> {
   return authedGet<Order[]>('/api/v1/orders?pool=public')
