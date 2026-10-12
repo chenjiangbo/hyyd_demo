@@ -1422,6 +1422,359 @@ export function HuanyuOrderCreatePage({ onBack, onCreated }: { onBack: () => voi
   )
 }
 
+function AiBadge(): React.JSX.Element {
+  return (
+    <span
+      className="shrink-0 text-[10px] px-1 py-0.2 bg-purple-50 text-purple-600 rounded border border-purple-200 font-medium select-none pointer-events-none"
+      title="由AI智能分析识别，点击保存后写入数据库"
+    >
+      AI
+    </span>
+  )
+}
+
+function HuanyuInput({
+  label,
+  value,
+  onChange,
+  wide = false,
+  disabled = false,
+  type = 'text',
+  required = false,
+  copyable = false,
+  isAi = false
+}: {
+  label: string
+  value: string | boolean
+  onChange: (value: string) => void
+  wide?: boolean
+  disabled?: boolean
+  type?: React.HTMLInputTypeAttribute
+  required?: boolean
+  copyable?: boolean
+  isAi?: boolean
+}): React.JSX.Element {
+  const textValue = typeof value === 'string' ? value : (value != null ? String(value) : '')
+  const [copied, setCopied] = useState(false)
+  return (
+    <label className={'flex min-w-0 items-center gap-1.5 ' + (wide ? 'md:col-span-2 xl:col-span-4' : '')}>
+      <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">
+        {required && <span className="text-status-danger mr-0.5">*</span>}
+        {label}：
+      </span>
+      <div className="relative flex min-w-0 flex-1 items-center">
+        <input
+          type={type}
+          disabled={disabled}
+          value={textValue}
+          onChange={(event) => onChange(event.target.value)}
+          className={
+            'h-8 min-w-0 flex-1 rounded border border-border-subtle px-2.5 text-body-sm text-text-main outline-none transition-colors ' +
+            (copyable || isAi ? 'pr-8 ' : '') +
+            (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary')
+          }
+        />
+        {isAi && !copyable && (
+          <span className="absolute right-2 flex items-center">
+            <AiBadge />
+          </span>
+        )}
+        {copyable && textValue && (
+          <button
+            type="button"
+            title={copied ? '已复制' : '复制内容'}
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              void navigator.clipboard?.writeText(textValue)
+              setCopied(true)
+              setTimeout(() => setCopied(false), 1200)
+            }}
+            className="absolute right-1.5 flex items-center justify-center p-0.5 text-text-muted transition-colors hover:text-primary"
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>
+              {copied ? 'check' : 'content_copy'}
+            </span>
+          </button>
+        )}
+      </div>
+    </label>
+  )
+}
+
+interface HuanyuSelectOption {
+  value: string
+  label: string
+}
+
+interface HuanyuSearchOption {
+  id: string
+  name: string
+}
+
+/**
+ * 下拉项只展示名称；面板按最长名称计算宽度，避免有代码时靠截断勉强显示。
+ * 最小宽度仍由触发输入框约束，超出视口时交由面板横向滚动处理。
+ */
+function dropdownWidthForNames(names: string[], minimum: number): number {
+  const validNames = names.filter(Boolean)
+  if (validNames.length === 0 || typeof document === 'undefined') return minimum
+  const canvas = document.createElement('canvas')
+  const context = canvas.getContext('2d')
+  if (!context) return Math.max(minimum, ...validNames.map((name) => name.length * 14 + 28))
+  context.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif'
+  return Math.max(minimum, ...validNames.map((name) => Math.ceil(context.measureText(name).width) + 28))
+}
+
+function HuanyuSearchSelect({
+  label,
+  value,
+  options,
+  loading,
+  error,
+  disabled = false,
+  disabledPlaceholder = '请先选择上级字段',
+  onSearch,
+  onChange,
+  isAi = false
+}: {
+  label: string
+  value: string | boolean
+  options: HuanyuSearchOption[]
+  loading: boolean
+  error: string | null
+  disabled?: boolean
+  disabledPlaceholder?: string
+  onSearch: (value: string) => void
+  onChange: (value: string) => void
+  isAi?: boolean
+}): React.JSX.Element {
+  const currentValue = typeof value === 'string' ? value : ''
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const [isTyping, setIsTyping] = useState(false)
+  const selected = options.find((option) => option.id === currentValue || option.name === currentValue)
+  const currentName = selected?.name ?? currentValue
+  const shownValue = open && isTyping ? search : currentName
+
+  function closeSoon(): void {
+    window.setTimeout(() => {
+      setOpen(false)
+      setIsTyping(false)
+    }, 200)
+  }
+
+  return (
+    <label className="relative flex min-w-0 items-center gap-1.5">
+      <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
+      <div className="relative min-w-0 flex-1">
+        <input
+          value={shownValue}
+          disabled={disabled}
+          placeholder={disabled ? disabledPlaceholder : '输入搜索'}
+          onFocus={(e) => {
+            setOpen(true)
+            setIsTyping(false)
+            setSearch('')
+            onSearch('')
+            e.target.select()
+          }}
+          onBlur={closeSoon}
+          onChange={(event) => {
+            const next = event.target.value
+            setIsTyping(true)
+            setSearch(next)
+            onSearch(next)
+            setOpen(true)
+          }}
+          className={
+            'h-8 min-w-0 w-full rounded border border-border-subtle px-2.5 text-body-sm text-text-main outline-none transition-colors ' +
+            (isAi ? 'pr-8 ' : '') +
+            (disabled
+              ? 'cursor-not-allowed bg-surface-container text-text-muted'
+              : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary')
+          }
+        />
+        {isAi && (
+          <span className="absolute right-2 top-1.5 flex items-center">
+            <AiBadge />
+          </span>
+        )}
+        {open && !disabled && (
+          <div className="absolute z-20 mt-1 max-h-52 w-max min-w-full max-w-[calc(100vw-24px)] overflow-x-auto overflow-y-auto rounded-md border border-border-subtle bg-white py-1 shadow-lg">
+            {loading && <div className="px-3 py-1.5 text-body-sm text-text-muted">加载中…</div>}
+            {!loading && error && <div className="px-3 py-1.5 text-body-sm text-error">{error}</div>}
+            {!loading && !error && options.length === 0 && <div className="px-3 py-1.5 text-body-sm text-text-muted">暂无匹配数据</div>}
+            {!loading && !error && options.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  onChange(option.id)
+                  setSearch('')
+                  setIsTyping(false)
+                  setOpen(false)
+                }}
+                className="block w-full whitespace-nowrap px-3 py-1.5 text-left text-body-sm text-text-main hover:bg-surface-bg"
+              >
+                {option.name}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </label>
+  )
+}
+
+function HuanyuSelect({
+  label,
+  value,
+  options = [],
+  onChange,
+  isAi = false
+}: {
+  label: string
+  value: string | boolean
+  options?: Array<string | HuanyuSelectOption>
+  onChange: (value: string) => void
+  isAi?: boolean
+}): React.JSX.Element {
+  const currentValue = typeof value === 'string' ? value.trim() : (value != null ? String(value).trim() : '')
+  const normalizedOptions = options.map((option) => typeof option === 'string' ? { value: option, label: option } : option)
+  const hasEmptyOption = normalizedOptions.some((option) => option.value === '')
+  const baseOptions = !hasEmptyOption ? [{ value: '', label: '' }, ...normalizedOptions] : normalizedOptions
+  const isMatched = baseOptions.some((option) => option.value === currentValue)
+  const visibleOptions = currentValue && !isMatched
+    ? [{ value: currentValue, label: currentValue }, ...baseOptions]
+    : baseOptions
+  return (
+    <label className="flex min-w-0 items-center gap-1.5">
+      <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
+      <div className="relative flex min-w-0 flex-1 items-center">
+        <select
+          value={currentValue}
+          onChange={(event) => onChange(event.target.value)}
+          className={
+            'h-8 min-w-0 flex-1 rounded border border-border-subtle bg-white px-2.5 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary ' +
+            (isAi ? 'pr-8 ' : '')
+          }
+        >
+          {visibleOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+        {isAi && (
+          <span className="absolute right-6 top-1.5 flex items-center">
+            <AiBadge />
+          </span>
+        )}
+      </div>
+    </label>
+  )
+}
+
+function HuanyuAmountField({
+  value,
+  editable,
+  locked = false,
+  onChange,
+  onEditableChange
+}: {
+  value: string | boolean
+  editable: boolean
+  locked?: boolean
+  onChange: (value: string) => void
+  onEditableChange: (value: boolean) => void
+}): React.JSX.Element {
+  return (
+    <div className="flex min-w-0 items-center gap-1.5">
+      <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">订单金额：</span>
+      <input
+        type="number"
+        inputMode="decimal"
+        step="0.01"
+        aria-label="订单金额"
+        disabled={locked || !editable}
+        value={typeof value === 'string' ? value : ''}
+        onChange={(event) => onChange(event.target.value)}
+        className={
+          'h-8 min-w-[76px] flex-1 rounded border border-border-subtle px-2.5 text-body-sm text-text-main outline-none transition-colors ' +
+          (!locked && editable ? 'bg-white focus:border-primary focus:ring-1 focus:ring-primary' : 'cursor-not-allowed bg-surface-container text-text-muted')
+        }
+      />
+      <label className="flex h-8 w-[74px] min-w-[44px] shrink items-center gap-1 text-body-sm text-text-main">
+        <input type="checkbox" checked={editable} disabled={locked} onChange={(event) => onEditableChange(event.target.checked)} className="h-4 w-4 shrink-0 accent-primary disabled:cursor-not-allowed" />
+        <span className="flex min-w-0 flex-wrap text-[12px] leading-4"><span className="whitespace-nowrap">金额</span><span className="whitespace-nowrap">修改</span></span>
+      </label>
+    </div>
+  )
+}
+
+function HuanyuTextarea({
+  label,
+  value,
+  onChange,
+  placeholder = '请输入内容',
+  minHeight = 'min-h-24',
+  disabled = false,
+  copyable = false,
+  isAi = false
+}: {
+  label?: string
+  value: string | boolean
+  onChange: (value: string) => void
+  placeholder?: string
+  minHeight?: string
+  disabled?: boolean
+  copyable?: boolean
+  isAi?: boolean
+}): React.JSX.Element {
+  const textValue = typeof value === 'string' ? value : ''
+  const [copied, setCopied] = useState(false)
+
+  return (
+    <div className="flex min-w-0 items-start gap-1.5">
+      {label && (
+        <span className="w-28 shrink-0 pt-1.5 text-right text-body-sm font-medium text-text-muted flex items-center justify-end">
+          <span>{label}：</span>
+          {isAi && <AiBadge />}
+        </span>
+      )}
+      <div className="min-w-0 flex-1">
+        <textarea
+          disabled={disabled}
+          value={textValue}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+          className={
+            'min-w-0 w-full resize-y rounded border border-border-subtle p-2.5 text-body-sm text-text-main outline-none transition-colors ' +
+            (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary') +
+            ' ' +
+            minHeight
+          }
+        />
+        {copyable && (
+          <div className="mt-1 flex justify-end">
+            <button
+              type="button"
+              disabled={!textValue}
+              onClick={() => {
+                void navigator.clipboard?.writeText(textValue)
+                setCopied(true)
+                setTimeout(() => setCopied(false), 1200)
+              }}
+              className="inline-flex items-center gap-1 text-xs text-primary hover:underline disabled:cursor-not-allowed disabled:text-text-muted"
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>{copied ? 'check' : 'content_copy'}</span>
+              {copied ? '已复制' : '复制内容'}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function HuanyuOrderForm({
   initialForm,
   initialEscorts,
@@ -1889,7 +2242,7 @@ function HuanyuOrderForm({
     if (!isCreate && !hasHuanyuOrderNo) return false
     const patientName = String(form.patientName || '').trim()
     if (isCreate && !patientName) {
-      window.alert('就诊人姓名不能为空，请输入就诊人姓名')
+      setSaveStatus({ type: 'error', message: '就诊人姓名不能为空，请填写后再保存' })
       return false
     }
     setIsSaving(true)
@@ -2650,6 +3003,7 @@ function HuanyuOrderForm({
   ])
 
   function changeField(key: string, value: string | boolean): void {
+    if (key === 'patientName' && String(value).trim()) setSaveStatus(null)
     setForm((current) => {
       if (key === 'orderStatus') {
         const next = { ...current, orderStatus: value }
@@ -3955,359 +4309,6 @@ function HuanyuEscortSelectCell({
           ))}
         </div>
       )}
-    </div>
-  )
-}
-
-function AiBadge(): React.JSX.Element {
-  return (
-    <span
-      className="shrink-0 text-[10px] px-1 py-0.2 bg-purple-50 text-purple-600 rounded border border-purple-200 font-medium select-none pointer-events-none"
-      title="由AI智能分析识别，点击保存后写入数据库"
-    >
-      AI
-    </span>
-  )
-}
-
-function HuanyuInput({
-  label,
-  value,
-  onChange,
-  wide = false,
-  disabled = false,
-  type = 'text',
-  required = false,
-  copyable = false,
-  isAi = false
-}: {
-  label: string
-  value: string | boolean
-  onChange: (value: string) => void
-  wide?: boolean
-  disabled?: boolean
-  type?: React.HTMLInputTypeAttribute
-  required?: boolean
-  copyable?: boolean
-  isAi?: boolean
-}): React.JSX.Element {
-  const textValue = typeof value === 'string' ? value : (value != null ? String(value) : '')
-  const [copied, setCopied] = useState(false)
-  return (
-    <label className={'flex min-w-0 items-center gap-1.5 ' + (wide ? 'md:col-span-2 xl:col-span-4' : '')}>
-      <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">
-        {required && <span className="text-status-danger mr-0.5">*</span>}
-        {label}：
-      </span>
-      <div className="relative flex min-w-0 flex-1 items-center">
-        <input
-          type={type}
-          disabled={disabled}
-          value={textValue}
-          onChange={(event) => onChange(event.target.value)}
-          className={
-            'h-8 min-w-0 flex-1 rounded border border-border-subtle px-2.5 text-body-sm text-text-main outline-none transition-colors ' +
-            (copyable || isAi ? 'pr-8 ' : '') +
-            (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary')
-          }
-        />
-        {isAi && !copyable && (
-          <span className="absolute right-2 flex items-center">
-            <AiBadge />
-          </span>
-        )}
-        {copyable && textValue && (
-          <button
-            type="button"
-            title={copied ? '已复制' : '复制内容'}
-            onClick={(e) => {
-              e.preventDefault()
-              e.stopPropagation()
-              void navigator.clipboard?.writeText(textValue)
-              setCopied(true)
-              setTimeout(() => setCopied(false), 1200)
-            }}
-            className="absolute right-1.5 flex items-center justify-center p-0.5 text-text-muted transition-colors hover:text-primary"
-          >
-            <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>
-              {copied ? 'check' : 'content_copy'}
-            </span>
-          </button>
-        )}
-      </div>
-    </label>
-  )
-}
-
-interface HuanyuSelectOption {
-  value: string
-  label: string
-}
-
-interface HuanyuSearchOption {
-  id: string
-  name: string
-}
-
-/**
- * 下拉项只展示名称；面板按最长名称计算宽度，避免有代码时靠截断勉强显示。
- * 最小宽度仍由触发输入框约束，超出视口时交由面板横向滚动处理。
- */
-function dropdownWidthForNames(names: string[], minimum: number): number {
-  const validNames = names.filter(Boolean)
-  if (validNames.length === 0 || typeof document === 'undefined') return minimum
-  const canvas = document.createElement('canvas')
-  const context = canvas.getContext('2d')
-  if (!context) return Math.max(minimum, ...validNames.map((name) => name.length * 14 + 28))
-  context.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif'
-  return Math.max(minimum, ...validNames.map((name) => Math.ceil(context.measureText(name).width) + 28))
-}
-
-function HuanyuSearchSelect({
-  label,
-  value,
-  options,
-  loading,
-  error,
-  disabled = false,
-  disabledPlaceholder = '请先选择上级字段',
-  onSearch,
-  onChange,
-  isAi = false
-}: {
-  label: string
-  value: string | boolean
-  options: HuanyuSearchOption[]
-  loading: boolean
-  error: string | null
-  disabled?: boolean
-  disabledPlaceholder?: string
-  onSearch: (value: string) => void
-  onChange: (value: string) => void
-  isAi?: boolean
-}): React.JSX.Element {
-  const currentValue = typeof value === 'string' ? value : ''
-  const [open, setOpen] = useState(false)
-  const [search, setSearch] = useState('')
-  const [isTyping, setIsTyping] = useState(false)
-  const selected = options.find((option) => option.id === currentValue || option.name === currentValue)
-  const currentName = selected?.name ?? currentValue
-  const shownValue = open && isTyping ? search : currentName
-
-  function closeSoon(): void {
-    window.setTimeout(() => {
-      setOpen(false)
-      setIsTyping(false)
-    }, 200)
-  }
-
-  return (
-    <label className="relative flex min-w-0 items-center gap-1.5">
-      <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
-      <div className="relative min-w-0 flex-1">
-        <input
-          value={shownValue}
-          disabled={disabled}
-          placeholder={disabled ? disabledPlaceholder : '输入搜索'}
-          onFocus={(e) => {
-            setOpen(true)
-            setIsTyping(false)
-            setSearch('')
-            onSearch('')
-            e.target.select()
-          }}
-          onBlur={closeSoon}
-          onChange={(event) => {
-            const next = event.target.value
-            setIsTyping(true)
-            setSearch(next)
-            onSearch(next)
-            setOpen(true)
-          }}
-          className={
-            'h-8 min-w-0 w-full rounded border border-border-subtle px-2.5 text-body-sm text-text-main outline-none transition-colors ' +
-            (isAi ? 'pr-8 ' : '') +
-            (disabled
-              ? 'cursor-not-allowed bg-surface-container text-text-muted'
-              : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary')
-          }
-        />
-        {isAi && (
-          <span className="absolute right-2 top-1.5 flex items-center">
-            <AiBadge />
-          </span>
-        )}
-        {open && !disabled && (
-          <div className="absolute z-20 mt-1 max-h-52 w-max min-w-full max-w-[calc(100vw-24px)] overflow-x-auto overflow-y-auto rounded-md border border-border-subtle bg-white py-1 shadow-lg">
-            {loading && <div className="px-3 py-1.5 text-body-sm text-text-muted">加载中…</div>}
-            {!loading && error && <div className="px-3 py-1.5 text-body-sm text-error">{error}</div>}
-            {!loading && !error && options.length === 0 && <div className="px-3 py-1.5 text-body-sm text-text-muted">暂无匹配数据</div>}
-            {!loading && !error && options.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => {
-                  onChange(option.id)
-                  setSearch('')
-                  setIsTyping(false)
-                  setOpen(false)
-                }}
-                className="block w-full whitespace-nowrap px-3 py-1.5 text-left text-body-sm text-text-main hover:bg-surface-bg"
-              >
-                {option.name}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    </label>
-  )
-}
-
-function HuanyuSelect({
-  label,
-  value,
-  options = [],
-  onChange,
-  isAi = false
-}: {
-  label: string
-  value: string | boolean
-  options?: Array<string | HuanyuSelectOption>
-  onChange: (value: string) => void
-  isAi?: boolean
-}): React.JSX.Element {
-  const currentValue = typeof value === 'string' ? value.trim() : (value != null ? String(value).trim() : '')
-  const normalizedOptions = options.map((option) => typeof option === 'string' ? { value: option, label: option } : option)
-  const hasEmptyOption = normalizedOptions.some((option) => option.value === '')
-  const baseOptions = !hasEmptyOption ? [{ value: '', label: '' }, ...normalizedOptions] : normalizedOptions
-  const isMatched = baseOptions.some((option) => option.value === currentValue)
-  const visibleOptions = currentValue && !isMatched
-    ? [{ value: currentValue, label: currentValue }, ...baseOptions]
-    : baseOptions
-  return (
-    <label className="flex min-w-0 items-center gap-1.5">
-      <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
-      <div className="relative flex min-w-0 flex-1 items-center">
-        <select
-          value={currentValue}
-          onChange={(event) => onChange(event.target.value)}
-          className={
-            'h-8 min-w-0 flex-1 rounded border border-border-subtle bg-white px-2.5 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary ' +
-            (isAi ? 'pr-8 ' : '')
-          }
-        >
-          {visibleOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
-        {isAi && (
-          <span className="absolute right-6 top-1.5 flex items-center">
-            <AiBadge />
-          </span>
-        )}
-      </div>
-    </label>
-  )
-}
-
-function HuanyuAmountField({
-  value,
-  editable,
-  locked = false,
-  onChange,
-  onEditableChange
-}: {
-  value: string | boolean
-  editable: boolean
-  locked?: boolean
-  onChange: (value: string) => void
-  onEditableChange: (value: boolean) => void
-}): React.JSX.Element {
-  return (
-    <div className="flex min-w-0 items-center gap-1.5">
-      <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">订单金额：</span>
-      <input
-        type="number"
-        inputMode="decimal"
-        step="0.01"
-        aria-label="订单金额"
-        disabled={locked || !editable}
-        value={typeof value === 'string' ? value : ''}
-        onChange={(event) => onChange(event.target.value)}
-        className={
-          'h-8 min-w-[76px] flex-1 rounded border border-border-subtle px-2.5 text-body-sm text-text-main outline-none transition-colors ' +
-          (!locked && editable ? 'bg-white focus:border-primary focus:ring-1 focus:ring-primary' : 'cursor-not-allowed bg-surface-container text-text-muted')
-        }
-      />
-      <label className="flex h-8 w-[74px] min-w-[44px] shrink items-center gap-1 text-body-sm text-text-main">
-        <input type="checkbox" checked={editable} disabled={locked} onChange={(event) => onEditableChange(event.target.checked)} className="h-4 w-4 shrink-0 accent-primary disabled:cursor-not-allowed" />
-        <span className="flex min-w-0 flex-wrap text-[12px] leading-4"><span className="whitespace-nowrap">金额</span><span className="whitespace-nowrap">修改</span></span>
-      </label>
-    </div>
-  )
-}
-
-function HuanyuTextarea({
-  label,
-  value,
-  onChange,
-  placeholder = '请输入内容',
-  minHeight = 'min-h-24',
-  disabled = false,
-  copyable = false,
-  isAi = false
-}: {
-  label?: string
-  value: string | boolean
-  onChange: (value: string) => void
-  placeholder?: string
-  minHeight?: string
-  disabled?: boolean
-  copyable?: boolean
-  isAi?: boolean
-}): React.JSX.Element {
-  const textValue = typeof value === 'string' ? value : ''
-  const [copied, setCopied] = useState(false)
-
-  return (
-    <div className="flex min-w-0 items-start gap-1.5">
-      {label && (
-        <span className="w-28 shrink-0 pt-1.5 text-right text-body-sm font-medium text-text-muted flex items-center justify-end">
-          <span>{label}：</span>
-          {isAi && <AiBadge />}
-        </span>
-      )}
-      <div className="min-w-0 flex-1">
-        <textarea
-          disabled={disabled}
-          value={textValue}
-          onChange={(event) => onChange(event.target.value)}
-          placeholder={placeholder}
-          className={
-            'min-w-0 w-full resize-y rounded border border-border-subtle p-2.5 text-body-sm text-text-main outline-none transition-colors ' +
-            (disabled ? 'cursor-not-allowed bg-surface-container text-text-muted' : 'bg-white focus:border-primary focus:ring-1 focus:ring-primary') +
-            ' ' +
-            minHeight
-          }
-        />
-        {copyable && (
-          <div className="mt-1 flex justify-end">
-            <button
-              type="button"
-              disabled={!textValue}
-              onClick={() => {
-                void navigator.clipboard?.writeText(textValue)
-                setCopied(true)
-                setTimeout(() => setCopied(false), 1200)
-              }}
-              className="inline-flex items-center gap-1 text-xs text-primary hover:underline disabled:cursor-not-allowed disabled:text-text-muted"
-            >
-              <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>{copied ? 'check' : 'content_copy'}</span>
-              {copied ? '已复制' : '复制内容'}
-            </button>
-          </div>
-        )}
-      </div>
     </div>
   )
 }

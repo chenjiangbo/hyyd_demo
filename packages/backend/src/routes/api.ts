@@ -1072,6 +1072,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     // 仅当本地尚无寰宇订单号时才触发回拉，避免详情页每次打开覆盖人工维护的本地快照。
     const isTaikangRegistrationAssistance = isTaikangRegistrationAssistanceOrder(orderObj, rawObj)
     const orderNoCandidates = [
+      orderObj.huanyuOrderNo,
       orderObj.sourceOrderNo,
       rawObj.sourceOrderNo,
       rawObj.channelOrderNo,
@@ -1219,7 +1220,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       orderNo: h.DDBH || '',
       orderStatus: h.DD_state || orderObj.status || '',
       channel: h.BDQD || '',
-      channelOrderNo: h.BDQD_DDBH || orderObj.sourceOrderNo || '',
+      channelOrderNo: h.BDQD_DDBH || (orderObj.source === 'huanyu' ? '' : orderObj.sourceOrderNo) || '',
       backupOrderNo: h.BDQD_DDBH2 || '',
       channelDetail: h.BDQD_XF || '',
       channelContact: h.BDQD_DJR || '',
@@ -1341,9 +1342,22 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     }
 
     const employeeName = request.employee.name || request.employee.token
+    const creatorEmployeeId = request.employee.id
     const accountManager = String(body.accountManager || '').trim() || employeeName
     const orderStatus = String(body.orderStatus || '待跟进').trim()
     const nowStr = new Date().toISOString()
+    const channelOrderNoStr = String(body.channelOrderNo || '').trim()
+    const isPureSelfOperated = body.source === 'huanyu' ||
+      body.isSelfOperated === true ||
+      (body.mode === 'create' && !channelOrderNoStr) ||
+      channelOrderNoStr.startsWith('HYYD') ||
+      (orderNo.startsWith('HYYD') && channelOrderNoStr === orderNo)
+    if (!isPureSelfOperated && !channelOrderNoStr) {
+      return reply.status(400).send({ ok: false, error: 'B 端订单号不能为空' })
+    }
+    if (isPureSelfOperated && !patientName) {
+      return reply.status(400).send({ ok: false, error: '就诊人姓名不能为空' })
+    }
 
     const toHuanyuStorageFormat = (val: string | null | undefined): string | null => {
       if (!val) return null
@@ -1387,7 +1401,8 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
 
     try {
       // 1. 保存/更新主表 HY_FACT_DDCX_NEW
-      await prisma.$executeRawUnsafe(`
+      const selfOrder = await prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`
         INSERT INTO "HY_FACT_DDCX_NEW" (
           "DDBH", "DD_state", "BDQD", "BDQD_DDBH", "BDQD_DDBH2", "BDQD_XF",
           "BDQD_DJR", "BDQD_DJR2", "BDQD_FWXM", "DDJE", "KHJL", "JZR_XM",
@@ -1460,7 +1475,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         orderNo,
         orderStatus,
         body.channel || null,
-        body.channelOrderNo || null,
+        isPureSelfOperated ? null : (body.channelOrderNo || null),
         body.backupOrderNo || null,
         body.channelDetail || null,
         body.channelContact || null,
@@ -1509,7 +1524,31 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         body.expertLevel || null,
         lastQueueFormatted,
         nowStr
-      )
+        )
+
+        if (!isPureSelfOperated) return null
+        const existing = await tx.order.upsert({
+          where: { huanyuOrderNo: orderNo },
+          update: {},
+          create: {
+            source: 'huanyu',
+            sourceOrderNo: `SELF:${orderNo}`,
+            customerName: patientName,
+            huanyuOrderNo: orderNo,
+            assignedEmployeeId: creatorEmployeeId
+          }
+        })
+        if (existing.source !== 'huanyu') {
+          throw new Error(`寰宇订单 ${orderNo} 已关联 B 端订单，不能创建自建订单入口`)
+        }
+        return tx.order.update({
+          where: { id: existing.id },
+          data: {
+            customerName: patientName,
+            assignedEmployeeId: existing.assignedEmployeeId ?? creatorEmployeeId
+          }
+        })
+      })
 
       // 2. 更新陪诊人表 fact_hy_pzrxx
       if (Array.isArray(body.escortList)) {
@@ -1531,14 +1570,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         }
       }
 
-      // 3. 自建单原则：自建单不在 orders 表记录，绝对不查、不写、不碰 orders 表！
-      // 只有在明确存在第三方外部 B 端渠道工单号（且不是自建单、非 HYYD 自身单号）时，才同步原 B 端工单镜像
-      const channelOrderNoStr = String(body.channelOrderNo || '').trim()
-      const isPureSelfOperated = body.source === 'huanyu' || 
-        body.isSelfOperated === true ||
-        !channelOrderNoStr ||
-        channelOrderNoStr.startsWith('HYYD') ||
-        (orderNo.startsWith('HYYD') && (!channelOrderNoStr || channelOrderNoStr === orderNo))
+      // 3. 自建单也写入 orders，作为列表入口；复制服务单仍只写寰宇事实表。
 
       let resolvedHospitalName = body.hospital || null
       if (body.hospital) {
@@ -1556,7 +1588,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         if (doc?.name) resolvedDoctorName = doc.name
       }
 
-      let syncedOrder: any = null
+      let syncedOrder: any = selfOrder
       if (!isPureSelfOperated && channelOrderNoStr) {
         const existingOrder = await prisma.order.findFirst({
           where: { sourceOrderNo: channelOrderNoStr }
@@ -1616,20 +1648,8 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       }
 
       if (!syncedOrder) {
-        // 自建寰宇订单：坚决不写、不碰 orders 表，直接构造返回对象
-        syncedOrder = {
-          id: `huanyu-${orderNo}`,
-          source: 'huanyu',
-          sourceOrderNo: '',
-          huanyuOrderNo: orderNo,
-          customerName: patientName,
-          customerPhone: body.patientPhone || null,
-          hospital: resolvedHospitalName,
-          dept: resolvedDeptName,
-          doctor: resolvedDoctorName,
-          status: orderStatus,
-          rawJson: { ...orderRawBody, orderNo, DDBH: orderNo }
-        }
+        // 没有对应 B 端 orders 行时，不能静默返回一个无法从列表找到的假订单。
+        throw new Error(`寰宇订单 ${orderNo} 未找到对应的 B 端订单入口`)
       }
 
       // 4. 触发远程 MySQL 核心主数据（医院、院区、对外科室、医生、陪诊人员）查重与自动建档
@@ -1725,6 +1745,17 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       )
       if (!existingRows || existingRows.length === 0) {
         return reply.status(404).send({ ok: false, error: `原寰宇订单 ${sourceOrderNo} 不存在` })
+      }
+      const motherBOrderNo = String(existingRows[0].BDQD_DDBH || '').trim()
+      if (!motherBOrderNo) {
+        return reply.status(400).send({ ok: false, error: '原订单没有 B 端母单号，无法作为复制服务单关联到申请列表' })
+      }
+      const motherOrder = await prisma.order.findFirst({
+        where: { sourceOrderNo: motherBOrderNo },
+        select: { id: true }
+      })
+      if (!motherOrder) {
+        return reply.status(409).send({ ok: false, error: `B 端母单 ${motherBOrderNo} 尚未入库，复制后无法在列表展示` })
       }
 
       // 2. 生成全新不重复的寰宇单号
@@ -2177,353 +2208,12 @@ function calculateChannelProductPrice(
   return null
 }
 
-interface SelfOpQueryParams {
-  captureEmployeeId: number | null
-  query?: string
-  status?: string
-  lane?: string
-  applicationNo?: string
-  sourceOrderNo?: string
-  huanyuOrderNo?: string
-  serviceType?: string
-  customerName?: string
-  accountManager?: string
-  hospital?: string
-  dept?: string
-  doctor?: string
-  minAmount?: string | number
-  maxAmount?: string | number
-  startDate?: string
-  endDate?: string
-}
-
-async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfOpQueryParams): Promise<any[]> {
-  if (params.applicationNo && typeof params.applicationNo === 'string' && params.applicationNo.trim()) {
-    return []
-  }
-
-  let employeeName: string | null = null
-  if (params.captureEmployeeId) {
-    const employee = await prisma.employee.findUnique({
-      where: { id: params.captureEmployeeId },
-      select: { name: true }
-    })
-    employeeName = employee?.name || null
-  }
-
-  try {
-    const q = (params.query && typeof params.query === 'string') ? params.query.trim() : ''
-    const docParam = (params.doctor && typeof params.doctor === 'string') ? params.doctor.trim() : ''
-    const deptParam = (params.dept && typeof params.dept === 'string') ? params.dept.trim() : ''
-    const hospParam = (params.hospital && typeof params.hospital === 'string') ? params.hospital.trim() : ''
-    const prodParam = (params.serviceType && typeof params.serviceType === 'string') ? params.serviceType.trim() : ''
-
-    const [
-      qDocIds, qDeptIds, qHospIds, qProdIds,
-      fDocIds, fDeptIds, fHospIds, fProdIds
-    ] = await Promise.all([
-      q ? findHuanyuDoctorIdsByName(q).catch(() => []) : Promise.resolve([]),
-      q ? findHuanyuDepartmentIdsByName(q).catch(() => []) : Promise.resolve([]),
-      q ? findHuanyuHospitalIdsByName(q).catch(() => []) : Promise.resolve([]),
-      q ? findHuanyuProductIdsByName(q).catch(() => []) : Promise.resolve([]),
-      docParam ? findHuanyuDoctorIdsByName(docParam).catch(() => []) : Promise.resolve([]),
-      deptParam ? findHuanyuDepartmentIdsByName(deptParam).catch(() => []) : Promise.resolve([]),
-      hospParam ? findHuanyuHospitalIdsByName(hospParam).catch(() => []) : Promise.resolve([]),
-      prodParam ? findHuanyuProductIdsByName(prodParam).catch(() => []) : Promise.resolve([])
-    ])
-
-    const qDocIdSet = new Set(qDocIds)
-    const qDeptIdSet = new Set(qDeptIds)
-    const qHospIdSet = new Set(qHospIds)
-    const qProdIdSet = new Set(qProdIds)
-    const fDocIdSet = new Set(fDocIds)
-    const fDeptIdSet = new Set(fDeptIds)
-    const fHospIdSet = new Set(fHospIds)
-    const fProdIdSet = new Set(fProdIds)
-
-    const sqlConditions: Prisma.Sql[] = [
-      Prisma.sql`"DDBH" LIKE 'HYYD%'`,
-      Prisma.sql`("BDQD_DDBH" IS NULL OR "BDQD_DDBH" = '')`
-    ]
-
-    if (q) {
-      const qConds: Prisma.Sql[] = [
-        Prisma.sql`"JZR_XM" ILIKE ${'%' + q + '%'}`,
-        Prisma.sql`"DDBH" ILIKE ${'%' + q + '%'}`,
-        Prisma.sql`"KHJL" ILIKE ${'%' + q + '%'}`,
-        Prisma.sql`"H_YS" ILIKE ${'%' + q + '%'}`,
-        Prisma.sql`"H_KS" ILIKE ${'%' + q + '%'}`,
-        Prisma.sql`"H_NAME" ILIKE ${'%' + q + '%'}`,
-        Prisma.sql`"BDQD_FWXM" ILIKE ${'%' + q + '%'}`
-      ]
-      if (qDocIds.length > 0) qConds.push(Prisma.sql`"H_YS" IN (${Prisma.join(qDocIds)})`)
-      if (qDeptIds.length > 0) qConds.push(Prisma.sql`"H_KS" IN (${Prisma.join(qDeptIds)})`)
-      if (qHospIds.length > 0) qConds.push(Prisma.sql`"H_NAME" IN (${Prisma.join(qHospIds)})`)
-      if (qProdIds.length > 0) qConds.push(Prisma.sql`"BDQD_FWXM" IN (${Prisma.join(qProdIds)})`)
-      sqlConditions.push(Prisma.sql`(${Prisma.join(qConds, ' OR ')})`)
-    }
-
-    if (docParam) {
-      const docConds: Prisma.Sql[] = [Prisma.sql`"H_YS" ILIKE ${'%' + docParam + '%'}`]
-      if (fDocIds.length > 0) docConds.push(Prisma.sql`"H_YS" IN (${Prisma.join(fDocIds)})`)
-      sqlConditions.push(Prisma.sql`(${Prisma.join(docConds, ' OR ')})`)
-    }
-
-    if (deptParam) {
-      const deptConds: Prisma.Sql[] = [Prisma.sql`"H_KS" ILIKE ${'%' + deptParam + '%'}`]
-      if (fDeptIds.length > 0) deptConds.push(Prisma.sql`"H_KS" IN (${Prisma.join(fDeptIds)})`)
-      sqlConditions.push(Prisma.sql`(${Prisma.join(deptConds, ' OR ')})`)
-    }
-
-    if (hospParam) {
-      const hospConds: Prisma.Sql[] = [Prisma.sql`"H_NAME" ILIKE ${'%' + hospParam + '%'}`]
-      if (fHospIds.length > 0) hospConds.push(Prisma.sql`"H_NAME" IN (${Prisma.join(fHospIds)})`)
-      sqlConditions.push(Prisma.sql`(${Prisma.join(hospConds, ' OR ')})`)
-    }
-
-    if (prodParam) {
-      const prodConds: Prisma.Sql[] = [Prisma.sql`"BDQD_FWXM" ILIKE ${'%' + prodParam + '%'}`]
-      if (fProdIds.length > 0) prodConds.push(Prisma.sql`"BDQD_FWXM" IN (${Prisma.join(fProdIds)})`)
-      sqlConditions.push(Prisma.sql`(${Prisma.join(prodConds, ' OR ')})`)
-    }
-
-    if (params.customerName && typeof params.customerName === 'string' && params.customerName.trim()) {
-      sqlConditions.push(Prisma.sql`"JZR_XM" ILIKE ${'%' + params.customerName.trim() + '%'}`)
-    }
-    if (params.huanyuOrderNo && typeof params.huanyuOrderNo === 'string' && params.huanyuOrderNo.trim()) {
-      sqlConditions.push(Prisma.sql`"DDBH" ILIKE ${'%' + params.huanyuOrderNo.trim() + '%'}`)
-    }
-    if (params.accountManager && typeof params.accountManager === 'string' && params.accountManager.trim()) {
-      sqlConditions.push(Prisma.sql`"KHJL" ILIKE ${'%' + params.accountManager.trim() + '%'}`)
-    }
-    if (params.startDate) {
-      sqlConditions.push(Prisma.sql`"xtsj_" >= ${new Date(params.startDate)}`)
-    }
-    if (params.endDate) {
-      const end = new Date(params.endDate)
-      end.setHours(23, 59, 59, 999)
-      sqlConditions.push(Prisma.sql`"xtsj_" <= ${end}`)
-    }
-
-    let selfOpRows = await prisma.$queryRaw<Array<any>>`
-      SELECT *
-      FROM "HY_FACT_DDCX_NEW"
-      WHERE ${Prisma.join(sqlConditions, ' AND ')}
-      ORDER BY "xtsj_" DESC NULLS LAST
-      LIMIT 500
-    `
-
-    if (selfOpRows.length === 0) return []
-
-    const bound = await prisma.order.findMany({
-      where: {
-        OR: [
-          { huanyuOrderNo: { in: selfOpRows.map((r) => r.DDBH) } },
-          { sourceOrderNo: { in: selfOpRows.map((r) => r.DDBH) } }
-        ]
-      },
-      select: { huanyuOrderNo: true, sourceOrderNo: true }
-    })
-    const boundSet = new Set(bound.flatMap((b) => [b.huanyuOrderNo, b.sourceOrderNo]).filter((x): x is string => Boolean(x)))
-    selfOpRows = selfOpRows.filter((r) => !boundSet.has(r.DDBH))
-
-    if (params.accountManager && typeof params.accountManager === 'string' && params.accountManager.trim()) {
-      const am = params.accountManager.trim().toLowerCase()
-      selfOpRows = selfOpRows.filter((r) => (r.KHJL || '').toLowerCase().includes(am))
-    } else if (employeeName) {
-      selfOpRows = selfOpRows.filter((r) => !r.KHJL || r.KHJL === employeeName)
-    }
-
-    if (params.status && typeof params.status === 'string' && params.status.trim()) {
-      const targetStatus = params.status.trim()
-      selfOpRows = selfOpRows.filter((r) => (r.DD_state || '待跟进') === targetStatus)
-    }
-
-    if (params.huanyuOrderNo && typeof params.huanyuOrderNo === 'string' && params.huanyuOrderNo.trim()) {
-      const hNo = params.huanyuOrderNo.trim().toLowerCase()
-      selfOpRows = selfOpRows.filter((r) => (r.DDBH || '').toLowerCase().includes(hNo))
-    }
-    if (params.sourceOrderNo && typeof params.sourceOrderNo === 'string' && params.sourceOrderNo.trim()) {
-      const sNo = params.sourceOrderNo.trim().toLowerCase()
-      selfOpRows = selfOpRows.filter((r) => (r.DDBH || '').toLowerCase().includes(sNo))
-    }
-
-    if (params.customerName && typeof params.customerName === 'string' && params.customerName.trim()) {
-      const cn = params.customerName.trim().toLowerCase()
-      selfOpRows = selfOpRows.filter((r) => (r.JZR_XM || '').toLowerCase().includes(cn))
-    }
-
-    if (hospParam) {
-      const h = hospParam.toLowerCase()
-      selfOpRows = selfOpRows.filter((r) => {
-        const val = (r.H_NAME || '').trim()
-        return val.toLowerCase().includes(h) || fHospIdSet.has(val)
-      })
-    }
-    if (deptParam) {
-      const d = deptParam.toLowerCase()
-      selfOpRows = selfOpRows.filter((r) => {
-        const val = (r.H_KS || '').trim()
-        return val.toLowerCase().includes(d) || fDeptIdSet.has(val)
-      })
-    }
-    if (docParam) {
-      const doc = docParam.toLowerCase()
-      selfOpRows = selfOpRows.filter((r) => {
-        const val = (r.H_YS || '').trim()
-        return val.toLowerCase().includes(doc) || fDocIdSet.has(val)
-      })
-    }
-    if (prodParam) {
-      const st = prodParam.toLowerCase()
-      selfOpRows = selfOpRows.filter((r) => {
-        const val = (r.BDQD_FWXM || '').trim()
-        return val.toLowerCase().includes(st) || fProdIdSet.has(val)
-      })
-    }
-
-    if (params.minAmount !== undefined && params.minAmount !== '') {
-      const min = Number(params.minAmount)
-      if (Number.isFinite(min)) {
-        selfOpRows = selfOpRows.filter((r) => r.DDJE != null && Number(r.DDJE) >= min)
-      }
-    }
-    if (params.maxAmount !== undefined && params.maxAmount !== '') {
-      const max = Number(params.maxAmount)
-      if (Number.isFinite(max)) {
-        selfOpRows = selfOpRows.filter((r) => r.DDJE != null && Number(r.DDJE) <= max)
-      }
-    }
-
-    if (params.startDate) {
-      const startTs = new Date(params.startDate).getTime()
-      selfOpRows = selfOpRows.filter((r) => r.xtsj_ && new Date(r.xtsj_).getTime() >= startTs)
-    }
-    if (params.endDate) {
-      const end = new Date(params.endDate)
-      end.setHours(23, 59, 59, 999)
-      const endTs = end.getTime()
-      selfOpRows = selfOpRows.filter((r) => r.xtsj_ && new Date(r.xtsj_).getTime() <= endTs)
-    }
-
-    if (q) {
-      const qLower = q.toLowerCase()
-      selfOpRows = selfOpRows.filter((r) => {
-        const jzr = (r.JZR_XM || '').toLowerCase()
-        const name = (r.H_NAME || '').trim()
-        const ks = (r.H_KS || '').trim()
-        const ys = (r.H_YS || '').trim()
-        const khjl = (r.KHJL || '').toLowerCase()
-        const ddbh = (r.DDBH || '').toLowerCase()
-        const fwxm = (r.BDQD_FWXM || '').trim()
-
-        return (
-          jzr.includes(qLower) ||
-          ddbh.includes(qLower) ||
-          khjl.includes(qLower) ||
-          name.toLowerCase().includes(qLower) || qHospIdSet.has(name) ||
-          ks.toLowerCase().includes(qLower) || qDeptIdSet.has(ks) ||
-          ys.toLowerCase().includes(qLower) || qDocIdSet.has(ys) ||
-          fwxm.toLowerCase().includes(qLower) || qProdIdSet.has(fwxm)
-        )
-      })
-    }
-
-    const allSelfOpFwxm = selfOpRows.map(r => r.BDQD_FWXM).filter((x): x is string => Boolean(x && x.trim()))
-    const selfOpProductMap = await findHuanyuChannelProductsByIds(allSelfOpFwxm)
-
-    const result: any[] = []
-    for (const row of selfOpRows) {
-      let dept = cleanDeptName(row.H_KS) ?? null
-      if (row.H_KS && (/^\d+$/.test(row.H_KS.trim()) || !dept)) {
-        const dObj = await findHuanyuDepartmentById(row.H_KS).catch(() => null)
-        if (dObj?.name) dept = dObj.name
-      }
-      let doctor = cleanDoctorName(row.H_YS) ?? null
-      if (row.H_YS && (/^\d+$/.test(row.H_YS.trim()) || !doctor)) {
-        const docObj = await findHuanyuDoctorById(row.H_YS).catch(() => null)
-        if (docObj?.name) doctor = docObj.name
-      }
-      let hospital = cleanHospitalName(row.H_NAME) ?? null
-      if (row.H_NAME && (/^\d+$/.test(row.H_NAME.trim()) || !hospital)) {
-        const hObj = await findHuanyuHospitalById(row.H_NAME).catch(() => null)
-        if (hObj?.name) hospital = hObj.name
-      }
-
-      const amount = row.DDJE != null && Number.isFinite(Number(row.DDJE)) && Number(row.DDJE) > 0 ? Number(row.DDJE) : null
-      const status = row.DD_state || '待跟进'
-      const workbenchLane = deriveWorkbenchLane(status)
-      const serviceStage = deriveServiceStage(workbenchLane)
-
-      if (params.lane && params.lane !== 'all' && workbenchLane !== params.lane) {
-        continue
-      }
-
-      const matchedSelfProd = row.BDQD_FWXM ? selfOpProductMap.get(row.BDQD_FWXM.trim()) : null
-      const resolvedSelfServiceName = matchedSelfProd?.name || (row.BDQD_FWXM && !/^\d+$/.test(row.BDQD_FWXM.trim()) ? row.BDQD_FWXM : null)
-
-      result.push({
-        id: `huanyu-${row.DDBH}`,
-        source: 'huanyu',
-        sourceOrderNo: '',
-        bOrderNo: null,
-        huanyuOrderNo: row.DDBH,
-        customerName: row.JZR_XM || '',
-        customerPhone: row.JZR_LXDH || null,
-        hospital,
-        dept,
-        doctor,
-        status,
-        orderState: null,
-        rawJson: { ...row, orderNo: row.DDBH, DDBH: row.DDBH, patientName: row.JZR_XM, patientPhone: row.JZR_LXDH },
-        assignedEmployee: employeeName ? { id: params.captureEmployeeId!, name: employeeName } : null,
-        createdAt: row.xtsj_ || new Date().toISOString(),
-        updatedAt: row.xtsj_ || new Date().toISOString(),
-        huanyuOrderStatus: status,
-        taikangOrderState: null,
-        taikangOrderStateName: null,
-        taikangCaseStatus: null,
-        taikangWaitType: null,
-        taikangServState: null,
-        workbenchLane,
-        serviceStage,
-        accountManager: row.KHJL || employeeName || null,
-        orderAmount: amount,
-        serviceType: resolvedSelfServiceName,
-        huanyuOrders: [{
-          id: row.DDBH,
-          ddbh: row.DDBH,
-          huanyuOrderNo: row.DDBH,
-          bOrderNo: null,
-          isClone: false,
-          sequence: 1,
-          status,
-          serviceName: resolvedSelfServiceName,
-          amount,
-          accountManager: row.KHJL || employeeName || null,
-          hospital: hospital || '',
-          dept: dept || '',
-          doctor: doctor || '',
-          patientName: row.JZR_XM || null,
-          createdAt: row.xtsj_ || new Date().toISOString()
-        }],
-        isAiHospital: false,
-        isAiDept: false,
-        isAiDoctor: false,
-        intendDate: null,
-        intendDateAmorpm: null,
-        claimedAt: row.xtsj_ || new Date().toISOString(),
-        audioCount: 0,
-        textCount: 0,
-        imageCount: 0,
-        materialCount: 0,
-        lastMaterialAt: null
-      })
-    }
-    return result
-  } catch (err: any) {
-    return []
-  }
+function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`EXISTS (
+    SELECT 1 FROM "HY_FACT_DDCX_NEW" AS f
+    WHERE (f."DDBH" = o."huanyu_order_no" OR (o."source" <> 'huanyu' AND f."BDQD_DDBH" = o."source_order_no"))
+      AND ${predicate}
+  )`
 }
 
   // 4. 查询订单 GET /api/v1/orders
@@ -2576,552 +2266,182 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
         hospital,
         dept,
         doctor,
+        minAmount,
+        maxAmount,
         startDate,
         endDate
       } = request.query
 
-      const where: any = {}
+      const conditions: Prisma.Sql[] = []
+      const factConditions: Prisma.Sql[] = []
       let captureEmployeeId: number | null = null
-      if (source) where.source = source
-      if (pool) where.rawJson = { path: ['pool'], equals: pool }
+      if (source) conditions.push(Prisma.sql`o."source" = ${source}`)
+      if (pool) conditions.push(Prisma.sql`o."raw_json"->>'pool' = ${pool}`)
       if (assignedEmployeeId) {
         captureEmployeeId = parseInt(assignedEmployeeId, 10)
-        where.assignedEmployeeId = captureEmployeeId
       } else if (assignedEmployeeCode) {
         const employee = await ensureEmployeeByCode(prisma, assignedEmployeeCode)
         captureEmployeeId = employee.id
-        where.assignedEmployeeId = employee.id
       } else if (pool !== 'public') {
         if (!request.employee) return reply.status(401).send({ error: '未登录' })
         captureEmployeeId = request.employee.id
-        where.assignedEmployeeId = request.employee.id
+      }
+      if (captureEmployeeId !== null) {
+        conditions.push(Prisma.sql`o."assigned_employee_id" = ${captureEmployeeId}`)
       }
 
-      const andConditions: any[] = []
-
-      // 0. 状态筛选 (支持主表状态、事实表 DD_state 穿透、候选/待跟进映射)
-      if (status && typeof status === 'string' && status.trim()) {
-        const st = status.trim()
-        let factKeysByStatus: string[] = []
-        try {
-          const matched = await prisma.$queryRaw<Array<{ DDBH: string; BDQD_DDBH: string | null }>>`
-            SELECT "DDBH", "BDQD_DDBH"
-            FROM "HY_FACT_DDCX_NEW"
-            WHERE "DD_state" = ${st}
-            LIMIT 500
-          `
-          factKeysByStatus = Array.from(new Set(matched.flatMap(m => [m.DDBH, m.BDQD_DDBH].filter((k): k is string => Boolean(k)))))
-        } catch {}
-
-        andConditions.push({
-          OR: [
-            { status: st },
-            ...(st === '待跟进' ? [{ status: '候选' }] : []),
-            ...(factKeysByStatus.length > 0
-              ? [{ sourceOrderNo: { in: factKeysByStatus } }, { huanyuOrderNo: { in: factKeysByStatus } }]
-              : [])
-          ]
-        })
+      if (status?.trim()) factConditions.push(Prisma.sql`f."DD_state" = ${status.trim()}`)
+      const lane = (request.query as any).lane
+      const laneStatuses: Record<string, string> = {
+        todo: '待跟进', doing: '待预约', await_backfill: '待交付', done: '预约完成待支付'
+      }
+      if (lane && lane !== 'all') {
+        const laneStatus = laneStatuses[String(lane)]
+        factConditions.push(laneStatus ? Prisma.sql`f."DD_state" = ${laneStatus}` : Prisma.sql`FALSE`)
       }
 
-      // 1. 全局模糊搜索 (query) - 完全覆盖列表展示的全部源头
-      if (query && typeof query === 'string' && query.trim()) {
-        const q = query.trim()
-        const [docIds, deptIds, hospIds, prodIds] = await Promise.all([
-          findHuanyuDoctorIdsByName(q).catch(() => []),
-          findHuanyuDepartmentIdsByName(q).catch(() => []),
-          findHuanyuHospitalIdsByName(q).catch(() => []),
-          findHuanyuProductIdsByName(q).catch(() => [])
-        ])
+      const q = typeof query === 'string' ? query.trim() : ''
+      const hName = typeof hospital === 'string' ? hospital.trim() : ''
+      const dName = typeof dept === 'string' ? dept.trim() : ''
+      const docName = typeof doctor === 'string' ? doctor.trim() : ''
+      const serviceName = typeof serviceType === 'string' ? serviceType.trim() : ''
+      const [qDocIds, qDeptIds, qHospIds, qProdIds, hospIds, deptIds, doctorIds, productIds] = await Promise.all([
+        q ? findHuanyuDoctorIdsByName(q).catch(() => []) : Promise.resolve([]),
+        q ? findHuanyuDepartmentIdsByName(q).catch(() => []) : Promise.resolve([]),
+        q ? findHuanyuHospitalIdsByName(q).catch(() => []) : Promise.resolve([]),
+        q ? findHuanyuProductIdsByName(q).catch(() => []) : Promise.resolve([]),
+        hName ? findHuanyuHospitalIdsByName(hName).catch(() => []) : Promise.resolve([]),
+        dName ? findHuanyuDepartmentIdsByName(dName).catch(() => []) : Promise.resolve([]),
+        docName ? findHuanyuDoctorIdsByName(docName).catch(() => []) : Promise.resolve([]),
+        serviceName ? findHuanyuProductIdsByName(serviceName).catch(() => []) : Promise.resolve([])
+      ])
 
-        let factMatchedKeys: string[] = []
-        try {
-          const factConditions: Prisma.Sql[] = [
-            Prisma.sql`"JZR_XM" ILIKE ${'%' + q + '%'}`,
-            Prisma.sql`"DDBH" ILIKE ${'%' + q + '%'}`,
-            Prisma.sql`"BDQD_DDBH" ILIKE ${'%' + q + '%'}`,
-            Prisma.sql`"KHJL" ILIKE ${'%' + q + '%'}`,
-            Prisma.sql`"H_YS" ILIKE ${'%' + q + '%'}`,
-            Prisma.sql`"H_KS" ILIKE ${'%' + q + '%'}`,
-            Prisma.sql`"H_NAME" ILIKE ${'%' + q + '%'}`,
-            Prisma.sql`"BDQD_FWXM" ILIKE ${'%' + q + '%'}`
-          ]
-          if (docIds.length > 0) factConditions.push(Prisma.sql`"H_YS" IN (${Prisma.join(docIds)})`)
-          if (deptIds.length > 0) factConditions.push(Prisma.sql`"H_KS" IN (${Prisma.join(deptIds)})`)
-          if (hospIds.length > 0) factConditions.push(Prisma.sql`"H_NAME" IN (${Prisma.join(hospIds)})`)
-          if (prodIds.length > 0) factConditions.push(Prisma.sql`"BDQD_FWXM" IN (${Prisma.join(prodIds)})`)
-
-          const matchedFacts = await prisma.$queryRaw<Array<{ DDBH: string; BDQD_DDBH: string | null }>>`
-            SELECT "DDBH", "BDQD_DDBH"
-            FROM "HY_FACT_DDCX_NEW"
-            WHERE ${Prisma.join(factConditions, ' OR ')}
-            LIMIT 500
-          `
-          factMatchedKeys = Array.from(
-            new Set(matchedFacts.flatMap((f) => [f.DDBH, f.BDQD_DDBH].filter((k): k is string => Boolean(k))))
-          )
-        } catch {
-          // ignore fact query failure
-        }
-
-        let aiMatchedOrderIds: number[] = []
-        try {
-          const aiRows = await prisma.$queryRaw<Array<{ order_id: number }>>`
-            SELECT DISTINCT order_id FROM b_order_ai_field_candidates
-            WHERE value_text ILIKE ${'%' + q + '%'}
-            LIMIT 200
-          `
-          aiMatchedOrderIds = aiRows.map(r => r.order_id)
-        } catch {}
-
-        andConditions.push({
-          OR: [
-            // 姓名
-            { customerName: { contains: q, mode: 'insensitive' } },
-            { rawJson: { path: ['patientName'], string_contains: q } },
-            { rawJson: { path: ['paName'], string_contains: q } },
-            { rawJson: { path: ['trueName'], string_contains: q } },
-            { rawJson: { path: ['insurName'], string_contains: q } },
-            { detailJson: { path: ['recommendations', 'patientName'], string_contains: q } },
-            { detailJson: { path: ['recommendations', 'insurName'], string_contains: q } },
-            // 手机号
-            { customerPhone: { contains: q } },
-            { rawJson: { path: ['paMobile'], string_contains: q } },
-            { rawJson: { path: ['patientPhone'], string_contains: q } },
-            { detailJson: { path: ['recommendations', 'paMobile'], string_contains: q } },
-            { detailJson: { path: ['recommendations', 'ecpPhone'], string_contains: q } },
-            // 医院
-            { hospital: { contains: q, mode: 'insensitive' } },
-            { rawJson: { path: ['hospital'], string_contains: q } },
-            { rawJson: { path: ['intendHos'], string_contains: q } },
-            { rawJson: { path: ['clinicHos'], string_contains: q } },
-            { rawJson: { path: ['visitingHospital'], string_contains: q } },
-            { detailJson: { path: ['recommendations', 'intendHos'], string_contains: q } },
-            { detailJson: { path: ['recommendations', 'visitingHospital'], string_contains: q } },
-            { aiBriefJson: { path: ['keyInfo', '目标医院'], string_contains: q } },
-            // 科室
-            { dept: { contains: q, mode: 'insensitive' } },
-            { rawJson: { path: ['dept'], string_contains: q } },
-            { detailJson: { path: ['recommendations', 'intendDept'], string_contains: q } },
-            { aiBriefJson: { path: ['keyInfo', '科室或病种'], string_contains: q } },
-            // 医生
-            { doctor: { contains: q, mode: 'insensitive' } },
-            { rawJson: { path: ['doctor'], string_contains: q } },
-            { detailJson: { path: ['recommendations', 'intendDoc'], string_contains: q } },
-            { aiBriefJson: { path: ['keyInfo', '意向专家'], string_contains: q } },
-            // 单号
-            { sourceOrderNo: { contains: q, mode: 'insensitive' } },
-            { huanyuOrderNo: { contains: q, mode: 'insensitive' } },
-            { rawJson: { path: ['sourceOrderNo'], string_contains: q } },
-            { rawJson: { path: ['channelOrderNo'], string_contains: q } },
-            { rawJson: { path: ['bOrderNo'], string_contains: q } },
-            { rawJson: { path: ['bChannelOrderNo'], string_contains: q } },
-            { rawJson: { path: ['subOrderNo'], string_contains: q } },
-            { detailJson: { path: ['recommendations', 'subOrderNo'], string_contains: q } },
-            { rawJson: { path: ['crmApplyNo'], string_contains: q } },
-            { rawJson: { path: ['applyNo'], string_contains: q } },
-            { detailJson: { path: ['recommendations', 'crmApplyNo'], string_contains: q } },
-            { detailJson: { path: ['recommendations', 'applyNo'], string_contains: q } },
-            // 业务类型
-            { rawJson: { path: ['itemName'], string_contains: q } },
-            { rawJson: { path: ['serviceType'], string_contains: q } },
-            { rawJson: { path: ['serviceName'], string_contains: q } },
-            { rawJson: { path: ['serviceItemName'], string_contains: q } },
-            { detailJson: { path: ['recommendations', 'itemName'], string_contains: q } },
-            { detailJson: { path: ['recommendations', 'serviceName'], string_contains: q } },
-            { detailJson: { path: ['recommendations', 'subPlanName'], string_contains: q } },
-            // 客户经理
-            { assignedEmployee: { name: { contains: q, mode: 'insensitive' } } },
-            { rawJson: { path: ['accountManager'], string_contains: q } },
-            { rawJson: { path: ['cmgrName'], string_contains: q } },
-            { rawJson: { path: ['mmgrName'], string_contains: q } },
-            // 维表与事实表穿透与AI候选词
-            ...(docIds.length > 0 ? [{ doctor: { in: docIds } }] : []),
-            ...(deptIds.length > 0 ? [{ dept: { in: deptIds } }] : []),
-            ...(hospIds.length > 0 ? [{ hospital: { in: hospIds } }] : []),
-            ...(factMatchedKeys.length > 0
-              ? [{ sourceOrderNo: { in: factMatchedKeys } }, { huanyuOrderNo: { in: factMatchedKeys } }]
-              : []),
-            ...(aiMatchedOrderIds.length > 0 ? [{ id: { in: aiMatchedOrderIds } }] : [])
-          ]
-        })
+      if (q) {
+        const term = `%${q}%`
+        const factSearch: Prisma.Sql[] = [
+          Prisma.sql`f."JZR_XM" ILIKE ${term}`,
+          Prisma.sql`f."DDBH" ILIKE ${term}`,
+          Prisma.sql`f."BDQD_DDBH" ILIKE ${term}`,
+          Prisma.sql`f."KHJL" ILIKE ${term}`,
+          Prisma.sql`f."H_NAME" ILIKE ${term}`,
+          Prisma.sql`f."H_KS" ILIKE ${term}`,
+          Prisma.sql`f."H_YS" ILIKE ${term}`,
+          Prisma.sql`f."BDQD_FWXM" ILIKE ${term}`
+        ]
+        if (qDocIds.length) factSearch.push(Prisma.sql`f."H_YS" IN (${Prisma.join(qDocIds)})`)
+        if (qDeptIds.length) factSearch.push(Prisma.sql`f."H_KS" IN (${Prisma.join(qDeptIds)})`)
+        if (qHospIds.length) factSearch.push(Prisma.sql`f."H_NAME" IN (${Prisma.join(qHospIds)})`)
+        if (qProdIds.length) factSearch.push(Prisma.sql`f."BDQD_FWXM" IN (${Prisma.join(qProdIds)})`)
+        conditions.push(Prisma.sql`(
+          o."customer_name" ILIKE ${term} OR o."customer_phone" ILIKE ${term}
+          OR (o."source" <> 'huanyu' AND o."source_order_no" ILIKE ${term})
+          OR o."huanyu_order_no" ILIKE ${term}
+          OR o."raw_json"->>'crmApplyNo' ILIKE ${term}
+          OR o."raw_json"->>'applyNo' ILIKE ${term}
+          OR ${matchingHuanyuFact(Prisma.sql`(${Prisma.join(factSearch, ' OR ')})`)}
+        )`)
       }
 
-      // 2. 高级筛选 - 申请号
-      if (applicationNo && typeof applicationNo === 'string' && applicationNo.trim()) {
-        const appQ = applicationNo.trim()
-        andConditions.push({
-          OR: [
-            { rawJson: { path: ['crmApplyNo'], string_contains: appQ } },
-            { rawJson: { path: ['applyNo'], string_contains: appQ } },
-            { detailJson: { path: ['recommendations', 'crmApplyNo'], string_contains: appQ } },
-            { detailJson: { path: ['recommendations', 'applyNo'], string_contains: appQ } }
-          ]
-        })
+      if (applicationNo?.trim()) {
+        const term = `%${applicationNo.trim()}%`
+        conditions.push(Prisma.sql`(
+          o."raw_json"->>'crmApplyNo' ILIKE ${term}
+          OR o."raw_json"->>'applyNo' ILIKE ${term}
+          OR o."detail_json"#>>'{recommendations,crmApplyNo}' ILIKE ${term}
+          OR o."detail_json"#>>'{recommendations,applyNo}' ILIKE ${term}
+        )`)
+      }
+      if (sourceOrderNo?.trim()) {
+        conditions.push(Prisma.sql`o."source" <> 'huanyu' AND o."source_order_no" ILIKE ${`%${sourceOrderNo.trim()}%`}`)
+      }
+      if (huanyuOrderNo?.trim()) factConditions.push(Prisma.sql`f."DDBH" ILIKE ${`%${huanyuOrderNo.trim()}%`}`)
+      if (customerName?.trim()) factConditions.push(Prisma.sql`f."JZR_XM" ILIKE ${`%${customerName.trim()}%`}`)
+      if (accountManager?.trim()) factConditions.push(Prisma.sql`f."KHJL" ILIKE ${`%${accountManager.trim()}%`}`)
+      if (hName) {
+        const predicates: Prisma.Sql[] = [Prisma.sql`f."H_NAME" ILIKE ${`%${hName}%`}`]
+        if (hospIds.length) predicates.push(Prisma.sql`f."H_NAME" IN (${Prisma.join(hospIds)})`)
+        factConditions.push(Prisma.sql`(${Prisma.join(predicates, ' OR ')})`)
+      }
+      if (dName) {
+        const predicates: Prisma.Sql[] = [Prisma.sql`f."H_KS" ILIKE ${`%${dName}%`}`]
+        if (deptIds.length) predicates.push(Prisma.sql`f."H_KS" IN (${Prisma.join(deptIds)})`)
+        factConditions.push(Prisma.sql`(${Prisma.join(predicates, ' OR ')})`)
+      }
+      if (docName) {
+        const predicates: Prisma.Sql[] = [Prisma.sql`f."H_YS" ILIKE ${`%${docName}%`}`]
+        if (doctorIds.length) predicates.push(Prisma.sql`f."H_YS" IN (${Prisma.join(doctorIds)})`)
+        factConditions.push(Prisma.sql`(${Prisma.join(predicates, ' OR ')})`)
+      }
+      if (serviceName) {
+        const predicates: Prisma.Sql[] = [Prisma.sql`f."BDQD_FWXM" ILIKE ${`%${serviceName}%`}`]
+        if (productIds.length) predicates.push(Prisma.sql`f."BDQD_FWXM" IN (${Prisma.join(productIds)})`)
+        factConditions.push(Prisma.sql`(${Prisma.join(predicates, ' OR ')})`)
+      }
+      const minimum = minAmount === undefined || minAmount === '' ? null : Number(minAmount)
+      const maximum = maxAmount === undefined || maxAmount === '' ? null : Number(maxAmount)
+      if (minimum !== null && Number.isFinite(minimum)) factConditions.push(Prisma.sql`f."DDJE" >= ${minimum}`)
+      if (maximum !== null && Number.isFinite(maximum)) factConditions.push(Prisma.sql`f."DDJE" <= ${maximum}`)
+      if (factConditions.length) conditions.push(matchingHuanyuFact(Prisma.sql`(${Prisma.join(factConditions, ' AND ')})`))
+      if (startDate) {
+        const start = new Date(startDate)
+        if (Number.isFinite(start.getTime())) conditions.push(Prisma.sql`o."created_at" >= ${start}`)
+      }
+      if (endDate) {
+        const end = new Date(endDate)
+        end.setHours(23, 59, 59, 999)
+        if (Number.isFinite(end.getTime())) conditions.push(Prisma.sql`o."created_at" <= ${end}`)
       }
 
-      // 3. 高级筛选 - B端订单号
-      if (sourceOrderNo && typeof sourceOrderNo === 'string' && sourceOrderNo.trim()) {
-        const sNo = sourceOrderNo.trim()
-        let factKeysBySourceNo: string[] = []
-        try {
-          const matched = await prisma.$queryRaw<Array<{ DDBH: string; BDQD_DDBH: string | null }>>`
-            SELECT "DDBH", "BDQD_DDBH"
-            FROM "HY_FACT_DDCX_NEW"
-            WHERE "BDQD_DDBH" ILIKE ${'%' + sNo + '%'}
-            LIMIT 200
-          `
-          factKeysBySourceNo = Array.from(new Set(matched.flatMap(m => [m.DDBH, m.BDQD_DDBH].filter((k): k is string => Boolean(k)))))
-        } catch {}
-
-        andConditions.push({
-          OR: [
-            { sourceOrderNo: { contains: sNo, mode: 'insensitive' } },
-            { rawJson: { path: ['sourceOrderNo'], string_contains: sNo } },
-            { rawJson: { path: ['channelOrderNo'], string_contains: sNo } },
-            { rawJson: { path: ['bOrderNo'], string_contains: sNo } },
-            { rawJson: { path: ['bChannelOrderNo'], string_contains: sNo } },
-            { rawJson: { path: ['subOrderNo'], string_contains: sNo } },
-            { detailJson: { path: ['recommendations', 'subOrderNo'], string_contains: sNo } },
-            ...(factKeysBySourceNo.length > 0 ? [{ sourceOrderNo: { in: factKeysBySourceNo } }, { huanyuOrderNo: { in: factKeysBySourceNo } }] : [])
-          ]
-        })
-      }
-
-      // 4. 高级筛选 - 寰宇订单号 (覆盖主表、自建单号与事实表)
-      if (huanyuOrderNo && typeof huanyuOrderNo === 'string' && huanyuOrderNo.trim()) {
-        const hNo = huanyuOrderNo.trim()
-        let factKeysByHuanyuNo: string[] = []
-        try {
-          const matched = await prisma.$queryRaw<Array<{ DDBH: string; BDQD_DDBH: string | null }>>`
-            SELECT "DDBH", "BDQD_DDBH"
-            FROM "HY_FACT_DDCX_NEW"
-            WHERE "DDBH" ILIKE ${'%' + hNo + '%'}
-            LIMIT 200
-          `
-          factKeysByHuanyuNo = Array.from(new Set(matched.flatMap(m => [m.DDBH, m.BDQD_DDBH].filter((k): k is string => Boolean(k)))))
-        } catch {}
-
-        andConditions.push({
-          OR: [
-            { huanyuOrderNo: { contains: hNo, mode: 'insensitive' } },
-            { sourceOrderNo: { contains: hNo, mode: 'insensitive' } },
-            ...(factKeysByHuanyuNo.length > 0 ? [{ sourceOrderNo: { in: factKeysByHuanyuNo } }, { huanyuOrderNo: { in: factKeysByHuanyuNo } }] : [])
-          ]
-        })
-      }
-
-      // 5. 高级筛选 - 客户姓名 (带事实表联动与 recommendations 覆盖)
-      if (customerName && typeof customerName === 'string' && customerName.trim()) {
-        const cName = customerName.trim()
-        let factKeysByCustomer: string[] = []
-        try {
-          const matched = await prisma.$queryRaw<Array<{ DDBH: string; BDQD_DDBH: string | null }>>`
-            SELECT "DDBH", "BDQD_DDBH"
-            FROM "HY_FACT_DDCX_NEW"
-            WHERE "JZR_XM" ILIKE ${'%' + cName + '%'}
-            LIMIT 200
-          `
-          factKeysByCustomer = Array.from(new Set(matched.flatMap(m => [m.DDBH, m.BDQD_DDBH].filter((k): k is string => Boolean(k)))))
-        } catch {}
-
-        andConditions.push({
-          OR: [
-            { customerName: { contains: cName, mode: 'insensitive' } },
-            { rawJson: { path: ['patientName'], string_contains: cName } },
-            { rawJson: { path: ['paName'], string_contains: cName } },
-            { rawJson: { path: ['trueName'], string_contains: cName } },
-            { rawJson: { path: ['insurName'], string_contains: cName } },
-            { detailJson: { path: ['recommendations', 'patientName'], string_contains: cName } },
-            { detailJson: { path: ['recommendations', 'insurName'], string_contains: cName } },
-            ...(factKeysByCustomer.length > 0 ? [{ sourceOrderNo: { in: factKeysByCustomer } }, { huanyuOrderNo: { in: factKeysByCustomer } }] : [])
-          ]
-        })
-      }
-
-      // 6. 高级筛选 - 医院 (覆盖主表、rawJson、recommendations、AI 提取与事实/维表穿透)
-      if (hospital && typeof hospital === 'string' && hospital.trim()) {
-        const hName = hospital.trim()
-        const hIds = await findHuanyuHospitalIdsByName(hName).catch(() => [])
-        let factKeysByHosp: string[] = []
-        try {
-          const hospConds: Prisma.Sql[] = [Prisma.sql`"H_NAME" ILIKE ${'%' + hName + '%'}`]
-          if (hIds.length > 0) hospConds.push(Prisma.sql`"H_NAME" IN (${Prisma.join(hIds)})`)
-          const matched = await prisma.$queryRaw<Array<{ DDBH: string; BDQD_DDBH: string | null }>>`
-            SELECT "DDBH", "BDQD_DDBH"
-            FROM "HY_FACT_DDCX_NEW"
-            WHERE ${Prisma.join(hospConds, ' OR ')}
-            LIMIT 200
-          `
-          factKeysByHosp = Array.from(new Set(matched.flatMap(m => [m.DDBH, m.BDQD_DDBH].filter((k): k is string => Boolean(k)))))
-        } catch {}
-
-        let aiMatchedOrderIds: number[] = []
-        try {
-          const aiRows = await prisma.$queryRaw<Array<{ order_id: number }>>`
-            SELECT DISTINCT order_id FROM b_order_ai_field_candidates
-            WHERE field_code = 'hospital' AND value_text ILIKE ${'%' + hName + '%'}
-            LIMIT 200
-          `
-          aiMatchedOrderIds = aiRows.map(r => r.order_id)
-        } catch {}
-
-        andConditions.push({
-          OR: [
-            { hospital: { contains: hName, mode: 'insensitive' } },
-            { rawJson: { path: ['hospital'], string_contains: hName } },
-            { rawJson: { path: ['intendHos'], string_contains: hName } },
-            { rawJson: { path: ['clinicHos'], string_contains: hName } },
-            { rawJson: { path: ['visitingHospital'], string_contains: hName } },
-            { detailJson: { path: ['recommendations', 'intendHos'], string_contains: hName } },
-            { detailJson: { path: ['recommendations', 'visitingHospital'], string_contains: hName } },
-            { aiBriefJson: { path: ['keyInfo', '目标医院'], string_contains: hName } },
-            ...(hIds.length > 0 ? [{ hospital: { in: hIds } }] : []),
-            ...(factKeysByHosp.length > 0 ? [{ sourceOrderNo: { in: factKeysByHosp } }, { huanyuOrderNo: { in: factKeysByHosp } }] : []),
-            ...(aiMatchedOrderIds.length > 0 ? [{ id: { in: aiMatchedOrderIds } }] : [])
-          ]
-        })
-      }
-
-      // 7. 高级筛选 - 科室 (覆盖主表、rawJson、recommendations.intendDept、AI 提取与事实/维表穿透)
-      if (dept && typeof dept === 'string' && dept.trim()) {
-        const dName = dept.trim()
-        const dIds = await findHuanyuDepartmentIdsByName(dName).catch(() => [])
-        let factKeysByDept: string[] = []
-        try {
-          const deptConds: Prisma.Sql[] = [Prisma.sql`"H_KS" ILIKE ${'%' + dName + '%'}`]
-          if (dIds.length > 0) deptConds.push(Prisma.sql`"H_KS" IN (${Prisma.join(dIds)})`)
-          const matched = await prisma.$queryRaw<Array<{ DDBH: string; BDQD_DDBH: string | null }>>`
-            SELECT "DDBH", "BDQD_DDBH"
-            FROM "HY_FACT_DDCX_NEW"
-            WHERE ${Prisma.join(deptConds, ' OR ')}
-            LIMIT 200
-          `
-          factKeysByDept = Array.from(new Set(matched.flatMap(m => [m.DDBH, m.BDQD_DDBH].filter((k): k is string => Boolean(k)))))
-        } catch {}
-
-        let aiMatchedOrderIds: number[] = []
-        try {
-          const aiRows = await prisma.$queryRaw<Array<{ order_id: number }>>`
-            SELECT DISTINCT order_id FROM b_order_ai_field_candidates
-            WHERE field_code = 'department' AND value_text ILIKE ${'%' + dName + '%'}
-            LIMIT 200
-          `
-          aiMatchedOrderIds = aiRows.map(r => r.order_id)
-        } catch {}
-
-        andConditions.push({
-          OR: [
-            { dept: { contains: dName, mode: 'insensitive' } },
-            { rawJson: { path: ['dept'], string_contains: dName } },
-            { detailJson: { path: ['recommendations', 'intendDept'], string_contains: dName } },
-            { aiBriefJson: { path: ['keyInfo', '科室或病种'], string_contains: dName } },
-            ...(dIds.length > 0 ? [{ dept: { in: dIds } }] : []),
-            ...(factKeysByDept.length > 0 ? [{ sourceOrderNo: { in: factKeysByDept } }, { huanyuOrderNo: { in: factKeysByDept } }] : []),
-            ...(aiMatchedOrderIds.length > 0 ? [{ id: { in: aiMatchedOrderIds } }] : [])
-          ]
-        })
-      }
-
-      // 8. 高级筛选 - 医生 (覆盖主表、rawJson、recommendations.intendDoc、AI 提取与事实/维表穿透)
-      if (doctor && typeof doctor === 'string' && doctor.trim()) {
-        const docName = doctor.trim()
-        const docIds = await findHuanyuDoctorIdsByName(docName).catch(() => [])
-        let factKeysByDoc: string[] = []
-        try {
-          const docConds: Prisma.Sql[] = [Prisma.sql`"H_YS" ILIKE ${'%' + docName + '%'}`]
-          if (docIds.length > 0) docConds.push(Prisma.sql`"H_YS" IN (${Prisma.join(docIds)})`)
-          const matched = await prisma.$queryRaw<Array<{ DDBH: string; BDQD_DDBH: string | null }>>`
-            SELECT "DDBH", "BDQD_DDBH"
-            FROM "HY_FACT_DDCX_NEW"
-            WHERE ${Prisma.join(docConds, ' OR ')}
-            LIMIT 200
-          `
-          factKeysByDoc = Array.from(new Set(matched.flatMap(m => [m.DDBH, m.BDQD_DDBH].filter((k): k is string => Boolean(k)))))
-        } catch {}
-
-        let aiMatchedOrderIds: number[] = []
-        try {
-          const aiRows = await prisma.$queryRaw<Array<{ order_id: number }>>`
-            SELECT DISTINCT order_id FROM b_order_ai_field_candidates
-            WHERE field_code = 'doctor' AND value_text ILIKE ${'%' + docName + '%'}
-            LIMIT 200
-          `
-          aiMatchedOrderIds = aiRows.map(r => r.order_id)
-        } catch {}
-
-        andConditions.push({
-          OR: [
-            { doctor: { contains: docName, mode: 'insensitive' } },
-            { rawJson: { path: ['doctor'], string_contains: docName } },
-            { detailJson: { path: ['recommendations', 'intendDoc'], string_contains: docName } },
-            { aiBriefJson: { path: ['keyInfo', '意向专家'], string_contains: docName } },
-            ...(docIds.length > 0 ? [{ doctor: { in: docIds } }] : []),
-            ...(factKeysByDoc.length > 0 ? [{ sourceOrderNo: { in: factKeysByDoc } }, { huanyuOrderNo: { in: factKeysByDoc } }] : []),
-            ...(aiMatchedOrderIds.length > 0 ? [{ id: { in: aiMatchedOrderIds } }] : [])
-          ]
-        })
-      }
-
-      // 9. 高级筛选 - 业务类型 (覆盖 rawJson、recommendations、挂号协助与事实表穿透)
-      if (serviceType && typeof serviceType === 'string' && serviceType.trim()) {
-        const sType = serviceType.trim()
-        const prodIds = await findHuanyuProductIdsByName(sType).catch(() => [])
-        let factKeysByProd: string[] = []
-        try {
-          const prodConds: Prisma.Sql[] = [Prisma.sql`"BDQD_FWXM" ILIKE ${'%' + sType + '%'}`]
-          if (prodIds.length > 0) prodConds.push(Prisma.sql`"BDQD_FWXM" IN (${Prisma.join(prodIds)})`)
-          const matched = await prisma.$queryRaw<Array<{ DDBH: string; BDQD_DDBH: string | null }>>`
-            SELECT "DDBH", "BDQD_DDBH"
-            FROM "HY_FACT_DDCX_NEW"
-            WHERE ${Prisma.join(prodConds, ' OR ')}
-            LIMIT 200
-          `
-          factKeysByProd = Array.from(new Set(matched.flatMap(m => [m.DDBH, m.BDQD_DDBH].filter((k): k is string => Boolean(k)))))
-        } catch {}
-
-        andConditions.push({
-          OR: [
-            { rawJson: { path: ['itemName'], string_contains: sType } },
-            { rawJson: { path: ['serviceType'], string_contains: sType } },
-            { rawJson: { path: ['serviceName'], string_contains: sType } },
-            { rawJson: { path: ['serviceItemName'], string_contains: sType } },
-            { detailJson: { path: ['recommendations', 'itemName'], string_contains: sType } },
-            { detailJson: { path: ['recommendations', 'serviceName'], string_contains: sType } },
-            { detailJson: { path: ['recommendations', 'subPlanName'], string_contains: sType } },
-            ...(sType.includes('挂号') ? [{ rawJson: { path: ['poolType'], equals: 'register' } }] : []),
-            ...(factKeysByProd.length > 0 ? [{ sourceOrderNo: { in: factKeysByProd } }, { huanyuOrderNo: { in: factKeysByProd } }] : [])
-          ]
-        })
-      }
-
-      // 10. 高级筛选 - 客户经理 (带事实表 KHJL 穿透联动)
-      if (accountManager && typeof accountManager === 'string' && accountManager.trim()) {
-        const amName = accountManager.trim()
-        let factKeysByManager: string[] = []
-        try {
-          const matched = await prisma.$queryRaw<Array<{ DDBH: string; BDQD_DDBH: string | null }>>`
-            SELECT "DDBH", "BDQD_DDBH"
-            FROM "HY_FACT_DDCX_NEW"
-            WHERE "KHJL" ILIKE ${'%' + amName + '%'}
-            LIMIT 200
-          `
-          factKeysByManager = Array.from(new Set(matched.flatMap(m => [m.DDBH, m.BDQD_DDBH].filter((k): k is string => Boolean(k)))))
-        } catch {}
-
-        andConditions.push({
-          OR: [
-            { assignedEmployee: { name: { contains: amName, mode: 'insensitive' } } },
-            { rawJson: { path: ['accountManager'], string_contains: amName } },
-            { rawJson: { path: ['cmgrName'], string_contains: amName } },
-            { rawJson: { path: ['mmgrName'], string_contains: amName } },
-            ...(factKeysByManager.length > 0 ? [{ sourceOrderNo: { in: factKeysByManager } }, { huanyuOrderNo: { in: factKeysByManager } }] : [])
-          ]
-        })
-      }
-
-      // 11. 高级筛选 - 入池日期范围 (覆盖 orders.createdAt、rawJson.applyDate/applicationDate/applyTime)
-      if (startDate || endDate) {
-        const startDt = startDate ? new Date(startDate) : new Date('1970-01-01')
-        const endDt = endDate ? new Date(endDate) : new Date('2099-12-31')
-        if (endDate) endDt.setHours(23, 59, 59, 999)
-
-        const startStr = startDate ? startDate.slice(0, 10) : '1970-01-01'
-        const endStr = endDate ? endDate.slice(0, 10) + ' 23:59:59' : '2099-12-31 23:59:59'
-
-        let dateMatchedOrderIds: number[] = []
-        try {
-          const matched = await prisma.$queryRaw<Array<{ id: number }>>`
-            SELECT id FROM "Order"
-            WHERE (
-              (NULLIF("rawJson"->>'applyDate', '') IS NOT NULL AND ("rawJson"->>'applyDate') >= ${startStr} AND ("rawJson"->>'applyDate') <= ${endStr})
-              OR (NULLIF("rawJson"->>'applicationDate', '') IS NOT NULL AND ("rawJson"->>'applicationDate') >= ${startStr} AND ("rawJson"->>'applicationDate') <= ${endStr})
-              OR (NULLIF("rawJson"->>'applyTime', '') IS NOT NULL AND ("rawJson"->>'applyTime') >= ${startStr} AND ("rawJson"->>'applyTime') <= ${endStr})
-            )
-            LIMIT 5000
-          `
-          dateMatchedOrderIds = matched.map(m => m.id)
-        } catch {}
-
-        const createdAtCond: any = {}
-        if (startDate) createdAtCond.gte = startDt
-        if (endDate) createdAtCond.lte = endDt
-
-        andConditions.push({
-          OR: [
-            { createdAt: createdAtCond },
-            ...(dateMatchedOrderIds.length > 0 ? [{ id: { in: dateMatchedOrderIds } }] : [])
-          ]
-        })
-      }
-
-      if (andConditions.length > 0) {
-        where.AND = andConditions
-      }
-
+      const whereSql = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` : Prisma.empty
       const isPaginated = page !== undefined || pageSize !== undefined
       const pageNum = Math.max(1, parseInt(String(page || 1), 10) || 1)
       const sizeNum = Math.max(1, Math.min(100, parseInt(String(pageSize || 20), 10) || 20))
-
-      let orderBy: any = { createdAt: 'desc' }
-      if (sortKey) {
-        const dir = sortDir === 'asc' ? 'asc' : 'desc'
-        if (sortKey === 'poolEnteredAt' || sortKey === 'createdAt') orderBy = { createdAt: dir }
-        else if (sortKey === 'hospital') orderBy = { hospital: dir }
-        else if (sortKey === 'customerName') orderBy = { customerName: dir }
-        else if (sortKey === 'updatedAt') orderBy = { updatedAt: dir }
+      const dir = sortDir === 'asc' ? Prisma.sql`ASC` : Prisma.sql`DESC`
+      let orderSql = Prisma.sql`o."created_at" ${dir}, o."id" ${dir}`
+      if (sortKey === 'updatedAt') orderSql = Prisma.sql`o."updated_at" ${dir}, o."id" ${dir}`
+      if (sortKey === 'customerName') orderSql = Prisma.sql`o."customer_name" ${dir}, o."id" ${dir}`
+      if (sortKey === 'status' || sortKey === 'hospital') {
+        const field = sortKey === 'status' ? Prisma.raw('f."DD_state"') : Prisma.raw('f."H_NAME"')
+        orderSql = Prisma.sql`(
+          SELECT ${field} FROM "HY_FACT_DDCX_NEW" AS f
+          WHERE (f."DDBH" = o."huanyu_order_no" OR (o."source" <> 'huanyu' AND f."BDQD_DDBH" = o."source_order_no"))
+            AND ${field} IS NOT NULL AND BTRIM(${field}) <> ''
+          ORDER BY CASE WHEN f."DDBH" = o."huanyu_order_no" THEN 0 ELSE 1 END, f."DDBH"
+          LIMIT 1
+        ) ${dir} NULLS LAST, o."created_at" DESC, o."id" DESC`
       }
 
       try {
-        const selfOpData = await querySelfOperatedHuanyuOrders(prisma, {
-          captureEmployeeId,
-          query,
-          status,
-          lane: (request.query as any).lane,
-          applicationNo,
-          sourceOrderNo,
-          huanyuOrderNo,
-          serviceType,
-          customerName,
-          accountManager,
-          hospital,
-          dept,
-          doctor,
-          minAmount: (request.query as any).minAmount,
-          maxAmount: (request.query as any).maxAmount,
-          startDate,
-          endDate
-        })
-
-        const selfOpCount = selfOpData.length
-        const orderTableCount = isPaginated ? await prisma.order.count({ where }) : 0
-        const totalCount = isPaginated ? (orderTableCount + selfOpCount) : undefined
-
-        let pageSelfOps: any[] = []
-        let ordersSkip = 0
-        let ordersTake = sizeNum
-
-        if (isPaginated) {
-          const globalStart = (pageNum - 1) * sizeNum
-          const globalEnd = globalStart + sizeNum
-
-          if (globalStart < selfOpCount) {
-            pageSelfOps = selfOpData.slice(globalStart, globalEnd)
-            ordersSkip = 0
-            ordersTake = Math.max(0, sizeNum - pageSelfOps.length)
-          } else {
-            pageSelfOps = []
-            ordersSkip = globalStart - selfOpCount
-            ordersTake = sizeNum
-          }
+        const totalCount = isPaginated
+          ? Number((await prisma.$queryRaw<Array<{ total: number }>>`
+              SELECT COUNT(*)::int AS total FROM "orders" AS o ${whereSql}
+            `)[0]?.total ?? 0)
+          : 0
+        const pageStart = (pageNum - 1) * sizeNum
+        const totalPages = Math.ceil(totalCount / sizeNum)
+        let pageRows: Array<{ id: number }>
+        if (isPaginated && (sortKey === 'poolEnteredAt' || sortKey === 'createdAt' || !sortKey) && pageNum === totalPages && pageNum > 1) {
+          const finalPageSize = totalCount - pageStart
+          pageRows = await prisma.$queryRaw<Array<{ id: number }>>`
+            SELECT o."id" FROM "orders" AS o ${whereSql}
+            ORDER BY o."created_at" ${sortDir === 'asc' ? Prisma.sql`DESC` : Prisma.sql`ASC`}, o."id" ${sortDir === 'asc' ? Prisma.sql`DESC` : Prisma.sql`ASC`}
+            LIMIT ${finalPageSize}
+          `
+          pageRows.reverse()
+        } else if (isPaginated) {
+          pageRows = await prisma.$queryRaw<Array<{ id: number }>>`
+            SELECT o."id" FROM "orders" AS o ${whereSql}
+            ORDER BY ${orderSql} LIMIT ${sizeNum} OFFSET ${pageStart}
+          `
+        } else {
+          pageRows = await prisma.$queryRaw<Array<{ id: number }>>`
+            SELECT o."id" FROM "orders" AS o ${whereSql} ORDER BY ${orderSql}
+          `
         }
-
-        const orders = (isPaginated && ordersTake === 0)
-          ? []
-          : await prisma.order.findMany({
-              where,
-              orderBy,
-              ...(isPaginated ? { skip: ordersSkip, take: ordersTake } : {}),
+        const pageIds = pageRows.map((row) => row.id)
+        const pageOrder = new Map(pageIds.map((id, index) => [id, index]))
+        const orders = await prisma.order.findMany({
+          where: { id: { in: pageIds } },
           select: {
             id: true,
             source: true,
@@ -3154,25 +2474,15 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
             }
           }
         })
+        orders.sort((a, b) => (pageOrder.get(a.id) ?? 0) - (pageOrder.get(b.id) ?? 0))
 
         // 批量查询对应的 HY_FACT_DDCX_NEW 记录
-        const huanyuOrderKeys = Array.from(
-          new Set(
-            orders.flatMap((o) => {
-              const raw = (o.rawJson ?? {}) as Record<string, unknown>
-              return [
-                o.huanyuOrderNo,
-                o.sourceOrderNo,
-                stringOrNull(raw.sourceOrderNo),
-                stringOrNull(raw.channelOrderNo),
-                stringOrNull(raw.bOrderNo),
-                stringOrNull(raw.bChannelOrderNo),
-                stringOrNull(raw.orderNo)
-              ].filter((value): value is string => Boolean(value))
-            })
-          )
-        )
-        const huanyuRows = huanyuOrderKeys.length > 0
+        const huanyuNos = Array.from(new Set(orders.map((o) => o.huanyuOrderNo).filter((v): v is string => Boolean(v))))
+        const bOrderNos = Array.from(new Set(orders.filter((o) => o.source !== 'huanyu').map((o) => o.sourceOrderNo).filter((v): v is string => Boolean(v))))
+        const factMatches: Prisma.Sql[] = []
+        if (huanyuNos.length) factMatches.push(Prisma.sql`"DDBH" IN (${Prisma.join(huanyuNos)})`)
+        if (bOrderNos.length) factMatches.push(Prisma.sql`"BDQD_DDBH" IN (${Prisma.join(bOrderNos)})`)
+        const huanyuRows = factMatches.length > 0
           ? await prisma.$queryRaw<Array<{
               DDBH: string
               BDQD_DDBH: string | null
@@ -3188,13 +2498,12 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
             }>>`
               SELECT "DDBH", "BDQD_DDBH", "DD_state", "DDJE", "KHJL", "H_NAME", "H_KS", "H_YS", "JZR_XM", "BDQD_FWXM", "xtsj_"
               FROM "HY_FACT_DDCX_NEW"
-              WHERE "DDBH" IN (${Prisma.join(huanyuOrderKeys)})
-                 OR "BDQD_DDBH" IN (${Prisma.join(huanyuOrderKeys)})
+              WHERE ${Prisma.join(factMatches, ' OR ')}
             `
           : []
 
-        // 按 orderKey 归类所有的 HY_FACT_DDCX_NEW 记录（支持一单多次服务）
-        const huanyuRowsByKey = new Map<string, Array<{
+        // 分别按寰宇号和 B 端号归类，复制服务单沿用母单 B 端号。
+        type WorkbenchHuanyuRow = {
           DDBH: string
           BDQD_DDBH: string | null
           DD_state: string | null
@@ -3206,17 +2515,13 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
           JZR_XM: string | null
           BDQD_FWXM: string | null
           xtsj_: string | null
-        }>>()
+        }
+        const huanyuRowsByNo = new Map<string, WorkbenchHuanyuRow[]>()
+        const huanyuRowsByBNo = new Map<string, WorkbenchHuanyuRow[]>()
 
         for (const row of huanyuRows) {
-          const keys = [row.DDBH, row.BDQD_DDBH].filter((k): k is string => Boolean(k))
-          for (const k of keys) {
-            const list = huanyuRowsByKey.get(k) ?? []
-            if (!list.some(item => item.DDBH === row.DDBH)) {
-              list.push(row)
-            }
-            huanyuRowsByKey.set(k, list)
-          }
+          huanyuRowsByNo.set(row.DDBH, [row])
+          if (row.BDQD_DDBH) huanyuRowsByBNo.set(row.BDQD_DDBH, [...(huanyuRowsByBNo.get(row.BDQD_DDBH) ?? []), row])
         }
 
         const allFwxmCodes = huanyuRows.map(r => r.BDQD_FWXM).filter((x): x is string => Boolean(x && x.trim()))
@@ -3274,68 +2579,18 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
           }
         }
 
-        const channelCache = await getCachedChannelProducts()
-
-        // 批量查询当前页订单未处理的 AI 识别业务字段（b_order_ai_field_candidates）
-        const aiCandidateRows = orderIds.length > 0
-          ? await prisma.$queryRaw<Array<{
-              order_id: number
-              field_code: string
-              value_text: string
-            }>>`
-              SELECT DISTINCT ON (order_id, field_code)
-                order_id, field_code, value_text
-              FROM b_order_ai_field_candidates
-              WHERE order_id IN (${Prisma.join(orderIds)}) AND status = 'pending'
-              ORDER BY order_id, field_code, created_at DESC, id DESC
-            `
-          : []
-        const aiCandidatesByOrderId = new Map<number, Map<string, string>>()
-        for (const row of aiCandidateRows) {
-          let fieldMap = aiCandidatesByOrderId.get(row.order_id)
-          if (!fieldMap) {
-            fieldMap = new Map<string, string>()
-            aiCandidatesByOrderId.set(row.order_id, fieldMap)
-          }
-          if (row.value_text && row.value_text.trim()) {
-            fieldMap.set(row.field_code, row.value_text.trim())
-          }
-        }
-
         const data = orders.map((o: any) => {
           const raw = (o.rawJson ?? {}) as Record<string, unknown>
-          const orderKeys = [
-            o.huanyuOrderNo,
-            o.sourceOrderNo,
-            stringOrNull(raw.sourceOrderNo),
-            stringOrNull(raw.channelOrderNo),
-            stringOrNull(raw.bOrderNo),
-            stringOrNull(raw.bChannelOrderNo),
-            stringOrNull(raw.orderNo)
-          ].filter((v): v is string => Boolean(v))
-
           // 匹配当前订单的所有寰宇服务记录
-          const matchedHuanyuRows: Array<{
-            DDBH: string
-            BDQD_DDBH: string | null
-            DD_state: string | null
-            DDJE: any
-            KHJL: string | null
-            H_NAME: string | null
-            H_KS: string | null
-            H_YS: string | null
-            JZR_XM: string | null
-            BDQD_FWXM: string | null
-            xtsj_: string | null
-          }> = []
-          for (const k of orderKeys) {
-            const list = huanyuRowsByKey.get(k) || []
-            for (const item of list) {
-              if (!matchedHuanyuRows.some(r => r.DDBH === item.DDBH)) {
-                matchedHuanyuRows.push(item)
-              }
-            }
-          }
+          const matchedHuanyuRows: WorkbenchHuanyuRow[] = [
+            ...(o.huanyuOrderNo ? huanyuRowsByNo.get(o.huanyuOrderNo) ?? [] : []),
+            ...(o.source !== 'huanyu' && o.sourceOrderNo ? huanyuRowsByBNo.get(o.sourceOrderNo) ?? [] : [])
+          ].filter((item, index, rows) => rows.findIndex((r) => r.DDBH === item.DDBH) === index)
+          matchedHuanyuRows.sort((a, b) => {
+            if (a.DDBH === o.huanyuOrderNo) return -1
+            if (b.DDBH === o.huanyuOrderNo) return 1
+            return a.DDBH.localeCompare(b.DDBH)
+          })
 
           // 寰宇状态
           const huanyuOrderStatus = matchedHuanyuRows[0]?.DD_state || null
@@ -3347,11 +2602,7 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
           const workbenchLane = deriveWorkbenchLane(huanyuOrderStatus)
           const serviceStage = deriveServiceStage(workbenchLane)
           const rec = ((o.detailJson as any)?.recommendations ?? {}) as Record<string, unknown>
-          const claimedAt =
-            (raw.applyDate as string | undefined) ??
-            (raw.applicationDate as string | undefined) ??
-            (raw.applyTime as string | undefined) ??
-            o.createdAt.toISOString()
+          const claimedAt = o.createdAt.toISOString()
 
           // 1. 客户姓名：优先取不含 * 的真实姓名
           const hPatientName = matchedHuanyuRows.find(r => r.JZR_XM && !r.JZR_XM.includes('*'))?.JZR_XM
@@ -3372,65 +2623,20 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
             o.customerPhone ??
             null
 
-          // AI 分析结果（包含 aiBriefJson 与 b_order_ai_field_candidates）
-          const aiKeyInfo = ((o.aiBriefJson as any)?.keyInfo ?? {}) as Record<string, unknown>
-          const aiFieldMap = aiCandidatesByOrderId.get(o.id)
-          const aiHospital = stringOrNull(aiFieldMap?.get('hospital')) ?? stringOrNull(aiKeyInfo['目标医院'])
-          const aiDept = stringOrNull(aiFieldMap?.get('department')) ?? stringOrNull(aiKeyInfo['科室或病种'])
-          const aiDoctor = stringOrNull(aiFieldMap?.get('doctor')) ?? stringOrNull(aiKeyInfo['意向专家'])
-
-          // 2. 医院：1 优先 HY_FACT_DDCX_NEW 维表反查/清洗 -> 2 优先 AI 目标医院 -> 3 优先上游意向/原单（清洗过滤省市区）
-          const rawHospital = typeof raw.hospital === 'string' ? raw.hospital : undefined
+          // 列表业务字段只采用寰宇事实表；事实表无值时保持空白。
           const hNameRaw = matchedHuanyuRows.find(r => r.H_NAME?.trim())?.H_NAME?.trim()
           const hNameResolved = hNameRaw ? (hospitalDictMap.get(hNameRaw)?.name ?? cleanHospitalName(hNameRaw)) : null
-          const hospitalRow =
-            hNameResolved ??
-            cleanHospitalName(aiHospital) ??
-            cleanHospitalName(rec.visitingHospital) ??
-            cleanHospitalName(rec.intendHos) ??
-            cleanHospitalName(raw.clinicHos) ??
-            cleanHospitalName(raw.intendHos) ??
-            cleanHospitalName(raw.visitingHospital) ??
-            cleanHospitalName(rawHospital) ??
-            cleanHospitalName(o.hospital) ??
-            null
-
-          // 3. 科室：1 优先 HY_FACT_DDCX_NEW 维表反查/清洗 -> 2 优先 AI 科室病种 -> 3 优先原订单
-          const rawDept = typeof raw.dept === 'string' ? raw.dept : undefined
-          const isNumericDeptId = rawDept && /^\d{6,12}$/.test(rawDept.trim())
+          const hospitalRow = hNameResolved
           const hKsRaw = matchedHuanyuRows.find(r => r.H_KS?.trim())?.H_KS?.trim()
           const hKsResolved = hKsRaw ? (deptDictMap.get(hKsRaw)?.name ?? cleanDeptName(hKsRaw)) : null
-          const deptRow =
-            hKsResolved ??
-            cleanDeptName(aiDept) ??
-            (!isNumericDeptId ? cleanDeptName(rawDept) : undefined) ??
-            cleanDeptName(rec.intendDept as string | undefined) ??
-            (o.dept && !/^\d{6,12}$/.test(o.dept.trim()) ? o.dept : undefined) ??
-            cleanDeptName(rawDept) ??
-            cleanDeptName(o.dept) ??
-            null
-
-          // 4. 医生：1 优先 HY_FACT_DDCX_NEW 维表反查/清洗 -> 2 优先 AI 意向专家 -> 3 优先原订单
-          const rawDoctor = typeof raw.doctor === 'string' ? raw.doctor : undefined
-          const isNumericDoctorId = rawDoctor && /^\d{4,10}$/.test(rawDoctor.trim())
+          const deptRow = hKsResolved
           const hYsRaw = matchedHuanyuRows.find(r => r.H_YS?.trim())?.H_YS?.trim()
           const hYsResolved = hYsRaw ? (doctorDictMap.get(hYsRaw)?.name ?? cleanDoctorName(hYsRaw)) : null
-          const doctorRow =
-            hYsResolved ??
-            cleanDoctorName(aiDoctor) ??
-            (!isNumericDoctorId ? cleanDoctorName(rawDoctor) : undefined) ??
-            cleanDoctorName(rec.intendDoc as string | undefined) ??
-            (o.doctor && !/^\d{4,10}$/.test(o.doctor.trim()) ? o.doctor : undefined) ??
-            cleanDoctorName(rawDoctor) ??
-            cleanDoctorName(o.doctor) ??
-            null
+          const doctorRow = hYsResolved
 
           // 5. 客户经理：优先取 HY_FACT_DDCX_NEW 的客户经理，没有的话取 orders 表的 assigned_employee_id (关联 employees.name)
           const hKhjl = matchedHuanyuRows.find(r => r.KHJL?.trim())?.KHJL?.trim()
-          const accountManagerRow =
-            hKhjl ??
-            o.assignedEmployee?.name ??
-            null
+          const accountManagerRow = hKhjl ?? null
 
           // 7. 业务类型名称
           const primaryFwxm = matchedHuanyuRows[0]?.BDQD_FWXM
@@ -3445,31 +2651,10 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
             null
           const serviceItemNameRow = stringOrNull(rec.serviceItemName) ?? stringOrNull(raw.serviceItemName)
 
-          // 6. 订单金额：优先取 HY_FACT_DDCX_NEW.DDJE；当没有的时候，按照订单B端渠道服务项目计算出来
-          const isCancelled = isCancelledOrderText(o.status) || isCancelledOrderText(huanyuOrderStatus)
-          const isRegister = raw.poolType === 'register' || o.source === 'taikang_register' || raw.serviceType === '挂号协助'
-          const channelProds = isRegister ? channelCache.p62 : channelCache.p72
-
-          const primaryItemCandidates = [
-            matchedHuanyuRows[0]?.BDQD_FWXM,
-            raw.itemName,
-            raw.serviceType,
-            raw.serviceItemName,
-            raw.serviceName,
-            rec.itemName,
-            rec.serviceName,
-            rec.subPlanName,
-            serviceTypeRow
-          ]
-          const computedPrice = calculateChannelProductPrice(channelProds, primaryItemCandidates, isCancelled)
-
-          const firstJe = matchedHuanyuRows[0]?.DDJE != null && Number.isFinite(Number(matchedHuanyuRows[0].DDJE)) && Number(matchedHuanyuRows[0].DDJE) > 0
+          const firstJe = matchedHuanyuRows[0]?.DDJE != null && Number.isFinite(Number(matchedHuanyuRows[0].DDJE))
             ? Number(matchedHuanyuRows[0].DDJE)
             : null
-
-          const orderAmountRow = isCancelled
-            ? 0
-            : (firstJe ?? computedPrice ?? (raw.orderAmount != null ? Number(raw.orderAmount) : null))
+          const orderAmountRow = firstJe
 
           // 区分自营订单（无B端单号，只有寰宇订单号）与外部渠道订单
           const isSelfOperated = o.source === 'huanyu' || (typeof o.sourceOrderNo === 'string' && o.sourceOrderNo.startsWith('HYYD'))
@@ -3482,9 +2667,7 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
 
           // 多次复制服务单列表
           const huanyuOrders = matchedHuanyuRows.map((r, index) => {
-            const rowJe = r.DDJE != null && Number.isFinite(Number(r.DDJE)) && Number(r.DDJE) > 0 ? Number(r.DDJE) : null
-            const subCandidates = [r.BDQD_FWXM, r.BDQD_FWXM ? null : serviceTypeRow]
-            const subComputed = calculateChannelProductPrice(channelProds, subCandidates, isCancelled)
+            const rowJe = r.DDJE != null && Number.isFinite(Number(r.DDJE)) ? Number(r.DDJE) : null
             const matchedSubProd = r.BDQD_FWXM ? channelProductMap.get(r.BDQD_FWXM.trim()) : null
             const resolvedSubServiceName =
               matchedSubProd?.name ||
@@ -3498,15 +2681,15 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
               bOrderNo: r.BDQD_DDBH || (isSelfOperated ? null : o.sourceOrderNo),
               isClone: index > 0,
               sequence: index + 1,
-              status: r.DD_state || '待跟进',
+              status: r.DD_state || '',
               serviceName: resolvedSubServiceName,
-              amount: isCancelled ? 0 : (rowJe ?? subComputed ?? null),
-              accountManager: r.KHJL || accountManagerRow || '',
-              hospital: (r.H_NAME ? (hospitalDictMap.get(r.H_NAME.trim())?.name || cleanHospitalName(r.H_NAME)) : null) || hospitalRow || '',
-              dept: (r.H_KS ? (deptDictMap.get(r.H_KS.trim())?.name || cleanDeptName(r.H_KS)) : null) || deptRow || '',
-              doctor: (r.H_YS ? (doctorDictMap.get(r.H_YS.trim())?.name || cleanDoctorName(r.H_YS)) : null) || doctorRow || '',
+              amount: rowJe,
+              accountManager: r.KHJL?.trim() || '',
+              hospital: r.H_NAME ? (hospitalDictMap.get(r.H_NAME.trim())?.name || cleanHospitalName(r.H_NAME)) || '' : '',
+              dept: r.H_KS ? (deptDictMap.get(r.H_KS.trim())?.name || cleanDeptName(r.H_KS)) || '' : '',
+              doctor: r.H_YS ? (doctorDictMap.get(r.H_YS.trim())?.name || cleanDoctorName(r.H_YS)) || '' : '',
               patientName: r.JZR_XM || customerNameRow,
-              createdAt: r.xtsj_ || o.createdAt.toISOString()
+              createdAt: o.createdAt.toISOString()
             }
           })
 
@@ -3547,7 +2730,7 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
             sourceOrderNo: bOrderNoRow ?? '',
             bOrderNo: bOrderNoRow,
             huanyuOrderNo: huanyuOrderNoRow,
-            status: huanyuOrderStatus ?? (o.status === '候选' ? '待跟进' : o.status),
+            status: huanyuOrderStatus ?? '',
             huanyuOrderStatus,
             taikangOrderState,
             taikangOrderStateName,
@@ -3566,9 +2749,10 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
             serviceType: serviceTypeRow,
             serviceItemName: serviceItemNameRow,
             huanyuOrders,
-            isAiHospital: Boolean(!hNameRaw && aiHospital),
-            isAiDept: Boolean(!hKsRaw && aiDept),
-            isAiDoctor: Boolean(!hYsRaw && aiDoctor),
+            poolEnteredAt: o.createdAt.toISOString(),
+            isAiHospital: false,
+            isAiDept: false,
+            isAiDoctor: false,
             intendDate: intendDateRow,
             intendDateAmorpm: intendDateAmorpmRow,
             claimedAt,
@@ -3580,19 +2764,17 @@ async function querySelfOperatedHuanyuOrders(prisma: PrismaClient, params: SelfO
           }
         })
 
-        const finalData = isPaginated ? [...pageSelfOps, ...data] : [...selfOpData, ...data]
-
         if (isPaginated) {
           return reply.send({
-            data: finalData,
-            total: totalCount ?? finalData.length,
+            data,
+            total: totalCount,
             page: pageNum,
             pageSize: sizeNum,
-            totalPages: Math.ceil((totalCount ?? finalData.length) / sizeNum)
+            totalPages
           })
         }
 
-        return reply.send({ data: finalData })
+        return reply.send({ data })
       } catch (err: any) {
         return reply.status(500).send({ error: '查询订单失败: ' + err.message })
       }

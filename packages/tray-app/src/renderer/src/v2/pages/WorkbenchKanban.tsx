@@ -33,7 +33,7 @@ export type ApplicationGroup = {
   orders: Order[]
   primary: Order
   updatedAt: string
-  poolEnteredAt: string
+  poolEnteredAt: string | null
 }
 
 const REFRESH_INTERVAL_MS = 30_000
@@ -136,18 +136,30 @@ function displayCustomerNameOf(order: Order): string {
   return stringField(raw, ['patientName', 'paName', 'customerName', 'name', 'patName']) ?? order.customerName
 }
 
-function poolEnteredAtOf(order: Order): string {
-  const raw = (order.rawJson ?? {}) as Record<string, unknown>
-  return stringField(raw, ['applyDate']) ?? order.claimedAt ?? order.createdAt ?? order.updatedAt
+function poolEnteredAtOf(order: Order): string | null {
+  if (order.poolEnteredAt !== undefined) return order.poolEnteredAt
+  if (order.source === 'huanyu') {
+    const raw = (order.rawJson ?? {}) as Record<string, unknown>
+    const xtsj = raw.xtsj_
+    return typeof xtsj === 'string' && xtsj.trim() ? xtsj : null
+  }
+  return order.createdAt ?? null
 }
 
-function timeValue(value: string | null | undefined): number {
-  if (!value) return 0
+function timeValue(value: string | null | undefined): number | null {
+  if (!value) return null
   const parsed = Date.parse(value)
-  return Number.isFinite(parsed) ? parsed : 0
+  return Number.isFinite(parsed) ? parsed : null
 }
 
-function groupOrdersByApplication(orders: Order[]): ApplicationGroup[] {
+function comparePoolTime(a: string | null | undefined, b: string | null | undefined, dir: 'asc' | 'desc' = 'desc'): number {
+  const aTime = timeValue(a)
+  const bTime = timeValue(b)
+  if (aTime === null || bTime === null) return aTime === bTime ? 0 : aTime === null ? -1 : 1
+  return dir === 'desc' ? bTime - aTime : aTime - bTime
+}
+
+function groupOrdersByApplication(orders: Order[], sortDir: 'asc' | 'desc' = 'desc'): ApplicationGroup[] {
   const map = new Map<string, Order[]>()
   for (const order of orders) {
     const applicationNo = applicationNoOf(order)
@@ -158,7 +170,7 @@ function groupOrdersByApplication(orders: Order[]): ApplicationGroup[] {
   }
   return [...map.entries()]
     .map(([key, list]) => {
-      const sorted = [...list].sort((a, b) => timeValue(poolEnteredAtOf(b)) - timeValue(poolEnteredAtOf(a)))
+      const sorted = [...list].sort((a, b) => comparePoolTime(poolEnteredAtOf(a), poolEnteredAtOf(b)))
       const primary = sorted[0]
       return {
         key,
@@ -170,7 +182,7 @@ function groupOrdersByApplication(orders: Order[]): ApplicationGroup[] {
         poolEnteredAt: poolEnteredAtOf(primary)
       }
     })
-    .sort((a, b) => timeValue(b.poolEnteredAt) - timeValue(a.poolEnteredAt))
+    .sort((a, b) => comparePoolTime(a.poolEnteredAt, b.poolEnteredAt, sortDir))
 }
 
 function groupLaneOf(group: ApplicationGroup): LaneKey | null {
@@ -182,16 +194,20 @@ function groupLaneOf(group: ApplicationGroup): LaneKey | null {
 }
 
 function settlementUnitItem(order: Order): string {
-  return order.serviceItemName ?? ''
+  return order.serviceType?.trim() || order.serviceItemName?.trim() || ''
 }
 
 function dedupeServices(orders: Order[]): Array<{ label: string; count: number; order: Order }> {
   const map = new Map<string, { label: string; count: number; order: Order }>()
   for (const order of orders) {
-    const label = settlementUnitItem(order)
-    const existing = map.get(label)
-    if (existing) existing.count += 1
-    else map.set(label, { label, count: 1, order })
+    const labels = order.huanyuOrders?.length
+      ? order.huanyuOrders.map((huanyu) => huanyu.serviceName?.trim() || settlementUnitItem(order))
+      : [settlementUnitItem(order)]
+    for (const label of labels) {
+      const existing = map.get(label)
+      if (existing) existing.count += 1
+      else map.set(label, { label, count: 1, order })
+    }
   }
   return [...map.values()]
 }
@@ -234,7 +250,7 @@ export interface FlattenedService {
   amount: number | null
   dataCount: { textAndImages: number; audio: number }
   source: string
-  poolEnteredAt: string
+  poolEnteredAt: string | null
   rawOrder: Order
 }
 
@@ -250,31 +266,15 @@ function isInvalidHospital(h: string | null | undefined): boolean {
 }
 
 export function getServicesOfGroup(group: ApplicationGroup): FlattenedService[] {
-  // 查找整个申请号组内权威有效的真实医院（非省市区）
-  let groupHospital = ''
-  for (const order of group.orders) {
-    if (order.hospital && !isInvalidHospital(order.hospital)) {
-      groupHospital = order.hospital
-      break
-    }
-    if (order.huanyuOrders) {
-      const validH = order.huanyuOrders.find((h) => h.hospital && !isInvalidHospital(h.hospital))
-      if (validH) {
-        groupHospital = validH.hospital
-        break
-      }
-    }
-  }
-
   const result: FlattenedService[] = []
   for (const order of group.orders) {
     const isSelfOperated = order.source === 'huanyu' || (typeof order.sourceOrderNo === 'string' && order.sourceOrderNo.startsWith('HYYD'))
-    const effectiveOrderHospital = (!isInvalidHospital(order.hospital) ? order.hospital : '') || groupHospital
+    const effectiveOrderHospital = !isInvalidHospital(order.hospital) ? (order.hospital || '') : ''
     if (order.huanyuOrders && order.huanyuOrders.length > 0) {
       for (const h of order.huanyuOrders) {
-        const effectiveH = (!isInvalidHospital(h.hospital) ? h.hospital : '') || effectiveOrderHospital || groupHospital
+        const effectiveH = !isInvalidHospital(h.hospital) ? h.hospital : ''
         const bNo = h.bOrderNo || (isSelfOperated ? '' : (order.bOrderNo || order.sourceOrderNo))
-        const hNo = h.huanyuOrderNo || h.ddbh || order.huanyuOrderNo || (isSelfOperated ? order.sourceOrderNo : null)
+        const hNo = h.huanyuOrderNo || h.ddbh || order.huanyuOrderNo || (isSelfOperated && !order.sourceOrderNo.startsWith('SELF:') ? order.sourceOrderNo : null)
         result.push({
           id: h.id,
           key: `huanyu:${h.id}`,
@@ -284,29 +284,29 @@ export function getServicesOfGroup(group: ApplicationGroup): FlattenedService[] 
           applicationNo: order.applicationNo || applicationNoOf(order),
           sourceOrderNo: bNo,
           huanyuOrderNo: hNo,
-          serviceType: settlementUnitItem(order),
+          serviceType: h.serviceName?.trim() || settlementUnitItem(order),
           customerName: h.patientName || displayCustomerNameOf(order),
-          status: h.status || order.huanyuOrderStatus || order.status,
-          accountManager: h.accountManager || order.accountManager || '—',
+          status: h.status || '',
+          accountManager: h.accountManager || '',
           hospital: effectiveH,
-          dept: h.dept || order.dept || '',
-          doctor: h.doctor || order.doctor || '',
-          isAiHospital: Boolean(order.isAiHospital && !effectiveH),
-          isAiDept: Boolean(order.isAiDept && !h.dept),
-          isAiDoctor: Boolean(order.isAiDoctor && !h.doctor),
-          amount: h.amount ?? order.orderAmount ?? null,
+          dept: h.dept || '',
+          doctor: h.doctor || '',
+          isAiHospital: false,
+          isAiDept: false,
+          isAiDoctor: false,
+          amount: h.amount ?? null,
           dataCount: {
             textAndImages: order.textCount + order.imageCount,
             audio: order.audioCount
           },
           source: order.source,
-          poolEnteredAt: h.createdAt || poolEnteredAtOf(order),
+          poolEnteredAt: poolEnteredAtOf(order),
           rawOrder: order
         })
       }
     } else {
       const bNo = isSelfOperated ? '' : (order.bOrderNo || order.sourceOrderNo)
-      const hNo = order.huanyuOrderNo || (isSelfOperated ? order.sourceOrderNo : null)
+      const hNo = order.huanyuOrderNo || (isSelfOperated && !order.sourceOrderNo.startsWith('SELF:') ? order.sourceOrderNo : null)
       result.push({
         id: order.id,
         key: `order:${order.id}`,
@@ -318,14 +318,14 @@ export function getServicesOfGroup(group: ApplicationGroup): FlattenedService[] 
         huanyuOrderNo: hNo,
         serviceType: settlementUnitItem(order),
         customerName: displayCustomerNameOf(order),
-        status: order.huanyuOrderStatus || order.status,
-        accountManager: order.accountManager || '—',
+        status: order.huanyuOrderStatus || '',
+        accountManager: order.accountManager || '',
         hospital: effectiveOrderHospital,
         dept: order.dept || '',
         doctor: order.doctor || '',
-        isAiHospital: Boolean(order.isAiHospital && !effectiveOrderHospital),
-        isAiDept: Boolean(order.isAiDept),
-        isAiDoctor: Boolean(order.isAiDoctor),
+        isAiHospital: false,
+        isAiDept: false,
+        isAiDoctor: false,
         amount: order.orderAmount ?? null,
         dataCount: {
           textAndImages: order.textCount + order.imageCount,
@@ -677,7 +677,7 @@ function BoardView({
       if (lane) g[lane].push(group)
     }
     for (const key of Object.keys(g) as LaneKey[]) {
-      g[key].sort((a, b) => timeValue(b.poolEnteredAt) - timeValue(a.poolEnteredAt))
+      g[key].sort((a, b) => comparePoolTime(a.poolEnteredAt, b.poolEnteredAt))
     }
     return g
   }, [groups])
@@ -1003,7 +1003,7 @@ function ApplicationCard({
             <span className="material-symbols-outlined shrink-0 text-[#6b8fc7]" style={{ fontSize: '12px' }}>call</span>
             <span className="truncate font-mono-data">{primary.customerPhone || '—'}</span>
           </Copyable>
-          <span className="shrink-0 text-[11px] text-[#7b8aa0] text-right" title={group.poolEnteredAt}>{monthDay(group.poolEnteredAt)}</span>
+          <span className="shrink-0 text-[11px] text-[#7b8aa0] text-right" title={group.poolEnteredAt ?? undefined}>{monthDay(group.poolEnteredAt)}</span>
         </div>
       </div>
 
@@ -1164,7 +1164,7 @@ function ListView({
     }
   }, [loadData])
 
-  const groups = useMemo(() => groupOrdersByApplication(orders), [orders])
+  const groups = useMemo(() => groupOrdersByApplication(orders, sort.key === 'poolEnteredAt' ? sort.dir : 'desc'), [orders, sort])
 
   function toggleSort(key: SortKey): void {
     setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }))
@@ -1482,7 +1482,7 @@ function ListView({
                         sequence: 1,
                         applicationNo: group.applicationNo,
                         sourceOrderNo: isSingleSelfOperated ? '' : (group.primary.bOrderNo || group.primary.sourceOrderNo),
-                        huanyuOrderNo: group.primary.huanyuOrderNo || (isSingleSelfOperated ? group.primary.sourceOrderNo : null),
+                        huanyuOrderNo: group.primary.huanyuOrderNo || (isSingleSelfOperated && !group.primary.sourceOrderNo.startsWith('SELF:') ? group.primary.sourceOrderNo : null),
                         serviceType: settlementUnitItem(group.primary),
                         customerName: group.customerName,
                         status: group.primary.huanyuOrderStatus || group.primary.status,
@@ -1693,7 +1693,7 @@ function ApplicationTreeRow({
       <td className="py-2.5 px-3 text-[#454a5a] font-medium">
         {(() => {
           const validServiceHospital = services.find((s) => s.hospital && !isInvalidHospital(s.hospital))?.hospital
-          const displayHospital = (!isInvalidHospital(order.hospital) ? order.hospital : '') || validServiceHospital || '医院待定'
+          const displayHospital = (!isInvalidHospital(order.hospital) ? order.hospital : '') || validServiceHospital || '—'
           return (
             <div className="flex items-center gap-1 truncate" title={displayHospital}>
               <span className="truncate">{displayHospital}</span>
@@ -1707,8 +1707,8 @@ function ApplicationTreeRow({
 
       {/* 8. 科室 */}
       <td className="py-2.5 px-3 text-body-sm text-[#536174]">
-        <div className="flex items-center gap-1 truncate" title={order.dept || '科室待定'}>
-          <span className="truncate">{order.dept || '科室待定'}</span>
+        <div className="flex items-center gap-1 truncate" title={order.dept || '—'}>
+          <span className="truncate">{order.dept || '—'}</span>
           {order.isAiDept && (
             <span className="shrink-0 text-[10px] px-1 py-0.2 bg-purple-50 text-purple-600 rounded border border-purple-200" title="由AI智能分析识别">AI</span>
           )}
@@ -1717,8 +1717,8 @@ function ApplicationTreeRow({
 
       {/* 9. 医生 */}
       <td className="py-2.5 px-3 text-body-sm text-[#536174]">
-        <div className="flex items-center gap-1 truncate" title={order.doctor || '医生待定'}>
-          <span className="truncate">{order.doctor || '医生待定'}</span>
+        <div className="flex items-center gap-1 truncate" title={order.doctor || '—'}>
+          <span className="truncate">{order.doctor || '—'}</span>
           {order.isAiDoctor && (
             <span className="shrink-0 text-[10px] px-1 py-0.2 bg-purple-50 text-purple-600 rounded border border-purple-200" title="由AI智能分析识别">AI</span>
           )}
@@ -1741,7 +1741,7 @@ function ApplicationTreeRow({
       </td>
 
       {/* 13. 入池 */}
-      <td className="py-2.5 px-3 text-[#454a5a] whitespace-nowrap text-body-sm font-mono-data" title={group.poolEnteredAt}>
+      <td className="py-2.5 px-3 text-[#454a5a] whitespace-nowrap text-body-sm font-mono-data" title={group.poolEnteredAt ?? undefined}>
         {relativeTime(group.poolEnteredAt)}
       </td>
 
@@ -1874,10 +1874,7 @@ function ServiceRow({
       {/* 7. 医院 */}
       <td className="py-2.5 px-3 text-[#161a22] font-medium">
         {(() => {
-          const validHospital =
-            (!isInvalidHospital(service.hospital) ? service.hospital : '') ||
-            (!isInvalidHospital(service.rawOrder.hospital) ? service.rawOrder.hospital : '') ||
-            '—'
+          const validHospital = (!isInvalidHospital(service.hospital) ? service.hospital : '') || '—'
           return (
             <div className="flex items-center gap-1 truncate" title={validHospital}>
               <span className="truncate">{validHospital}</span>
@@ -1927,7 +1924,7 @@ function ServiceRow({
       </td>
 
       {/* 13. 入池 */}
-      <td className="py-2.5 px-3 text-[#454a5a] whitespace-nowrap text-body-sm font-mono-data" title={service.poolEnteredAt}>
+      <td className="py-2.5 px-3 text-[#454a5a] whitespace-nowrap text-body-sm font-mono-data" title={service.poolEnteredAt ?? undefined}>
         {relativeTime(service.poolEnteredAt)}
       </td>
 
@@ -2022,7 +2019,7 @@ function LaneBadge({ order, customLabel }: { order: Order; customLabel?: string 
           : key === 'done'
             ? 'text-action-green bg-action-green/10'
             : 'text-text-muted bg-surface-variant'
-  const label = customLabel || order.huanyuOrderStatus || '未设置'
+  const label = (customLabel !== undefined ? customLabel : order.huanyuOrderStatus) || '—'
   return (
     <span className={'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-label-caps ' + color} title={label}>
       {label}

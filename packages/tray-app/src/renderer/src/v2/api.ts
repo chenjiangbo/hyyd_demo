@@ -99,6 +99,7 @@ export interface Order {
   intendDate: string | null
   claimedAt: string | null
   createdAt?: string
+  poolEnteredAt?: string | null
   updatedAt: string
   materialCount: number
   audioCount: number
@@ -419,6 +420,7 @@ export function createOrder(input: CreateOrderInput): Promise<Order> {
 
 export interface SaveHuanyuOrderPayload {
   mode?: 'create' | 'update'
+  source?: 'huanyu'
   orderNo: string
   orderStatus?: string
   channel?: string

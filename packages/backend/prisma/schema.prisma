@@ -61,6 +61,7 @@ model Order {
   statusHistory           OrderStatusHistory[]
 
   @@unique([source, sourceOrderNo])
+  @@index([assignedEmployeeId, createdAt(sort: Desc), id(sort: Desc)], map: "orders_employee_created_id_idx")
   @@map("orders")
 }
 

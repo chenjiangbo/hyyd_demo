@@ -224,7 +224,7 @@ function OrderGroup({
             >
               <span className={'text-label-caps px-1.5 py-0.5 rounded shrink-0 ' + bizChipClass(o)}>{bizType(o)}</span>
               <span className="min-w-0 flex-1">
-                <span className="block text-body-sm font-mono-data text-text-main truncate">{o.sourceOrderNo}</span>
+                <span className="block text-body-sm font-mono-data text-text-main truncate">{o.source === 'huanyu' ? (o.huanyuOrderNo || '') : o.sourceOrderNo}</span>
                 <span className="block text-label-caps text-text-muted truncate">
                   {o.hospital ? o.hospital + (o.dept ? ` · ${o.dept}` : '') : '医院待定'}
                 </span>
