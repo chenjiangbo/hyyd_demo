@@ -254,6 +254,24 @@ export interface FlattenedService {
   rawOrder: Order
 }
 
+interface ReminderTarget {
+  order: Order
+  orderNo: string | null
+  huanyuOrderNo: string | null
+}
+
+function reminderTargetForOrder(order: Order): ReminderTarget {
+  const sourceOrderNo = String(order.sourceOrderNo || '').trim()
+  const isSelfOperated = order.source === 'huanyu' || sourceOrderNo.startsWith('HYYD')
+  return {
+    order,
+    orderNo: isSelfOperated ? null : (String(order.bOrderNo || sourceOrderNo).trim() || null),
+    huanyuOrderNo: isSelfOperated
+      ? String(order.huanyuOrderNo || (!sourceOrderNo.startsWith('SELF:') ? sourceOrderNo : '')).trim() || null
+      : null
+  }
+}
+
 function isInvalidHospital(h: string | null | undefined): boolean {
   if (!h) return true
   const s = h.trim()
@@ -363,7 +381,7 @@ export default function WorkbenchKanban({
   const [view, setView] = useState<View>('list')
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [detailRegions, setDetailRegions] = useState<Record<string, string | null>>({})
-  const [reminderModalOrder, setReminderModalOrder] = useState<Order | null>(null)
+  const [reminderTarget, setReminderTarget] = useState<ReminderTarget | null>(null)
 
   useEffect(() => {
     if (view !== 'board') return
@@ -544,7 +562,7 @@ export default function WorkbenchKanban({
             groups={boardGroups}
             detailRegions={detailRegions}
             onOpen={onOpenApplication}
-            onOpenReminder={setReminderModalOrder}
+            onOpenReminder={setReminderTarget}
           />
         )
       ) : (
@@ -556,14 +574,16 @@ export default function WorkbenchKanban({
           onAdvancedFilterCountChange={onAdvancedFilterCountChange}
           onOpen={onOpenApplication}
           onCreateHuanyuOrder={onCreateHuanyuOrder}
-          onOpenReminder={setReminderModalOrder}
+          onOpenReminder={setReminderTarget}
         />
       )}
 
-      {reminderModalOrder && (
+      {reminderTarget && (
         <OrderReminderModal
-          order={reminderModalOrder}
-          onClose={() => setReminderModalOrder(null)}
+          order={reminderTarget.order}
+          orderNo={reminderTarget.orderNo}
+          huanyuOrderNo={reminderTarget.huanyuOrderNo}
+          onClose={() => setReminderTarget(null)}
         />
       )}
     </div>
@@ -668,7 +688,7 @@ function BoardView({
   groups: ApplicationGroup[]
   detailRegions: Record<string, string | null>
   onOpen: (group: ApplicationGroup) => void
-  onOpenReminder: (order: Order) => void
+  onOpenReminder: (target: ReminderTarget) => void
 }): React.JSX.Element {
   const grouped = useMemo(() => {
     const g: Record<LaneKey, ApplicationGroup[]> = { todo: [], doing: [], await_backfill: [], done: [] }
@@ -918,7 +938,7 @@ function ApplicationCard({
   lane: LaneKey
   detailRegion: string | null
   onOpen: (group: ApplicationGroup) => void
-  onOpenReminder: (order: Order) => void
+  onOpenReminder: (target: ReminderTarget) => void
 }): React.JSX.Element {
   const primary = group.primary
   const displayName = group.customerName
@@ -957,7 +977,7 @@ function ApplicationCard({
             title="设置跟进提醒"
             onClick={(e) => {
               e.stopPropagation()
-              onOpenReminder(primary)
+              onOpenReminder(reminderTargetForOrder(primary))
             }}
             className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded hover:bg-white text-text-muted hover:text-alert-orange transition-colors"
           >
@@ -1078,7 +1098,7 @@ function ListView({
   onAdvancedFilterCountChange?: (count: number) => void
   onOpen: (group: ApplicationGroup, selectedOrderId?: number) => void
   onCreateHuanyuOrder: () => void
-  onOpenReminder: (order: Order) => void
+  onOpenReminder: (target: ReminderTarget) => void
 }): React.JSX.Element {
   const [laneFilter, setLaneFilter] = useState<LaneKey | 'all'>('all')
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'poolEnteredAt', dir: 'desc' })
@@ -1769,7 +1789,7 @@ function ServiceRow({
   sequence?: number
   totalServices?: number
   onOpen: (group: ApplicationGroup, selectedOrderId?: number) => void
-  onOpenReminder: (order: Order) => void
+  onOpenReminder: (target: ReminderTarget) => void
 }): React.JSX.Element {
   const lane = laneOf(service.rawOrder)
   const gender = genderOf(service.rawOrder)
@@ -1935,7 +1955,11 @@ function ServiceRow({
           title="设置跟进提醒"
           onClick={(e) => {
             e.stopPropagation()
-            onOpenReminder(service.rawOrder)
+            onOpenReminder({
+              order: service.rawOrder,
+              orderNo: service.sourceOrderNo || null,
+              huanyuOrderNo: service.huanyuOrderNo || null
+            })
           }}
           className="inline-flex items-center gap-1 rounded px-2 py-1 text-[12px] font-medium text-text-muted hover:text-primary hover:bg-white transition-colors border border-border-subtle hover:border-primary/40 bg-surface-bg shadow-2xs"
         >

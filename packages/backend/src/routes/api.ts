@@ -3309,10 +3309,10 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
   )
 
   // ──────────────── 8.3 订单跟进提醒与桌面通知 ────────────────
-  // 列表（当前员工，支持按 orderNo 或 status 过滤）
-  fastify.get<{ Querystring: { status?: string; orderNo?: string } }>('/api/v1/order-reminders', async (request, reply) => {
+  // 列表（当前员工，支持按 B 端单号、寰宇单号或 status 过滤）
+  fastify.get<{ Querystring: { status?: string; orderNo?: string; huanyuOrderNo?: string } }>('/api/v1/order-reminders', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-    const { status, orderNo } = request.query
+    const { status, orderNo, huanyuOrderNo } = request.query
     const employeeId = request.employee.id
 
     const conditions: string[] = ['employee_id = $1']
@@ -3328,9 +3328,18 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
         conditions.push(`status = $${params.length}`)
       }
     }
-    if (orderNo) {
+    if (orderNo && huanyuOrderNo) {
+      params.push(huanyuOrderNo)
+      const huanyuPosition = params.length
       params.push(orderNo)
-      conditions.push(`order_no = $${params.length}`)
+      const bOrderPosition = params.length
+      conditions.push(`(huanyu_order_no = $${huanyuPosition} OR (order_no = $${bOrderPosition} AND huanyu_order_no IS NULL))`)
+    } else if (huanyuOrderNo) {
+      params.push(huanyuOrderNo)
+      conditions.push(`huanyu_order_no = $${params.length}`)
+    } else if (orderNo) {
+      params.push(orderNo)
+      conditions.push(`(order_no = $${params.length} AND huanyu_order_no IS NULL)`)
     }
 
     const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
@@ -3346,15 +3355,17 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
   })
 
   // 新建手工提醒
-  fastify.post<{ Body: { orderNo: string; remindTime: string; content: string; type?: string; extraData?: any } }>(
+  fastify.post<{ Body: { orderNo?: string | null; huanyuOrderNo?: string | null; remindTime: string; content: string; type?: string; extraData?: any } }>(
     '/api/v1/order-reminders',
     async (request, reply) => {
       if (!request.employee) return reply.status(401).send({ error: '未登录' })
       const employeeId = request.employee.id
-      const { orderNo, remindTime, content, type = 'manual', extraData = null } = request.body || {}
+      const { orderNo, huanyuOrderNo, remindTime, content, type = 'manual', extraData = null } = request.body || {}
+      const normalizedOrderNo = String(orderNo || '').trim() || null
+      const normalizedHuanyuOrderNo = String(huanyuOrderNo || '').trim() || null
 
-      if (!orderNo || !remindTime || !content) {
-        return reply.status(400).send({ error: 'orderNo、remindTime 和 content 均为必填项' })
+      if ((!normalizedOrderNo && !normalizedHuanyuOrderNo) || !remindTime || !content) {
+        return reply.status(400).send({ error: 'orderNo 和 huanyuOrderNo 至少填写一个，且 remindTime、content 必填' })
       }
 
       const parsedRemindTime = new Date(remindTime)
@@ -3364,13 +3375,14 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
 
       try {
         const insertSql = `
-          INSERT INTO order_reminders (order_no, employee_id, type, content, remind_time, status, extra_data, created_at, updated_at)
-          VALUES ($1, $2, $3, $4, $5, 'pending', $6::jsonb, NOW(), NOW())
+          INSERT INTO order_reminders (order_no, huanyu_order_no, employee_id, type, content, remind_time, status, extra_data, created_at, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7::jsonb, NOW(), NOW())
           RETURNING *;
         `
         const rows = await (prisma as any).$queryRawUnsafe(
           insertSql,
-          orderNo,
+          normalizedOrderNo,
+          normalizedHuanyuOrderNo,
           employeeId,
           type,
           content,

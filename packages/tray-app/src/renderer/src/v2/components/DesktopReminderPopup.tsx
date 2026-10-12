@@ -137,8 +137,12 @@ export function DesktopReminderPopup() {
   }
 
   const extractOrderNo = (r: OrderReminder): string => {
+    const huanyuOrderNo = r.huanyu_order_no || r.huanyuOrderNo
+    if (huanyuOrderNo && huanyuOrderNo !== 'SYSTEM' && huanyuOrderNo !== 'ALL') return huanyuOrderNo
     if (r.order_no && r.order_no !== 'SYSTEM' && r.order_no !== 'ALL') return r.order_no
     if (r.orderNo && r.orderNo !== 'SYSTEM' && r.orderNo !== 'ALL') return r.orderNo
+    const huanyuMatch = r.content?.match(/寰宇订单号[：:]\s*([A-Za-z0-9_-]+)/)
+    if (huanyuMatch) return huanyuMatch[1]
     const match = r.content?.match(/(?:订单号|单号)[：:]\s*([A-Za-z0-9_-]+)/)
     return match ? match[1] : ''
   }

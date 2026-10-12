@@ -6,7 +6,8 @@ import type { PrismaClient } from '@prisma/client'
 const CREATE_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS order_reminders (
     id SERIAL PRIMARY KEY,
-    order_no VARCHAR(64) NOT NULL,
+    order_no VARCHAR(64),
+    huanyu_order_no VARCHAR(64),
     employee_id INTEGER NOT NULL,
     type VARCHAR(32) NOT NULL DEFAULT 'manual',
     content TEXT NOT NULL DEFAULT '',
@@ -19,7 +20,11 @@ const CREATE_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_order_reminders_emp_status_time 
    ON order_reminders (employee_id, status, remind_time);`,
   `CREATE INDEX IF NOT EXISTS idx_order_reminders_order_no 
-   ON order_reminders (order_no);`
+   ON order_reminders (order_no);`,
+  `ALTER TABLE order_reminders ALTER COLUMN order_no DROP NOT NULL;`,
+  `ALTER TABLE order_reminders ADD COLUMN IF NOT EXISTS huanyu_order_no VARCHAR(64);`,
+  `CREATE INDEX IF NOT EXISTS idx_order_reminders_huanyu_order_no
+   ON order_reminders (huanyu_order_no);`
 ]
 
 export async function ensureReminderTables(prisma: PrismaClient, logger?: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string, err?: unknown) => void }): Promise<void> {

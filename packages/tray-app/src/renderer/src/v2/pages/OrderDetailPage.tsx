@@ -255,6 +255,8 @@ export default function OrderDetailPage({
       {showReminderModal && (
         <OrderReminderModal
           order={order}
+          orderNo={order.source === 'huanyu' || order.sourceOrderNo.startsWith('HYYD') ? null : (order.bOrderNo || order.sourceOrderNo)}
+          huanyuOrderNo={order.source === 'huanyu' || order.sourceOrderNo.startsWith('HYYD') ? (order.huanyuOrderNo || order.sourceOrderNo) : null}
           onClose={() => setShowReminderModal(false)}
         />
       )}

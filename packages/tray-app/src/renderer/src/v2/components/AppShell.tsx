@@ -17,10 +17,8 @@ import type { Session } from '../api'
 
 export type NavKey = 'claim' | 'workbench' | 'customers' | 'dictionary' | 'knowledge' | 'dashboard' | 'debug' | 'settings'
 
-// 顺序与命名对齐原型（数据看板 / 申领台 / 工作台 / 知识库 / 档案库 / 字典维护）
+// 普通用户可见的一级导航；数据看板和申领台暂时隐藏。
 const NAV: { key: NavKey; label: string }[] = [
-  { key: 'dashboard', label: '数据看板' },
-  { key: 'claim', label: '申领台' },
   { key: 'workbench', label: '工作台' },
   { key: 'knowledge', label: '知识库' },
   { key: 'customers', label: '档案库' },

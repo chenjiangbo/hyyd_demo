@@ -10,11 +10,13 @@ import {
 
 interface OrderReminderModalProps {
   order: Order
+  orderNo: string | null
+  huanyuOrderNo: string | null
   onClose: () => void
   onUpdated?: () => void
 }
 
-export function OrderReminderModal({ order, onClose, onUpdated }: OrderReminderModalProps) {
+export function OrderReminderModal({ order, orderNo, huanyuOrderNo, onClose, onUpdated }: OrderReminderModalProps) {
   const [reminders, setReminders] = useState<OrderReminder[]>([])
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -37,14 +39,13 @@ export function OrderReminderModal({ order, onClose, onUpdated }: OrderReminderM
   })
   const [content, setContent] = useState('')
 
-  const orderNo = order.sourceOrderNo || String(order.id)
   const customerName = order.customerName || (order.rawJson as Record<string, unknown>)?.patientName || '客户'
 
   async function loadReminders() {
     setLoading(true)
     setError(null)
     try {
-      const list = await fetchOrderReminders({ orderNo })
+      const list = await fetchOrderReminders({ orderNo: orderNo || undefined, huanyuOrderNo: huanyuOrderNo || undefined })
       setReminders(list)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '加载提醒失败')
@@ -55,7 +56,7 @@ export function OrderReminderModal({ order, onClose, onUpdated }: OrderReminderM
 
   useEffect(() => {
     void loadReminders()
-  }, [orderNo])
+  }, [orderNo, huanyuOrderNo])
 
   function formatStandardDateTime(val?: string | Date | null): string {
     if (!val) return ''
@@ -87,10 +88,12 @@ export function OrderReminderModal({ order, onClose, onUpdated }: OrderReminderM
       const rawData = order.rawJson as Record<string, any> | undefined
       const orderCreatedTime = order.createdAt || rawData?.applyTime || rawData?.sqsj || rawData?.created_at || ''
       const formattedApplyTime = formatStandardDateTime(orderCreatedTime)
-      const finalContent = `订单号: ${orderNo}${formattedApplyTime ? `\n申请时间: ${formattedApplyTime}` : ''}\n备忘内容: ${content.trim()}`
+      const displayOrderNo = huanyuOrderNo || orderNo || ''
+      const finalContent = `${orderNo ? `B端订单号: ${orderNo}\n` : ''}${huanyuOrderNo ? `寰宇订单号: ${huanyuOrderNo}\n` : ''}订单号: ${displayOrderNo}${formattedApplyTime ? `\n申请时间: ${formattedApplyTime}` : ''}\n备忘内容: ${content.trim()}`
 
       await createOrderReminder({
         orderNo,
+        huanyuOrderNo,
         remindTime: new Date(remindTime).toISOString(),
         content: finalContent,
         type: 'manual',
@@ -146,7 +149,9 @@ export function OrderReminderModal({ order, onClose, onUpdated }: OrderReminderM
             <div>
               <h2 className="text-[15px] font-bold text-text-main">设置订单跟进提醒</h2>
               <p className="text-[12px] text-text-muted">
-                {String(customerName)} · <span className="font-mono-data">{orderNo}</span>
+                {String(customerName)} · {orderNo && <><span className="text-text-muted">B端</span> <span className="font-mono-data">{orderNo}</span></>}
+                {orderNo && huanyuOrderNo && <span className="text-text-muted"> · </span>}
+                {huanyuOrderNo && <><span className="text-text-muted">寰宇</span> <span className="font-mono-data">{huanyuOrderNo}</span></>}
               </p>
             </div>
           </div>
@@ -254,6 +259,8 @@ export function OrderReminderModal({ order, onClose, onUpdated }: OrderReminderM
                   const isDone = r.status === 'done'
                   const rTime = r.remind_time || r.remindTime || ''
                   const tag = r.type === 'manual' ? '手工备忘' : '系统提醒'
+                  const reminderHuanyuNo = r.huanyu_order_no || r.huanyuOrderNo || null
+                  const isServiceReminder = Boolean(reminderHuanyuNo)
 
                   return (
                     <div
@@ -272,6 +279,9 @@ export function OrderReminderModal({ order, onClose, onUpdated }: OrderReminderM
                             }
                           >
                             {tag}
+                          </span>
+                          <span className="inline-flex items-center rounded bg-surface-bg px-1.5 py-0.5 text-[10px] text-text-muted">
+                            {isServiceReminder ? '服务单提醒' : 'B端母单提醒'}
                           </span>
                           <span className="text-[11px] text-text-muted">
                             {formatStandardDateTime(rTime)}
