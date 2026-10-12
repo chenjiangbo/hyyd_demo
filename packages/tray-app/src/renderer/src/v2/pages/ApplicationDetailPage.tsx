@@ -1068,7 +1068,7 @@ function OrderExecutionPanel({
   const isSelfOperated = selectedOrder.source === 'huanyu' || String(selectedOrder.id).startsWith('huanyu-')
   const [tab, setTab] = useState<RightTab>('huanyu-detail')
   const [detailResp, setDetailResp] = useState<OrderDetailResponse | null>(null)
-  const [detailLoading, setDetailLoading] = useState(() => !isSelfOperated)
+  const [detailLoading, setDetailLoading] = useState(true)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [aggregate, setAggregate] = useState<OrderAggregateResponse | null>(null)
   const [materials, setMaterials] = useState<Material[]>([])
@@ -1080,19 +1080,11 @@ function OrderExecutionPanel({
   }, [selectedOrder.id, isSelfOperated])
 
   const reloadDetail = useCallback(async () => {
-    if (isSelfOperated) return
     const response = await fetchOrderDetail(selectedOrder.id)
     setDetailResp(response)
-  }, [selectedOrder.id, isSelfOperated])
+  }, [selectedOrder.id])
 
   useEffect(() => {
-    if (isSelfOperated) {
-      setDetailLoading(false)
-      setDetailResp(null)
-      setDetailError(null)
-      return
-    }
-
     let alive = true
     setDetailLoading(true)
     setDetailResp(null)
@@ -1108,10 +1100,12 @@ function OrderExecutionPanel({
         setDetailError(e instanceof Error ? e.message : '加载订单详情失败')
         setDetailLoading(false)
       })
-    fetchOrderAggregate(selectedOrder.id)
-      .then((resp) => alive && setAggregate(resp))
-      .catch(() => alive && setAggregate(null))
-    reloadMaterials().catch(() => undefined)
+    if (!isSelfOperated) {
+      fetchOrderAggregate(selectedOrder.id)
+        .then((resp) => alive && setAggregate(resp))
+        .catch(() => alive && setAggregate(null))
+      reloadMaterials().catch(() => undefined)
+    }
     return () => {
       alive = false
     }
@@ -1167,12 +1161,24 @@ function OrderExecutionPanel({
               </span>
             </div>
             <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-              <HuanyuOrderDetailPanel
-                key={selectedOrder.id}
-                order={selectedOrder}
-                detailResp={null}
-                onReloadDetail={async () => {}}
-              />
+              {detailLoading ? (
+                <div className="flex-1 min-h-0 flex flex-col items-center justify-center p-12 text-text-muted gap-3">
+                  <div className="w-8 h-8 border-3 border-primary/25 border-t-primary rounded-full animate-spin" />
+                  <span className="text-body-sm font-medium">正在读取寰宇订单…</span>
+                </div>
+              ) : detailError ? (
+                <div className="p-6 m-4 rounded-lg bg-red-50 border border-error/25 text-error text-body-sm flex items-center gap-2">
+                  <span className="material-symbols-outlined text-error">error</span>
+                  <span>{detailError}</span>
+                </div>
+              ) : (
+                <HuanyuOrderDetailPanel
+                  key={selectedOrder.id}
+                  order={selectedOrder}
+                  detailResp={detailResp}
+                  onReloadDetail={reloadDetail}
+                />
+              )}
             </div>
           </div>
         ) : (
@@ -1327,6 +1333,8 @@ function HuanyuOrderDetailPanel({
     return `${currentOrder.id}_${currentOrder.updatedAt || ''}_${JSON.stringify(raw)}`
   }, [currentOrder])
 
+  const initialForm = useMemo(() => buildHuanyuForm(currentOrder), [formKey])
+
   const initialEscorts: HuanyuEscortRow[] = useMemo(() => {
     const list = (currentOrder.rawJson as any)?.escortList
     if (Array.isArray(list) && list.length > 0) {
@@ -1342,7 +1350,7 @@ function HuanyuOrderDetailPanel({
       }))
     }
     return []
-  }, [currentOrder])
+  }, [formKey])
 
   const huanyuRaw = (currentOrder.rawJson && typeof currentOrder.rawJson === 'object')
     ? currentOrder.rawJson as Record<string, unknown>
@@ -1359,7 +1367,7 @@ function HuanyuOrderDetailPanel({
       key={formKey}
       orderId={currentOrder.id}
       order={currentOrder}
-      initialForm={buildHuanyuForm(currentOrder)}
+      initialForm={initialForm}
       initialEscorts={initialEscorts}
       isTaikangRegistrationAssistance={isTaikangRegistrationAssistance}
       onRefundSucceeded={async () => {
@@ -1371,7 +1379,6 @@ function HuanyuOrderDetailPanel({
         clearOrdersCache()
         window.dispatchEvent(new CustomEvent('huanyu-orders-updated'))
         onOrderUpdated?.(savedOrder)
-        void onReloadDetail?.()
       }}
     />
   )
@@ -1382,7 +1389,10 @@ function isHuanyuCancelledOrderStatus(value: unknown): boolean {
   return status === '已取消' || status === '无责取消'
 }
 
-export function HuanyuOrderCreatePage({ onBack, onCreated }: { onBack: () => void; onCreated?: (order: Order) => void }): React.JSX.Element {
+export function HuanyuOrderCreatePage({ onBack, onCreated }: {
+  onBack: () => void
+  onCreated: (order: Order, meta?: { pushed?: boolean; pushError?: string | null; escortCount?: number }) => void
+}): React.JSX.Element {
   const [initialForm] = useState(() => buildEmptyHuanyuForm())
 
   return (
@@ -1402,21 +1412,7 @@ export function HuanyuOrderCreatePage({ onBack, onCreated }: { onBack: () => voi
         </div>
       </header>
       <div className="mx-auto flex w-full max-w-[1600px] min-h-0 flex-1">
-        <HuanyuOrderForm initialForm={initialForm} mode="create" onSaveSuccess={(order, meta) => {
-          if (onCreated) {
-            onCreated(order)
-          } else {
-            const no = order.huanyuOrderNo || (order.rawJson as any)?.orderNo || (order.rawJson as any)?.DDBH || ''
-            if (meta?.pushed) {
-              window.alert(`寰宇订单创建并推送成功！\n订单编号：${no}（${meta.escortCount ?? 0} 条陪诊明细）`)
-            } else if (meta?.pushError) {
-              window.alert(`寰宇订单已创建保存，但推送到远端系统失败：${meta.pushError}\n单据已在本地安全保存，可在列表中打开详情重新保存推送。`)
-            } else {
-              window.alert('寰宇订单创建成功！')
-            }
-            onBack()
-          }
-        }} />
+        <HuanyuOrderForm initialForm={initialForm} mode="create" onSaveSuccess={onCreated} />
       </div>
     </main>
   )
@@ -2250,6 +2246,7 @@ function HuanyuOrderForm({
     try {
       const res = await saveHuanyuOrder({
         mode: isCreate ? 'create' : 'update',
+        source: order?.source === 'huanyu' ? 'huanyu' : undefined,
         orderNo: String(form.orderNo || ''),
         orderStatus: String(form.orderStatus || '待跟进'),
         channel: String(form.channel || ''),
@@ -2317,25 +2314,24 @@ function HuanyuOrderForm({
       if (res.ok) {
         clearOrdersCache()
         if (res.order) {
-          const nextOrderNo = (res.order.rawJson as any)?.orderNo || (res.order.rawJson as any)?.DDBH || res.order.sourceOrderNo || ''
+          // 自建单的 sourceOrderNo 是内部 SELF:<寰宇单号> 关联值，不能回显到订单号输入框。
+          const nextOrderNo = (res.order.rawJson as any)?.orderNo ||
+            (res.order.rawJson as any)?.DDBH ||
+            res.order.huanyuOrderNo ||
+            String(form.orderNo || '')
           if (nextOrderNo) {
             setForm((current) => ({ ...current, orderNo: nextOrderNo }))
           }
         }
         setAiFilledFields(new Set())
-        if (res.pushed) {
-          setSaveStatus({
-            type: 'success',
-            message: `保存并推送成功！（${res.escortCount ?? 0} 条陪诊明细）`
-          })
-        } else if (res.pushError) {
-          setSaveStatus({
-            type: 'error',
-            message: `已保存至本地，但推送到远端系统失败：${res.pushError}`
-          })
-        } else {
-          setSaveStatus({ type: 'success', message: res.message || '保存成功！' })
-        }
+        const notice = res.pushError
+          ? { type: 'error' as const, message: `已保存至本地，但推送到远端系统失败：${res.pushError}` }
+          : res.pushed
+            ? { type: 'success' as const, message: `保存并推送成功！（${res.escortCount ?? 0} 条陪诊明细）` }
+            : { type: 'success' as const, message: res.message || '保存成功！' }
+        // 保存结果统一显示在应用级提示，避免与表单内提示重复。
+        setSaveStatus(null)
+        window.dispatchEvent(new CustomEvent('huanyu-order-notice', { detail: notice }))
         if (onSaveSuccess) {
           onSaveSuccess(res.order, {
             pushed: res.pushed,
@@ -2380,7 +2376,6 @@ function HuanyuOrderForm({
         clearOrdersCache()
         window.dispatchEvent(new CustomEvent('huanyu-orders-updated'))
         setSaveStatus({ type: 'success', message: `复制成功！新订单号：${res.newOrderNo}` })
-        window.alert(`订单复制成功！\n新订单号：${res.newOrderNo}`)
       } else {
         setSaveStatus({ type: 'error', message: res.message || '复制订单失败' })
       }
@@ -2393,7 +2388,7 @@ function HuanyuOrderForm({
 
   function openRefundModal(): void {
     if (Number.isFinite(registrationRefund) && registrationRefund > 0) {
-      window.alert('已经退款，请勿二次操作，请确认！')
+      setSaveStatus({ type: 'error', message: '已经退款，请勿二次操作，请确认！' })
       return
     }
     setRefundAmount('')
@@ -3527,12 +3522,20 @@ function buildHuanyuForm(order: Order): Record<string, string | boolean> {
   const raw = (order.rawJson ?? {}) as Record<string, unknown>
   const rec = (order as unknown as Record<string, unknown>) || {}
   const value = (keys: string[], fallback?: unknown): string => pick(rec, raw, keys, fallback)
+  // 医院/科室/医生在 Order 上是展示名称，寰宇 rawJson 保存的是事实表码值；编辑表单必须优先用码值。
+  const factValue = (keys: string[], fallback?: unknown): string => {
+    for (const key of keys) {
+      const rawValue = normalizeValue(raw[key])
+      if (rawValue) return rawValue
+    }
+    return value(keys, fallback)
+  }
   const bookingTime = value(['bookingTime', 'serviceDate', 'appointTime'], order.intendDate)
   const patientName = value(['patientName', 'customerName', 'name'], order.customerName)
   const patientPhone = value(['patientPhone', 'customerPhone', 'phone', 'mobile'], order.customerPhone)
-  const hospital = value(['hospital', 'hospitalName', 'H_NAME'], order.hospital)
-  const department = value(['dept', 'department', 'H_KS'], order.dept)
-  const doctor = value(['doctor', 'doctorName', 'H_YS'], order.doctor)
+  const hospital = factValue(['hospital', 'H_NAME', 'hospitalName'], order.hospital)
+  const department = factValue(['department', 'H_KS', 'dept'], order.dept)
+  const doctor = factValue(['doctor', 'H_YS', 'doctorName'], order.doctor)
 
   const docNo = value(['documentNo', 'certNo', 'idNo', 'idCard', 'JZR_ZJHM', 'cardId'])
   const bday = value(['birthday', 'birthDate', 'birth_date', 'csrq', 'CSRQ'])

@@ -49,14 +49,17 @@ export function registerEscortFeedbackRoutes(
         include: { assignedEmployee: true }
       })
 
-      // 优先从 fact_hy_pzrxx 获取正式陪诊人与服务时间（彻底抛弃 HY_FACT_DDCX_NEW.PZR）
+      // 正式陪诊人和服务时间分别取最新有效记录，字段独立回退。
       const pzrRows = await prisma.$queryRawUnsafe<any[]>(`
-        SELECT "PZR", "BBQ_FW"
-        FROM "fact_hy_pzrxx"
-        WHERE ("DDBH" = $1 OR "DDBH" = $2)
-          AND "PZR" IS NOT NULL AND TRIM("PZR") != ''
-        ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC
-        LIMIT 1;
+        SELECT
+          (SELECT "PZR" FROM "fact_hy_pzrxx"
+           WHERE ("DDBH" = $1 OR "DDBH" = $2)
+             AND "PZR" IS NOT NULL AND TRIM("PZR") != ''
+           ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC LIMIT 1) AS "PZR",
+          (SELECT "BBQ_FW" FROM "fact_hy_pzrxx"
+           WHERE ("DDBH" = $1 OR "DDBH" = $2)
+             AND "BBQ_FW" IS NOT NULL AND TRIM("BBQ_FW") != ''
+           ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC LIMIT 1) AS "BBQ_FW";
       `, cleanOrderNo, order?.huanyuOrderNo || cleanOrderNo)
 
       const dbPzr = pzrRows[0]
@@ -65,13 +68,15 @@ export function registerEscortFeedbackRoutes(
       let aiEscortName: string | null = null
       let aiEscortDate: string | null = null
       let aiEscortPhone: string | null = null
+      let aiHospital: string | null = null
+      let aiDepartment: string | null = null
 
       if (order?.id) {
         const aiCandidates = await prisma.$queryRawUnsafe<any[]>(`
           SELECT field_code, value_text
           FROM b_order_ai_field_candidates
           WHERE order_id = $1
-            AND field_code IN ('escort_name', 'escort_service_date', 'escort_phone')
+            AND field_code IN ('escort_name', 'escort_service_date', 'escort_phone', 'hospital', 'department')
             AND status != 'dismissed'
             AND TRIM(value_text) NOT IN ('', '无', '待定', '暂无', '待安排', '待分配', '未指派', '未安排', '无陪诊', '不需陪诊', '不需要陪诊')
           ORDER BY created_at DESC;
@@ -81,6 +86,8 @@ export function registerEscortFeedbackRoutes(
           if (c.field_code === 'escort_name' && !aiEscortName) aiEscortName = c.value_text?.trim() || null
           if (c.field_code === 'escort_service_date' && !aiEscortDate) aiEscortDate = c.value_text?.trim() || null
           if (c.field_code === 'escort_phone' && !aiEscortPhone) aiEscortPhone = c.value_text?.trim() || null
+          if (c.field_code === 'hospital' && !aiHospital) aiHospital = c.value_text?.trim() || null
+          if (c.field_code === 'department' && !aiDepartment) aiDepartment = c.value_text?.trim() || null
         }
       }
 
@@ -96,28 +103,29 @@ export function registerEscortFeedbackRoutes(
 
       const hy = huanyuRows[0] || {}
 
-      const customerName = order?.customerName || hy.JZR_XM || '客户'
-      const hospital = order?.hospital || hy.H_NAME || '待定医院'
-      const dept = order?.dept || hy.H_KS || ''
+      const customerName = String(order?.customerName || '').trim() || String(hy.JZR_XM || '').trim() || '客户'
+      const hospital = String(hy.H_NAME || '').trim() || aiHospital || '以约定的为准'
+      const dept = String(hy.H_KS || '').trim() || aiDepartment || '以约定的为准'
       const pzrId = (dbPzr?.PZR ? String(dbPzr.PZR).trim() : null) || aiEscortName || ''
       let pzrName = pzrId || '陪诊人员'
-      let escortPhone = aiEscortPhone || ''
+      let dictionaryPhone = ''
 
       // 从远端 MySQL 字典库 (dim_hy_pzr) 获取陪诊人姓名与默认手机号
       if (pzrId) {
         try {
           const escorts = await listHuanyuEscorts(pzrId)
-          const matched = escorts.find((e) => e.id === pzrId || e.name === pzrId) || escorts[0]
+          const matched = escorts.find((e) => e.id === pzrId || e.name === pzrId)
           if (matched) {
             pzrName = matched.name || pzrId
-            if (matched.phone) escortPhone = matched.phone
+            if (matched.phone) dictionaryPhone = String(matched.phone).trim()
           }
         } catch {
-          // 远端 MySQL 异常时使用本地编号作为 fallback
+          // 远端 MySQL 异常时保留当前姓名/编号，手机号继续回退 AI 候选
         }
       }
 
-      const serviceDate = (dbPzr?.BBQ_FW ? String(dbPzr.BBQ_FW).trim() : null) || aiEscortDate || hy.BBQ_FW || hy.DATE_FW || ''
+      const serviceDate = (dbPzr?.BBQ_FW ? String(dbPzr.BBQ_FW).trim() : null) || aiEscortDate || ''
+      const escortPhone = dictionaryPhone || aiEscortPhone || ''
       const sourceOrderNo = order?.sourceOrderNo || hy.BDQD_DDBH || cleanOrderNo
       const huanyuOrderNo = order?.huanyuOrderNo || hy.DDBH || ''
 

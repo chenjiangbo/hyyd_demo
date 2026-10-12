@@ -319,6 +319,16 @@ const CREATE_STATEMENTS = [
   `,
   `
     CREATE INDEX IF NOT EXISTS "idx_fact_hy_pz_sms_logs_query" ON "fact_hy_pz_sms_logs" ("order_no", "batch_type", "send_ymd", "status");
+  `,
+  // 短信发送前原子占位，避免多实例或异常恢复时重复调用短信供应商
+  `
+    CREATE TABLE IF NOT EXISTS "fact_hy_pz_sms_send_claims" (
+      "order_no" VARCHAR(100) NOT NULL,
+      "batch_type" VARCHAR(20) NOT NULL,
+      "send_ymd" VARCHAR(20) NOT NULL,
+      "claimed_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+      PRIMARY KEY ("order_no", "batch_type", "send_ymd")
+    );
   `
 ]
 

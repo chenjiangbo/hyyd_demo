@@ -1402,7 +1402,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     try {
       // 1. 保存/更新主表 HY_FACT_DDCX_NEW
       const selfOrder = await prisma.$transaction(async (tx) => {
-        await tx.$executeRawUnsafe(`
+        const mainRowCount = await tx.$executeRawUnsafe(`
         INSERT INTO "HY_FACT_DDCX_NEW" (
           "DDBH", "DD_state", "BDQD", "BDQD_DDBH", "BDQD_DDBH2", "BDQD_XF",
           "BDQD_DJR", "BDQD_DJR2", "BDQD_FWXM", "DDJE", "KHJL", "JZR_XM",
@@ -1459,18 +1459,19 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           "DATE_QDFW" = EXCLUDED."DATE_QDFW",
           "BBQ_FK" = EXCLUDED."BBQ_FK",
           "DATE_FK" = EXCLUDED."DATE_FK",
-          "BBQ_FW" = EXCLUDED."BBQ_FW",
-          "DATE_FW" = EXCLUDED."DATE_FW",
+          -- 服务日期由陪诊明细表维护；此表单不提交这两个旧列，更新时保留原值。
           "PZR" = EXCLUDED."PZR",
           "PZXJ" = EXCLUDED."PZXJ",
           "YYQDLX" = EXCLUDED."YYQDLX",
           "BDYH" = EXCLUDED."BDYH",
           "registerAmount" = EXCLUDED."registerAmount",
           "isAdvancePay" = EXCLUDED."isAdvancePay",
-          "isTaiKang" = EXCLUDED."isTaiKang",
+          "medicareType" = EXCLUDED."medicareType",
+          "isTaiKang" = COALESCE(EXCLUDED."isTaiKang", "HY_FACT_DDCX_NEW"."isTaiKang"),
           "expert_level" = EXCLUDED."expert_level",
           "lastQueuingTime" = EXCLUDED."lastQueuingTime",
-          "xtsj_" = COALESCE("HY_FACT_DDCX_NEW"."xtsj_", EXCLUDED."xtsj_");
+          "xtsj_" = COALESCE("HY_FACT_DDCX_NEW"."xtsj_", EXCLUDED."xtsj_")
+        WHERE $53::text <> 'create';
       `,
         orderNo,
         orderStatus,
@@ -1520,11 +1521,35 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         body.registrationRefund ? parseFloat(body.registrationRefund) || null : null,
         sanitizeVarchar2(body.hasInsurance),
         sanitizeVarchar2(body.insuranceType),
-        sanitizeVarchar2(body.isTaiKang) || '0',
+        sanitizeVarchar2(body.isTaiKang) || (body.mode === 'create' || isPureSelfOperated ? '0' : null),
         body.expertLevel || null,
         lastQueueFormatted,
-        nowStr
+        nowStr,
+        body.mode === 'create' ? 'create' : 'update'
         )
+
+        if (mainRowCount === 0) {
+          throw new Error('HYYD_ORDER_NO_COLLISION')
+        }
+
+        // 主订单和陪诊明细属于一次保存；任一写入失败都回滚，避免返回失败但主订单已落库。
+        if (Array.isArray(body.escortList)) {
+          await tx.$executeRawUnsafe(`DELETE FROM "fact_hy_pzrxx" WHERE "DDBH" = $1;`, orderNo)
+          for (let i = 0; i < body.escortList.length; i++) {
+            const item = body.escortList[i]
+            if (!item || !item.escortName) continue
+            const seq = item.sequence || String(i + 1)
+            const zj = `${orderNo}_${seq}`
+            await tx.$executeRawUnsafe(`
+              INSERT INTO "fact_hy_pzrxx" ("DDBH", "PZR", "BBQ_FW", "ZJ", "xtsj")
+              VALUES ($1, $2, $3, $4, $5)
+              ON CONFLICT ("ZJ") DO UPDATE SET
+                "PZR" = EXCLUDED."PZR",
+                "BBQ_FW" = EXCLUDED."BBQ_FW",
+                "xtsj" = EXCLUDED."xtsj";
+            `, orderNo, item.escortName, item.serviceDate || '', zj, nowStr)
+          }
+        }
 
         if (!isPureSelfOperated) return null
         const existing = await tx.order.upsert({
@@ -1550,27 +1575,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         })
       })
 
-      // 2. 更新陪诊人表 fact_hy_pzrxx
-      if (Array.isArray(body.escortList)) {
-        await prisma.$executeRawUnsafe(`DELETE FROM "fact_hy_pzrxx" WHERE "DDBH" = $1;`, orderNo)
-        for (let i = 0; i < body.escortList.length; i++) {
-          const item = body.escortList[i]
-          if (item && item.escortName) {
-            const seq = item.sequence || String(i + 1)
-            const zj = `${orderNo}_${seq}`
-            await prisma.$executeRawUnsafe(`
-              INSERT INTO "fact_hy_pzrxx" ("DDBH", "PZR", "BBQ_FW", "ZJ", "xtsj")
-              VALUES ($1, $2, $3, $4, $5)
-              ON CONFLICT ("ZJ") DO UPDATE SET
-                "PZR" = EXCLUDED."PZR",
-                "BBQ_FW" = EXCLUDED."BBQ_FW",
-                "xtsj" = EXCLUDED."xtsj";
-            `, orderNo, item.escortName, item.serviceDate || '', zj, nowStr)
-          }
-        }
-      }
-
-      // 3. 自建单也写入 orders，作为列表入口；复制服务单仍只写寰宇事实表。
+      // 2. 自建单也写入 orders，作为列表入口；复制服务单仍只写寰宇事实表。
 
       let resolvedHospitalName = body.hospital || null
       if (body.hospital) {
@@ -1724,6 +1729,9 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       })
     } catch (err: any) {
       fastify.log.error('保存寰宇订单失败:', err)
+      if (err?.message === 'HYYD_ORDER_NO_COLLISION') {
+        return reply.status(409).send({ ok: false, error: '寰宇订单号已存在，请返回后重新新建订单' })
+      }
       return reply.status(500).send({ ok: false, error: '保存寰宇订单失败: ' + err.message })
     }
   })

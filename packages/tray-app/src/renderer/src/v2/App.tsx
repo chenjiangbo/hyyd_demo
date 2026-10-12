@@ -38,6 +38,7 @@ export default function App(): React.JSX.Element {
   const [openOrder, setOpenOrder] = useState<Order | null>(null)
   const [openApplication, setOpenApplication] = useState<{ group: ApplicationGroup; selectedOrderId?: number } | null>(null)
   const [openHuanyuCreate, setOpenHuanyuCreate] = useState(false)
+  const [orderNotice, setOrderNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   // 顶部导航全局搜索（驱动工作台过滤）
   const [search, setSearch] = useState('')
   const [showAdvancedSearch, setShowAdvancedSearch] = useState(false)
@@ -65,6 +66,22 @@ export default function App(): React.JSX.Element {
     window.addEventListener(BACKEND_CONFIG_CHANGED, pushConfig)
     return () => window.removeEventListener(BACKEND_CONFIG_CHANGED, pushConfig)
   }, [session])
+
+  useEffect(() => {
+    if (!orderNotice) return
+    const timer = window.setTimeout(() => setOrderNotice(null), 5000)
+    return () => window.clearTimeout(timer)
+  }, [orderNotice])
+
+  useEffect(() => {
+    const handleOrderNotice = (event: Event): void => {
+      const detail = (event as CustomEvent<{ type?: 'success' | 'error'; message?: string }>).detail
+      if (!detail?.message || (detail.type !== 'success' && detail.type !== 'error')) return
+      setOrderNotice({ type: detail.type, message: detail.message })
+    }
+    window.addEventListener('huanyu-order-notice', handleOrderNotice)
+    return () => window.removeEventListener('huanyu-order-notice', handleOrderNotice)
+  }, [])
 
   // 监听来自桌面右下角提醒浮窗 / 内部提醒组件的"打开订单"点击
   useEffect(() => {
@@ -113,7 +130,14 @@ export default function App(): React.JSX.Element {
       />
     )
   } else if (openHuanyuCreate) {
-    content = <HuanyuOrderCreatePage onBack={() => setOpenHuanyuCreate(false)} />
+    content = <HuanyuOrderCreatePage
+      onBack={() => setOpenHuanyuCreate(false)}
+      onCreated={() => {
+        clearOrdersCache()
+        window.dispatchEvent(new CustomEvent('huanyu-orders-updated'))
+        setOpenHuanyuCreate(false)
+      }}
+    />
   } else {
     content = (
       <AppShell
@@ -162,9 +186,18 @@ export default function App(): React.JSX.Element {
   }
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden">
+    <div className="relative flex flex-col h-screen overflow-hidden">
       <TitleBar />
       <div className="flex-1 min-h-0">{content}</div>
+      {orderNotice && (
+        <div role="status" className={`absolute right-5 top-14 z-[100] max-w-[min(560px,calc(100vw-40px))] rounded-md border px-4 py-3 text-body-sm shadow-lg ${
+          orderNotice.type === 'success'
+            ? 'border-green-200 bg-green-50 text-green-800'
+            : 'border-red-200 bg-red-50 text-red-800'
+        }`}>
+          {orderNotice.message}
+        </div>
+      )}
     </div>
   )
 }

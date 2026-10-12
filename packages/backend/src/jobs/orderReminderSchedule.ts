@@ -11,7 +11,6 @@
 
 import type { PrismaClient } from '@prisma/client'
 import { formatYmd, subtractWorkdays } from '../lib/chineseWorkdays.js'
-import { getEnv } from '../env.js'
 import { sendAliyunSms, getSmsConfig } from '../services/aliyunSmsService.js'
 import { listHuanyuEscorts } from '../db/remoteDictionary.js'
 
@@ -21,9 +20,47 @@ export interface LoggerLike {
   error: (msg: string, err?: unknown) => void
 }
 
-const CHECK_INTERVAL_MS = 30_000 // 每 30 秒轮询一次
+const CHECK_INTERVAL_MS = 30_000 // 其他提醒每 30 秒轮询一次；短信另用定点定时器
 let timer: NodeJS.Timeout | null = null
+const smsTimers: Partial<Record<'pre_day' | 'same_day', NodeJS.Timeout>> = {}
+let smsScheduleGeneration = 0
 let isRunning = false
+
+function nextShanghaiTime(hour: number): Date {
+  const now = new Date()
+  const { ymd } = shanghaiNowParts(now)
+  let target = new Date(`${ymd}T${String(hour).padStart(2, '0')}:00:00+08:00`)
+  if (target.getTime() <= now.getTime()) {
+    target = new Date(target.getTime() + 24 * 60 * 60 * 1000)
+  }
+  return target
+}
+
+function scheduleSmsRun(
+  prisma: PrismaClient,
+  logger: LoggerLike | undefined,
+  batchType: 'pre_day' | 'same_day',
+  hour: number,
+  generation: number
+): void {
+  if (generation !== smsScheduleGeneration) return
+  const target = nextShanghaiTime(hour)
+  const delay = Math.max(0, target.getTime() - Date.now())
+  logger?.info(`[orderReminderSchedule] ${batchType} 短信下次触发时间: ${target.toISOString()}`)
+  smsTimers[batchType] = setTimeout(async () => {
+    delete smsTimers[batchType]
+    try {
+      if (batchType === 'pre_day') await sendPreDayEscortSms(prisma, logger)
+      else await sendSameDayEscortSms(prisma, logger)
+    } catch (err) {
+      logger?.error(`[orderReminderSchedule] ${batchType} 短信定点任务异常:`, err)
+    } finally {
+      if (generation === smsScheduleGeneration) {
+        scheduleSmsRun(prisma, logger, batchType, hour, generation)
+      }
+    }
+  }, delay)
+}
 
 function shanghaiNowParts(now = new Date()): { ymd: string; time: string; hours: number; minutes: number } {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -238,9 +275,8 @@ async function scanEscortUnassignedReminders(prisma: PrismaClient, logger?: Logg
 /**
  * 辅助方法：解析陪诊人员手机号
  * 优先级：
- * 1. 本地陪诊人员表 f_hy_pzr (name / id)
- * 2. 远端 MySQL 字典库 dim_hy_pzr
- * 3. AI 候选表 b_order_ai_field_candidates (escort_phone)
+ * 1. 远端 MySQL 字典库 dim_hy_pzr (name / id)
+ * 2. AI 候选表 b_order_ai_field_candidates (escort_phone)
  */
 async function resolveEscortPhone(
   prisma: PrismaClient,
@@ -250,22 +286,8 @@ async function resolveEscortPhone(
   const cleanName = (pzrName || '').trim()
   if (cleanName) {
     try {
-      const rows = await prisma.$queryRawUnsafe<any[]>(`
-        SELECT "sj" FROM "f_hy_pzr"
-        WHERE ("name" = $1 OR "id" = $1)
-          AND "sj" IS NOT NULL AND TRIM("sj") != ''
-        LIMIT 1;
-      `, cleanName)
-      if (rows && rows[0]?.sj && String(rows[0].sj).trim()) {
-        return String(rows[0].sj).trim()
-      }
-    } catch {
-      // 忽略查询异常
-    }
-
-    try {
       const escorts = await listHuanyuEscorts(cleanName)
-      const matched = escorts.find((e) => e.id === cleanName || e.name === cleanName) || escorts[0]
+      const matched = escorts.find((e) => e.id === cleanName || e.name === cleanName)
       if (matched && matched.phone && String(matched.phone).trim()) {
         return String(matched.phone).trim()
       }
@@ -296,10 +318,25 @@ async function resolveEscortPhone(
   return null
 }
 
+async function claimEscortSmsSend(
+  prisma: PrismaClient,
+  orderNo: string,
+  batchType: 'pre_day' | 'same_day',
+  sendYmd: string
+): Promise<boolean> {
+  const rows = await prisma.$queryRawUnsafe<any[]>(`
+    INSERT INTO "fact_hy_pz_sms_send_claims" ("order_no", "batch_type", "send_ymd")
+    VALUES ($1, $2, $3)
+    ON CONFLICT ("order_no", "batch_type", "send_ymd") DO NOTHING
+    RETURNING "order_no";
+  `, orderNo, batchType, sendYmd)
+  return rows.length > 0
+}
+
 /**
  * 场景 2.2-A：【陪诊】前一天 11:00 自动发送出工确认短信（模板：SMS_512665048）
  * 逻辑：
- * 1. 每天 11:00 启动扫描明日出工的陪诊订单（白名单服务类型）；
+ * 1. 每天 11:00 定点扫描明日出工的陪诊订单（白名单服务类型）；
  * 2. 解析陪诊人员手机号，调用阿里云 SendSms 接口下发短信，参数为 { orderNo: source_order_no }；
  * 3. 发送成功：记录流水表 fact_hy_pz_sms_logs (status = 'success')，静默等待反馈，不打扰客户经理；
  * 4. 发送失败（或未找到手机号）：记录流水表 (status = 'failed')，并【立即向责任客户经理报警】，通知人工及时介入！
@@ -327,21 +364,25 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike): P
         ai_escort.value_text
       ) AS pzr,
       COALESCE(
-        NULLIF(TRIM(p."BBQ_FW"), ''),
-        ai_date.value_text,
-        h."BBQ_FW",
-        h."DATE_FW"
+        NULLIF(TRIM(p_date."BBQ_FW"), ''),
+        ai_date.value_text
       ) AS service_date
     FROM orders o
     JOIN b_order_operations op ON op.order_id = o.id
-    LEFT JOIN "HY_FACT_DDCX_NEW" h ON (h."BDQD_DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND h."DDBH" = o.huanyu_order_no))
     LEFT JOIN LATERAL (
-      SELECT "PZR", "BBQ_FW" FROM "fact_hy_pzrxx" p 
+      SELECT "PZR" FROM "fact_hy_pzrxx" p
       WHERE (p."DDBH" = o.huanyu_order_no OR p."DDBH" = o.source_order_no)
         AND p."PZR" IS NOT NULL AND TRIM(p."PZR") != ''
       ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC
       LIMIT 1
     ) p ON true
+    LEFT JOIN LATERAL (
+      SELECT "BBQ_FW" FROM "fact_hy_pzrxx" p
+      WHERE (p."DDBH" = o.huanyu_order_no OR p."DDBH" = o.source_order_no)
+        AND p."BBQ_FW" IS NOT NULL AND TRIM(p."BBQ_FW") != ''
+      ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC
+      LIMIT 1
+    ) p_date ON true
     LEFT JOIN LATERAL (
       SELECT value_text FROM b_order_ai_field_candidates c
       WHERE c.order_id = o.id 
@@ -369,16 +410,11 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike): P
           AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
           AND cstep.step_status != 'cancelled'
       )
-      AND (
-        (p."BBQ_FW" LIKE $1)
-        OR (p."BBQ_FW" IS NULL AND ai_date.value_text LIKE $1)
-        OR (p."BBQ_FW" IS NULL AND ai_date.value_text IS NULL AND (h."BBQ_FW" LIKE $1 OR h."DATE_FW" LIKE $1))
-      )
+      AND COALESCE(NULLIF(TRIM(p_date."BBQ_FW"), ''), ai_date.value_text) LIKE $1
       AND (
         (p."PZR" IS NOT NULL AND TRIM(p."PZR") != '')
         OR (ai_escort.value_text IS NOT NULL AND TRIM(ai_escort.value_text) != '')
       )
-    LIMIT 200;
   `, `%${tomorrowYmd}%`)
 
   for (const row of preDayOrders) {
@@ -392,6 +428,10 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike): P
     `, row.source_order_no, ymd)
 
     if (existingLog && existingLog.length > 0) {
+      continue
+    }
+
+    if (!(await claimEscortSmsSend(prisma, row.source_order_no, 'pre_day', ymd))) {
       continue
     }
 
@@ -467,7 +507,7 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike): P
 /**
  * 场景 2.3-A：【陪诊】当天 07:00 自动发送出工打卡短信（模板：SMS_512530051）
  * 逻辑：
- * 1. 每天 07:00 启动扫描当天出工的陪诊订单（白名单服务类型）；
+ * 1. 每天 07:00 定点扫描当天出工的陪诊订单（白名单服务类型）；
  * 2. 下发打卡短信；成功记录流水，失败立即报警通知客户经理。
  */
 async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike): Promise<void> {
@@ -491,21 +531,25 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike): 
         ai_escort.value_text
       ) AS pzr,
       COALESCE(
-        NULLIF(TRIM(p."BBQ_FW"), ''),
-        ai_date.value_text,
-        h."BBQ_FW",
-        h."DATE_FW"
+        NULLIF(TRIM(p_date."BBQ_FW"), ''),
+        ai_date.value_text
       ) AS service_date
     FROM orders o
     JOIN b_order_operations op ON op.order_id = o.id
-    LEFT JOIN "HY_FACT_DDCX_NEW" h ON (h."BDQD_DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND h."DDBH" = o.huanyu_order_no))
     LEFT JOIN LATERAL (
-      SELECT "PZR", "BBQ_FW" FROM "fact_hy_pzrxx" p 
+      SELECT "PZR" FROM "fact_hy_pzrxx" p
       WHERE (p."DDBH" = o.huanyu_order_no OR p."DDBH" = o.source_order_no)
         AND p."PZR" IS NOT NULL AND TRIM(p."PZR") != ''
       ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC
       LIMIT 1
     ) p ON true
+    LEFT JOIN LATERAL (
+      SELECT "BBQ_FW" FROM "fact_hy_pzrxx" p
+      WHERE (p."DDBH" = o.huanyu_order_no OR p."DDBH" = o.source_order_no)
+        AND p."BBQ_FW" IS NOT NULL AND TRIM(p."BBQ_FW") != ''
+      ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC
+      LIMIT 1
+    ) p_date ON true
     LEFT JOIN LATERAL (
       SELECT value_text FROM b_order_ai_field_candidates c
       WHERE c.order_id = o.id 
@@ -533,16 +577,11 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike): 
           AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
           AND cstep.step_status != 'cancelled'
       )
-      AND (
-        (p."BBQ_FW" LIKE $1)
-        OR (p."BBQ_FW" IS NULL AND ai_date.value_text LIKE $1)
-        OR (p."BBQ_FW" IS NULL AND ai_date.value_text IS NULL AND (h."BBQ_FW" LIKE $1 OR h."DATE_FW" LIKE $1))
-      )
+      AND COALESCE(NULLIF(TRIM(p_date."BBQ_FW"), ''), ai_date.value_text) LIKE $1
       AND (
         (p."PZR" IS NOT NULL AND TRIM(p."PZR") != '')
         OR (ai_escort.value_text IS NOT NULL AND TRIM(ai_escort.value_text) != '')
       )
-    LIMIT 200;
   `, `%${ymd}%`)
 
   for (const row of sameDayOrders) {
@@ -555,6 +594,10 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike): 
     `, row.source_order_no, ymd)
 
     if (existingLog && existingLog.length > 0) {
+      continue
+    }
+
+    if (!(await claimEscortSmsSend(prisma, row.source_order_no, 'same_day', ymd))) {
       continue
     }
 
@@ -1064,8 +1107,6 @@ export async function runOrderReminderCycle(prisma: PrismaClient, logger?: Logge
     await scanDailyCallUploadReminders(prisma, logger)
     await scanHospitalBookingReminders(prisma, logger)
     await scanEscortUnassignedReminders(prisma, logger)
-    await sendPreDayEscortSms(prisma, logger)
-    await sendSameDayEscortSms(prisma, logger)
     await scanEscortDailyCheckReminders(prisma, logger)
     await scanHospitalCareReminders(prisma, logger)
   } catch (err) {
@@ -1080,8 +1121,16 @@ export async function runOrderReminderCycle(prisma: PrismaClient, logger?: Logge
  */
 export function startOrderReminderSchedule(prisma: PrismaClient, logger?: LoggerLike): void {
   if (timer) clearInterval(timer)
+  for (const smsTimer of Object.values(smsTimers)) {
+    if (smsTimer) clearTimeout(smsTimer)
+  }
+  smsScheduleGeneration += 1
+  delete smsTimers.pre_day
+  delete smsTimers.same_day
 
-  logger?.info('[orderReminderSchedule] 订单自动提醒扫描任务已启动，轮询周期: 30秒')
+  logger?.info('[orderReminderSchedule] 订单自动提醒扫描任务已启动，轮询周期: 30秒；短信按每日定点单次触发')
+  scheduleSmsRun(prisma, logger, 'pre_day', 11, smsScheduleGeneration)
+  scheduleSmsRun(prisma, logger, 'same_day', 7, smsScheduleGeneration)
 
   // 启动即执行一轮
   void runOrderReminderCycle(prisma, logger)
@@ -1092,8 +1141,14 @@ export function startOrderReminderSchedule(prisma: PrismaClient, logger?: Logger
 }
 
 export function stopOrderReminderSchedule(): void {
+  smsScheduleGeneration += 1
   if (timer) {
     clearInterval(timer)
     timer = null
   }
+  for (const smsTimer of Object.values(smsTimers)) {
+    if (smsTimer) clearTimeout(smsTimer)
+  }
+  delete smsTimers.pre_day
+  delete smsTimers.same_day
 }
