@@ -2302,7 +2302,7 @@ function HuanyuOrderForm({
         insuranceType: String(form.insuranceType || ''),
         escortSummary: String(form.escortSummary || ''),
         escortList: escortRows.map((r) => ({
-          serviceDate: r.serviceDate,
+          serviceDate: toHuanyuStorageFormat(r.serviceDate),
           escortName: r.escortName,
           escortType: r.escortType,
           phone: r.phone,
@@ -3751,7 +3751,19 @@ function toHuanyuDateTimeLocal(value: unknown): string {
     return `${y}-${m}-${d}T00:00:00`
   }
 
-  // 3. 8位紧凑日期 + 时间：20260914 14:49:41 或 20260914T14:49:41 或 20260914144941
+  // 3. 中文日期：2026年09月14日 14:49:41
+  const chineseDateMatch = /^(\d{4})年(\d{1,2})月(\d{1,2})日?(?:[T\s]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/.exec(trimmed)
+  if (chineseDateMatch) {
+    const y = chineseDateMatch[1]
+    const m = chineseDateMatch[2].padStart(2, '0')
+    const d = chineseDateMatch[3].padStart(2, '0')
+    const hh = (chineseDateMatch[4] || '00').padStart(2, '0')
+    const mm = (chineseDateMatch[5] || '00').padStart(2, '0')
+    const ss = (chineseDateMatch[6] || '00').padStart(2, '0')
+    return `${y}-${m}-${d}T${hh}:${mm}:${ss}`
+  }
+
+  // 4. 8位紧凑日期 + 时间：20260914 14:49:41 或 20260914T14:49:41 或 20260914144941
   const compactMatch = /^(\d{4})(\d{2})(\d{2})[T\s]?(\d{2}):?(\d{2})(?::?(\d{2}))?/.exec(trimmed)
   if (compactMatch) {
     const y = compactMatch[1]
@@ -3763,7 +3775,7 @@ function toHuanyuDateTimeLocal(value: unknown): string {
     return `${y}-${m}-${d}T${hh}:${mm}:${ss}`
   }
 
-  // 4. 标准日期 + 时间：2026-09-14 14:49:41 或 2026/09/14 14:49:41 或 ISO 2026-09-14T14:49:41.000Z
+  // 5. 标准日期 + 时间：2026-09-14 14:49:41 或 2026/09/14 14:49:41 或 ISO 2026-09-14T14:49:41.000Z
   const stdMatch = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})[T\s](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/.exec(trimmed)
   if (stdMatch) {
     const y = stdMatch[1]
@@ -3775,7 +3787,7 @@ function toHuanyuDateTimeLocal(value: unknown): string {
     return `${y}-${m}-${d}T${hh}:${mm}:${ss}`
   }
 
-  // 5. Date 构造器解析兜底
+  // 6. Date 构造器解析兜底
   const parsed = new Date(trimmed)
   if (!isNaN(parsed.getTime())) {
     const y = parsed.getFullYear()
@@ -3809,8 +3821,33 @@ function toHuanyuStorageFormat(value: unknown): string {
 }
 
 function escortServiceDateInputValue(value: string): string {
-  const match = value.trim().match(/^(\d{4})[-/]?(\d{2})[-/]?(\d{2})/)
-  return match ? `${match[1]}-${match[2]}-${match[3]}` : ''
+  return toHuanyuDateTimeLocal(value)
+}
+
+function huanyuDateTimeClipboardText(value: unknown): string {
+  return toHuanyuDateTimeLocal(value).replace('T', ' ')
+}
+
+function HuanyuDateTimeCopyButton({ value }: { value: string }): React.JSX.Element {
+  const [copied, setCopied] = useState(false)
+  const text = huanyuDateTimeClipboardText(value)
+
+  return (
+    <button
+      type="button"
+      disabled={!text}
+      title={copied ? '已复制' : text ? '复制时间' : '暂无时间可复制'}
+      onClick={() => {
+        if (!text) return
+        void navigator.clipboard?.writeText(text)
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 1200)
+      }}
+      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded border border-border-subtle bg-white text-text-muted transition-colors hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:bg-surface-container disabled:text-text-disabled"
+    >
+      <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>{copied ? 'check' : 'content_copy'}</span>
+    </button>
+  )
 }
 
 function huanyuDatePart(value: unknown): string {
@@ -3867,37 +3904,40 @@ function HuanyuTimeInformation({
         const dateVal = huanyuDatePart(timeVal) || (typeof form[dateKey] === 'string' ? (form[dateKey] as string) : '')
         const parsedTimeVal = huanyuTimePart(timeVal) || (typeof form[defaultTimeKey] === 'string' ? (form[defaultTimeKey] as string) : '')
         const isAi = Boolean(aiFilledFields?.has(timeKey))
+        const changeDateTime = (nextValue: string): void => {
+          onChange(timeKey, nextValue)
+          onChange(dateKey, huanyuDatePart(nextValue))
+          onChange(defaultTimeKey, huanyuTimePart(nextValue))
+          if (timeKey === 'requestTime' && (!form.responseTime || form.responseTime === timeVal)) {
+            onChange('responseTime', nextValue)
+            onChange('responseDefaultDate', huanyuDatePart(nextValue))
+            onChange('responseDefaultTime', huanyuTimePart(nextValue))
+          }
+        }
 
         return (
           <div key={timeKey} className="grid grid-cols-1 gap-x-3 gap-y-1.5 md:grid-cols-3">
             <label className="flex min-w-0 items-center gap-1.5">
               <span className="w-28 shrink-0 text-right text-body-sm font-medium text-text-muted">{label}：</span>
-              <div className="relative flex min-w-0 flex-1 items-center">
+              <div className="flex min-w-0 flex-1 items-center gap-1">
                 <input
                   type="datetime-local"
                   step="1"
                   value={timeVal}
-                  onChange={(event) => {
-                    const nextValue = event.target.value
-                    onChange(timeKey, nextValue)
-                    onChange(dateKey, huanyuDatePart(nextValue))
-                    onChange(defaultTimeKey, huanyuTimePart(nextValue))
-                    if (timeKey === 'requestTime' && (!form.responseTime || form.responseTime === timeVal)) {
-                      onChange('responseTime', nextValue)
-                      onChange('responseDefaultDate', huanyuDatePart(nextValue))
-                      onChange('responseDefaultTime', huanyuTimePart(nextValue))
-                    }
+                  onChange={(event) => changeDateTime(event.target.value)}
+                  onPaste={(event) => {
+                    const nextValue = toHuanyuDateTimeLocal(event.clipboardData.getData('text'))
+                    if (!nextValue) return
+                    event.preventDefault()
+                    changeDateTime(nextValue)
                   }}
+                  title="支持粘贴 20261013 09:30:00、2026-10-13 09:30:00 等时间格式"
                   className={
-                    'h-8 min-w-0 flex-1 rounded border border-border-subtle bg-white px-2.5 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary ' +
-                    (isAi ? 'pr-8' : '')
+                    'h-8 min-w-0 flex-1 rounded border border-border-subtle bg-white px-2.5 text-body-sm text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary'
                   }
                 />
-                {isAi && (
-                  <span className="absolute right-2 flex items-center">
-                    <AiBadge />
-                  </span>
-                )}
+                <HuanyuDateTimeCopyButton value={timeVal} />
+                {isAi && <AiBadge />}
               </div>
             </label>
             <HuanyuInput label="默认日期" value={dateVal} onChange={(value) => onChange(dateKey, value)} disabled />
@@ -4121,7 +4161,7 @@ function HuanyuEscortInformationTable({
       <table className="min-w-[980px] w-full border-collapse text-body-sm">
         <thead>
           <tr className="bg-surface-bg text-text-main">
-            {['订单号', '服务日期', '陪诊人员', '陪诊人类型', '默认电话', '所在地区', '陪诊人序号'].map((label) => (
+            {['订单号', '服务日期/时间', '陪诊人员', '陪诊人类型', '默认电话', '所在地区', '陪诊人序号'].map((label) => (
               <th key={label} className="border border-border-subtle px-3 py-2 text-center font-semibold whitespace-nowrap">{label}</th>
             ))}
           </tr>
@@ -4131,20 +4171,26 @@ function HuanyuEscortInformationTable({
             <tr key={row.id}>
               <td className="border border-border-subtle p-1.5"><input disabled value={row.orderNo} className="h-8 w-full border-0 bg-surface-container px-2 text-center text-text-muted outline-none" /></td>
               <td className="border border-border-subtle p-1.5">
-                <div className="relative flex items-center">
+                <div className="flex min-w-0 items-center gap-1">
                   <input
-                    type="date"
-                    value={row.serviceDate}
+                    type="datetime-local"
+                    step="1"
+                    value={escortServiceDateInputValue(row.serviceDate)}
                     onChange={(event) => changeRow(row.id, 'serviceDate', event.target.value)}
+                    onPaste={(event) => {
+                      const nextValue = toHuanyuDateTimeLocal(event.clipboardData.getData('text'))
+                      if (!nextValue) return
+                      event.preventDefault()
+                      changeRow(row.id, 'serviceDate', nextValue)
+                    }}
+                    title="支持粘贴 20261013 09:30:00、2026-10-13 09:30:00 等时间格式"
                     className={
-                      'h-8 w-full bg-white px-2 text-center text-text-main outline-none focus:ring-1 focus:ring-primary ' +
-                      (index === 0 && aiFilledFields?.has('escortServiceDate') ? 'pr-7' : '')
+                      'h-8 min-w-0 flex-1 rounded border border-border-subtle bg-white px-2.5 text-center text-text-main outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary'
                     }
                   />
+                  <HuanyuDateTimeCopyButton value={row.serviceDate} />
                   {index === 0 && aiFilledFields?.has('escortServiceDate') && (
-                    <span className="absolute right-1 top-1.5 flex items-center">
-                      <AiBadge />
-                    </span>
+                    <AiBadge />
                   )}
                 </div>
               </td>
