@@ -29,6 +29,15 @@ const MAX_MATERIAL_ORDERS_PER_CHECK = 5
 let timer: ReturnType<typeof setInterval> | null = null
 let running = false
 
+function describeTaskError(error: unknown): string {
+  if (error instanceof Error) return error.stack || error.message || error.name
+  try {
+    return JSON.stringify(error)
+  } catch {
+    return String(error)
+  }
+}
+
 let currentConfig: OrderAiScheduleConfig = { ...DEFAULT_ORDER_AI_SCHEDULE_CONFIG }
 let cachedSlots: Set<string> = new Set(
   generateScheduleSlots(currentConfig.startTime, currentConfig.endTime, currentConfig.intervalMinutes)
@@ -216,7 +225,7 @@ async function run(prisma: PrismaClient, minio: Minio.Client, slot: string): Pro
       try {
         if (await processOrder(prisma, minio, order.id)) succeeded += 1
       } catch (error) {
-        console.warn(`[order-ai-schedule] 订单 ${order.id} 分析失败:`, (error as Error).message)
+        console.warn(`[order-ai-schedule] 订单 ${order.id} 分析失败:\n${describeTaskError(error)}`)
       }
     }
     console.log(`[order-ai-schedule] 上海时间 ${slot} 批量执行完成：分析 ${succeeded}/${orders.length} 单`)
@@ -259,7 +268,7 @@ async function runSilentMaterialOrders(prisma: PrismaClient, minio: Minio.Client
       try {
         if (await processOrder(prisma, minio, order.id)) succeeded += 1
       } catch (error) {
-        console.warn(`[order-ai-material] 订单 ${order.id} 静默补录分析失败:`, (error as Error).message)
+        console.warn(`[order-ai-material] 订单 ${order.id} 静默补录分析失败:\n${describeTaskError(error)}`)
       }
     }
     if (orders.length > 0) {

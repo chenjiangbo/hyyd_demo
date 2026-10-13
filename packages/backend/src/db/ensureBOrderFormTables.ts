@@ -378,7 +378,7 @@ const CREATE_STATEMENTS = [
       order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
       application_no VARCHAR(100),
       model VARCHAR(100) NOT NULL,
-      prompt_version VARCHAR(40) NOT NULL,
+      prompt_version VARCHAR(100) NOT NULL,
       status VARCHAR(20) NOT NULL DEFAULT 'succeeded'
         CHECK (status IN ('running', 'succeeded', 'failed')),
       source_message_max_id INTEGER,
