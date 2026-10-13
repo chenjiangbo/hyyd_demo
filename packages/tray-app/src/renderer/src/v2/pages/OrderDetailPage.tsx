@@ -611,7 +611,8 @@ function CommunicationPanel({ events, orderId }: { events: LifecycleEvent[]; ord
 
 // 综合所有渠道的 AI 总结卡（淡紫底，固定在沟通区下方）。
 // 读后端「订单滚动简报」(brief.summary)——和右侧「AI 关键信息」是同一次 LLM 调用的两个展示。
-// 简报由后端自动触发（静默5分钟 / 攒够10条微信企微消息 / 通话转写完成 → 全量重跑），这里只读不触发。
+// 简报由后端自动触发：补录素材静默 3 分钟后分析；企微/通话按后台配置的批量时段运行。
+// 此处只读，不主动触发分析。
 function AiSummaryCard({
   orderId,
   events,

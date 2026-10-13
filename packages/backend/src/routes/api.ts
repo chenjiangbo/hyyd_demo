@@ -3779,7 +3779,8 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
 
   // 8.45 订单 AI 滚动简报 —— 手动刷新（员工点"刷新简报"按钮）。综合该订单的微信/企微消息 +
   //      通话/录音转写，一次 LLM 调用产出 摘要/阶段/待办/风险 + 回填关键信息。增量(基于上一版简报)。
-  //      自动触发由扫描器负责(静默5min/攒够10条)；这里是手动兜底，force=true 强制重算。
+  //      自动触发由扫描器负责：补录素材静默 3 分钟后分析；企微/通话按后台配置的批量时段运行。
+  //      此处是手动兜底，force=true 强制重算。
   fastify.post<{ Params: { id: string } }>('/api/v1/orders/:id/brief/refresh', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
     const id = parseInt(request.params.id, 10)

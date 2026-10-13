@@ -1,7 +1,7 @@
 /**
  * 订单 AI 定时分析调度引擎。
- * 不监听新消息或转写完成而立即执行；仅在配置的上海时区时点运行，且只分析自上次
- * 分析后新增了企微/微信有效消息或完成转写通话录音的订单。
+ * 企微/微信消息与完成转写的通话仅在配置的上海时区时点批量分析；手工补录素材
+ * 单独采用静默触发：某订单最后一次新增补录满 3 分钟后自动分析。
  *
  * 支持通过数据库 sys_settings 动态热配置工作时段与频次（如 09:00~21:00 每30分钟/15分钟），即改即生效。
  */
@@ -27,6 +27,8 @@ export const DEFAULT_ORDER_AI_SCHEDULE_CONFIG: OrderAiScheduleConfig = {
 }
 
 const CHECK_INTERVAL_MS = 30_000
+const MATERIAL_SILENCE_MS = 3 * 60_000
+const MAX_MATERIAL_ORDERS_PER_CHECK = 5
 let timer: ReturnType<typeof setInterval> | null = null
 let running = false
 
@@ -262,7 +264,55 @@ async function run(prisma: PrismaClient, minio: Minio.Client, slot: string): Pro
   }
 }
 
+/**
+ * 手工补录独立于批量时段：仅当本次待处理的最后一条补录已静默 3 分钟后才分析。
+ * 若这 3 分钟内继续补录，NOT EXISTS 条件会阻止执行，并从最新一条素材重新计时。
+ */
+async function runSilentMaterialOrders(prisma: PrismaClient, minio: Minio.Client): Promise<void> {
+  if (running) return
+  running = true
+  try {
+    const silenceCutoff = new Date(Date.now() - MATERIAL_SILENCE_MS)
+    const orders = await prisma.$queryRaw<Array<{ id: number }>>`
+      SELECT o.id
+      FROM orders o
+      WHERE EXISTS (
+        SELECT 1
+        FROM materials m
+        WHERE m.order_id = o.id
+          AND m.id > COALESCE(o.brief_last_material_id, 0)
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM materials m
+        WHERE m.order_id = o.id
+          AND m.id > COALESCE(o.brief_last_material_id, 0)
+          AND m.created_at > ${silenceCutoff}
+      )
+      ORDER BY o.updated_at ASC
+      LIMIT ${MAX_MATERIAL_ORDERS_PER_CHECK}
+    `
+
+    let succeeded = 0
+    for (const order of orders) {
+      try {
+        if (await processOrder(prisma, minio, order.id)) succeeded += 1
+      } catch (error) {
+        console.warn(`[order-ai-material] 订单 ${order.id} 静默补录分析失败:`, (error as Error).message)
+      }
+    }
+    if (orders.length > 0) {
+      console.log(`[order-ai-material] 静默 ${MATERIAL_SILENCE_MS / 60_000} 分钟后执行：分析 ${succeeded}/${orders.length} 单`)
+    }
+  } finally {
+    running = false
+  }
+}
+
 async function tick(prisma: PrismaClient, minio: Minio.Client): Promise<void> {
+  // 补录保存后的静默分析不受企微/通话的批量时段限制。
+  await runSilentMaterialOrders(prisma, minio)
+
   if (!currentConfig.enabled) return
   const { date, time } = shanghaiClock()
   if (!cachedSlots.has(time)) return
