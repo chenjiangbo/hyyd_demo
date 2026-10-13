@@ -839,7 +839,7 @@ function ApplicationAiSummaryCard({
               <div
                 key={candidate.id}
                 className="inline-flex items-center gap-1.5 rounded-md border border-[#cfe0ff] bg-white px-2.5 py-1.5 text-[12px] text-text-main shadow-2xs hover:border-primary transition-colors"
-                title={candidate.evidence?.[0]?.quote ? `证据来源: ${candidate.evidence[0].quote}` : undefined}
+                title={candidate.evidence?.[0]?.sourceId ? `AI 来源: ${candidate.evidence[0].sourceId}` : undefined}
               >
                 <span className="text-text-muted">{candidate.fieldLabel}:</span>
                 <span className="font-semibold text-text-main">{candidate.value}</span>
@@ -5198,7 +5198,7 @@ function CommunicationField({
     : null
   return (
     <label className="block min-w-0 text-body-sm text-text-muted">
-      <span className="mb-1 flex items-center gap-1">{label}{required && <span className="text-error">*</span>}{aiSource && <span title={`AI 依据：${aiSource.evidence?.[0]?.quote ?? ''}`}><AiBadge /></span>}{aiSource?.requiresConfirmation && <span className="rounded border border-amber-200 bg-amber-50 px-1 text-[10px] text-amber-700">需确认</span>}</span>
+      <span className="mb-1 flex items-center gap-1">{label}{required && <span className="text-error">*</span>}{aiSource && <span title={`AI 来源：${aiSource.evidence?.[0]?.sourceId ?? ''}`}><AiBadge /></span>}{aiSource?.requiresConfirmation && <span className="rounded border border-amber-200 bg-amber-50 px-1 text-[10px] text-amber-700">需确认</span>}</span>
       {children}
       {error && <span className="mt-1 block text-[11px] text-error">{error}</span>}
     </label>
@@ -6446,7 +6446,6 @@ interface OutpatientPlanScheme extends OutpatientPlanFormValue {
 
 interface OutpatientPlanSuggestion extends OutpatientPlanFormValue {
   evidenceSourceId: string
-  evidenceQuote: string
 }
 
 const EMPTY_OUTPATIENT_PLAN: OutpatientPlanFormValue = {
@@ -6464,8 +6463,7 @@ function parseOutpatientPlanSuggestions(candidate: OrderAiFieldCandidate | undef
       hospital: String(row.hospital ?? '').trim(),
       department: String(row.department ?? '').trim(),
       doctor: String(row.doctor ?? '').trim(),
-      evidenceSourceId: String(row.evidence_source_id ?? '').trim(),
-      evidenceQuote: String(row.evidence_quote ?? '').trim()
+      evidenceSourceId: String(row.evidence_source_id ?? '').trim()
     }
     return scheme.hospital || scheme.doctor ? [scheme] : []
   })
@@ -6629,9 +6627,9 @@ function OutpatientPlanConfirmationForm({ readOnly }: { readOnly: boolean }): Re
                           {alreadyAdded ? '已加入方案' : complete ? '加入方案' : '带入填写'}
                         </button>
                       </div>
-                      {(scheme.evidenceQuote || scheme.evidenceSourceId) && (
+                      {scheme.evidenceSourceId && (
                         <p className="mt-2 border-t border-border-subtle pt-2 text-[12px] text-text-muted">
-                          依据：{scheme.evidenceQuote || '沟通内容'}{scheme.evidenceSourceId ? `（${scheme.evidenceSourceId}）` : ''}
+                          来源：{scheme.evidenceSourceId}
                         </p>
                       )}
                     </div>
@@ -7361,7 +7359,7 @@ function MedicalTransportServiceEntryForm({ readOnly }: { readOnly: boolean }): 
     <div className="mt-4 space-y-5">
       <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 xl:grid-cols-8">
         <div className="xl:col-span-3">
-          <p className="mb-1.5 flex items-center gap-1 text-body-sm text-text-muted">实际出发地 <span className="text-error">*</span>{originAiSources.map((candidate) => <span key={candidate.id} title={`AI 依据：${candidate.evidence?.[0]?.quote ?? ''}`}><AiBadge /></span>)}</p>
+          <p className="mb-1.5 flex items-center gap-1 text-body-sm text-text-muted">实际出发地 <span className="text-error">*</span>{originAiSources.map((candidate) => <span key={candidate.id} title={`AI 来源：${candidate.evidence?.[0]?.sourceId ?? ''}`}><AiBadge /></span>)}</p>
           <div className="grid grid-cols-3 gap-3">
             <div className="min-w-0">
               <input value={form.originProvince} disabled={readOnly} onChange={(event) => changeField('originProvince', event.target.value)} placeholder="请输入省" className={inputClass(Boolean(errors.originProvince)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />
@@ -7384,7 +7382,7 @@ function MedicalTransportServiceEntryForm({ readOnly }: { readOnly: boolean }): 
         </div>
 
         <div className="xl:col-span-3">
-          <p className="mb-1.5 flex items-center gap-1 text-body-sm text-text-muted">实际到达地 <span className="text-error">*</span>{destinationAiSources.map((candidate) => <span key={candidate.id} title={`AI 依据：${candidate.evidence?.[0]?.quote ?? ''}`}><AiBadge /></span>)}</p>
+          <p className="mb-1.5 flex items-center gap-1 text-body-sm text-text-muted">实际到达地 <span className="text-error">*</span>{destinationAiSources.map((candidate) => <span key={candidate.id} title={`AI 来源：${candidate.evidence?.[0]?.sourceId ?? ''}`}><AiBadge /></span>)}</p>
           <div className="grid grid-cols-3 gap-3">
             <div className="min-w-0">
               <input value={form.destinationProvince} disabled={readOnly} onChange={(event) => changeField('destinationProvince', event.target.value)} placeholder="请输入省" className={inputClass(Boolean(errors.destinationProvince)) + ' disabled:cursor-not-allowed disabled:bg-surface-bg'} />

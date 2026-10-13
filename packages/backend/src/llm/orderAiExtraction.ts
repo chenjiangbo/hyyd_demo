@@ -1,7 +1,7 @@
 import { chat } from './gatewayClient.js'
 import { WORKFLOW_EVENT_CODES, type WorkflowAnalysisEvent } from './orderBriefService.js'
 
-export const ORDER_AI_FIELD_PROMPT_VERSION = 'order-fields-v4-escort-datetime'
+export const ORDER_AI_FIELD_PROMPT_VERSION = 'order-fields-v5-escort-datetime-source-id-max-10000'
 
 export type OrderAiSourceMessage = {
   id: number
@@ -26,7 +26,8 @@ export type OrderAiFieldCandidate = {
   candidateType: 'new_or_confirmed' | 'change_candidate' | 'ambiguous'
   confidence: number
   requiresConfirmation: boolean
-  evidence: Array<{ sourceId: string; quote: string }>
+  // 仅保留可回溯的时间线来源 ID，避免在候选数据中重复存储沟通原文。
+  evidence: Array<{ sourceId: string }>
 }
 
 export type OrderAiExtraction = {
@@ -157,7 +158,7 @@ export const ORDER_AI_PROMPT_RULES = [
   '若信息不能确定属于当前服务类型，返回 ambiguous 字段候选且 requires_confirmation=true；不得输出自动流转事件。',
   '金额、诊断、ICD10 必须 requires_confirmation=true。',
   '【医院、科室、医生提取与缺失规范（极其重要）】：',
-  '1. 多个备选方案(recommended_schemes)：仅当服务专员在沟通中明确向客户推荐/提出了一个或多个医院、科室、医生组合时提取；客户单方面表达的偏好、尚未确定的讨论以及模型自行推荐都不算专员推荐。normalized_value 必须是数组，每项为 { province, city, hospital, department, doctor, evidence_source_id, evidence_quote }，没有明确提到的字段填空字符串。不同医院或不同医生的方案分别成项，不要合并；每项都必须有对应原文证据，候选的 evidence 也引用推荐原文。若没有明确推荐，绝不输出该候选。',
+  '1. 多个备选方案(recommended_schemes)：仅当服务专员在沟通中明确向客户推荐/提出了一个或多个医院、科室、医生组合时提取；客户单方面表达的偏好、尚未确定的讨论以及模型自行推荐都不算专员推荐。normalized_value 必须是数组，每项为 { province, city, hospital, department, doctor, evidence_source_id }，没有明确提到的字段填空字符串。不同医院或不同医生的方案分别成项，不要合并；每项都必须有对应来源 ID。若没有明确推荐，绝不输出该候选。',
   '2. 缺失与未定信息全量置空原则：若沟通记录中未提及、或者处于“未定、待商量、不知道去哪、不确定挂哪个、随便哪个医生都行”等状态，绝不要生成该字段候选！严禁输出任何“未明确”、“未知”、“暂无”、“待定”、“无”、“待确认”、“不详”、“/”等占位词。',
   '3. 最终确认医院(hospital)：必须结合就医城市与上下文，直接输出在中国国家卫健委官方注册挂牌的标准官方全称（例：客户说“北京协和/协和医院”，必须规范输出为“中国医学科学院北京协和医院”；说“北医三院”，输出为“北京大学第三医院”；说“宣武医院”，输出为“首都医科大学宣武医院”；说“301医院”，输出为“中国人民解放军总医院”）。绝对不得输出口语简称或未带官方前缀的简写。',
   '4. 最终确认科室(department)：必须输出正规医学临床二级学科名称（例：“心内”输出为“心血管内科”；“消化”输出为“消化内科”；“皮科”输出为“皮肤科”）。若仅提及“大夫科室”或不明确具体专科，严禁输出，保持不提取。',
@@ -170,7 +171,7 @@ export const ORDER_AI_PROMPT_RULES = [
   'special_inspection_situation 只取特殊医院、非常规项目、其他；没有明确特殊情况时不要输出。人员姓名和电话必须有明确指派证据，不能由当前登录人或订单联系人推断。',
   '点名专家字段只接受明确提到的类型、价格和点名原因；expert_type 只取普通专家/特殊专家，special_expert_situation 只取表单已有枚举。价格必须保留原金额并要求人工确认。service_province/service_city 只提取本次就医服务地点，不得把客户居住地当作服务地点。',
   'doctor_title 与 expert_level 含义不同：doctor_title 只提取沟通原文明说的主任医师或副主任医师，即使同时提到了医生姓名也要提取；不得由医生姓名推断。',
-  '每个候选都必须引用消息#ID或通话#ID及其原文短句；只输出合法 JSON。',
+  '每个候选都必须提供消息#ID或通话#ID作为 evidence.source_id；禁止在 evidence 中输出 quote、原文或原文摘要；只输出合法 JSON。',
   '【建议订单状态(order_status)识别准则（输出为候选建议，必须人工确认）】：',
   '1. 适用状态枚举仅限：已完成、待跟进、待预约、待交付、预约完成待支付、已取消。',
   '2. “已完成”识别要求（极其严谨，必须有确凿事实证据）：',
@@ -216,8 +217,14 @@ function parseObject(content: string): Record<string, unknown> {
   const trimmed = content.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
   const start = trimmed.indexOf('{')
   const end = trimmed.lastIndexOf('}')
-  if (start < 0 || end <= start) return {}
-  try { return JSON.parse(trimmed.slice(start, end + 1)) as Record<string, unknown> } catch { return {} }
+  if (start < 0 || end <= start) {
+    throw new Error('字段提取模型未返回完整 JSON，未覆盖已有候选')
+  }
+  try {
+    return JSON.parse(trimmed.slice(start, end + 1)) as Record<string, unknown>
+  } catch {
+    throw new Error('字段提取模型返回的 JSON 无法解析，未覆盖已有候选')
+  }
 }
 
 function stringValue(value: unknown): string | null {
@@ -272,8 +279,7 @@ function normalizeCandidates(raw: unknown, allowed: Map<string, OrderAiFieldDefi
           if (!entry || typeof entry !== 'object') return []
           const source = entry as Record<string, unknown>
           const sourceId = stringValue(source.source_id)
-          const quote = stringValue(source.quote)
-          return sourceId && quote ? [{ sourceId, quote: quote.slice(0, 500) }] : []
+          return sourceId ? [{ sourceId }] : []
         }).slice(0, 5)
       : []
     if (evidence.length === 0) continue
@@ -296,7 +302,6 @@ function normalizeCandidates(raw: unknown, allowed: Map<string, OrderAiFieldDefi
         const scheme = entry as Record<string, unknown>
         const normalized = Object.fromEntries(['province', 'city', 'hospital', 'department', 'doctor'].map((key) => [key, stringValue(scheme[key]) ?? ''])) as Record<string, string>
         normalized.evidence_source_id = stringValue(scheme.evidence_source_id) ?? ''
-        normalized.evidence_quote = (stringValue(scheme.evidence_quote) ?? '').slice(0, 500)
         if (!normalized.hospital && !normalized.doctor) return []
         return [normalized]
       })
@@ -418,9 +423,9 @@ export async function extractOrderServiceFields(input: {
     'JSON 格式：',
     JSON.stringify({
       field_candidates: [
-        { field_code: '白名单字段', value: '候选值', normalized_value: '可选标准化值', candidate_type: 'new_or_confirmed | change_candidate | ambiguous', confidence: 0.0, requires_confirmation: false, evidence: [{ source_id: '消息#123 或 通话#456', quote: '原文短句' }] },
-        { field_code: 'recommended_schemes', value: '识别到2条专员推荐方案', normalized_value: [{ province: '北京市', city: '北京市', hospital: '北京协和医院', department: '心内科', doctor: '张医生', evidence_source_id: '通话#456', evidence_quote: '专员推荐北京协和医院张医生' }, { province: '上海市', city: '上海市', hospital: '瑞金医院', department: '心内科', doctor: '李医生', evidence_source_id: '消息#123', evidence_quote: '专员推荐上海瑞金医院李医生' }], candidate_type: 'new_or_confirmed', confidence: 0.9, requires_confirmation: true, evidence: [{ source_id: '通话#456', quote: '专员明确向客户推荐的医院和医生' }] },
-        { field_code: 'escort_records', value: '共识别到2次陪诊：1. 2026-09-28 00:00:00 张三(门诊陪诊)；2. 2026-09-29 00:00:00 李四(检查陪诊)', normalized_value: [{ sequence: '1', service_date: '2026-09-28 00:00:00', escort_name: '张三', escort_phone: '13800000001', service_scene: '门诊陪诊' }, { sequence: '2', service_date: '2026-09-29 00:00:00', escort_name: '李四', escort_phone: '13900000002', service_scene: '检查陪诊' }], candidate_type: 'new_or_confirmed', confidence: 0.95, requires_confirmation: false, evidence: [{ source_id: '消息#123', quote: '原文短句' }] }
+        { field_code: '白名单字段', value: '候选值', normalized_value: '可选标准化值', candidate_type: 'new_or_confirmed | change_candidate | ambiguous', confidence: 0.0, requires_confirmation: false, evidence: [{ source_id: '消息#123 或 通话#456' }] },
+        { field_code: 'recommended_schemes', value: '识别到2条专员推荐方案', normalized_value: [{ province: '北京市', city: '北京市', hospital: '北京协和医院', department: '心内科', doctor: '张医生', evidence_source_id: '通话#456' }, { province: '上海市', city: '上海市', hospital: '瑞金医院', department: '心内科', doctor: '李医生', evidence_source_id: '消息#123' }], candidate_type: 'new_or_confirmed', confidence: 0.9, requires_confirmation: true, evidence: [{ source_id: '通话#456' }] },
+        { field_code: 'escort_records', value: '共识别到2次陪诊：1. 2026-09-28 00:00:00 张三(门诊陪诊)；2. 2026-09-29 00:00:00 李四(检查陪诊)', normalized_value: [{ sequence: '1', service_date: '2026-09-28 00:00:00', escort_name: '张三', escort_phone: '13800000001', service_scene: '门诊陪诊' }, { sequence: '2', service_date: '2026-09-29 00:00:00', escort_name: '李四', escort_phone: '13900000002', service_scene: '检查陪诊' }], candidate_type: 'new_or_confirmed', confidence: 0.95, requires_confirmation: false, evidence: [{ source_id: '消息#123' }] }
       ],
       workflow_events: [{ code: WORKFLOW_EVENT_CODES.join(' | '), evidence: '明确完成或确认的原文事实' }]
     })
@@ -431,7 +436,7 @@ export async function extractOrderServiceFields(input: {
     `【当前已保存正式值，仅用于判断变更，不得照搬】${JSON.stringify(input.currentValues)}`,
     `【申请号下沟通时间线】\n${sourceTimeline || '（无可分析的企微、微信或已转写通话）'}`
   ].join('\n\n')
-  const result = await chat([{ role: 'system', content: system }, { role: 'user', content: user }], { temperature: 0, maxTokens: 2600 })
+  const result = await chat([{ role: 'system', content: system }, { role: 'user', content: user }], { temperature: 0, maxTokens: 10000 })
   const parsed = parseObject(result.content)
   return {
     candidates: normalizeCandidates(parsed.field_candidates, allowedMap),

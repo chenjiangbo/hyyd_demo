@@ -259,7 +259,7 @@ export interface OrderAiFieldCandidate {
   candidateType: 'new_or_confirmed' | 'change_candidate' | 'ambiguous' | string
   confidence: number
   requiresConfirmation: boolean
-  evidence: Array<{ sourceId: string; quote: string }>
+  evidence: Array<{ sourceId: string }>
   createdAt: string
 }
 
