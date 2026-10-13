@@ -1,6 +1,6 @@
 /**
  * LLM 客户端：直连阿里云百炼（DashScope）OpenAI 兼容端点。
- *   端点：https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
+ *   端点：HYYD_LLM_BASE_URL/chat/completions；未配置时使用 DashScope 公共兼容端点
  *   凭证：DASHSCOPE_API_KEY（env，与 ASR 复用同一个 key）
  *   默认模型：qwen-plus（可用 options.model 或环境变量 HYYD_LLM_MODEL 覆盖）
  * 历史：之前走自建 BlackWhite 网关（GATEWAY_*），现改为百炼官方直连。
@@ -8,7 +8,11 @@
  */
 import { getEnv } from '../env.js'
 
-const DASHSCOPE_CHAT_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'
+const DEFAULT_DASHSCOPE_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+
+function openAiChatEndpoint(baseUrl?: string): string {
+  return `${(baseUrl || DEFAULT_DASHSCOPE_BASE_URL).replace(/\/+$/, '')}/chat/completions`
+}
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
@@ -53,6 +57,10 @@ function getDashscopeApiKey(): string {
   return requiredAiConfig(getEnv().dashscopeApiKey, 'DASHSCOPE_API_KEY')
 }
 
+function getLlmChatEndpoint(): string {
+  return openAiChatEndpoint(getEnv().hyydLlmBaseUrl)
+}
+
 // ── 非流式聊天 ────────────────────────────────────────────────────────────────
 
 export async function chat(
@@ -73,7 +81,7 @@ export async function chat(
   if (options.maxTokens)   body.max_tokens   = options.maxTokens
   if (options.temperature !== undefined) body.temperature = options.temperature
 
-  const res = await fetch(DASHSCOPE_CHAT_URL, {
+  const res = await fetch(getLlmChatEndpoint(), {
     method: 'POST',
     headers: {
       'Content-Type':  'application/json',
@@ -109,8 +117,7 @@ export async function visionChat(
   options: ChatOptions = {}
 ): Promise<ChatResult> {
   const apiKey = process.env.HYYD_VLM_API_KEY?.trim() || getDashscopeApiKey()
-  const baseUrl = process.env.HYYD_VLM_BASE_URL?.trim().replace(/\/+$/, '')
-  const endpoint = baseUrl ? `${baseUrl}/chat/completions` : DASHSCOPE_CHAT_URL
+  const endpoint = openAiChatEndpoint(process.env.HYYD_VLM_BASE_URL?.trim())
   const model = options.model ?? process.env.HYYD_VLM_MODEL ?? 'qwen-vl-max'
 
   const body: Record<string, unknown> = {

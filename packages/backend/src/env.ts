@@ -18,6 +18,8 @@ export interface AppEnv {
   gatewayAppId?: string
   gatewayApiKey?: string
   dashscopeApiKey?: string
+  // 文本模型的 OpenAI 兼容 Base URL；未配置时使用 DashScope 公共兼容地址。
+  hyydLlmBaseUrl?: string
   adminWebDist?: string
   remoteDictDbHost?: string
   remoteDictDbPort?: string
@@ -91,6 +93,7 @@ export function getEnv(): AppEnv {
     gatewayAppId: optional('GATEWAY_APP_ID'),
     gatewayApiKey: optional('GATEWAY_API_KEY'),
     dashscopeApiKey: optional('DASHSCOPE_API_KEY'),
+    hyydLlmBaseUrl: optional('HYYD_LLM_BASE_URL'),
     adminWebDist: optional('ADMIN_WEB_DIST'),
     // 远端字典库只在下拉读取接口被调用时才校验，避免未配置的环境无法启动常规服务。
     remoteDictDbHost: optional('REMOTE_DICT_DB_HOST'),
