@@ -96,6 +96,13 @@ export interface RefreshResult {
   model?: string
 }
 
+export interface FieldAnalysisResult {
+  skipped: boolean
+  reason?: string
+  model?: string
+  fieldExtractionSucceeded: boolean
+}
+
 type ApplicationOrderContext = {
   customer_name: string | null
   hospital: string | null
@@ -171,6 +178,250 @@ async function persistFieldCandidates(
       `
     }
   })
+}
+
+function describeError(error: unknown): string {
+  if (error instanceof Error) {
+    const details = [`${error.name}: ${error.message || '错误对象没有 message'}`]
+    if (error.cause) details.push(`cause: ${describeError(error.cause)}`)
+    if (error.stack) details.push(error.stack)
+    return details.join('\n')
+  }
+  try {
+    return JSON.stringify(error)
+  } catch {
+    return String(error)
+  }
+}
+
+async function createRunningAnalysisRun(
+  prisma: PrismaClient,
+  input: {
+    orderId: number
+    applicationNo: string | null
+    maxMessageId: number
+    maxCallId: number
+    maxMaterialId: number
+  }
+): Promise<bigint> {
+  const rows = await prisma.$queryRaw<Array<{ id: bigint }>>`
+    INSERT INTO b_order_ai_analysis_runs (
+      order_id, application_no, model, prompt_version, status,
+      source_message_max_id, source_call_max_id, source_material_max_id
+    ) VALUES (
+      ${input.orderId}, ${input.applicationNo}, ${String(process.env.HYYD_LLM_MODEL ?? 'qwen-plus').slice(0, 100)}, ${ORDER_AI_FIELD_PROMPT_VERSION}, 'running',
+      ${input.maxMessageId}, ${input.maxCallId}, ${input.maxMaterialId}
+    ) RETURNING id
+  `
+  return rows[0]!.id
+}
+
+async function completeRunningAnalysisRun(
+  prisma: PrismaClient,
+  input: {
+    runId: bigint
+    orderId: number
+    model: string
+    raw: string
+    candidates: Awaited<ReturnType<typeof extractOrderServiceFields>>['candidates']
+  }
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    // 本轮使用完整沟通历史重新提取：上一轮未再次出现的候选也必须退出当前补位。
+    await tx.$executeRaw`
+      UPDATE b_order_ai_field_candidates SET status = 'superseded'
+      WHERE order_id = ${input.orderId} AND status = 'pending'
+    `
+    for (const candidate of input.candidates) {
+      await tx.$executeRaw`
+        INSERT INTO b_order_ai_field_candidates (
+          run_id, order_id, field_code, field_label, value_text, normalized_value_json,
+          candidate_type, confidence, requires_confirmation, evidence_json
+        ) VALUES (
+          ${input.runId}, ${input.orderId}, ${candidate.fieldCode}, ${candidate.fieldLabel}, ${candidate.value},
+          ${JSON.stringify(candidate.normalizedValue)}::jsonb, ${candidate.candidateType},
+          ${candidate.confidence}, ${candidate.requiresConfirmation}, ${JSON.stringify(candidate.evidence)}::jsonb
+        )
+      `
+    }
+    await tx.$executeRaw`
+      UPDATE b_order_ai_analysis_runs
+      SET status = 'succeeded', model = ${input.model}, raw_result_json = ${JSON.stringify({ raw: input.raw })}::jsonb, completed_at = now()
+      WHERE id = ${input.runId} AND status = 'running'
+    `
+  })
+}
+
+async function failRunningAnalysisRun(prisma: PrismaClient, runId: bigint, errorMessage: string): Promise<void> {
+  await prisma.$executeRaw`
+    UPDATE b_order_ai_analysis_runs
+    SET status = 'failed', error_message = ${errorMessage.slice(0, 8000)}, completed_at = now()
+    WHERE id = ${runId} AND status = 'running'
+  `
+}
+
+async function loadBFormSavedValues(prisma: PrismaClient, orderId: number): Promise<Record<string, Record<string, string>>> {
+  const saved: Record<string, Record<string, string>> = {}
+  try {
+    const formRows = await prisma.$queryRaw<Array<{ tab_code: string; data_json: Record<string, unknown> }>>`
+      SELECT d.tab_code, d.data_json
+      FROM b_order_form_tab_data d
+      JOIN b_order_form_instances i ON i.id = d.form_instance_id
+      JOIN b_order_operations o ON o.id = i.operation_id
+      WHERE o.order_id = ${orderId} AND i.status <> 'void'
+      ORDER BY i.updated_at DESC, i.id DESC
+    `
+    for (const row of formRows) {
+      if (saved[row.tab_code]) continue
+      const fields: Record<string, string> = {}
+      for (const [key, value] of Object.entries(row.data_json ?? {})) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+        for (const [property, stored] of Object.entries(value)) {
+          if (typeof stored === 'string' && stored.trim() && stored.length <= 200) fields[`${key}.${property}`] = stored
+        }
+      }
+      saved[row.tab_code] = fields
+    }
+  } catch (error) {
+    console.warn(`[order-ai-field] orderId=${orderId} 读取 B 端正式表单值失败: ${describeError(error)}`)
+  }
+  return saved
+}
+
+/**
+ * 自动字段与服务步骤分析。它不生成也不更新旧版 AI 简报，且使用独立水位：
+ * 同一批输入无论成功还是失败都只尝试一次；有新素材后才会再次入队。
+ */
+export async function analyzeOrderFields(
+  prisma: PrismaClient,
+  minio: Minio.Client,
+  orderId: number,
+  options: { force?: boolean } = {}
+): Promise<FieldAnalysisResult | null> {
+  const order = await prisma.order.findUnique({ where: { id: orderId } })
+  if (!order) return null
+
+  const lastMsgId = order.fieldAiLastMsgId ?? 0
+  const lastCallId = order.fieldAiLastCallId ?? 0
+  const lastMaterialId = order.fieldAiLastMaterialId ?? 0
+  const applicationNo = applicationNoOf(order.rawJson)
+  const captureWhere = applicationNo ? { OR: [{ applicationNo }, { orderId }] } : { orderId }
+  const [msgs, calls, mats] = await Promise.all([
+    prisma.message.findMany({ where: captureWhere, orderBy: { id: 'asc' } }),
+    prisma.call.findMany({ where: captureWhere, orderBy: { id: 'asc' } }),
+    prisma.material.findMany({ where: { orderId }, orderBy: { id: 'asc' } })
+  ])
+  const maxMessageId = msgs.at(-1)?.id ?? lastMsgId
+  const maxCallId = calls.at(-1)?.id ?? lastCallId
+  const maxMaterialId = mats.at(-1)?.id ?? lastMaterialId
+  const hasNewContent =
+    msgs.some((m) => m.id > lastMsgId && (m.contentText ?? '').trim().length > 0) ||
+    calls.some((c) => c.id > lastCallId && ((c.asrText ?? '').trim().length > 0 || (c.durationSec ?? 0) > 0)) ||
+    mats.some((m) => m.id > lastMaterialId && (m.type === 'image' || (m.textContent ?? '').trim().length > 0))
+
+  if (!hasNewContent && !options.force) {
+    if (maxMessageId > lastMsgId || maxCallId > lastCallId || maxMaterialId > lastMaterialId) {
+      await prisma.order.update({
+        where: { id: orderId },
+        data: { fieldAiLastMsgId: maxMessageId, fieldAiLastCallId: maxCallId, fieldAiLastMaterialId: maxMaterialId }
+      })
+    }
+    return { skipped: true, reason: 'no_new_content', fieldExtractionSucceeded: false }
+  }
+
+  for (const material of mats) {
+    if (material.type === 'image') await ensureImageUnderstood(prisma, minio, material)
+  }
+  const raw = (order.rawJson ?? {}) as Record<string, unknown>
+  const bFormSaved = await loadBFormSavedValues(prisma, orderId)
+  const runId = await createRunningAnalysisRun(prisma, { orderId, applicationNo, maxMessageId, maxCallId, maxMaterialId })
+
+  try {
+    const extraction = await extractOrderServiceFields({
+      orderId,
+      applicationNo,
+      serviceType: String(raw.serviceType ?? raw.itemName ?? '').trim() || '未识别服务',
+      currentValues: {
+        hospital: order.hospital,
+        department: order.dept,
+        doctor: order.doctor,
+        serviceRemark: raw.comments ?? raw.comment ?? null,
+        bFormSaved
+      },
+      messages: [
+        ...msgs.map((m) => ({
+          id: m.id, channel: m.channel, senderName: m.senderName, contentText: m.contentText,
+          occurredAt: m.sortTime ?? m.chatTime ?? m.capturedAt
+        })),
+        ...mats
+          .map((m) => ({
+            id: -m.id,
+            channel: 'material',
+            senderName: m.type === 'image' ? `补录图片(${m.aiImageKind || '单据'})` : '专员文字补录',
+            contentText: m.type === 'image' ? m.aiImageText : m.textContent,
+            occurredAt: m.createdAt
+          }))
+          .filter((m) => (m.contentText ?? '').trim().length > 0)
+          .map((m) => ({ ...m, contentText: m.contentText! }))
+      ],
+      calls: calls.map((c) => ({ id: c.id, direction: c.direction, asrText: c.asrText, startedAt: c.startedAt }))
+    })
+
+    // 客户主数据同步保持原有行为；同步异常不影响字段候选和服务步骤写入。
+    try {
+      const byCode = (code: string) => extraction.candidates.find((candidate) => candidate.fieldCode === code)?.value
+      const syncResult = await autoSyncOrderMasterData({
+        hospitalName: byCode('hospital') || order.hospital,
+        hospitalAddress: byCode('hospital_address'),
+        departmentName: byCode('department') || order.dept,
+        doctorName: byCode('doctor') || order.doctor,
+        expertLevel: byCode('expert_level'),
+        escortName: byCode('escort_name'),
+        escortPhone: byCode('escort_phone')
+      })
+      const hospitalCandidate = extraction.candidates.find((candidate) => candidate.fieldCode === 'hospital')
+      if (hospitalCandidate && syncResult.normalizedHospitalName) {
+        hospitalCandidate.value = syncResult.normalizedHospitalName
+        hospitalCandidate.normalizedValue = syncResult.hospitalId
+          ? { id: syncResult.hospitalId, name: syncResult.normalizedHospitalName }
+          : syncResult.normalizedHospitalName
+      }
+    } catch (error) {
+      console.warn(`[master-data] orderId=${orderId} 远程主数据自动建档异常: ${describeError(error)}`)
+    }
+
+    await completeRunningAnalysisRun(prisma, {
+      runId, orderId, model: extraction.model, raw: extraction.raw, candidates: extraction.candidates
+    })
+    for (const event of extraction.workflowEvents) {
+      const fingerprint = createHash('sha256').update(`${orderId}:${event.code}:${event.evidence}`).digest('hex').slice(0, 32)
+      try {
+        await applyOrderWorkflowEvent(prisma, orderId, {
+          code: event.code, source: 'ai', sourceRef: `qwen:${event.code}:${fingerprint}`, confidence: 0.85,
+          evidence: [{ text: event.evidence, model: extraction.model || 'qwen-plus' }]
+        })
+      } catch (error) {
+        console.warn(`[order-ai-field] orderId=${orderId} runId=${runId} 服务步骤 ${event.code} 写入失败: ${describeError(error)}`)
+      }
+    }
+    console.log(`[order-ai-field] orderId=${orderId} runId=${runId} status=succeeded materialMaxId=${maxMaterialId} messageMaxId=${maxMessageId} callMaxId=${maxCallId} model=${extraction.model} candidates=${extraction.candidates.length} events=${extraction.workflowEvents.length}`)
+    return { skipped: false, model: extraction.model, fieldExtractionSucceeded: true }
+  } catch (error) {
+    const errorMessage = describeError(error)
+    console.error(`[order-ai-field] orderId=${orderId} runId=${runId} status=failed materialMaxId=${maxMaterialId} messageMaxId=${maxMessageId} callMaxId=${maxCallId} model=${String(process.env.HYYD_LLM_MODEL ?? 'qwen-plus')} promptVersion=${ORDER_AI_FIELD_PROMPT_VERSION}\n${errorMessage}`)
+    try {
+      await failRunningAnalysisRun(prisma, runId, errorMessage)
+    } catch (runError) {
+      console.error(`[order-ai-field] orderId=${orderId} runId=${runId} 失败记录写入异常:\n${describeError(runError)}`)
+    }
+    return { skipped: false, fieldExtractionSucceeded: false }
+  } finally {
+    // 自动任务不重试：本批输入无论成功或失败均消费，新的消息/通话/补录才会触发下一次调用。
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { fieldAiLastMsgId: maxMessageId, fieldAiLastCallId: maxCallId, fieldAiLastMaterialId: maxMaterialId }
+    })
+  }
 }
 
 /**
@@ -389,7 +640,6 @@ export async function refreshOrderBrief(
       raw: extraction.raw,
       candidates: extraction.candidates
     })
-
     // 自动应用 AI 识别出的工作流事件（包括 service_cancelled 取消关单、各履约环节等）
     for (const event of extractionEvents) {
       const fingerprint = createHash('sha256').update(`${orderId}:${event.code}:${event.evidence}`).digest('hex').slice(0, 32)
@@ -406,7 +656,7 @@ export async function refreshOrderBrief(
       }
     }
   } catch (error) {
-    console.warn(`[order-ai] 订单 ${orderId} 字段提取失败，保留简报并等待下次重试:`, (error as Error).message)
+    console.warn(`[order-ai] 订单 ${orderId} 字段提取失败，保留简报:`, (error as Error).message)
   }
 
   // 存储：简报字段 + 记号(本次跑到的最新 id) + 模型，便于前端展示与追溯

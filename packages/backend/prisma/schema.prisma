@@ -51,6 +51,11 @@ model Order {
   briefLastMsgId          Int?                     @map("brief_last_msg_id") // 上次处理到的最大 Message.id
   briefLastCallId         Int?                     @map("brief_last_call_id") // 上次处理到的最大 Call.id
   briefLastMaterialId     Int?                     @map("brief_last_material_id") // 上次处理到的最大 Material.id（手工补录）
+  // 字段/服务步骤分析的独立水位。无论一次分析成功还是失败都会推进，避免同一批素材被后台重复调用。
+  // 旧 brief* 水位仍只服务旧版“AI 简报”页面，二者不得混用。
+  fieldAiLastMsgId        Int?                     @map("field_ai_last_msg_id")
+  fieldAiLastCallId       Int?                     @map("field_ai_last_call_id")
+  fieldAiLastMaterialId   Int?                     @map("field_ai_last_material_id")
   createdAt               DateTime                 @default(now()) @map("created_at")
   poolEnteredAt           DateTime?                @map("pool_entered_at") // 仅泰康订单填写；自营订单留空
   updatedAt               DateTime                 @updatedAt @map("updated_at")

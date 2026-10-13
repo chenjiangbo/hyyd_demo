@@ -11,7 +11,7 @@ import { parseChatTime } from '../lib/chatTimeParser.js'
 import { parseTaikangPoolEnteredAt } from '../taikangPoolTime.js'
 import { extractKeyInfo, type KeyInfoMessage, type KeyInfoContext } from '../llm/keyInfoService.js'
 import { structureMessages, type StructInput } from '../lib/messageStructure.js'
-import { refreshApplicationBrief, refreshOrderBrief } from '../jobs/orderBriefRunner.js'
+import { analyzeOrderFields, refreshApplicationBrief, refreshOrderBrief } from '../jobs/orderBriefRunner.js'
 import { getRecordingPlaybackInfo } from '../audioTranscode.js'
 import { ensureBOrderFormInstance } from '../bOrderForms.js'
 import { resolveCallBOrderId, saveCallAsBOrderCommunication } from '../callCommunicationRecord.js'
@@ -3792,6 +3792,22 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     } catch (e: any) {
       fastify.log.error('订单简报刷新失败: ' + e.message)
       return reply.status(500).send({ error: '订单简报刷新失败: ' + e.message })
+    }
+  })
+
+  // 字段分析失败后只允许员工显式重跑；后台不会对同一批输入自动重试。
+  fastify.post<{ Params: { id: string } }>('/api/v1/orders/:id/ai-fields/reanalyze', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const id = parseInt(request.params.id, 10)
+    if (!Number.isFinite(id)) return reply.status(400).send({ error: '订单ID非法' })
+    try {
+      const result = await analyzeOrderFields(prisma, minioClient, id, { force: true })
+      if (!result) return reply.status(404).send({ error: '订单不存在' })
+      if (!result.fieldExtractionSucceeded) return reply.status(502).send({ error: '字段分析失败，请查看后台分析日志' })
+      return reply.send({ data: { ok: true, model: result.model ?? null } })
+    } catch (error) {
+      fastify.log.error(`[order-ai-field] 订单 ${id} 人工重分析失败: ${error instanceof Error ? error.stack || error.message : String(error)}`)
+      return reply.status(500).send({ error: '字段分析失败，请查看后台分析日志' })
     }
   })
 

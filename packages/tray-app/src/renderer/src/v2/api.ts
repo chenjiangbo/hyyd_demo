@@ -521,6 +521,11 @@ export function fetchOrderAiFieldCandidates(orderId: number): Promise<OrderAiFie
   return authedGet<OrderAiFieldCandidate[]>(`/api/v1/orders/${orderId}/ai-field-candidates`)
 }
 
+/** 员工显式重跑字段与服务步骤分析；后台不会自动重试失败批次。 */
+export function reanalyzeOrderAiFields(orderId: number): Promise<{ ok: true; model: string | null }> {
+  return authedSend<{ ok: true; model: string | null }>(`/api/v1/orders/${orderId}/ai-fields/reanalyze`, 'POST', {})
+}
+
 /** 人工确认后，将本地 PostgreSQL 的寰宇三张表快照推送到目标 MySQL。 */
 export function pushHuanyuOrder(orderId: number): Promise<{ ok: boolean; ddbh: string; escortCount: number }> {
   return authedSend<{ ok: boolean; ddbh: string; escortCount: number }>(`/api/v1/orders/${orderId}/huanyu/push`, 'POST', {})

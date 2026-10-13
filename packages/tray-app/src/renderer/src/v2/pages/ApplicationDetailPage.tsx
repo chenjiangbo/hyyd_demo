@@ -6,7 +6,6 @@ import {
   fetchCallRecordingUrl,
   fetchMaterials,
   fetchOrderAggregate,
-  fetchOrderBrief,
   fetchOrderDetail,
   fetchOrderWorkflow,
   fetchBOrderForms,
@@ -29,6 +28,7 @@ import {
   fetchHuanyuHospitals,
   fetchHuanyuHospitalById,
   fetchOrderAiFieldCandidates,
+  reanalyzeOrderAiFields,
   refundHuanyuRegistrationFee,
   saveHuanyuOrder,
   copyHuanyuOrder,
@@ -36,12 +36,10 @@ import {
   getSessionDisplayName,
   fetchTaikangOrderEntryCommandResult,
   openTaikangOrderEntry,
-  refreshOrderBrief,
   type Material,
   type Order,
   type OrderAggregateResponse,
   type OrderAttachment,
-  type OrderBrief,
   type OrderCall,
   type CallRecordingUrl,
   type HuanyuChannelOption,
@@ -60,7 +58,7 @@ import { bizChipClass, bizType, sourceStyle } from '../lib/orderMapping'
 import { bOrderAiCandidateForLabel, bOrderAiKeysForServiceTab, bOrderAiKeysForSubmit, bOrderAiRules, overlayBOrderAi } from '../lib/bOrderAiFields'
 import { clearOrdersCache, type ApplicationGroup } from './WorkbenchKanban'
 
-type RightTab = 'taikang-detail' | 'huanyu-detail' | 'entry' | 'ai'
+type RightTab = 'taikang-detail' | 'huanyu-detail' | 'entry'
 type CaptureTab = 'wxwork' | 'wechat' | 'call'
 
 const CAPTURE_TABS: Array<{ key: CaptureTab; label: string; icon: string; iconColor: string }> = [
@@ -798,6 +796,7 @@ function ApplicationAiSummaryCard({
 }): React.JSX.Element {
   const [candidates, setCandidates] = useState<OrderAiFieldCandidate[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [reanalyzing, setReanalyzing] = useState(false)
 
   useEffect(() => {
     if (!orderId) {
@@ -827,8 +826,28 @@ function ApplicationAiSummaryCard({
         <h3 className="text-body-md font-bold text-primary">
           AI 识别业务字段 {candidates.length > 0 ? `(${candidates.length})` : ''}
         </h3>
-        <span className="text-[11px] text-text-muted">来源：企微/微信/通话</span>
+        <span className="text-[11px] text-text-muted">来源：补录/企微/微信/通话</span>
       </div>
+      <button
+        type="button"
+        disabled={!orderId || reanalyzing}
+        onClick={() => {
+          if (!orderId || reanalyzing) return
+          setReanalyzing(true)
+          setError(null)
+          reanalyzeOrderAiFields(orderId)
+            .then(() => fetchOrderAiFieldCandidates(orderId))
+            .then((rows) => setCandidates(rows))
+            .catch((e) => setError(e instanceof Error ? e.message : '字段重新分析失败'))
+            .finally(() => setReanalyzing(false))
+        }}
+        className="absolute right-4 top-3 inline-flex items-center gap-1 rounded border border-[#b9d4ff] bg-white px-2 py-1 text-[11px] font-semibold text-primary hover:bg-primary-fixed disabled:opacity-50"
+      >
+        <span className={'material-symbols-outlined ' + (reanalyzing ? 'animate-spin' : '')} style={{ fontSize: '14px' }}>
+          {reanalyzing ? 'progress_activity' : 'refresh'}
+        </span>
+        {reanalyzing ? '分析中' : '重新分析字段'}
+      </button>
 
       {error && <div className="mb-2 rounded border border-error/25 bg-error/10 px-3 py-1.5 text-body-sm text-error shrink-0">{error}</div>}
 
@@ -866,196 +885,6 @@ function ApplicationAiSummaryCard({
   )
 }
 
-function OrderAiTaskPanel({
-  order,
-  aggregate
-}: {
-  order: Order
-  aggregate: OrderAggregateResponse | null
-}): React.JSX.Element {
-  const [brief, setBrief] = useState<OrderBrief | null>(null)
-  const [updatedAt, setUpdatedAt] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [refreshing, setRefreshing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    setLoading(true)
-    setError(null)
-    fetchOrderBrief(order.id)
-      .then((resp) => {
-        if (!alive) return
-        setBrief(resp.brief)
-        setUpdatedAt(resp.updatedAt)
-      })
-      .catch((e) => {
-        if (!alive) return
-        setError(e instanceof Error ? e.message : '加载订单 AI 任务失败')
-      })
-      .finally(() => {
-        if (!alive) return
-        setLoading(false)
-      })
-    return () => {
-      alive = false
-    }
-  }, [order.id])
-
-  const refresh = (): void => {
-    if (refreshing) return
-    setRefreshing(true)
-    setError(null)
-    refreshOrderBrief(order.id)
-      .then((next) => {
-        setBrief(next)
-        setUpdatedAt(new Date().toISOString())
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : '刷新订单 AI 任务失败'))
-      .finally(() => setRefreshing(false))
-  }
-
-  const keyInfoEntries = Object.entries(brief?.keyInfo || {}).filter(([, value]) => !!value)
-  const tasks = buildAiTasks(brief, keyInfoEntries)
-  const messageCount = aggregate?.messages.length ?? 0
-  const callCount = aggregate?.calls.length ?? 0
-
-  return (
-    <div className="flex-1 min-h-0 overflow-y-auto bg-white p-4 space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-ai-purple font-bold text-body-md">
-            <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>psychology_alt</span>
-            订单 AI 任务
-          </div>
-          <div className="mt-0.5 truncate text-[11px] text-text-muted">
-            当前订单 · 消息 {messageCount} 条 · 通话 {callCount} 条
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={refresh}
-          disabled={refreshing}
-          className="shrink-0 inline-flex items-center gap-1 rounded border border-border-subtle px-2 py-1 text-[11px] font-bold text-primary hover:bg-primary-fixed disabled:opacity-50"
-        >
-          <span className={'material-symbols-outlined ' + (refreshing ? 'animate-spin' : '')} style={{ fontSize: '14px' }}>
-            {refreshing ? 'progress_activity' : 'refresh'}
-          </span>
-          {refreshing ? '生成中' : '刷新'}
-        </button>
-      </div>
-
-      {error && <div className="rounded border border-error/25 bg-error/10 px-3 py-2 text-body-sm text-error">{error}</div>}
-
-      {loading && !brief ? (
-        <div className="rounded-lg border border-dashed border-border-subtle bg-surface-bg px-3 py-8 text-center text-body-sm text-text-muted">
-          加载订单 AI 任务...
-        </div>
-      ) : tasks.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-border-subtle bg-surface-bg px-4 py-8 text-center">
-          <span className="material-symbols-outlined text-ai-purple" style={{ fontSize: '32px' }}>task_alt</span>
-          <div className="mt-2 text-body-md font-bold text-text-main">暂无 AI 任务</div>
-          <div className="mt-1 text-body-sm text-text-muted">采集内容生成后，会把风险、待办和回填信息整理成任务。</div>
-        </div>
-      ) : (
-        <>
-          <div className="space-y-2">
-            {tasks.map((task, index) => (
-              <AiTaskItem key={`${task.kind}-${task.title}-${index}`} task={task} />
-            ))}
-          </div>
-
-          {keyInfoEntries.length > 0 && (
-            <section className="rounded-lg border border-border-subtle bg-white">
-              <div className="border-b border-border-subtle px-3 py-2 text-label-caps text-text-muted">
-                待回填信息
-              </div>
-              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 p-3 text-body-sm">
-                {keyInfoEntries.map(([key, value]) => (
-                  <BriefKv key={key} name={key} value={value} />
-                ))}
-              </dl>
-            </section>
-          )}
-
-          {updatedAt && (
-            <p className="text-center text-[11px] text-text-muted">
-              任务生成于 {formatDateTime(updatedAt)}{brief?.model ? ` · ${brief.model}` : ''}
-            </p>
-          )}
-        </>
-      )}
-    </div>
-  )
-}
-
-interface AiTask {
-  kind: 'risk' | 'action' | 'fill'
-  title: string
-  detail?: string
-}
-
-function buildAiTasks(brief: OrderBrief | null, keyInfoEntries: Array<[string, string | null]>): AiTask[] {
-  if (!brief) return []
-  const risks = brief.risks.map((risk) => ({ kind: 'risk' as const, title: '处理风险', detail: risk }))
-  const actions = brief.nextActions.map((action) => ({ kind: 'action' as const, title: '跟进动作', detail: action }))
-  const fills = keyInfoEntries.slice(0, 6).map(([key, value]) => ({
-    kind: 'fill' as const,
-    title: `回填${key}`,
-    detail: value || undefined
-  }))
-  return [...risks, ...actions, ...fills]
-}
-
-function AiTaskItem({ task }: { task: AiTask }): React.JSX.Element {
-  const style = {
-    risk: {
-      icon: 'warning',
-      iconClass: 'bg-error/10 text-error border-error/20',
-      badgeClass: 'bg-error/10 text-error',
-      label: '风险'
-    },
-    action: {
-      icon: 'checklist',
-      iconClass: 'bg-primary-fixed text-primary border-primary-fixed-dim',
-      badgeClass: 'bg-primary-fixed text-primary',
-      label: '待办'
-    },
-    fill: {
-      icon: 'edit_note',
-      iconClass: 'bg-action-green/10 text-action-green border-action-green/20',
-      badgeClass: 'bg-action-green/10 text-action-green',
-      label: '回填'
-    }
-  }[task.kind]
-
-  return (
-    <section className="rounded-lg border border-border-subtle bg-white p-3">
-      <div className="flex items-start gap-2">
-        <span className={'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border ' + style.iconClass}>
-          <span className="material-symbols-outlined" style={{ fontSize: '17px' }}>{style.icon}</span>
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className={'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold ' + style.badgeClass}>{style.label}</span>
-            <h3 className="truncate text-body-sm font-bold text-text-main">{task.title}</h3>
-          </div>
-          {task.detail && <p className="mt-1 text-body-sm leading-relaxed text-text-muted">{task.detail}</p>}
-        </div>
-      </div>
-    </section>
-  )
-}
-
-function BriefKv({ name, value }: { name: string; value: string | null }): React.JSX.Element {
-  return (
-    <>
-      <dt className="whitespace-nowrap text-text-muted">{name}</dt>
-      <dd className={value ? 'min-w-0 break-words text-text-main' : 'text-text-muted/50'}>{value || '—'}</dd>
-    </>
-  )
-}
-
 function OrderExecutionPanel({
   orders,
   selectedOrder,
@@ -1070,7 +899,6 @@ function OrderExecutionPanel({
   const [detailResp, setDetailResp] = useState<OrderDetailResponse | null>(null)
   const [detailLoading, setDetailLoading] = useState(true)
   const [detailError, setDetailError] = useState<string | null>(null)
-  const [aggregate, setAggregate] = useState<OrderAggregateResponse | null>(null)
   const [materials, setMaterials] = useState<Material[]>([])
 
   const reloadMaterials = useCallback(async () => {
@@ -1101,9 +929,6 @@ function OrderExecutionPanel({
         setDetailLoading(false)
       })
     if (!isSelfOperated) {
-      fetchOrderAggregate(selectedOrder.id)
-        .then((resp) => alive && setAggregate(resp))
-        .catch(() => alive && setAggregate(null))
       reloadMaterials().catch(() => undefined)
     }
     return () => {
@@ -1243,9 +1068,6 @@ function OrderExecutionPanel({
                   )}
                   {tab === 'entry' && (
                     <OrderDataEntryPanel order={selectedOrder} materials={materials} onReload={reloadMaterials} />
-                  )}
-                  {tab === 'ai' && (
-                    <OrderAiTaskPanel order={selectedOrder} aggregate={aggregate} />
                   )}
                 </>
               )}
@@ -4687,11 +4509,6 @@ function OrderDataEntryPanel({
       setSuccess(true)
       setTimeout(() => setSuccess(false), 2500)
       await onReload()
-
-      // 保存成功后直接静默触发该订单的 AI 分析，无需任何多余提示
-      void refreshOrderBrief(order.id).catch((e) => {
-        console.warn('[brief] 补录后订单 AI 静默分析重算失败:', e)
-      })
     } catch (e) {
       setErr(e instanceof Error ? e.message : '保存失败')
     } finally {

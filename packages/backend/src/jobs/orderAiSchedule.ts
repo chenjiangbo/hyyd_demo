@@ -1,16 +1,13 @@
 /**
  * 订单 AI 定时分析调度引擎。
- * 企微/微信消息与完成转写的通话仅在配置的上海时区时点批量分析；手工补录素材
- * 单独采用静默触发：某订单最后一次新增补录满 3 分钟后自动分析。
+ * 企微/微信消息与完成转写的通话仅在配置的上海时区时点批量做字段与服务步骤分析；
+ * 手工补录素材单独采用静默触发：某订单最后一次新增补录满 3 分钟后自动分析。
  *
  * 支持通过数据库 sys_settings 动态热配置工作时段与频次（如 09:00~21:00 每30分钟/15分钟），即改即生效。
  */
-import { createHash } from 'node:crypto'
 import type { PrismaClient } from '@prisma/client'
 import type * as Minio from 'minio'
-import { refreshOrderBrief } from './orderBriefRunner.js'
-import { applyOrderWorkflowEvent } from '../workflow/serviceWorkflow.js'
-import { summarizeCallIntoBOrderCommunication, type CallForCommunication } from '../callCommunicationRecord.js'
+import { analyzeOrderFields } from './orderBriefRunner.js'
 
 export interface OrderAiScheduleConfig {
   enabled: boolean
@@ -159,56 +156,9 @@ export function getScheduleStatus(): {
 }
 
 async function processOrder(prisma: PrismaClient, minio: Minio.Client, orderId: number): Promise<boolean> {
-  // 不使用 force：即使候选筛选与水位在并发时出现短暂差异，也绝不对无新增内容的订单调用模型。
-  const result = await refreshOrderBrief(prisma, minio, orderId)
-  if (!result?.brief) return false
-
-  // 电话沟通小结遵循同一套 sys_settings.order_ai_schedule 配置，不在 ASR 完成时抢跑。
-  const orderRows = await prisma.$queryRaw<Array<{ application_no: string | null }>>`
-    SELECT raw_json->>'crmApplyNo' AS application_no FROM orders WHERE id = ${orderId} LIMIT 1
-  `
-  const applicationNo = orderRows[0]?.application_no ?? null
-  const calls = await prisma.call.findMany({
-    where: {
-      asrStatus: 'done',
-      asrText: { not: null },
-      OR: [
-        { orderId },
-        ...(applicationNo ? [{ applicationNo }] : [])
-      ]
-    },
-    orderBy: { startedAt: 'asc' }
-  })
-  for (const call of calls) {
-    try {
-      const written = await summarizeCallIntoBOrderCommunication(
-        prisma,
-        call as CallForCommunication,
-        orderId
-      )
-      if (written) console.log(`[order-ai-schedule] 通话 ${call.id} 沟通小结已写入 B 端订单 ${orderId}`)
-    } catch (error) {
-      // 电话小结失败不撤销本轮订单简报，也不阻断同批订单。
-      console.warn(`[order-ai-schedule] 通话 ${call.id} 沟通小结失败:`, (error as Error).message)
-    }
-  }
-
-  for (const event of result.brief.workflowEvents) {
-    // 同一事实的证据文本产生同一来源引用，定时任务重跑不会重复新建复诊/住院服务包。
-    const fingerprint = createHash('sha256').update(`${orderId}:${event.code}:${event.evidence}`).digest('hex').slice(0, 32)
-    try {
-      await applyOrderWorkflowEvent(prisma, orderId, {
-        code: event.code,
-        source: 'ai',
-        sourceRef: `qwen:${event.code}:${fingerprint}`,
-        confidence: 0.8,
-        evidence: [{ text: event.evidence, model: result.model ?? 'qwen-plus' }]
-      })
-    } catch (error) {
-      // 例如当前服务类型不支持“住院服务”；简报仍应保留，单个事件失败不阻断同批订单。
-      console.warn(`[order-ai-schedule] 订单 ${orderId} 事件 ${event.code} 未应用:`, (error as Error).message)
-    }
-  }
+  // 自动链路只做字段与服务步骤分析，不生成旧的 AI 简报。
+  const result = await analyzeOrderFields(prisma, minio, orderId)
+  if (!result || result.skipped || !result.fieldExtractionSucceeded) return false
   return true
 }
 
@@ -216,12 +166,15 @@ async function run(prisma: PrismaClient, minio: Minio.Client, slot: string): Pro
   if (running) return
   running = true
   try {
+    const materialSilenceCutoff = new Date(Date.now() - MATERIAL_SILENCE_MS)
     // 申请号是沟通数据范围，订单是分析结果范围：同一申请号下只要新增有效沟通，
-    // 每张关联订单都会按各自服务类型分别分析。手工素材不会单独触发本定时任务。
+    // 每张关联订单都会按各自服务类型分别分析。若有未静默满三分钟的补录，整单留给补录任务处理，
+    // 以保证同一轮字段分析包含完整的补录批次。
     const orders = await prisma.$queryRaw<Array<{ id: number }>>`
       SELECT o.id
       FROM orders o
-      WHERE EXISTS (
+      WHERE (
+        EXISTS (
         SELECT 1
         FROM messages m
         WHERE (
@@ -231,11 +184,11 @@ async function run(prisma: PrismaClient, minio: Minio.Client, slot: string): Pro
               AND m.application_no = o.raw_json->>'crmApplyNo'
             )
           )
-          AND m.id > COALESCE(o.brief_last_msg_id, 0)
+          AND m.id > COALESCE(o.field_ai_last_msg_id, 0)
           AND m.channel IN ('wechat', 'wxwork')
           AND btrim(COALESCE(m.content_text, '')) <> ''
-      )
-      OR EXISTS (
+        )
+        OR EXISTS (
         SELECT 1
         FROM calls c
         WHERE (
@@ -245,8 +198,16 @@ async function run(prisma: PrismaClient, minio: Minio.Client, slot: string): Pro
               AND c.application_no = o.raw_json->>'crmApplyNo'
             )
           )
-          AND c.id > COALESCE(o.brief_last_call_id, 0)
+          AND c.id > COALESCE(o.field_ai_last_call_id, 0)
           AND btrim(COALESCE(c.asr_text, '')) <> ''
+        )
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM materials m
+        WHERE m.order_id = o.id
+          AND m.id > COALESCE(o.field_ai_last_material_id, 0)
+          AND m.created_at > ${materialSilenceCutoff}
       )
       ORDER BY o.updated_at ASC
     `
@@ -280,13 +241,13 @@ async function runSilentMaterialOrders(prisma: PrismaClient, minio: Minio.Client
         SELECT 1
         FROM materials m
         WHERE m.order_id = o.id
-          AND m.id > COALESCE(o.brief_last_material_id, 0)
+          AND m.id > COALESCE(o.field_ai_last_material_id, 0)
       )
       AND NOT EXISTS (
         SELECT 1
         FROM materials m
         WHERE m.order_id = o.id
-          AND m.id > COALESCE(o.brief_last_material_id, 0)
+          AND m.id > COALESCE(o.field_ai_last_material_id, 0)
           AND m.created_at > ${silenceCutoff}
       )
       ORDER BY o.updated_at ASC
