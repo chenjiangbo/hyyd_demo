@@ -3135,13 +3135,13 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
         matchedOrderId?: number | null; matchedApplicationNo?: string | null; reason?: string
       } = { matchMethod: 'none' }
 
-      // 客户会话只按申请号字段 rawJson.crmApplyNo 识别；COD/sourceOrderNo 不参与自动绑定。
-      // 但对于陪诊派单标准模板（陪诊人与电话均非空），精准通过正文 source_order_no 关联当前消息
+      // 客户会话只按申请号字段 rawJson.crmApplyNo 识别；COD/sourceOrderNo 不参与会话自动绑定。
+      // 但正文含「渠道订单号」的派单消息，精准通过该字段匹配 source_order_no 关联当前消息。
       if (!finalOrderId) {
         const escortMatch = parseEscortDispatchTemplate(contentText)
-        if (escortMatch.matched && escortMatch.sourceOrderNo) {
+        if (escortMatch.matched && escortMatch.channelOrderNo) {
           const matchedOrder = await prisma.order.findFirst({
-            where: { sourceOrderNo: { equals: escortMatch.sourceOrderNo, mode: 'insensitive' } },
+            where: { sourceOrderNo: { equals: escortMatch.channelOrderNo, mode: 'insensitive' } },
             select: { id: true, rawJson: true }
           })
           if (matchedOrder) {
@@ -3607,9 +3607,9 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       let itemApplicationNo = applicationNo
       if (!itemOrderId) {
         const escortMatch = parseEscortDispatchTemplate(content)
-        if (escortMatch.matched && escortMatch.sourceOrderNo) {
+        if (escortMatch.matched && escortMatch.channelOrderNo) {
           const matchedOrder = await prisma.order.findFirst({
-            where: { sourceOrderNo: { equals: escortMatch.sourceOrderNo, mode: 'insensitive' } },
+            where: { sourceOrderNo: { equals: escortMatch.channelOrderNo, mode: 'insensitive' } },
             select: { id: true, rawJson: true }
           })
           if (matchedOrder) {
