@@ -193,3 +193,12 @@ export function relativeTime(iso: string | null): string {
   if (d < 30) return `${d}天前`
   return new Date(iso).toLocaleDateString('zh-CN')
 }
+
+/** 完整本地时间：YYYY-MM-DD HH:mm:ss */
+export function formatDateTime(iso: string | null): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}

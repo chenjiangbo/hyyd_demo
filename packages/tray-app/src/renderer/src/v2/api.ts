@@ -80,6 +80,7 @@ export interface MeResponse {
 export interface Order {
   id: number
   source: string // 'taikang' | 'pingan' | ...
+  sourceCategory?: string | null
   sourceOrderNo: string
   customerName: string
   customerPhone: string | null
@@ -286,6 +287,7 @@ export interface FetchOrdersParams {
   sortKey?: string
   sortDir?: 'asc' | 'desc'
   pool?: string
+  sourceCategory?: string
   applicationNo?: string
   sourceOrderNo?: string
   huanyuOrderNo?: string
@@ -316,6 +318,7 @@ export async function fetchOrdersPaginated(params: FetchOrdersParams): Promise<P
   if (params.sortKey) q.set('sortKey', params.sortKey)
   if (params.sortDir) q.set('sortDir', params.sortDir)
   if (params.pool) q.set('pool', params.pool)
+  if (params.sourceCategory) q.set('sourceCategory', params.sourceCategory)
   if (params.applicationNo) q.set('applicationNo', params.applicationNo)
   if (params.sourceOrderNo) q.set('sourceOrderNo', params.sourceOrderNo)
   if (params.huanyuOrderNo) q.set('huanyuOrderNo', params.huanyuOrderNo)

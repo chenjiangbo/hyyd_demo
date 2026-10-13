@@ -39,6 +39,7 @@ import { ensureTaikangHuanyuChannelMappingTable } from './db/ensureTaikangHuanyu
 import { syncHuanyuOrderFromTaikang, type HuanyuSourceOrder } from './huanyuOrderSync.js'
 import { pullHuanyuOrderFromMysqlByChannelOrderNo } from './huanyuMysqlPush.js'
 import { initializeOrderWorkflow } from './workflow/serviceWorkflow.js'
+import { parseTaikangPoolEnteredAt } from './taikangPoolTime.js'
 
 function isTaikangRegistrationAssistance(rawJson: unknown): boolean {
   if (!rawJson || typeof rawJson !== 'object' || Array.isArray(rawJson)) return false
@@ -300,6 +301,8 @@ async function start() {
                     // 为历史回填保留抓单账号；用于 dim_bdyh.userid_ → CAPTION_ 的客户经理映射。
                     taikangAccount
                   }
+                  const poolEnteredAt = parseTaikangPoolEnteredAt(orderData)
+                  const sourceCategory = orderData.poolType === 'register' ? 'taikang_register' : 'taikang_green'
 
                   // 先取旧状态码，用于判断是否需要记一条状态变更历史
                   const existing = await prisma.order.findUnique({
@@ -320,6 +323,8 @@ async function start() {
                       status: taikangStatus,
                       orderState: newState,
                       rawJson,
+                      sourceCategory,
+                      poolEnteredAt,
                       // 个人池：归属到当前员工。公共池：传 undefined = Prisma 不更新此字段，
                       // 【不动】已有归属（避免泰康待申领池数据延迟把已申领的单抢回 null，
                       // 否则工作台订单数会忽多忽少）。create 时公共池才设 null。
@@ -327,11 +332,13 @@ async function start() {
                     },
                     create: {
                       source: 'taikang',
+                      sourceCategory,
                       sourceOrderNo: orderData.orderId,
                       customerName: orderData.patientName || '未知',
                       status: taikangStatus,
                       assignedEmployeeId: pool === 'personal' ? employeeId : null,
                       orderState: newState,
+                      poolEnteredAt,
                       rawJson
                     }
                   })

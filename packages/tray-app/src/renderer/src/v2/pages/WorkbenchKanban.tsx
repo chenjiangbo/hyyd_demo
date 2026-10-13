@@ -11,7 +11,7 @@ import {
   bizChipClass,
   sourceLabel,
   sourceStyle,
-  relativeTime,
+  formatDateTime,
   monthDay,
   type LaneKey
 } from '../lib/orderMapping'
@@ -138,11 +138,6 @@ function displayCustomerNameOf(order: Order): string {
 
 function poolEnteredAtOf(order: Order): string | null {
   if (order.poolEnteredAt !== undefined) return order.poolEnteredAt
-  if (order.source === 'huanyu') {
-    const raw = (order.rawJson ?? {}) as Record<string, unknown>
-    const xtsj = raw.xtsj_
-    return typeof xtsj === 'string' && xtsj.trim() ? xtsj : null
-  }
   return order.createdAt ?? null
 }
 
@@ -1052,8 +1047,10 @@ function ApplicationCard({
 
 // ─── 列表视图（14列标准工作台、树状折叠/展开、按列高级搜索、服务端真分页）──────────────
 type SortKey = 'customerName' | 'hospital' | 'status' | 'poolEnteredAt'
+type WorkbenchSourceCategory = '' | 'taikang_register' | 'taikang_green' | 'huanyu_self'
 
 interface AdvancedFilters {
+  sourceCategory: WorkbenchSourceCategory
   applicationNo: string
   sourceOrderNo: string
   huanyuOrderNo: string
@@ -1068,6 +1065,7 @@ interface AdvancedFilters {
 }
 
 const EMPTY_FILTERS: AdvancedFilters = {
+  sourceCategory: '',
   applicationNo: '',
   sourceOrderNo: '',
   huanyuOrderNo: '',
@@ -1102,6 +1100,7 @@ function ListView({
 }): React.JSX.Element {
   const [laneFilter, setLaneFilter] = useState<LaneKey | 'all'>('all')
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'poolEnteredAt', dir: 'desc' })
+  const [sourceCategory, setSourceCategory] = useState<WorkbenchSourceCategory>('')
   const [page, setPage] = useState<number>(1)
   const [pageSize, setPageSize] = useState<number>(20)
   const [orders, setOrders] = useState<Order[]>([])
@@ -1136,7 +1135,7 @@ function ListView({
   // 当筛选、排序、全局搜索或高级条件变化时重置回第 1 页
   useEffect(() => {
     setPage(1)
-  }, [laneFilter, sort, query, activeFilters])
+  }, [laneFilter, sort, query, activeFilters, sourceCategory])
 
   const loadData = useCallback(() => {
     setLoading(true)
@@ -1145,6 +1144,7 @@ function ListView({
       pageSize,
       query: query.trim() || undefined,
       lane: laneFilter !== 'all' ? laneFilter : undefined,
+      sourceCategory: sourceCategory || undefined,
       sortKey: sort.key,
       sortDir: sort.dir,
       applicationNo: activeFilters.applicationNo.trim() || undefined,
@@ -1166,7 +1166,7 @@ function ListView({
       })
       .catch((e) => setError(e instanceof Error ? e.message : '加载列表失败'))
       .finally(() => setLoading(false))
-  }, [page, pageSize, query, laneFilter, sort, activeFilters, employeeCode])
+  }, [page, pageSize, query, laneFilter, sort, activeFilters, sourceCategory, employeeCode])
 
   useEffect(() => {
     loadData()
@@ -1238,6 +1238,17 @@ function ListView({
             <span className="material-symbols-outlined text-[18px]">tune</span>
             高级筛选{activeCount > 0 ? ` (${activeCount})` : ''}
           </button>
+          <select
+            value={sourceCategory}
+            onChange={(e) => setSourceCategory(e.target.value as WorkbenchSourceCategory)}
+            className="h-10 rounded-md border border-border-subtle bg-white px-3 text-body-md text-text-main shadow-sm focus:outline-none focus:border-primary"
+            title="订单来源"
+          >
+            <option value="">全部来源</option>
+            <option value="taikang_register">泰康-挂号协助</option>
+            <option value="taikang_green">泰康-绿通</option>
+            <option value="huanyu_self">寰宇自营</option>
+          </select>
           <select
             value={laneFilter}
             onChange={(e) => setLaneFilter(e.target.value as LaneKey | 'all')}
@@ -1442,7 +1453,7 @@ function ListView({
                 <col className="w-[100px]" /> {/* 11. 订单金额 */}
                 <col className="w-[95px]" />  {/* 12. 数据量 */}
                 <col className="w-[70px]" />  {/* 13. 来源 */}
-                <col className="w-[95px]" />  {/* 14. 入池 */}
+                <col className="w-[150px]" />  {/* 14. 入池 */}
                 <col className="w-[80px]" />  {/* 15. 操作 */}
               </colgroup>
               <thead className="sticky top-0 bg-white z-10 shadow-[0_1px_0_0_#f1f5f9]">
@@ -1599,6 +1610,18 @@ function rowAccentOf(lane: LaneKey | null): string {
 }
 
 /** 申请号汇总父行（折叠/展开一次，包含所有子单汇总统计） */
+function PoolEnteredAt({ value }: { value: string | null }): React.JSX.Element {
+  const [date, time] = formatDateTime(value).split(' ')
+  if (!time) return <>{date}</>
+
+  return (
+    <>
+      <span className="block">{date}</span>
+      <span className="block text-[11px] text-[#7b8aa0]">{time}</span>
+    </>
+  )
+}
+
 function ApplicationTreeRow({
   group,
   services,
@@ -1762,7 +1785,7 @@ function ApplicationTreeRow({
 
       {/* 13. 入池 */}
       <td className="py-2.5 px-3 text-[#454a5a] whitespace-nowrap text-body-sm font-mono-data" title={group.poolEnteredAt ?? undefined}>
-        {relativeTime(group.poolEnteredAt)}
+        <PoolEnteredAt value={group.poolEnteredAt} />
       </td>
 
       {/* 14. 操作 */}
@@ -1945,7 +1968,7 @@ function ServiceRow({
 
       {/* 13. 入池 */}
       <td className="py-2.5 px-3 text-[#454a5a] whitespace-nowrap text-body-sm font-mono-data" title={service.poolEnteredAt ?? undefined}>
-        {relativeTime(service.poolEnteredAt)}
+        <PoolEnteredAt value={service.poolEnteredAt} />
       </td>
 
       {/* 14. 操作 */}

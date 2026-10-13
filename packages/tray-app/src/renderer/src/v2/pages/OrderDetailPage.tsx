@@ -1197,7 +1197,7 @@ function buildDetailGroups(
         field('当前阶段', pick(rec, raw, ['stageName']), ['stageName']),
         field('服务状态', pick(rec, raw, ['servStateName']), ['servStateName']),
         field('申请方式', pick(rec, raw, ['applyWayDesc']), ['applyWayDesc']),
-        field('申请时间', pick(rec, raw, ['applicationDate', 'applyTime', 'applyDate']), ['applicationDate', 'applyTime', 'applyDate']),
+        field('申请时间', pick(rec, raw, ['applicationDate', 'applyTime']), ['applicationDate', 'applyTime']),
         field('受理时间', pick(rec, raw, ['mmgrApplyDate']), ['mmgrApplyDate']),
         field('服务开始', pick(rec, raw, ['startDate']), ['startDate']),
         field('申领时间', order.claimedAt, []),

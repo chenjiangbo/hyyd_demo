@@ -8,6 +8,7 @@ import { getEnv } from '../env.js'
 import { extractOrderCandidate, resolveOrder, type OrderNoEntry } from '../lib/orderNoMatch.js'
 import { parseEscortDispatchTemplate } from '../lib/escortTemplateMatch.js'
 import { parseChatTime } from '../lib/chatTimeParser.js'
+import { parseTaikangPoolEnteredAt } from '../taikangPoolTime.js'
 import { extractKeyInfo, type KeyInfoMessage, type KeyInfoContext } from '../llm/keyInfoService.js'
 import { structureMessages, type StructInput } from '../lib/messageStructure.js'
 import { refreshApplicationBrief, refreshOrderBrief } from '../jobs/orderBriefRunner.js'
@@ -1002,6 +1003,15 @@ export function registerApiRoutes(
   // 3. 上报/同步订单 POST /api/v1/orders
   fastify.post<{ Body: CreateOrderPayload }>('/api/v1/orders', async (request, reply) => {
     const { source, sourceOrderNo, customerName, customerPhone, hospital, dept, doctor, rawJson } = request.body
+    const rawRecord = rawJson && typeof rawJson === 'object' && !Array.isArray(rawJson)
+      ? rawJson as Record<string, unknown>
+      : {}
+    const sourceCategory = (source as string) === 'huanyu' || sourceOrderNo.startsWith('HYYD')
+      ? 'huanyu_self'
+      : source === 'taikang'
+        ? rawRecord.poolType === 'register' ? 'taikang_register' : 'taikang_green'
+        : source
+    const poolEnteredAt = source === 'taikang' ? parseTaikangPoolEnteredAt(rawRecord) : null
 
     try {
       const order = await prisma.order.upsert({
@@ -1012,6 +1022,8 @@ export function registerApiRoutes(
           }
         },
         update: {
+          sourceCategory,
+          poolEnteredAt: poolEnteredAt ?? undefined,
           customerName,
           customerPhone: customerPhone ?? null,
           hospital: hospital ?? null,
@@ -1021,6 +1033,8 @@ export function registerApiRoutes(
         },
         create: {
           source,
+          sourceCategory,
+          poolEnteredAt,
           sourceOrderNo,
           customerName,
           customerPhone: customerPhone ?? null,
@@ -1557,6 +1571,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           update: {},
           create: {
             source: 'huanyu',
+            sourceCategory: 'huanyu_self',
             sourceOrderNo: `SELF:${orderNo}`,
             customerName: patientName,
             huanyuOrderNo: orderNo,
@@ -1569,6 +1584,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         return tx.order.update({
           where: { id: existing.id },
           data: {
+            sourceCategory: 'huanyu_self',
             customerName: patientName,
             assignedEmployeeId: existing.assignedEmployeeId ?? creatorEmployeeId
           }
@@ -2228,6 +2244,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
   fastify.get<{
     Querystring: {
       source?: string
+      sourceCategory?: string
       status?: string
       pool?: string
       assignedEmployeeId?: string
@@ -2256,6 +2273,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     async (request, reply) => {
       const {
         source,
+        sourceCategory,
         status,
         pool,
         assignedEmployeeId,
@@ -2284,6 +2302,13 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       const factConditions: Prisma.Sql[] = []
       let captureEmployeeId: number | null = null
       if (source) conditions.push(Prisma.sql`o."source" = ${source}`)
+      const allowedSourceCategories = ['taikang_register', 'taikang_green', 'huanyu_self']
+      if (sourceCategory && !allowedSourceCategories.includes(sourceCategory)) {
+        return reply.status(400).send({ error: '不支持的订单来源分类' })
+      }
+      if (sourceCategory) {
+        conditions.push(Prisma.sql`o."source_category" = ${sourceCategory}`)
+      }
       if (pool) conditions.push(Prisma.sql`o."raw_json"->>'pool' = ${pool}`)
       if (assignedEmployeeId) {
         captureEmployeeId = parseInt(assignedEmployeeId, 10)
@@ -2405,7 +2430,8 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       const pageNum = Math.max(1, parseInt(String(page || 1), 10) || 1)
       const sizeNum = Math.max(1, Math.min(100, parseInt(String(pageSize || 20), 10) || 20))
       const dir = sortDir === 'asc' ? Prisma.sql`ASC` : Prisma.sql`DESC`
-      let orderSql = Prisma.sql`o."created_at" ${dir}, o."id" ${dir}`
+      const poolEnteredAtOrderSql = Prisma.sql`COALESCE(o."pool_entered_at", o."created_at") ${dir}, o."id" ${dir}`
+      let orderSql = sortKey === 'poolEnteredAt' || !sortKey ? poolEnteredAtOrderSql : Prisma.sql`o."created_at" ${dir}, o."id" ${dir}`
       if (sortKey === 'updatedAt') orderSql = Prisma.sql`o."updated_at" ${dir}, o."id" ${dir}`
       if (sortKey === 'customerName') orderSql = Prisma.sql`o."customer_name" ${dir}, o."id" ${dir}`
       if (sortKey === 'status' || sortKey === 'hospital') {
@@ -2428,11 +2454,14 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
         const pageStart = (pageNum - 1) * sizeNum
         const totalPages = Math.ceil(totalCount / sizeNum)
         let pageRows: Array<{ id: number }>
-        if (isPaginated && (sortKey === 'poolEnteredAt' || sortKey === 'createdAt' || !sortKey) && pageNum === totalPages && pageNum > 1) {
+        if (isPaginated && (sortKey === 'poolEnteredAt' || !sortKey) && pageNum === totalPages && pageNum > 1) {
           const finalPageSize = totalCount - pageStart
+          const reversePoolEnteredAtOrderSql = sortDir === 'asc'
+            ? Prisma.sql`COALESCE(o."pool_entered_at", o."created_at") DESC, o."id" DESC`
+            : Prisma.sql`COALESCE(o."pool_entered_at", o."created_at") ASC, o."id" ASC`
           pageRows = await prisma.$queryRaw<Array<{ id: number }>>`
             SELECT o."id" FROM "orders" AS o ${whereSql}
-            ORDER BY o."created_at" ${sortDir === 'asc' ? Prisma.sql`DESC` : Prisma.sql`ASC`}, o."id" ${sortDir === 'asc' ? Prisma.sql`DESC` : Prisma.sql`ASC`}
+            ORDER BY ${reversePoolEnteredAtOrderSql}
             LIMIT ${finalPageSize}
           `
           pageRows.reverse()
@@ -2469,6 +2498,8 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
               select: { id: true, name: true }
             },
             createdAt: true,
+            poolEnteredAt: true,
+            sourceCategory: true,
             updatedAt: true,
             _count: { select: { calls: true, materials: true } },
             calls: {
@@ -2757,7 +2788,8 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
             serviceType: serviceTypeRow,
             serviceItemName: serviceItemNameRow,
             huanyuOrders,
-            poolEnteredAt: o.createdAt.toISOString(),
+            poolEnteredAt: (o.poolEnteredAt ?? o.createdAt).toISOString(),
+            sourceCategory: o.sourceCategory,
             isAiHospital: false,
             isAiDept: false,
             isAiDoctor: false,

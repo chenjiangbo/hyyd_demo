@@ -264,7 +264,7 @@ const TRACKING_FIELD_LABELS: Record<string, string> = {
   crmApplyNo: 'CRM申请号',
   caseId: '案件ID',
   applicationDate: '申请时间',
-  applyDate: '申请时间',
+  applyDate: '入池时间',
   startDate: '服务开始时间',
   applyWay: '申请方式',
   applyWayDesc: '申请方式',
@@ -2030,7 +2030,8 @@ function toReportedOrder(o: any) {
     packetName: o.packetName,
     productName: o.productName,
     itemName: o.itemName,
-    applyTime: o.applyDate || o.applicationDate || null,
+    // 工作台的“申请时间”对应泰康 applicationDate；applyDate 是列表“入池时间”。
+    applyTime: o.applicationDate || null,
     applicationDate: o.applicationDate,
     mmgrApplyDate: o.mmgrApplyDate,
     taikangRawJson: o,

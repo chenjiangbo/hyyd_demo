@@ -28,6 +28,7 @@ model Employee {
 model Order {
   id                      Int                      @id @default(autoincrement())
   source                  String // 'taikang' | 'pingan'
+  sourceCategory          String?                  @map("source_category") // 工作台来源分类：泰康挂号/泰康绿通/寰宇自营
   sourceOrderNo           String                   @map("source_order_no")
   customerName            String                   @map("customer_name")
   customerPhone           String?                  @map("customer_phone")
@@ -51,6 +52,7 @@ model Order {
   briefLastCallId         Int?                     @map("brief_last_call_id") // 上次处理到的最大 Call.id
   briefLastMaterialId     Int?                     @map("brief_last_material_id") // 上次处理到的最大 Material.id（手工补录）
   createdAt               DateTime                 @default(now()) @map("created_at")
+  poolEnteredAt           DateTime?                @map("pool_entered_at") // 仅泰康订单填写；自营订单留空
   updatedAt               DateTime                 @updatedAt @map("updated_at")
   messages                Message[]
   calls                   Call[]

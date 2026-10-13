@@ -263,9 +263,9 @@ const SYSTEM_BASE = 'https://ccm.taikang.com/ccm-unify/hssrmp';
 | `doctor` | `intendDoc || null` |
 | `networkTag` | `labelName` |
 | `planName` / `planAlias` / `packetName` / `productName` / `itemName` | 泰康列表原字段 |
-| `applyTime` | `applyDate || applicationDate || null` |
-| `applicationDate` | 泰康原字段 |
-| `mmgrApplyDate` | 泰康原字段 |
+| `poolEnteredAt` | 泰康列表 `applyDate`（入池时间） |
+| `applyTime` / `applicationDate` | 泰康列表 `applicationDate`（申请时间） |
+| `mmgrApplyDate` | 泰康原字段（受理时间，不作为入池时间） |
 | `taikangRawJson` / `rawJson` | 原始列表项 |
 
 列表上报给后端的消息类型为 `ORDERS_SYNCED`。
