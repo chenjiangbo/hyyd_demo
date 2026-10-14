@@ -64,7 +64,7 @@ async function main() {
       createdAt: true,
       rawJson: true,
       huanyuOrderNo: true,
-      assignedEmployee: { select: { taikangAccount: true, name: true } }
+      assignedEmployee: { select: { name: true } }
     }
   })
 
@@ -77,7 +77,6 @@ async function main() {
     const result = await syncHuanyuOrderFromTaikang(
       prisma,
       order,
-      order.assignedEmployee?.taikangAccount,
       order.assignedEmployee?.name
     )
     if (result.created) created += 1

@@ -1,7 +1,6 @@
 import { Prisma, PrismaClient } from '@prisma/client'
 import { randomInt } from 'node:crypto'
 import {
-  findHuanyuBdUserNameByUserId,
   findHuanyuChannelById,
   findHuanyuChannelProductByName,
   type HuanyuChannelOption,
@@ -41,7 +40,6 @@ type JsonRecord = Record<string, unknown>
 
 const channelCache = new Map<string, HuanyuChannelOption | null>()
 const productCache = new Map<string, HuanyuChannelProductOption | null>()
-const managerCache = new Map<string, string | null>()
 
 function asRecord(value: Prisma.JsonValue | unknown): JsonRecord {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as JsonRecord : {}
@@ -145,7 +143,7 @@ function isCancelledOrder(status: string | null | undefined): boolean {
   return Boolean(status && (status.includes('已取消') || status.includes('无责取消')))
 }
 
-async function stableDdbh(prisma: PrismaClient, order: HuanyuSourceOrder): Promise<string> {
+async function stableDdbh(prisma: PrismaClient | Prisma.TransactionClient, order: HuanyuSourceOrder): Promise<string> {
   if (order.huanyuOrderNo) return order.huanyuOrderNo
 
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -180,11 +178,6 @@ async function productByName(channelId: string, name: string): Promise<HuanyuCha
   return productCache.get(key) ?? null
 }
 
-async function managerByUserId(userId: string): Promise<string | null> {
-  if (!managerCache.has(userId)) managerCache.set(userId, await findHuanyuBdUserNameByUserId(userId))
-  return managerCache.get(userId) ?? null
-}
-
 function productNames(raw: JsonRecord): string[] {
   const names = [
     field(raw, 'serviceType'),
@@ -204,11 +197,9 @@ function productNames(raw: JsonRecord): string[] {
 export async function syncHuanyuOrderFromTaikang(
   prisma: PrismaClient,
   order: HuanyuSourceOrder,
-  taikangAccount?: string | null,
-  employeeName?: string | null,
+  customerManagerName?: string | null,
   options: HuanyuOrderSyncOptions = {}
 ): Promise<HuanyuOrderSyncResult> {
-  const ddbh = await stableDdbh(prisma, order)
   const listRaw = asRecord(order.rawJson)
   const detail = asRecord(asRecord(order.detailJson ?? null).recommendations)
   // 详情接口是客户信息的权威来源；同名字段覆盖列表值，未返回的字段再回退列表原始数据。
@@ -229,10 +220,9 @@ export async function syncHuanyuOrderFromTaikang(
     }
   }
 
-  const account = taikangAccount?.trim() || field(raw, 'taikangAccount')
-  // 首选寰宇 BD 用户字典；泰康账号不在该字典时，回退到订单所属申请员工的姓名。
-  // 这是显示名称回填，绝不以模糊匹配猜测其他人的姓名。
-  const manager = (account ? await managerByUserId(account) : null) ?? (employeeName?.trim() || null)
+  // 客户经理只取 B 端订单 assigned_employee_id 对应的 employees.name。
+  // 调用方必须先从 orders 关联员工后传入，绝不再根据泰康账号或 BD 用户字典推断姓名。
+  const manager = customerManagerName?.trim() || null
   const birthday = field(raw, 'birthday')
   const patientName = field(raw, 'patientName') ?? order.customerName
   // 泰康客户信息页中“联系人手机号”对应 ecpPhone；无该值时才回退患者手机号。
@@ -248,10 +238,13 @@ export async function syncHuanyuOrderFromTaikang(
   const repairPatientContactMapping = Boolean(options.repairPatientContactMapping)
   // 取消类订单的金额规则优先级最高，固定写 0；其他订单取维表 CPJG。
   const amount = isCancelledOrder(order.status) ? 0 : productPrice(product?.price)
-  const targetExists = await prisma.$queryRaw<Array<{ exists: boolean }>>`
-    SELECT EXISTS(SELECT 1 FROM "HY_FACT_DDCX_NEW" WHERE "DDBH" = ${ddbh}) AS "exists"
-  `
-  await prisma.$executeRaw`
+  // DDBH 写回 orders 与寰宇主表写入必须同一事务：任一步失败都不能留下空关联号。
+  return prisma.$transaction(async (tx) => {
+    const ddbh = await stableDdbh(tx, order)
+    const targetExists = await tx.$queryRaw<Array<{ exists: boolean }>>`
+      SELECT EXISTS(SELECT 1 FROM "HY_FACT_DDCX_NEW" WHERE "DDBH" = ${ddbh}) AS "exists"
+    `
+    await tx.$executeRaw`
     INSERT INTO "HY_FACT_DDCX_NEW" (
       "DDBH", "DD_state", "BDQD", "BDQD_DDBH", "BDQD_DDBH2", "BDQD_FWXM", "DDJE", "KHJL",
       "JZR_XM", "JZR_ZJLX", "JZR_ZJHM", "JZR_XB", "JZR_NL", "JZR_LXDH",
@@ -306,13 +299,14 @@ export async function syncHuanyuOrderFromTaikang(
           END,
           "JZR_JB" = COALESCE("HY_FACT_DDCX_NEW"."JZR_JB", EXCLUDED."JZR_JB"),
           "JZR_BZ" = COALESCE("HY_FACT_DDCX_NEW"."JZR_BZ", EXCLUDED."JZR_BZ")
-  `
+    `
 
-  return {
-    ddbh,
-    created: !targetExists[0]?.exists,
-    channelFound: Boolean(channel),
-    productFound: Boolean(product),
-    managerFound: Boolean(manager)
-  }
+    return {
+      ddbh,
+      created: !targetExists[0]?.exists,
+      channelFound: Boolean(channel),
+      productFound: Boolean(product),
+      managerFound: Boolean(manager)
+    }
+  })
 }

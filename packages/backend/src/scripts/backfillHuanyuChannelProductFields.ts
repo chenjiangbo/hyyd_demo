@@ -34,7 +34,7 @@ async function main() {
       rawJson: true,
       detailJson: true,
       huanyuOrderNo: true,
-      assignedEmployee: { select: { taikangAccount: true, name: true } }
+      assignedEmployee: { select: { name: true } }
     }
   })
 
@@ -44,7 +44,6 @@ async function main() {
       await syncHuanyuOrderFromTaikang(
         prisma,
         order,
-        order.assignedEmployee?.taikangAccount,
         order.assignedEmployee?.name
       )
       processed += 1

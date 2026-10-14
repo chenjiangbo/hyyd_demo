@@ -36,19 +36,18 @@ async function main() {
       rawJson: true,
       detailJson: true,
       huanyuOrderNo: true,
-      assignedEmployee: { select: { taikangAccount: true, name: true } }
+      assignedEmployee: { select: { name: true } }
     }
   })
 
   let processed = 0
-  // 并发受限于 10，减少历史初始化时间，同时避免对远端只读字典库造成突发压力。
+  // 并发受限于 10，减少历史初始化时对订单与渠道字典查询造成的瞬时压力。
   for (let index = 0; index < orders.length; index += 10) {
     const group = orders.slice(index, index + 10)
     await Promise.all(group.map(async (order) => {
       await syncHuanyuOrderFromTaikang(
         prisma,
         order,
-        order.assignedEmployee?.taikangAccount,
         order.assignedEmployee?.name
       )
       processed += 1

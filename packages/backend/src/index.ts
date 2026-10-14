@@ -36,7 +36,7 @@ import { ensureBOrderFormTables } from './db/ensureBOrderFormTables.js'
 import { ensureReminderTables } from './db/ensureReminderTables.js'
 import { ensureSysSettingsTable } from './db/ensureSysSettingsTable.js'
 import { ensureTaikangHuanyuChannelMappingTable } from './db/ensureTaikangHuanyuChannelMappingTable.js'
-import { syncHuanyuOrderFromTaikang, type HuanyuSourceOrder } from './huanyuOrderSync.js'
+import { syncHuanyuOrderFromTaikang } from './huanyuOrderSync.js'
 import { pullHuanyuOrderFromMysqlByChannelOrderNo } from './huanyuMysqlPush.js'
 import { initializeOrderWorkflow } from './workflow/serviceWorkflow.js'
 import { parseTaikangPoolEnteredAt } from './taikangPoolTime.js'
@@ -67,25 +67,152 @@ const server = fastify({
 
 const prisma = new PrismaClient()
 
-async function syncGreenPassHuanyuOrder(
-  order: HuanyuSourceOrder,
-  taikangAccount?: string | null,
-  employeeName?: string | null
-): Promise<void> {
-  if (!order.huanyuOrderNo) {
+type GreenPassHuanyuSyncAction =
+  | 'public_skipped'
+  | 'missing_assignee'
+  | 'remote_pulled'
+  | 'local_created'
+  | 'failed'
+
+type GreenPassHuanyuSyncLog = {
+  orderId: number
+  sourceOrderNo: string
+  pool: 'public' | 'personal'
+  assignedEmployeeId?: number | null
+  assignedEmployeeName?: string | null
+  action: GreenPassHuanyuSyncAction
+  huanyuOrderNo?: string | null
+  errorMessage?: string | null
+}
+
+/**
+ * 记录绿通“远程回拉 / 本地建单”的业务决策。日志写入失败不能影响订单同步主流程。
+ */
+async function writeGreenPassHuanyuSyncLog(input: GreenPassHuanyuSyncLog): Promise<void> {
+  try {
+    await prisma.$executeRaw`
+      INSERT INTO order_huanyu_sync_logs (
+        order_id, source_order_no, pool, assigned_employee_id, assigned_employee_name,
+        action, huanyu_order_no, error_message
+      ) VALUES (
+        ${input.orderId}, ${input.sourceOrderNo}, ${input.pool}, ${input.assignedEmployeeId ?? null},
+        ${input.assignedEmployeeName ?? null}, ${input.action}, ${input.huanyuOrderNo ?? null},
+        ${input.errorMessage?.slice(0, 4000) ?? null}
+      )
+    `
+  } catch (error) {
+    server.log.warn({ err: error, orderId: input.orderId, action: input.action }, '绿通寰宇同步日志写入失败')
+  }
+}
+
+/**
+ * 以数据库唯一键作为跨实例互斥锁。进程异常留下的占位五分钟后可由下一次个人池同步接管，
+ * 不依赖后台定时重试。
+ */
+async function claimGreenPassHuanyuSync(orderId: number): Promise<boolean> {
+  const rows = await prisma.$queryRaw<Array<{ order_id: number }>>`
+    INSERT INTO order_huanyu_sync_claims (order_id, claimed_at)
+    VALUES (${orderId}, NOW())
+    ON CONFLICT (order_id) DO UPDATE
+      SET claimed_at = NOW()
+      WHERE order_huanyu_sync_claims.claimed_at < NOW() - INTERVAL '5 minutes'
+    RETURNING order_id
+  `
+  return rows.length === 1
+}
+
+async function releaseGreenPassHuanyuSyncClaim(orderId: number): Promise<void> {
+  try {
+    await prisma.$executeRaw`DELETE FROM order_huanyu_sync_claims WHERE order_id = ${orderId}`
+  } catch (error) {
+    server.log.warn({ err: error, orderId }, '绿通寰宇同步占位释放失败')
+  }
+}
+
+/**
+ * 绿通订单只允许在个人池同步事件中调用本方法。
+ *
+ * 客户经理由已落库订单的 assigned_employee_id 关联 employees.name 得到；
+ * 公共池和订单详情抓取都不得调用本方法，以免公共池采集人影响 KHJL。
+ */
+async function syncGreenPassHuanyuOrderAfterPersonalPool(orderId: number): Promise<void> {
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    include: { assignedEmployee: { select: { id: true, name: true } } }
+  })
+  if (!order) return
+
+  const managerName = order.assignedEmployee?.name.trim() || null
+  if (!order.assignedEmployeeId || !managerName) {
+    await writeGreenPassHuanyuSyncLog({
+      orderId: order.id,
+      sourceOrderNo: order.sourceOrderNo,
+      pool: 'personal',
+      assignedEmployeeId: order.assignedEmployeeId,
+      assignedEmployeeName: managerName,
+      action: 'missing_assignee',
+      errorMessage: '个人池订单缺少 assigned_employee_id 对应的员工姓名，未执行寰宇同步'
+    })
+    throw new Error(`个人池订单 ${order.sourceOrderNo} 缺少归属员工，不能创建寰宇订单`)
+  }
+
+  // 已有 DDBH 即表示之前已完成回拉或本地创建；后续同步绝不重新查询或建单。
+  if (order.huanyuOrderNo) return
+
+  if (!await claimGreenPassHuanyuSync(order.id)) {
+    server.log.info(`泰康个人池订单 ${order.sourceOrderNo} 正由其他同步请求处理，跳过本次重复建单`)
+    return
+  }
+
+  try {
+    // 远程可访问且明确查无时，才允许后续本地建单。异常会进入 catch，绝不把“查询失败”当作“无订单”。
     const pulled = await pullHuanyuOrderFromMysqlByChannelOrderNo(prisma, order.sourceOrderNo, order.id)
     if (pulled.found) {
+      await writeGreenPassHuanyuSyncLog({
+        orderId: order.id,
+        sourceOrderNo: order.sourceOrderNo,
+        pool: 'personal',
+        assignedEmployeeId: order.assignedEmployeeId,
+        assignedEmployeeName: managerName,
+        action: 'remote_pulled',
+        huanyuOrderNo: pulled.ddbh
+      })
       server.log.info(`已从 MySQL 回拉寰宇订单 ${pulled.ddbh}（泰康订单 ${order.sourceOrderNo}）`)
       return
     }
-  }
 
-  const result = await syncHuanyuOrderFromTaikang(prisma, order, taikangAccount, employeeName)
-  if (result.created) {
-    server.log.info(`已创建寰宇订单 ${result.ddbh}（泰康订单 ${order.sourceOrderNo}）`)
-  }
-  if (!result.channelFound || !result.productFound) {
-    server.log.warn(`寰宇订单 ${result.ddbh} 字典映射不完整：渠道=${result.channelFound}，服务项目=${result.productFound}`)
+    // 本地创建时的 KHJL 只来自 orders.assigned_employee_id → employees.name。
+    // 此函数不触发任何远程 MySQL 写入；远程写入仍仅由人工确认推送执行。
+    const result = await syncHuanyuOrderFromTaikang(prisma, order, managerName)
+    if (result.created) {
+      await writeGreenPassHuanyuSyncLog({
+        orderId: order.id,
+        sourceOrderNo: order.sourceOrderNo,
+        pool: 'personal',
+        assignedEmployeeId: order.assignedEmployeeId,
+        assignedEmployeeName: managerName,
+        action: 'local_created',
+        huanyuOrderNo: result.ddbh
+      })
+      server.log.info(`已创建本地寰宇订单 ${result.ddbh}（泰康订单 ${order.sourceOrderNo}，客户经理=${managerName}）`)
+    }
+    if (!result.channelFound || !result.productFound) {
+      server.log.warn(`寰宇订单 ${result.ddbh} 字典映射不完整：渠道=${result.channelFound}，服务项目=${result.productFound}`)
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    await writeGreenPassHuanyuSyncLog({
+      orderId: order.id,
+      sourceOrderNo: order.sourceOrderNo,
+      pool: 'personal',
+      assignedEmployeeId: order.assignedEmployeeId,
+      assignedEmployeeName: managerName,
+      action: 'failed',
+      errorMessage
+    })
+    throw error
+  } finally {
+    await releaseGreenPassHuanyuSyncClaim(order.id)
   }
 }
 
@@ -361,14 +488,25 @@ async function start() {
                     }
                   }
 
-                  // 挂号协助仍在打开详情时回拉；绿通仅在首次创建寰宇订单前查询 MySQL。
+                  // 挂号协助保持“打开详情时仅回拉远程单”的路径；不在泰康采集时本地新建。
                   if (isTaikangRegistrationAssistance(saved.rawJson)) {
                     server.log.info(`泰康挂号协助订单 ${orderData.orderId} 已入库，跳过自动创建寰宇订单`)
+                  } else if (pool === 'public') {
+                    // 绿通公共池只保存 B 端订单。公共池采集人不得触发远程查询、建单或写入 KHJL。
+                    if (!existing) {
+                      await writeGreenPassHuanyuSyncLog({
+                        orderId: saved.id,
+                        sourceOrderNo: saved.sourceOrderNo,
+                        pool: 'public',
+                        assignedEmployeeId: saved.assignedEmployeeId,
+                        action: 'public_skipped'
+                      })
+                    }
                   } else {
                     try {
-                      await syncGreenPassHuanyuOrder(saved, taikangAccount, employee.name)
+                      await syncGreenPassHuanyuOrderAfterPersonalPool(saved.id)
                     } catch (error) {
-                      server.log.error(error, `泰康订单 ${orderData.orderId} 同步寰宇订单失败，将在下次同步/回填时重试`)
+                      server.log.error(error, `泰康个人池订单 ${orderData.orderId} 同步寰宇订单失败，等待下一次个人池同步或人工核验`)
                     }
                   }
                 }
@@ -451,26 +589,25 @@ async function start() {
                     attachments: payload.attachments || [],
                     fingerprint: payload.fingerprint
                   })
-                  // 客户信息主要来自 recommendations 详情。非挂号协助订单详情成功后立即补齐
-                  // 寰宇订单中当前为空的就诊人字段；挂号协助只允许从远端寰宇订单回拉。
-                  const orderForHuanyu = await prisma.order.findUnique({
+                  // 详情抓取仍可补齐已关联寰宇订单中的空字段，但不能触发远程查询或生成新的 DDBH。
+                  // 因此公共池订单（huanyuOrderNo 为空）打开详情也不会绕过个人池建单入口。
+                  const orderForExistingHuanyu = await prisma.order.findUnique({
                     where: { id: result.orderId },
-                    select: {
-                      id: true,
-                      sourceOrderNo: true,
-                      customerName: true,
-                      status: true,
-                      createdAt: true,
-                      rawJson: true,
-                      detailJson: true,
-                      huanyuOrderNo: true
-                    }
+                    include: { assignedEmployee: { select: { name: true } } }
                   })
-                  if (orderForHuanyu && !isTaikangRegistrationAssistance(orderForHuanyu.rawJson)) {
+                  if (
+                    orderForExistingHuanyu &&
+                    !isTaikangRegistrationAssistance(orderForExistingHuanyu.rawJson) &&
+                    orderForExistingHuanyu.huanyuOrderNo
+                  ) {
                     try {
-                      await syncGreenPassHuanyuOrder(orderForHuanyu, employee.taikangAccount, employee.name)
+                      await syncHuanyuOrderFromTaikang(
+                        prisma,
+                        orderForExistingHuanyu,
+                        orderForExistingHuanyu.assignedEmployee?.name
+                      )
                     } catch (error) {
-                      server.log.error(error, `泰康订单 ${orderForHuanyu.sourceOrderNo} 同步寰宇订单失败，将在下次同步时重试`)
+                      server.log.error(error, `泰康订单 ${orderForExistingHuanyu.sourceOrderNo} 补齐已关联寰宇订单字段失败`)
                     }
                   }
                   void scheduleOrderIdCardOcr(prisma, minioClient, result.orderId).catch(() => {
