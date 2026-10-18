@@ -429,7 +429,7 @@ export async function listHuanyuEscorts(rawSearch: unknown, currentId?: unknown)
   const current = searchTerm(currentId)
   const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
     `SELECT CAST(pzr.id AS CHAR) AS id,
-            pzr.name,
+            pzr.name AS name,
             pzr.pzrlx AS escortType,
             pzr.sj AS phone,
             CONCAT(COALESCE(sf.S_NAME, ''), '-', COALESCE(cs.X_NAME, '')) AS area
@@ -466,7 +466,7 @@ export async function findHuanyuEscortById(idOrName: string): Promise<HuanyuEsco
   if (!target) return null
   const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
     `SELECT CAST(pzr.id AS CHAR) AS id,
-            pzr.name,
+            pzr.name AS name,
             pzr.pzrlx AS escortType,
             pzr.sj AS phone,
             CONCAT(COALESCE(sf.S_NAME, ''), '-', COALESCE(cs.X_NAME, '')) AS area
