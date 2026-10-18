@@ -48,7 +48,7 @@ import {
   refreshRegistrationAssistFieldsFromMysql,
   REGISTRATION_ASSIST_REMOTE_AUTHORITATIVE_COLUMNS
 } from '../huanyuMysqlPush.js'
-import { autoSyncOrderMasterData, ensureRemoteEscort } from '../services/masterDataAutoSync.js'
+import { previewHuanyuMasterSave, commitHuanyuMasterSave, type MasterSaveCreation, type MasterSaveResolution } from '../services/huanyuMasterSave.js'
 import { requestAbiRefund } from '../services/abiRefundService.js'
 import { scheduleOrderIdCardOcr } from '../services/orderIdCardOcr.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -1331,7 +1331,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
     const body = (request.body as any) || {}
     // 内部一级/二级是 B 端服务项目的维表衍生展示字段，不应写回 orders.raw_json。
-    const { internalLevelOne: _internalLevelOne, internalLevelTwo: _internalLevelTwo, documentNo: _documentNo, ...orderRawBody } = body
+    const { internalLevelOne: _internalLevelOne, internalLevelTwo: _internalLevelTwo, documentNo: _documentNo, confirmedMasterCreations: _confirmedMasterCreations, confirmMasterDataCreation: _confirmMasterDataCreation, ...orderRawBody } = body
     let orderNo = String(body.orderNo || '').trim()
     if (body.mode === 'update' && !orderNo) {
       return reply.status(400).send({ ok: false, error: '当前订单尚无寰宇订单编号，不能保存或创建本地寰宇订单' })
@@ -1371,6 +1371,46 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     }
     if (isPureSelfOperated && !patientName) {
       return reply.status(400).send({ ok: false, error: '就诊人姓名不能为空' })
+    }
+
+    // 先按医院 → 地址/科室 → 医生的关系解析维表。仅保存按钮可以触发建档。
+    const masterInput = {
+      hospital: body.hospital,
+      hospitalAddress: body.hospitalAddress,
+      department: body.department,
+      doctor: body.doctor,
+      escortList: Array.isArray(body.escortList) ? body.escortList : []
+    }
+    let resolvedMaster: MasterSaveResolution
+    try {
+      const preview = await previewHuanyuMasterSave(masterInput)
+      const confirmedCreations: MasterSaveCreation[] | null = Array.isArray(body.confirmedMasterCreations)
+        ? body.confirmedMasterCreations : null
+      if (preview.creations.length && !confirmedCreations) {
+        return reply.send({ ok: false, requiresMasterDataConfirmation: true, creations: preview.creations })
+      }
+      const resolved = await commitHuanyuMasterSave(masterInput, confirmedCreations)
+      resolvedMaster = resolved
+      body.hospital = resolved.hospital
+      body.hospitalAddress = resolved.hospitalAddress
+      body.department = resolved.department
+      body.doctor = resolved.doctor
+      if (Array.isArray(body.escortList)) {
+        body.escortList = body.escortList.map((item: any, index: number) => ({
+          ...item,
+          escortName: resolved.escortIds[index]
+        }))
+        body.escortName = resolved.escortIds.find(Boolean) ?? null
+      }
+      orderRawBody.hospital = body.hospital
+      orderRawBody.hospitalAddress = body.hospitalAddress
+      orderRawBody.department = body.department
+      orderRawBody.doctor = body.doctor
+      orderRawBody.escortList = body.escortList
+      orderRawBody.escortName = body.escortName
+    } catch (masterError) {
+      const message = masterError instanceof Error ? masterError.message : '维表校验失败'
+      return reply.status(409).send({ ok: false, error: message })
     }
 
     const toHuanyuStorageFormat = (val: string | null | undefined): string | null => {
@@ -1673,29 +1713,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         throw new Error(`寰宇订单 ${orderNo} 未找到对应的 B 端订单入口`)
       }
 
-      // 4. 触发远程 MySQL 核心主数据（医院、院区、对外科室、医生、陪诊人员）查重与自动建档
-      try {
-        await autoSyncOrderMasterData({
-          hospitalName: resolvedHospitalName || body.hospital,
-          hospitalAddress: body.hospitalAddress,
-          departmentName: resolvedDeptName || body.department,
-          doctorName: resolvedDoctorName || body.doctor,
-          expertLevel: body.expertLevel,
-          escortName: body.escortName,
-          escortPhone: body.escortPhone || (Array.isArray(body.escortList) ? body.escortList[0]?.phone : null)
-        })
-        if (Array.isArray(body.escortList)) {
-          for (const item of body.escortList) {
-            if (item?.escortName && item?.phone) {
-              await ensureRemoteEscort(item.escortName, item.phone)
-            }
-          }
-        }
-      } catch (syncErr) {
-        fastify.log.warn({ err: syncErr }, '[master-data] 手工保存订单后触发主数据同步异常')
-      }
-
-      // 5. 自动推送到远端 MySQL 目标库（不论新建订单还是更新订单均一键自动推送）
+      // 4. 维表 ID 已解析并写入本地订单，随后推送远端 MySQL。
       const isTaikangRegistrationAssistance = isTaikangRegistrationAssistanceOrder(
         syncedOrder || {},
         (syncedOrder?.rawJson || body) as Record<string, unknown>
@@ -1736,6 +1754,13 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       return reply.send({
         ok: true,
         order: syncedOrder,
+        masterData: {
+          hospital: resolvedMaster.hospital,
+          hospitalAddress: resolvedMaster.hospitalAddress,
+          department: resolvedMaster.department,
+          doctor: resolvedMaster.doctor,
+          escortIds: resolvedMaster.escortIds
+        },
         pushed: pushResult.ok,
         escortCount: pushResult.escortCount,
         pushError: pushResult.ok ? null : pushResult.message,

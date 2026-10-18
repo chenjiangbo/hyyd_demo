@@ -422,6 +422,7 @@ export function createOrder(input: CreateOrderInput): Promise<Order> {
 }
 
 export interface SaveHuanyuOrderPayload {
+  confirmedMasterCreations?: Array<{ type: string; name: string; parent?: string }>
   mode?: 'create' | 'update'
   source?: 'huanyu'
   orderNo: string
@@ -496,7 +497,10 @@ export interface SaveHuanyuOrderPayload {
 
 export function saveHuanyuOrder(payload: SaveHuanyuOrderPayload): Promise<{
   ok: boolean
-  order: Order
+  order?: Order
+  requiresMasterDataConfirmation?: boolean
+  creations?: Array<{ type: string; name: string; parent?: string }>
+  masterData?: { hospital: string | null; hospitalAddress: string | null; department: string | null; doctor: string | null; escortIds: Array<string | null> }
   pushed?: boolean
   escortCount?: number
   pushError?: string | null
@@ -504,7 +508,10 @@ export function saveHuanyuOrder(payload: SaveHuanyuOrderPayload): Promise<{
 }> {
   return authedSend<{
     ok: boolean
-    order: Order
+    order?: Order
+    requiresMasterDataConfirmation?: boolean
+    creations?: Array<{ type: string; name: string; parent?: string }>
+    masterData?: { hospital: string | null; hospitalAddress: string | null; department: string | null; doctor: string | null; escortIds: Array<string | null> }
     pushed?: boolean
     escortCount?: number
     pushError?: string | null

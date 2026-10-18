@@ -76,8 +76,9 @@ function searchTerm(value: unknown): string {
 }
 
 /**
- * 远端字典库访问约束：本文件仅保留固定的参数化 SELECT；不接收 SQL 片段、表名或排序字段。
- * 建议 REMOTE_DICT_DB_USER 同时配置为数据库层面的只读账号，以形成第二道保障。
+ * 本文件的字典查询仅使用固定的参数化 SELECT。
+ * 同一连接池也供 huanyuMasterSave 在人工确认保存后写入四类主数据，
+ * REMOTE_DICT_DB_USER 需要具备这些目标表的相应写权限。
  */
 export async function listHuanyuChannels(rawSearch: unknown, currentId?: unknown): Promise<HuanyuChannelOption[]> {
   const search = searchTerm(rawSearch)

@@ -1344,6 +1344,20 @@ function dropdownWidthForNames(names: string[], minimum: number): number {
   return Math.max(minimum, ...validNames.map((name) => Math.ceil(context.measureText(name).width) + 28))
 }
 
+function uniqueExactOption<T extends { id: string; name: string }>(options: T[], value: string): T | undefined {
+  const byId = options.filter((option) => option.id === value)
+  if (byId.length) return byId.length === 1 ? byId[0] : undefined
+  const byName = options.filter((option) => option.name === value)
+  return byName.length === 1 ? byName[0] : undefined
+}
+
+function uniqueEscortByNamePhone(options: HuanyuEscortOption[], name: string, phone: string): HuanyuEscortOption | undefined {
+  const digits = phone.replace(/\D/g, '')
+  if (!name || !digits) return undefined
+  const matches = options.filter((option) => option.name === name && option.phone.replace(/\D/g, '') === digits)
+  return matches.length === 1 ? matches[0] : undefined
+}
+
 function HuanyuSearchSelect({
   label,
   value,
@@ -1354,6 +1368,7 @@ function HuanyuSearchSelect({
   disabledPlaceholder = '请先选择上级字段',
   onSearch,
   onChange,
+  onInputChange,
   isAi = false
 }: {
   label: string
@@ -1365,6 +1380,7 @@ function HuanyuSearchSelect({
   disabledPlaceholder?: string
   onSearch: (value: string) => void
   onChange: (value: string) => void
+  onInputChange?: (value: string) => void
   isAi?: boolean
 }): React.JSX.Element {
   const currentValue = typeof value === 'string' ? value : ''
@@ -1403,6 +1419,7 @@ function HuanyuSearchSelect({
             setIsTyping(true)
             setSearch(next)
             onSearch(next)
+            onInputChange?.(next)
             setOpen(true)
           }}
           className={
@@ -1759,6 +1776,7 @@ function HuanyuOrderForm({
   const [isSaving, setIsSaving] = useState(false)
   const [isCopying, setIsCopying] = useState(false)
   const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const [masterCreationPreview, setMasterCreationPreview] = useState<Array<{ type: string; name: string; parent?: string }> | null>(null)
   const [refundModalOpen, setRefundModalOpen] = useState(false)
   const [refundAmount, setRefundAmount] = useState('')
   const [refundError, setRefundError] = useState<string | null>(null)
@@ -1810,7 +1828,6 @@ function HuanyuOrderForm({
   const [expertSearch, setExpertSearch] = useState('')
   const [expertOptions, setExpertOptions] = useState<HuanyuChannelOption[]>([])
   const [escortOptions, setEscortOptions] = useState<HuanyuEscortOption[]>([])
-  const [loadedMap, setLoadedMap] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     let active = true
@@ -1826,11 +1843,9 @@ function HuanyuOrderForm({
           }
         }
         setEscortOptions(finalOptions)
-        setLoadedMap((prev) => ({ ...prev, escort: true }))
       })
       .catch(() => {
         if (!active) return
-        setLoadedMap((prev) => ({ ...prev, escort: true }))
       })
     return () => { active = false }
   }, [form.escortName, escortRows])
@@ -1852,7 +1867,7 @@ function HuanyuOrderForm({
         if (hospCandidate && typeof hospCandidate === 'string' && hospCandidate.trim()) {
           try {
             const list = await fetchHuanyuHospitals(hospCandidate.trim())
-            const exact = list.find((h) => h.name === hospCandidate.trim() || h.id === hospCandidate.trim()) || list[0]
+            const exact = uniqueExactOption(list, hospCandidate.trim())
             if (exact) {
               matchedHospital = exact
               hospitalOptionRef.current = exact
@@ -1914,7 +1929,7 @@ function HuanyuOrderForm({
             if (name) {
               try {
                 const escorts = await fetchHuanyuEscorts(name)
-                matched = escorts.find((e) => e.name === name || e.id === name) || escorts[0] || null
+                matched = uniqueEscortByNamePhone(escorts, name, phone) || null
                 if (matched && !newOptions.some((o) => o.id === matched!.id)) {
                   newOptions.push(matched)
                 }
@@ -1962,7 +1977,7 @@ function HuanyuOrderForm({
           if (extractedEscortName) {
             try {
               const escorts = await fetchHuanyuEscorts(extractedEscortName)
-              matchedEscort = escorts.find((e) => e.name === extractedEscortName || e.id === extractedEscortName) || escorts[0] || null
+              matchedEscort = uniqueEscortByNamePhone(escorts, extractedEscortName, extractedEscortPhone || '') || null
               if (matchedEscort) {
                 setEscortOptions((prev) => prev.some((e) => e.id === matchedEscort!.id) ? prev : [matchedEscort!, ...prev])
               }
@@ -1996,12 +2011,10 @@ function HuanyuOrderForm({
   const channelId = typeof form.channel === 'string'
     ? (channelOptions.find((c) => c.id === form.channel || c.name === form.channel)?.id || form.channel)
     : ''
-  const hospitalId = typeof form.hospital === 'string'
-    ? (hospitalOptions.find((h) => h.id === form.hospital || h.name === form.hospital)?.id || form.hospital)
-    : ''
-  const departmentId = typeof form.department === 'string'
-    ? (departmentOptions.find((d) => d.id === form.department || d.name === form.department)?.id || form.department)
-    : ''
+  const hospitalValue = typeof form.hospital === 'string' ? form.hospital.trim() : ''
+  const departmentValue = typeof form.department === 'string' ? form.department.trim() : ''
+  const hospitalId = uniqueExactOption(hospitalOptions, hospitalValue)?.id || (/^\d{4}$/.test(hospitalValue) ? hospitalValue : '')
+  const departmentId = uniqueExactOption(departmentOptions, departmentValue)?.id || (/^\d{8}$/.test(departmentValue) ? departmentValue : '')
   const amountLocked = isHuanyuCancelledOrderStatus(form.orderStatus)
   const bdSelectable = form.bookingChannelType === '1' || form.bookingChannelType === '2'
   const doctorAllowsExpertSelection = typeof form.doctor === 'string' && form.doctor.endsWith('WXSYSXM')
@@ -2056,7 +2069,7 @@ function HuanyuOrderForm({
     escortOptions
   ])
 
-  async function handleSave(): Promise<boolean> {
+  async function handleSave(confirmMasterDataCreation = false): Promise<boolean> {
     if (!isCreate && !hasHuanyuOrderNo) return false
     const patientName = String(form.patientName || '').trim()
     if (isCreate && !patientName) {
@@ -2067,6 +2080,7 @@ function HuanyuOrderForm({
     setSaveStatus(null)
     try {
       const res = await saveHuanyuOrder({
+        confirmedMasterCreations: confirmMasterDataCreation ? masterCreationPreview ?? undefined : undefined,
         mode: isCreate ? 'create' : 'update',
         source: order?.source === 'huanyu' ? 'huanyu' : undefined,
         orderNo: String(form.orderNo || ''),
@@ -2133,7 +2147,21 @@ function HuanyuOrderForm({
         }))
       })
 
+      if (res.requiresMasterDataConfirmation && res.creations?.length) {
+        setMasterCreationPreview(res.creations)
+        return false
+      }
       if (res.ok) {
+        setMasterCreationPreview(null)
+        if (res.masterData) {
+          const master = res.masterData
+          setForm((current) => ({ ...current,
+            hospital: master.hospital || '', hospitalAddress: master.hospitalAddress || '',
+            department: master.department || '', doctor: master.doctor || '',
+            escortName: master.escortIds.find(Boolean) || ''
+          }))
+          setEscortRows((current) => current.map((row, index) => ({ ...row, escortName: master.escortIds[index] || '' })))
+        }
         clearOrdersCache()
         if (res.order) {
           // 自建单的 sourceOrderNo 是内部 SELF:<寰宇单号> 关联值，不能回显到订单号输入框。
@@ -2154,7 +2182,7 @@ function HuanyuOrderForm({
         // 保存结果统一显示在应用级提示，避免与表单内提示重复。
         setSaveStatus(null)
         window.dispatchEvent(new CustomEvent('huanyu-order-notice', { detail: notice }))
-        if (onSaveSuccess) {
+        if (onSaveSuccess && res.order) {
           onSaveSuccess(res.order, {
             pushed: res.pushed,
             pushError: res.pushError,
@@ -2167,6 +2195,7 @@ function HuanyuOrderForm({
         return false
       }
     } catch (err) {
+      if (confirmMasterDataCreation) setMasterCreationPreview(null)
       setSaveStatus({ type: 'error', message: err instanceof Error ? err.message : '保存失败' })
       return false
     } finally {
@@ -2292,7 +2321,6 @@ function HuanyuOrderForm({
           }
         }
         setChannelOptions(options)
-        setLoadedMap((prev) => ({ ...prev, channel: true }))
         if (form.channel) {
           const matched = options.find((item) => item.id === form.channel || item.name === form.channel)
           if (matched && form.channel !== matched.id) {
@@ -2302,7 +2330,6 @@ function HuanyuOrderForm({
       } catch (error: unknown) {
         if (!active) return
         setChannelError(error instanceof Error ? error.message : 'B端渠道加载失败')
-        setLoadedMap((prev) => ({ ...prev, channel: true }))
       } finally {
         if (active) setChannelLoading(false)
       }
@@ -2336,7 +2363,6 @@ function HuanyuOrderForm({
           }
         }
         setServiceOptions(options)
-        setLoadedMap((prev) => ({ ...prev, service: true }))
         if (form.channelService) {
           const matched = options.find((item) => item.id === form.channelService || item.name === form.channelService)
           if (matched && form.channelService !== matched.id) {
@@ -2351,7 +2377,6 @@ function HuanyuOrderForm({
       } catch (error: unknown) {
         if (!active) return
         setServiceError(error instanceof Error ? error.message : 'B端渠道服务项目加载失败')
-        setLoadedMap((prev) => ({ ...prev, service: true }))
       } finally {
         if (active) setServiceLoading(false)
       }
@@ -2368,7 +2393,6 @@ function HuanyuOrderForm({
       .then((options) => {
         if (!active) return
         setOrderStatusOptions(options)
-        setLoadedMap((prev) => ({ ...prev, orderStatus: true }))
         const current = form.orderStatus
         if (typeof current === 'string' && current.trim()) {
           const matched = options.find((item) => item.id === current || item.name === current)
@@ -2380,7 +2404,6 @@ function HuanyuOrderForm({
       .catch(() => {
         if (!active) return
         setOrderStatusOptions([])
-        setLoadedMap((prev) => ({ ...prev, orderStatus: true }))
       })
     return () => { active = false }
   }, [])
@@ -2391,7 +2414,6 @@ function HuanyuOrderForm({
       .then((options) => {
         if (!active) return
         setBookingChannelTypeOptions(options)
-        setLoadedMap((prev) => ({ ...prev, bookingChannelType: true }))
         const current = form.bookingChannelType
         if (typeof current === 'string' && current.trim()) {
           const matched = options.find((item) => item.id === current || item.name === current)
@@ -2403,7 +2425,6 @@ function HuanyuOrderForm({
       .catch(() => {
         if (!active) return
         setBookingChannelTypeOptions([])
-        setLoadedMap((prev) => ({ ...prev, bookingChannelType: true }))
       })
     return () => { active = false }
   }, [])
@@ -2414,7 +2435,6 @@ function HuanyuOrderForm({
       .then((options) => {
         if (!active) return
         setDocumentTypeOptions(options)
-        setLoadedMap((prev) => ({ ...prev, documentType: true }))
         const current = form.documentType
         if (typeof current === 'string' && current.trim()) {
           const matched = options.find((item) => item.id === current || item.name === current)
@@ -2426,7 +2446,6 @@ function HuanyuOrderForm({
       .catch(() => {
         if (!active) return
         setDocumentTypeOptions([])
-        setLoadedMap((prev) => ({ ...prev, documentType: true }))
       })
     return () => { active = false }
   }, [])
@@ -2437,7 +2456,6 @@ function HuanyuOrderForm({
       .then((options) => {
         if (!active) return
         setMedicareTypeOptions(options)
-        setLoadedMap((prev) => ({ ...prev, medicareType: true }))
         const current = form.insuranceType
         if (typeof current === 'string' && current.trim()) {
           const matched = options.find((item) => item.id === current || item.name === current)
@@ -2449,7 +2467,6 @@ function HuanyuOrderForm({
       .catch(() => {
         if (!active) return
         setMedicareTypeOptions([])
-        setLoadedMap((prev) => ({ ...prev, medicareType: true }))
       })
     return () => { active = false }
   }, [])
@@ -2477,7 +2494,6 @@ function HuanyuOrderForm({
           }
         }
         setBdOptions(options)
-        setLoadedMap((prev) => ({ ...prev, bd: true }))
         if (form.bd && form.bd !== '无') {
           const matched = options.find((item) => item.id === form.bd || item.name === form.bd)
           if (matched && form.bd !== matched.id) {
@@ -2487,7 +2503,6 @@ function HuanyuOrderForm({
       } catch (error: unknown) {
         if (!active) return
         setBdError(error instanceof Error ? error.message : 'BD加载失败')
-        setLoadedMap((prev) => ({ ...prev, bd: true }))
       } finally {
         if (active) setBdLoading(false)
       }
@@ -2521,13 +2536,8 @@ function HuanyuOrderForm({
           }
         }
         setHospitalOptions(options)
-        setLoadedMap((prev) => ({ ...prev, hospital: true }))
         if (form.hospital) {
-          let matched = options.find((item) => item.id === form.hospital || item.name === form.hospital)
-          if (!matched && form.hospital.length >= 4) {
-            // 智能双向包含匹配（例如传入“北京协和医院”自动对齐选定“中国医学科学院北京协和医院”）
-            matched = options.find((item) => item.name.includes(form.hospital) || form.hospital.includes(item.name))
-          }
+          let matched = uniqueExactOption(options, form.hospital)
           if (matched && form.hospital !== matched.id) {
             setForm((current) => ({ ...current, hospital: matched.id }))
           }
@@ -2535,7 +2545,6 @@ function HuanyuOrderForm({
       } catch (error: unknown) {
         if (!active) return
         setHospitalError(error instanceof Error ? error.message : '医院加载失败')
-        setLoadedMap((prev) => ({ ...prev, hospital: true }))
       } finally {
         if (active) setHospitalLoading(false)
       }
@@ -2567,9 +2576,8 @@ function HuanyuOrderForm({
           }
         }
         setAddressOptions(options)
-        setLoadedMap((prev) => ({ ...prev, address: true }))
         if (form.hospitalAddress) {
-          const matched = options.find((item) => item.id === form.hospitalAddress || item.name === form.hospitalAddress || form.hospitalAddress.includes(item.name) || item.name.includes(form.hospitalAddress))
+          const matched = uniqueExactOption(options, form.hospitalAddress)
           if (matched && form.hospitalAddress !== matched.id) {
             setForm((current) => ({ ...current, hospitalAddress: matched.id }))
           }
@@ -2577,7 +2585,6 @@ function HuanyuOrderForm({
       } catch (error: unknown) {
         if (!active) return
         setAddressError(error instanceof Error ? error.message : '医院地址加载失败')
-        setLoadedMap((prev) => ({ ...prev, address: true }))
       } finally {
         if (active) setAddressLoading(false)
       }
@@ -2609,9 +2616,8 @@ function HuanyuOrderForm({
           }
         }
         setDepartmentOptions(options)
-        setLoadedMap((prev) => ({ ...prev, department: true }))
         if (form.department) {
-          const matched = options.find((item) => item.id === form.department || item.name === form.department)
+          const matched = uniqueExactOption(options, form.department)
           if (matched) {
             setForm((current) => ({
               ...current,
@@ -2624,7 +2630,6 @@ function HuanyuOrderForm({
       } catch (error: unknown) {
         if (!active) return
         setDepartmentError(error instanceof Error ? error.message : '科室加载失败')
-        setLoadedMap((prev) => ({ ...prev, department: true }))
       } finally {
         if (active) setDepartmentLoading(false)
       }
@@ -2659,9 +2664,8 @@ function HuanyuOrderForm({
           }
         }
         setDoctorOptions(options)
-        setLoadedMap((prev) => ({ ...prev, doctor: true }))
         if (form.doctor) {
-          const matched = options.find((item) => item.id === form.doctor || item.name === form.doctor)
+          const matched = uniqueExactOption(options, form.doctor)
           if (matched) {
             const isUnknownDoctor = matched.id.endsWith('WXSYSXM')
             const nextExpert = isUnknownDoctor ? form.expertLevel : (matched.expertLevel || '')
@@ -2677,7 +2681,6 @@ function HuanyuOrderForm({
       } catch (error: unknown) {
         if (!active) return
         setDoctorError(error instanceof Error ? error.message : '医生加载失败')
-        setLoadedMap((prev) => ({ ...prev, doctor: true }))
       } finally {
         if (active) setDoctorLoading(false)
       }
@@ -2695,7 +2698,6 @@ function HuanyuOrderForm({
       .then((options) => {
         if (!active) return
         setExpertOptions(options)
-        setLoadedMap((prev) => ({ ...prev, expert: true }))
         if (form.expertLevel) {
           const matched = options.find((item) => item.id === form.expertLevel || item.name === form.expertLevel)
           if (matched && form.expertLevel !== matched.id) {
@@ -2706,118 +2708,9 @@ function HuanyuOrderForm({
       .catch(() => {
         if (!active) return
         setExpertOptions([])
-        setLoadedMap((prev) => ({ ...prev, expert: true }))
       })
     return () => { active = false }
   }, [doctorAllowsExpertSelection, expertSearch])
-
-  const unmatchedFields = useMemo(() => {
-    const list: Array<{ label: string; value: string }> = []
-
-    // 1. 医院
-    const hospVal = typeof form.hospital === 'string' ? form.hospital.trim() : ''
-    if (hospVal && loadedMap.hospital && !hospitalLoading) {
-      const matched = hospitalOptions.find((o) => o.id === hospVal || o.name === hospVal)
-      if (!matched) list.push({ label: '医院', value: hospVal })
-    }
-
-    // 2. 医院地址
-    const addrVal = typeof form.hospitalAddress === 'string' ? form.hospitalAddress.trim() : ''
-    if (addrVal && hospitalId && loadedMap.address && !addressLoading) {
-      const matched = addressOptions.find((o) => o.id === addrVal || o.name === addrVal || addrVal.includes(o.name) || o.name.includes(addrVal))
-      if (!matched) list.push({ label: '医院地址', value: addrVal })
-    }
-
-    // 3. 科室
-    const deptVal = typeof form.department === 'string' ? form.department.trim() : ''
-    if (deptVal && hospitalId && loadedMap.department && !departmentLoading) {
-      const matched = departmentOptions.find((o) => o.id === deptVal || o.name === deptVal)
-      if (!matched) list.push({ label: '科室', value: deptVal })
-    }
-
-    // 4. 医生
-    const docVal = typeof form.doctor === 'string' ? form.doctor.trim() : ''
-    if (docVal && hospitalId && departmentId && loadedMap.doctor && !doctorLoading) {
-      const matched = doctorOptions.find((o) => o.id === docVal || o.name === docVal)
-      if (!matched) list.push({ label: '医生', value: docVal })
-    }
-
-    // 5. 专家级别
-    const expertVal = typeof form.expertLevel === 'string' ? form.expertLevel.trim() : ''
-    if (expertVal && doctorAllowsExpertSelection && loadedMap.expert) {
-      const matched = expertOptions.find((o) => o.id === expertVal || o.name === expertVal)
-      if (!matched) list.push({ label: '专家级别', value: expertVal })
-    }
-
-    // 6. B端渠道
-    const chanVal = typeof form.channel === 'string' ? form.channel.trim() : ''
-    if (chanVal && loadedMap.channel && !channelLoading) {
-      const matched = channelOptions.find((o) => o.id === chanVal || o.name === chanVal)
-      if (!matched) list.push({ label: 'B端渠道', value: chanVal })
-    }
-
-    // 7. B端渠道服务项目
-    const servVal = typeof form.channelService === 'string' ? form.channelService.trim() : ''
-    if (servVal && channelId && loadedMap.service && !serviceLoading) {
-      const matched = serviceOptions.find((o) => o.id === servVal || o.name === servVal)
-      if (!matched) list.push({ label: 'B端渠道服务项目', value: servVal })
-    }
-
-    // 8. BD
-    const bdVal = typeof form.bd === 'string' ? form.bd.trim() : ''
-    if (bdVal && bdVal !== '无' && bdSelectable && loadedMap.bd && !bdLoading) {
-      const matched = bdOptions.find((o) => o.id === bdVal || o.name === bdVal)
-      if (!matched) list.push({ label: 'BD', value: bdVal })
-    }
-
-    // 9. 陪诊人员
-    if (loadedMap.escort) {
-      escortRows.forEach((row, index) => {
-        const escortVal = row.escortName?.trim()
-        if (escortVal) {
-          const matched = escortOptions.find((o) => o.id === escortVal || o.name === escortVal)
-          if (!matched) {
-            const prefix = escortRows.length > 1 ? `陪诊人员(第${index + 1}行)` : '陪诊人员'
-            list.push({ label: prefix, value: escortVal })
-          }
-        }
-      })
-    }
-
-    return list
-  }, [
-    form.hospital,
-    form.hospitalAddress,
-    form.department,
-    form.doctor,
-    form.expertLevel,
-    form.channel,
-    form.channelService,
-    form.bd,
-    escortRows,
-    hospitalOptions,
-    addressOptions,
-    departmentOptions,
-    doctorOptions,
-    expertOptions,
-    channelOptions,
-    serviceOptions,
-    bdOptions,
-    escortOptions,
-    hospitalLoading,
-    addressLoading,
-    departmentLoading,
-    doctorLoading,
-    channelLoading,
-    serviceLoading,
-    bdLoading,
-    loadedMap,
-    hospitalId,
-    departmentId,
-    channelId,
-    bdSelectable,
-    doctorAllowsExpertSelection
-  ])
 
   function changeField(key: string, value: string | boolean): void {
     if (key === 'patientName' && String(value).trim()) setSaveStatus(null)
@@ -2891,10 +2784,25 @@ function HuanyuOrderForm({
     setDepartmentSearch('')
     setDoctorSearch('')
     setExpertSearch('')
+    setAddressOptions([])
+    setDepartmentOptions([])
+    setDoctorOptions([])
+  }
+
+  function typeHospital(value: string): void {
+    setForm((current) => ({ ...current, hospital: value, hospitalAddress: '', department: '', doctor: '', expertLevel: '', internalHospitalLevelOne: '', internalHospitalLevelTwo: '' }))
+    setAddressOptions([])
+    setDepartmentOptions([])
+    setDoctorOptions([])
+  }
+
+  function typeDepartment(value: string): void {
+    setForm((current) => ({ ...current, department: value, doctor: '', expertLevel: '', internalHospitalLevelOne: '', internalHospitalLevelTwo: '' }))
+    setDoctorOptions([])
   }
 
   function selectHospitalDepartment(nextDepartmentId: string): void {
-    const department = departmentOptions.find((item) => item.id === nextDepartmentId)
+    const department = uniqueExactOption(departmentOptions, nextDepartmentId)
     if (!department) return
     setForm((current) => ({
       ...current,
@@ -2906,10 +2814,11 @@ function HuanyuOrderForm({
     }))
     setDoctorSearch('')
     setExpertSearch('')
+    setDoctorOptions([])
   }
 
   function selectHospitalDoctor(nextDoctorId: string): void {
-    const doctor = doctorOptions.find((item) => item.id === nextDoctorId)
+    const doctor = uniqueExactOption(doctorOptions, nextDoctorId)
     if (!doctor) return
     setForm((current) => ({
       ...current,
@@ -2943,7 +2852,7 @@ function HuanyuOrderForm({
               <button
                 type="button"
                 disabled={isSaving}
-                onClick={handleSave}
+                onClick={() => void handleSave()}
                 className="rounded-md bg-action-green px-4 py-1.5 text-body-sm font-semibold text-white shadow-sm hover:bg-action-green/90 disabled:opacity-50 inline-flex items-center gap-1.5"
               >
                 <span className="material-symbols-outlined text-[16px]">save</span>
@@ -2996,25 +2905,6 @@ function HuanyuOrderForm({
           </div>
         </div>
       </div>
-
-      {/* 未匹配系统维表提示栏 */}
-      {unmatchedFields.length > 0 && (
-        <div className="mx-3 mt-2 rounded border border-amber-300/80 bg-amber-50/90 px-2.5 py-1.5 text-xs text-amber-900 shadow-2xs flex flex-wrap items-center gap-x-2 gap-y-1">
-          <div className="inline-flex items-center gap-1 font-semibold text-amber-900 shrink-0">
-            <span className="material-symbols-outlined text-amber-600 text-[15px]">warning</span>
-            <span>检测到 {unmatchedFields.length} 个业务项未在系统维表中匹配到，请检查或者补充维表：</span>
-          </div>
-          <div className="inline-flex flex-wrap items-center gap-1.5">
-            {unmatchedFields.map((item) => (
-              <span key={item.label} className="inline-flex items-center gap-1 rounded bg-white px-2 py-0.5 border border-amber-300 text-[11px] font-medium text-amber-950 shadow-2xs">
-                <span className="font-semibold text-text-main">{item.label}：</span>
-                <span className="text-amber-900">{item.value}</span>
-                <span className="text-amber-700 font-normal">(未匹配)</span>
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* 表单内容滚动区 */}
       <div className="p-3 space-y-3">
@@ -3090,12 +2980,12 @@ function HuanyuOrderForm({
 
       <HuanyuFormSection title="医院信息">
         <HuanyuFormGrid>
-          <HuanyuSearchSelect label="医院" value={f.hospital} isAi={aiFilledFields.has('hospital')} options={hospitalOptions} loading={hospitalLoading} error={hospitalError} onSearch={setHospitalSearch} onChange={selectHospital} />
-          <HuanyuSearchSelect label="医院地址" value={f.hospitalAddress} isAi={aiFilledFields.has('hospitalAddress')} options={addressOptions} loading={addressLoading} error={addressError} disabled={!hospitalId} disabledPlaceholder="请先选择医院" onSearch={setAddressSearch} onChange={(value) => changeField('hospitalAddress', value)} />
-          <HuanyuSearchSelect label="科室" value={f.department} isAi={aiFilledFields.has('department')} options={departmentOptions} loading={departmentLoading} error={departmentError} disabled={!hospitalId} disabledPlaceholder="请先选择医院" onSearch={setDepartmentSearch} onChange={selectHospitalDepartment} />
+          <HuanyuSearchSelect label="医院" value={f.hospital} isAi={aiFilledFields.has('hospital')} options={hospitalOptions} loading={hospitalLoading} error={hospitalError} onSearch={setHospitalSearch} onChange={selectHospital} onInputChange={typeHospital} />
+          <HuanyuSearchSelect label="医院地址" value={f.hospitalAddress} isAi={aiFilledFields.has('hospitalAddress')} options={addressOptions} loading={addressLoading} error={addressError} disabled={!hospitalValue} disabledPlaceholder="请先填写医院" onSearch={setAddressSearch} onChange={(value) => changeField('hospitalAddress', value)} onInputChange={(value) => changeField('hospitalAddress', value)} />
+          <HuanyuSearchSelect label="科室" value={f.department} isAi={aiFilledFields.has('department')} options={departmentOptions} loading={departmentLoading} error={departmentError} disabled={!hospitalValue} disabledPlaceholder="请先填写医院" onSearch={setDepartmentSearch} onChange={selectHospitalDepartment} onInputChange={typeDepartment} />
           <HuanyuInput label="内对一级" value={f.internalHospitalLevelOne} onChange={(value) => changeField('internalHospitalLevelOne', value)} disabled />
           <HuanyuInput label="内对二级" value={f.internalHospitalLevelTwo} onChange={(value) => changeField('internalHospitalLevelTwo', value)} disabled />
-          <HuanyuSearchSelect label="医生" value={f.doctor} isAi={aiFilledFields.has('doctor')} options={doctorOptions} loading={doctorLoading} error={doctorError} disabled={!hospitalId || !departmentId} disabledPlaceholder={!hospitalId ? '请先选择医院' : '请先选择科室'} onSearch={setDoctorSearch} onChange={selectHospitalDoctor} />
+          <HuanyuSearchSelect label="医生" value={f.doctor} isAi={aiFilledFields.has('doctor')} options={doctorOptions} loading={doctorLoading} error={doctorError} disabled={!hospitalValue || !departmentValue} disabledPlaceholder={!hospitalValue ? '请先填写医院' : '请先填写科室'} onSearch={setDoctorSearch} onChange={selectHospitalDoctor} onInputChange={(value) => changeField('doctor', value)} />
           {doctorAllowsExpertSelection
             ? <HuanyuSearchSelect label="专家级别" value={f.expertLevel} isAi={aiFilledFields.has('expertLevel')} options={expertOptions} loading={false} error={null} onSearch={setExpertSearch} onChange={(value) => changeField('expertLevel', value)} />
             : <HuanyuInput label="专家级别" value={f.expertLevel} isAi={aiFilledFields.has('expertLevel')} onChange={(value) => changeField('expertLevel', value)} disabled />}
@@ -3174,6 +3064,27 @@ function HuanyuOrderForm({
         )
       })()}
       </div>
+
+      {masterCreationPreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-labelledby="master-creation-title">
+          <div className="w-full max-w-[560px] rounded-lg bg-white p-5 shadow-xl">
+            <h3 id="master-creation-title" className="text-base font-semibold text-text-main">确认本次新增维表资料</h3>
+            <p className="mt-2 text-body-sm text-text-muted">以下资料在对应医院或科室下尚未找到。确认后系统会先建档、取得 ID，再保存并推送订单。</p>
+            <ul className="mt-4 max-h-72 space-y-2 overflow-y-auto text-body-sm text-text-main">
+              {masterCreationPreview.map((item, index) => (
+                <li key={`${item.type}-${index}`} className="rounded border border-border-subtle bg-surface-bg px-3 py-2">
+                  <span className="font-semibold">{{ hospital: '医院', address: '医院地址', department: '医院科室', doctor: '医生', escort: '陪诊人员' }[item.type] || item.type}：</span>
+                  {item.name}{item.parent ? `（所属：${item.parent}）` : ''}
+                </li>
+              ))}
+            </ul>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" disabled={isSaving} onClick={() => setMasterCreationPreview(null)} className="rounded border border-border-subtle px-4 py-2 text-body-sm">返回修改</button>
+              <button type="button" disabled={isSaving} onClick={() => void handleSave(true)} className="rounded bg-action-green px-4 py-2 text-body-sm font-semibold text-white disabled:opacity-50">{isSaving ? '保存中…' : '确认创建并保存'}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {refundModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-labelledby="registration-refund-title">
@@ -3853,7 +3764,7 @@ function HuanyuEscortInformationTable({
               }
               return row
             }
-            const matched = options.find((item) => item.id === row.escortName || item.name === row.escortName)
+            const matched = options.find((option) => option.id === row.escortName)
             if (matched) {
               const newName = matched.id
               const newType = row.escortType || matched.escortType
@@ -3895,7 +3806,7 @@ function HuanyuEscortInformationTable({
                 }
                 return row
               }
-              const matched = options.find((item) => item.id === row.escortName || item.name === row.escortName)
+              const matched = options.find((option) => option.id === row.escortName)
               if (matched) {
                 const newName = matched.id
                 const newType = row.escortType || matched.escortType
@@ -3942,6 +3853,17 @@ function HuanyuEscortInformationTable({
     }
   }
 
+  function typeEscortName(id: number, value: string): void {
+    const update = (row: HuanyuEscortRow): HuanyuEscortRow => {
+      if (row.id !== id) return row
+      const replacingSelectedPerson = escortOptions.some((option) => option.id === row.escortName)
+      return { ...row, escortName: value, phone: replacingSelectedPerson ? '' : row.phone,
+        escortType: replacingSelectedPerson ? '' : row.escortType, area: replacingSelectedPerson ? '' : row.area }
+    }
+    if (onChangeRows) onChangeRows(rows.map(update))
+    else setInternalRows((current) => current.map(update))
+  }
+
   function addRow(): void {
     const nextRow: HuanyuEscortRow = {
       id: Date.now(),
@@ -3961,7 +3883,7 @@ function HuanyuEscortInformationTable({
   }
 
   function selectEscort(rowId: number, escortId: string): void {
-    const escort = escortOptions.find((item) => item.id === escortId || item.name === escortId)
+    const escort = uniqueExactOption(escortOptions, escortId)
     if (!escort) return
     const updated = rows.map((row, index) => row.id === rowId ? {
       ...row,
@@ -4024,6 +3946,7 @@ function HuanyuEscortInformationTable({
                   error={escortError}
                   onSearch={setEscortSearch}
                   onChange={(value) => selectEscort(row.id, value)}
+                  onInputChange={(value) => typeEscortName(row.id, value)}
                   isAi={index === 0 && Boolean(aiFilledFields?.has('escortName'))}
                 />
               </td>
@@ -4031,8 +3954,9 @@ function HuanyuEscortInformationTable({
               <td className="border border-border-subtle p-1.5">
                 <div className="relative flex items-center">
                   <input
-                    disabled
+                    disabled={escortOptions.some((item) => item.id === row.escortName)}
                     value={row.phone}
+                    onChange={(event) => changeRow(row.id, 'phone', event.target.value)}
                     className={
                       'h-8 w-full border-0 bg-surface-container px-2 text-center text-text-muted outline-none ' +
                       (index === 0 && aiFilledFields?.has('escortPhone') ? 'pr-7' : '')
@@ -4068,6 +3992,7 @@ function HuanyuEscortSelectCell({
   error,
   onSearch,
   onChange,
+  onInputChange,
   isAi = false
 }: {
   value: string
@@ -4076,6 +4001,7 @@ function HuanyuEscortSelectCell({
   error: string | null
   onSearch: (value: string) => void
   onChange: (value: string) => void
+  onInputChange?: (value: string) => void
   isAi?: boolean
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
@@ -4136,6 +4062,7 @@ function HuanyuEscortSelectCell({
           setIsTyping(true)
           setSearch(next)
           onSearch(next)
+          onInputChange?.(next)
           setOpen(true)
           updatePosition()
         }}

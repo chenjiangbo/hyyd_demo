@@ -16,7 +16,6 @@ import {
 } from '../llm/orderBriefService.js'
 import { extractOrderServiceFields, ORDER_AI_FIELD_PROMPT_VERSION } from '../llm/orderAiExtraction.js'
 import { understandImage } from '../llm/imageUnderstandService.js'
-import { autoSyncOrderMasterData } from '../services/masterDataAutoSync.js'
 import { applyOrderWorkflowEvent } from '../workflow/serviceWorkflow.js'
 
 async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
@@ -367,29 +366,6 @@ export async function analyzeOrderFields(
       calls: calls.map((c) => ({ id: c.id, direction: c.direction, asrText: c.asrText, startedAt: c.startedAt }))
     })
 
-    // 客户主数据同步保持原有行为；同步异常不影响字段候选和服务步骤写入。
-    try {
-      const byCode = (code: string) => extraction.candidates.find((candidate) => candidate.fieldCode === code)?.value
-      const syncResult = await autoSyncOrderMasterData({
-        hospitalName: byCode('hospital') || order.hospital,
-        hospitalAddress: byCode('hospital_address'),
-        departmentName: byCode('department') || order.dept,
-        doctorName: byCode('doctor') || order.doctor,
-        expertLevel: byCode('expert_level'),
-        escortName: byCode('escort_name'),
-        escortPhone: byCode('escort_phone')
-      })
-      const hospitalCandidate = extraction.candidates.find((candidate) => candidate.fieldCode === 'hospital')
-      if (hospitalCandidate && syncResult.normalizedHospitalName) {
-        hospitalCandidate.value = syncResult.normalizedHospitalName
-        hospitalCandidate.normalizedValue = syncResult.hospitalId
-          ? { id: syncResult.hospitalId, name: syncResult.normalizedHospitalName }
-          : syncResult.normalizedHospitalName
-      }
-    } catch (error) {
-      console.warn(`[master-data] orderId=${orderId} 远程主数据自动建档异常: ${describeError(error)}`)
-    }
-
     await completeRunningAnalysisRun(prisma, {
       runId, orderId, model: extraction.model, raw: extraction.raw, candidates: extraction.candidates
     })
@@ -595,40 +571,6 @@ export async function refreshOrderBrief(
       ],
       calls: calls.map((c) => ({ id: c.id, direction: c.direction, asrText: c.asrText, startedAt: c.startedAt }))
     })
-    // 自动在远程 MySQL (hyyd) 中维护 医院、院区、科室、医生与陪诊人员主数据，并获取官方标准全称对齐
-    let normalizedHospName: string | null = null
-    try {
-      const hospCand = extraction.candidates.find((c) => c.fieldCode === 'hospital')?.value
-      const addrCand = extraction.candidates.find((c) => c.fieldCode === 'hospital_address')?.value
-      const deptCand = extraction.candidates.find((c) => c.fieldCode === 'department')?.value
-      const docCand = extraction.candidates.find((c) => c.fieldCode === 'doctor')?.value
-      const expertCand = extraction.candidates.find((c) => c.fieldCode === 'expert_level')?.value
-      const escortNameCand = extraction.candidates.find((c) => c.fieldCode === 'escort_name')?.value
-      const escortPhoneCand = extraction.candidates.find((c) => c.fieldCode === 'escort_phone')?.value
-
-      const syncRes = await autoSyncOrderMasterData({
-        hospitalName: hospCand || order.hospital,
-        hospitalAddress: addrCand,
-        departmentName: deptCand || order.dept,
-        doctorName: docCand || order.doctor,
-        expertLevel: expertCand,
-        escortName: escortNameCand,
-        escortPhone: escortPhoneCand
-      })
-
-      if (syncRes.normalizedHospitalName) {
-        normalizedHospName = syncRes.normalizedHospitalName
-        // 同步修正候选中的医院为官方标准全称与标准 ID
-        const hospCandidate = extraction.candidates.find((c) => c.fieldCode === 'hospital')
-        if (hospCandidate) {
-          hospCandidate.value = normalizedHospName
-          hospCandidate.normalizedValue = syncRes.hospitalId ? { id: syncRes.hospitalId, name: normalizedHospName } : normalizedHospName
-        }
-      }
-    } catch (syncErr) {
-      console.warn(`[master-data] 订单 ${orderId} 远程主数据自动建档异常:`, (syncErr as Error).message)
-    }
-
     extractionEvents = extraction.workflowEvents
     await persistFieldCandidates(prisma, {
       orderId,
