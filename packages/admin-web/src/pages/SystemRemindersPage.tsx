@@ -56,7 +56,7 @@ export default function SystemRemindersPage(): React.JSX.Element {
     <div className="space-y-6 max-w-7xl mx-auto pb-12">
       <PageHeader
         title="系统提醒说明"
-        subtitle="集中展示系统定时提醒、业务流转节点自动预警、桌面弹窗通知样式及员工协同闭环机制。"
+        subtitle="展示自动生成的提醒规则、短信异常、桌面弹窗及关闭方式；员工手工创建的备忘也使用同一待办和弹窗。"
       />
 
       {!config && !error && <LoadingBlock label="正在加载系统提醒说明…" />}
@@ -72,15 +72,19 @@ export default function SystemRemindersPage(): React.JSX.Element {
                   <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent-soft text-accent-strong text-base font-bold">
                     1
                   </span>
-                  全系统提醒机制与触发时点总览
+                  自动提醒机制与触发时点总览
                 </h2>
                 <p className="text-sm text-slate-500 mt-0.5">
-                  覆盖日常录音回传广播、约住院周期跟进、陪诊 7 大时效预警节点（含出工短信与异常即时报警）及住院陪护全周期关怀
+                  覆盖日常录音上传、约住院周期跟进、陪诊 7 类提醒及住院护工 2 类提醒；手工备忘不计入下方 11 类自动提醒
                 </p>
               </div>
               <span className="rounded-md bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600 border border-slate-200">
-                共 4 大业务类别 · 11 种精准提醒机制
+                共 4 大业务类别 · 11 类自动提醒
               </span>
+            </div>
+
+            <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              时区：{config.schedule.timeZone}；{config.schedule.scanInterval}；{config.schedule.clientPollInterval || '客户端按需查询到期提醒'}。
             </div>
 
             {/* 4 大板块 2x2 全览网格 */}
@@ -96,14 +100,14 @@ export default function SystemRemindersPage(): React.JSX.Element {
                       <h3 className="font-bold text-base text-emerald-950">日常录音上传提醒（广播）</h3>
                     </div>
                     <span className="text-xs font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded border border-emerald-300">
-                      接收对象：在岗全员
+                      接收对象：所有启用员工
                     </span>
                   </div>
                   <div className="space-y-2.5 text-sm">
                     <div className="rounded-lg bg-white/90 border border-emerald-200/80 p-3 shadow-2xs">
                       <div className="flex items-center gap-2 font-bold text-slate-900 mb-1">
                         <span className="px-2 py-0.5 text-xs font-bold bg-emerald-100 text-emerald-800 rounded">
-                          每天 11:30
+                          每天 {config.schedule.dailyUploadTimes?.[0] || '11:30'}
                         </span>
                         <span>上午录音与通话记录上传提醒</span>
                       </div>
@@ -115,7 +119,7 @@ export default function SystemRemindersPage(): React.JSX.Element {
                     <div className="rounded-lg bg-white/90 border border-emerald-200/80 p-3 shadow-2xs">
                       <div className="flex items-center gap-2 font-bold text-slate-900 mb-1">
                         <span className="px-2 py-0.5 text-xs font-bold bg-emerald-100 text-emerald-800 rounded">
-                          每天 17:30
+                          每天 {config.schedule.dailyUploadTimes?.[1] || '17:30'}
                         </span>
                         <span>下午录音与通话记录上传提醒</span>
                       </div>
@@ -125,8 +129,8 @@ export default function SystemRemindersPage(): React.JSX.Element {
                     </div>
 
                     <div className="rounded-lg bg-emerald-100/50 border border-emerald-200/60 p-2.5 text-xs text-emerald-900">
-                      <span className="font-bold">⏱ 失效机制：</span>
-                      <span> 仅当天有效。跨天后自动标记为失效，次日打开客户端绝不补发前日提醒。</span>
+                      <span className="font-bold">⏱ 生成与失效：</span>
+                      <span> {config.schedule.dailyUploadDescription}</span>
                     </div>
                   </div>
                 </div>
@@ -155,7 +159,7 @@ export default function SystemRemindersPage(): React.JSX.Element {
                         <span>约住院排队跟进提醒</span>
                       </div>
                       <p className="text-xs text-slate-600 leading-relaxed">
-                        触发条件：步骤处于待处理/进行中且未完成。自激活起每满 3 天上午 09:00 提醒一次。
+                        触发条件：步骤处于待处理/进行中。从步骤激活时间起每满 3 个日历日的周期日 09:00 后提醒；缺少激活时间时按开始、步骤创建、订单创建时间计算，错过周期日不补建。
                       </p>
                       <p className="text-xs text-slate-600 mt-1">
                         提醒内容：<code className="text-blue-900 font-medium">客户意向的住院时间前还没有预约成功，请关注！</code>
@@ -164,7 +168,7 @@ export default function SystemRemindersPage(): React.JSX.Element {
 
                     <div className="rounded-lg bg-blue-100/50 border border-blue-200/60 p-2.5 text-xs text-blue-900">
                       <span className="font-bold">⚙ 去重机制：</span>
-                      <span> 按订单与当天日期去重，同一订单在满足周期的当天仅生成 1 次提醒。</span>
+                      <span> 每个订单复用一条提醒记录；进入新的 3 天周期时更新并重新提醒。步骤重新开始或基准时间变更时关闭旧周期；订单不再有符合条件的约住院步骤，或订单取消、完结后关闭。</span>
                     </div>
                   </div>
                 </div>
@@ -192,43 +196,43 @@ export default function SystemRemindersPage(): React.JSX.Element {
                       <span>① 陪诊人员未落实预警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      前置完成满 1 小时未指派陪诊人（库表+AI均无）。提醒：<code className="text-amber-900 font-medium">陪诊人员没有落实，请关注！</code>
+                      前置步骤完成满 1 小时后，若正式陪诊明细中仍无非空 PZR 且陪诊步骤待处理或进行中，则提醒；代码只检查非空，不校验人员字典，也不把 AI 候选当作已指派。出现非空 PZR、订单结束或不再存在符合条件的前置和陪诊步骤时关闭；取消单个步骤但其他步骤仍符合条件时不一定关闭。有就诊日期时过日失效，无日期时不按固定天数失效。提醒：<code className="text-amber-900 font-medium">陪诊人员没有落实，请关注！</code>
                     </p>
                   </div>
 
                   <div className="rounded-lg bg-white/90 border border-amber-200/80 p-2.5 shadow-2xs">
                     <div className="flex items-center gap-2 font-bold text-slate-900 text-xs sm:text-sm">
                       <span className="px-1.5 py-0.5 text-[11px] font-bold bg-rose-100 text-rose-800 rounded shrink-0">
-                        前天 11:00
+                        前一天 11:00
                       </span>
                       <span>② 出工确认短信异常/无号码报警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      11:00 下发短信成功则等待反馈；若发送失败或无有效手机号，<code className="text-rose-900 font-medium">立即向客户经理报警</code>，促人工介入。
+                      逐条读取 PZR 非空的正式陪诊明细，以 ZJ 区分安排；服务日期匹配次日的明细分别发送。两套短信模板都配置完整且短信已启用、密钥齐全时才发送；错过 11:00、配置缺失、发送失败或无有效手机号则<code className="text-rose-900 font-medium">提醒客户经理</code>人工联系。发送请求 30 秒超时；中断超过 5 分钟核对明细对应流水，成功则关闭该明细异常提醒，失败或结果未知时提醒人工；不自动补发。
                     </p>
                   </div>
 
                   <div className="rounded-lg bg-white/90 border border-amber-200/80 p-2.5 shadow-2xs">
                     <div className="flex items-center gap-2 font-bold text-slate-900 text-xs sm:text-sm">
                       <span className="px-1.5 py-0.5 text-[11px] font-bold bg-amber-100 text-amber-900 rounded shrink-0">
-                        前天 13:00
+                        前一天 13:00
                       </span>
                       <span>③ 陪诊人员未第1次反馈预警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      门禁：须 11:00 成功发短信。截至 13:00 仍未反馈提醒：<code className="text-amber-900 font-medium">陪诊人员没有第一次反馈信息，请关注！</code>
+                      门禁：按 ZJ 分别检查正式陪诊明细；日期匹配次日且该明细 11:00 短信发送成功后，13:00 才检查对应陪诊人、服务日和明细的反馈。收到该明细反馈、换人改期或服务日结束后关闭：<code className="text-amber-900 font-medium">陪诊人员没有第一次反馈信息，请关注！</code>
                     </p>
                   </div>
 
                   <div className="rounded-lg bg-white/90 border border-amber-200/80 p-2.5 shadow-2xs">
                     <div className="flex items-center gap-2 font-bold text-slate-900 text-xs sm:text-sm">
                       <span className="px-1.5 py-0.5 text-[11px] font-bold bg-red-100 text-red-800 rounded shrink-0">
-                        前天 实时
+                        反馈提交触发
                       </span>
                       <span>④ 前一天反馈【无法出工】预警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      陪诊员前一天明确反馈无法出工。提醒：<code className="text-red-900 font-medium">陪诊人员反馈【无法出工】（原因：xxx），请立即处理！</code>
+                      前一天“无法出工”反馈提交后核对当前正式陪诊人和次日服务日期，符合条件立即生成；定时扫描只读取当天、当前陪诊人及服务日的反馈。客户端约每 15 秒查询一次，发现后弹窗；后续确认、换人改期或服务日结束后关闭：<code className="text-red-900 font-medium">陪诊人员反馈【无法出工】（原因：xxx），请立即处理！</code>
                     </p>
                   </div>
 
@@ -240,7 +244,7 @@ export default function SystemRemindersPage(): React.JSX.Element {
                       <span>⑤ 当天打卡短信异常/无号码紧急报警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      07:00 下发打卡短信成功则等待反馈；若发送失败或无手机号，<code className="text-rose-900 font-medium">立即紧急报警</code>通知客户经理！
+                      逐条读取 PZR 非空的正式陪诊明细，以 ZJ 区分安排；服务日期匹配当日的明细分别发送。两套短信模板都配置完整且短信已启用、密钥齐全时才发送；错过 07:00、配置缺失、发送失败或无有效手机号则<code className="text-rose-900 font-medium">提醒客户经理</code>人工联系。发送请求 30 秒超时；中断超过 5 分钟核对明细对应流水，成功则关闭该明细异常提醒，失败或结果未知时提醒人工；不自动补发。
                     </p>
                   </div>
 
@@ -252,21 +256,25 @@ export default function SystemRemindersPage(): React.JSX.Element {
                       <span>⑥ 当天未反馈出工信息预警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      门禁：须 07:00 成功发短信。截至 07:20 仍未打卡提醒：<code className="text-amber-900 font-medium">陪诊人员没有第一次反馈信息，请关注！</code>
+                      门禁：按 ZJ 分别检查正式陪诊明细；日期匹配当日且该明细 07:00 短信发送成功后，07:20 才检查对应陪诊人、服务日和明细的反馈。收到该明细反馈、换人改期或服务日结束后关闭：<code className="text-amber-900 font-medium">陪诊人员没有第一次反馈信息，请关注！</code>
                     </p>
                   </div>
 
                   <div className="rounded-lg bg-white/90 border border-amber-200/80 p-2.5 shadow-2xs">
                     <div className="flex items-center gap-2 font-bold text-slate-900 text-xs sm:text-sm">
                       <span className="px-1.5 py-0.5 text-[11px] font-bold bg-red-100 text-red-800 rounded shrink-0">
-                        当天 实时紧急
+                        反馈提交触发
                       </span>
                       <span>⑦ 当天反馈【无法出工】极速报警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      陪诊员当天反馈无法出工。提醒：<code className="text-red-900 font-medium">陪诊人员当天反馈【无法出工】（原因：xxx），请紧急处理！</code>
+                      当天“无法出工”反馈提交后核对当前正式陪诊人和当日服务日期，符合条件立即生成；定时扫描只读取当天、当前陪诊人及服务日的反馈。客户端约每 15 秒查询一次，发现后弹窗；后续确认、换人改期或服务日结束后关闭：<code className="text-red-900 font-medium">陪诊人员当天反馈【无法出工】（原因：xxx），请紧急处理！</code>
                     </p>
                   </div>
+                </div>
+                <div className="mt-3 rounded-lg bg-amber-100/60 border border-amber-200/70 p-2.5 text-xs text-amber-950">
+                  <span className="font-bold">闭环规则：</span>
+                  <span> 陪诊反馈按当前正式人员、服务日期和当天批次识别；提交前重新核对正式 PZR、BBQ_FW 及批次日期，不符合时拒绝提交。旧人员或旧日期的反馈与短信流水不能替新批次作证。换人、改期或步骤结束时关闭对应旧提醒；人工标记完成会关闭当前提醒。</span>
                 </div>
               </div>
 
@@ -293,11 +301,16 @@ export default function SystemRemindersPage(): React.JSX.Element {
                         <span>确认护工开始时间提醒</span>
                       </div>
                       <p className="text-xs text-slate-600 leading-relaxed">
-                        触发条件：客户入院后护工进场时间未确定，自激活起每满 2 天上午 09:00 提醒。
+                        触发条件：住院护工步骤待处理或进行中，开始时间和日期均未确定；从步骤激活时间起每满 2 个日历日的周期日 09:00 后提醒，缺少激活时间时按订单创建时间计算，错过周期日不补建。开始时间或日期任一补齐、步骤结束、订单取消或完结后自动关闭。
                       </p>
                       <p className="text-xs text-slate-600 mt-1">
-                        提醒内容：<code className="text-purple-900 font-medium">客户处于住院期间，请定期关注客户满意度情况！</code>
+                        提醒内容：<code className="text-purple-900 font-medium">护工开始时间尚未确定，请跟进确认！</code>
                       </p>
+                    </div>
+
+                    <div className="rounded-lg bg-purple-100/50 border border-purple-200/60 p-2.5 text-xs text-purple-900">
+                      <span className="font-bold">⚙ 去重机制：</span>
+                      <span> 同一订单复用一条提醒记录；每满 2 天进入新周期时才重新提醒。护工步骤重新开始或基准时间变更时，先关闭旧周期提醒。</span>
                     </div>
 
                     <div className="rounded-lg bg-white/90 border border-purple-200/80 p-3 shadow-2xs">
@@ -308,7 +321,7 @@ export default function SystemRemindersPage(): React.JSX.Element {
                         <span>住院陪护结束前 2 工作日提醒</span>
                       </div>
                       <p className="text-xs text-slate-600 leading-relaxed">
-                        触发条件：根据护工结束日期自动扣除周末与法定节假日，提前 2 个工作日上午 09:00 提醒。
+                        触发条件：住院护工步骤待处理或进行中；结束日期先取寰宇订单 BBQ_QDFW，为空才取 DATE_QDFW；按已维护的工作日日历倒推 2 个工作日，当天 09:00 后生成一次。日期变更、清空、无法解析、服务日已过、步骤结束或订单取消/完结时关闭旧提醒。后台每年 12 月 1 日至 31 日检查下一年度节假日安排，发布后同步，未发布或异常时次日重试。
                       </p>
                       <p className="text-xs text-slate-600 mt-1">
                         提醒内容：<code className="text-purple-900 font-medium">客户出院时间到了，请关注客户后续行程！</code>
@@ -317,6 +330,9 @@ export default function SystemRemindersPage(): React.JSX.Element {
                   </div>
                 </div>
               </div>
+            </div>
+            <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-700">
+              一次性提醒创建时绑定当时的订单责任客户经理；后续更换负责人不会自动迁移已有提醒。周期提醒在下一个符合条件的周期更新接收人。员工手工创建的备忘也进入同一待办和弹窗，但不属于上面的 11 类自动提醒。
             </div>
           </Card>
 
@@ -373,43 +389,28 @@ export default function SystemRemindersPage(): React.JSX.Element {
             <p className="text-sm text-slate-600 mb-5 leading-relaxed">
               {config.clientNotification.display}
             </p>
+            {config.clientNotification.validity && (
+              <div className="mb-5 rounded-lg border border-blue-200 bg-blue-50/70 px-4 py-3 text-sm text-blue-950">
+                <span className="font-bold">提醒关闭与再次弹出：</span>
+                <span> {config.clientNotification.validity}</span>
+              </div>
+            )}
 
             <div className="grid gap-4 md:grid-cols-3">
-              <div className="rounded-xl border border-line bg-surface-2/60 p-4.5 shadow-2xs">
-                <div className="font-bold text-base text-slate-900 flex items-center gap-2">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-md bg-blue-100 text-blue-700 text-sm">
-                    🔍
-                  </span>
-                  点击单号 / 一键复制
+              {config.clientNotification.actions.map((action, index) => (
+                <div key={action.name} className="rounded-xl border border-line bg-surface-2/60 p-4.5 shadow-2xs">
+                  <div className="font-bold text-base text-slate-900 flex items-center gap-2">
+                    <span className="flex h-6 w-6 items-center justify-center rounded-md bg-blue-100 text-blue-700 text-sm">
+                      {['🔍', '⏱', '✓'][index] || '•'}
+                    </span>
+                    {action.name}
+                  </div>
+                  <p className="mt-2 text-sm text-slate-600 leading-relaxed">{action.detail}</p>
                 </div>
-                <p className="mt-2 text-sm text-slate-600 leading-relaxed">
-                  单号高亮可点击，点击直接在工作台过滤定位该订单；点击复制图标可快速复制单号到剪贴板。
-                </p>
-              </div>
-
-              <div className="rounded-xl border border-line bg-surface-2/60 p-4.5 shadow-2xs">
-                <div className="font-bold text-base text-slate-900 flex items-center gap-2">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-md bg-amber-100 text-amber-700 text-sm">
-                    ⏱
-                  </span>
-                  延迟 10 分钟
-                </div>
-                <p className="mt-2 text-sm text-slate-600 leading-relaxed">
-                  若员工正在通话或忙碌中，点击后系统将在 10 分钟后再次弹窗提醒，避免遗漏。
-                </p>
-              </div>
-
-              <div className="rounded-xl border border-line bg-surface-2/60 p-4.5 shadow-2xs">
-                <div className="font-bold text-base text-slate-900 flex items-center gap-2">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-100 text-emerald-700 text-sm">
-                    ✓
-                  </span>
-                  标记已完成
-                </div>
-                <p className="mt-2 text-sm text-slate-600 leading-relaxed">
-                  员工核实并处理完毕后点击，该提醒归档为已完成状态，弹窗自动关闭并形成业务闭环。
-                </p>
-              </div>
+              ))}
+            </div>
+            <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-700">
+              提醒记录：{config.storage.table}（{config.storage.fields}）。
             </div>
           </Card>
         </div>
@@ -528,7 +529,7 @@ function RuleDetailCard({ rule, index }: { rule: SystemReminderRule; index: numb
         {/* 右侧：100% 真实还原桌面端弹窗浮窗样式 (5 列) */}
         <div className="lg:col-span-5">
           <div className="font-bold text-xs text-slate-500 uppercase tracking-wide mb-1.5 flex items-center gap-1.5">
-            <span>💬</span> 桌面端弹窗预览（与实际客户端 100% 一致）
+            <span>💬</span> 桌面端弹窗预览（样式示意）
           </div>
 
           {/* 桌面端弹窗卡片外观 */}

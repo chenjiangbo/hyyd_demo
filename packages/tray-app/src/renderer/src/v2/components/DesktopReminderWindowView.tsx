@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react'
 import {
   snoozeOrderReminder,
   doneOrderReminder,
+  dismissOrderReminderPopups,
   type OrderReminder
 } from '../api'
 
@@ -11,6 +12,11 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
   const [viewMode, setViewMode] = useState<'card' | 'list'>('card')
   const [isProcessing, setIsProcessing] = useState(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const remindersRef = useRef<OrderReminder[]>([])
+
+  useEffect(() => {
+    remindersRef.current = reminders
+  }, [reminders])
 
   const playChime = (): void => {
     try {
@@ -27,13 +33,13 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
     if (rawList.length === 0) return
 
     setReminders((prev) => {
-      const prevKey = prev.map((r) => `${r.id}_${r.remind_time || r.remindTime}`).join('|')
-      const newKey = rawList.map((r) => `${r.id}_${r.remind_time || r.remindTime}`).join('|')
+      const prevKey = prev.map((r) => `${r.id}_${r.notification_generation || 1}`).sort().join('|')
+      const newKey = rawList.map((r) => `${r.id}_${r.notification_generation || 1}`).sort().join('|')
       if (prevKey === newKey) {
         return prev // 数据完全无变化，不触发状态重置，保留当前翻页和展开状态
       }
-      const prevIds = new Set(prev.map((r) => r.id))
-      const hasNew = rawList.some((r) => !prevIds.has(r.id))
+      const prevVersions = new Set(prev.map((r) => `${r.id}_${r.notification_generation || 1}`))
+      const hasNew = rawList.some((r) => !prevVersions.has(`${r.id}_${r.notification_generation || 1}`))
       if (hasNew) playChime()
       setCurrentIndex((prevIdx) => (prevIdx >= rawList.length ? Math.max(0, rawList.length - 1) : prevIdx))
       return rawList
@@ -71,7 +77,7 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
         }
       }
       if (e.key === 'Escape') {
-        window.api?.hideDesktopReminder?.()
+        void handleClose()
       }
     }
     window.addEventListener('keydown', handleKeyDown)
@@ -194,7 +200,16 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
     }
   }
 
-  const handleClose = (): void => {
+  const handleClose = async (): Promise<void> => {
+    try {
+      await dismissOrderReminderPopups(remindersRef.current.map((r) => ({
+        id: r.id,
+        generation: Number(r.notification_generation || 1)
+      })))
+    } catch (err) {
+      console.error('[reminder] dismiss popup failed:', err)
+      return
+    }
     resetToCard()
     window.api?.hideDesktopReminder?.()
   }

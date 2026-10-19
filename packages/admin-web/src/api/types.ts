@@ -372,6 +372,7 @@ export interface SystemReminderConfig {
   schedule: {
     timeZone: string
     scanInterval: string
+    clientPollInterval?: string
     table: string
     dailyUploadTimes?: string[]
     dailyUploadDescription?: string
@@ -379,6 +380,7 @@ export interface SystemReminderConfig {
   rules: SystemReminderRule[]
   clientNotification: {
     display: string
+    validity?: string
     actions: Array<{ name: string; detail: string }>
   }
   storage: {
@@ -420,6 +422,7 @@ export interface SmsConfig {
 export interface SmsConfigResponse {
   config: SmsConfig
   isConfigured: boolean
+  templatesConfigured: boolean
 }
 
 export interface UpdateSmsConfigPayload {

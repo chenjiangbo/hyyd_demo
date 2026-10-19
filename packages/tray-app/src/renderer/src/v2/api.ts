@@ -881,6 +881,7 @@ export function confirmUnmatchedOrderRef(
 // ─── 订单跟进提醒与通知 ──────────────────────────
 export interface OrderReminder {
   id: number
+  notification_generation?: number
   orderNo?: string | null
   order_no?: string
   huanyuOrderNo?: string | null
@@ -905,9 +906,11 @@ export interface NotificationSummary {
   unmatchedRefsCount: number
 }
 
-export function fetchOrderReminders(params?: { status?: string; orderNo?: string; huanyuOrderNo?: string }): Promise<OrderReminder[]> {
+export function fetchOrderReminders(params?: { status?: string; dueOnly?: boolean; popupOnly?: boolean; orderNo?: string; huanyuOrderNo?: string }): Promise<OrderReminder[]> {
   const q = new URLSearchParams()
   if (params?.status) q.set('status', params.status)
+  if (params?.dueOnly) q.set('dueOnly', 'true')
+  if (params?.popupOnly) q.set('popupOnly', 'true')
   if (params?.orderNo) q.set('orderNo', params.orderNo)
   if (params?.huanyuOrderNo) q.set('huanyuOrderNo', params.huanyuOrderNo)
   const qs = q.toString() ? `?${q.toString()}` : ''
@@ -931,6 +934,10 @@ export function snoozeOrderReminder(id: number, minutes = 10): Promise<OrderRemi
 
 export function doneOrderReminder(id: number): Promise<OrderReminder> {
   return authedSend<OrderReminder>(`/api/v1/order-reminders/${id}/done`, 'POST')
+}
+
+export function dismissOrderReminderPopups(items: Array<{ id: number; generation: number }>): Promise<{ dismissed: number }> {
+  return authedSend<{ dismissed: number }>('/api/v1/order-reminders/dismiss-popup', 'POST', { items })
 }
 
 export function deleteOrderReminder(id: number): Promise<{ ok: boolean }> {

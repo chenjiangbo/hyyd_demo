@@ -285,7 +285,9 @@ const CREATE_STATEMENTS = [
       "id" SERIAL PRIMARY KEY,
       "ddbh" VARCHAR(100) NOT NULL,
       "pzr_id" VARCHAR(100),
+      "pzr_detail_id" VARCHAR(100),
       "pzr_name" VARCHAR(100),
+      "service_date" VARCHAR(20),
       "feedback_type" VARCHAR(50) NOT NULL,
       "will_attend" BOOLEAN NOT NULL DEFAULT TRUE,
       "screenshot_url" TEXT,
@@ -293,6 +295,10 @@ const CREATE_STATEMENTS = [
       "created_at" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     );
   `,
+  `ALTER TABLE "fact_hy_pzfk" ADD COLUMN IF NOT EXISTS "service_date" VARCHAR(20);`,
+  `ALTER TABLE "fact_hy_pzfk" ADD COLUMN IF NOT EXISTS "pzr_detail_id" VARCHAR(100);`,
+  `CREATE INDEX IF NOT EXISTS "idx_fact_hy_pzfk_current" ON "fact_hy_pzfk" ("ddbh", "feedback_type", "service_date", "pzr_id", "created_at" DESC);`,
+  `CREATE INDEX IF NOT EXISTS "idx_fact_hy_pzfk_detail_current" ON "fact_hy_pzfk" ("ddbh", "pzr_detail_id", "feedback_type", "service_date", "created_at" DESC);`,
   `
     CREATE INDEX IF NOT EXISTS "idx_fact_hy_pzfk_ddbh" ON "fact_hy_pzfk" ("ddbh");
   `,
@@ -305,6 +311,7 @@ const CREATE_STATEMENTS = [
       "phone" VARCHAR(50),
       "pzr_name" VARCHAR(100),
       "service_date" VARCHAR(50),
+      "pzr_detail_id" VARCHAR(100),
       "template_code" VARCHAR(50) NOT NULL,
       "sign_name" VARCHAR(100) NOT NULL,
       "params_json" JSONB,
@@ -326,10 +333,25 @@ const CREATE_STATEMENTS = [
       "order_no" VARCHAR(100) NOT NULL,
       "batch_type" VARCHAR(20) NOT NULL,
       "send_ymd" VARCHAR(20) NOT NULL,
+      "pzr_detail_id" VARCHAR(100) NOT NULL DEFAULT '',
+      "pzr_id" VARCHAR(100),
+      "service_date" VARCHAR(20),
       "claimed_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-      PRIMARY KEY ("order_no", "batch_type", "send_ymd")
+      "status" VARCHAR(20) NOT NULL DEFAULT 'sending',
+      "completed_at" TIMESTAMP WITH TIME ZONE,
+      "error_message" TEXT,
+      PRIMARY KEY ("order_no", "batch_type", "send_ymd", "pzr_detail_id")
     );
   `,
+  `ALTER TABLE "fact_hy_pz_sms_logs" ADD COLUMN IF NOT EXISTS "pzr_detail_id" VARCHAR(100);`,
+  `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "pzr_detail_id" VARCHAR(100) NOT NULL DEFAULT '';`,
+  `ALTER TABLE "fact_hy_pz_sms_send_claims" DROP CONSTRAINT IF EXISTS "fact_hy_pz_sms_send_claims_pkey";`,
+  `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD CONSTRAINT "fact_hy_pz_sms_send_claims_pkey" PRIMARY KEY ("order_no", "batch_type", "send_ymd", "pzr_detail_id");`,
+  `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "status" VARCHAR(20) NOT NULL DEFAULT 'sending';`,
+  `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "pzr_id" VARCHAR(100);`,
+  `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "service_date" VARCHAR(20);`,
+  `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "completed_at" TIMESTAMP WITH TIME ZONE;`,
+  `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "error_message" TEXT;`,
   // 19. 泰康绿通订单回拉/本地建单决策日志。公共池不建单、个人池先查远程的依据可直接追溯。
   `
     CREATE TABLE IF NOT EXISTS "order_huanyu_sync_logs" (

@@ -84,7 +84,7 @@ export function showReminderWindow(data: unknown): void {
   win.webContents.send('reminder:data', data)
 }
 
-export function hideReminderWindow(): void {
+export function hideReminderWindow(_dismissCurrent = false): void {
   if (reminderWindow && !reminderWindow.isDestroyed()) {
     reminderWindow.hide()
     // 隐藏后，重置高度为默认尺寸，确保下一次弹出时是初始紧凑卡片
@@ -104,8 +104,8 @@ export function setupReminderIPC(
     return { ok: true }
   })
 
-  ipcMain.handle('reminder:hide', () => {
-    hideReminderWindow()
+  ipcMain.handle('reminder:hide', (_e, dismissCurrent?: boolean) => {
+    hideReminderWindow(Boolean(dismissCurrent))
     return { ok: true }
   })
 

@@ -3367,9 +3367,9 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
 
   // ──────────────── 8.3 订单跟进提醒与桌面通知 ────────────────
   // 列表（当前员工，支持按 B 端单号、寰宇单号或 status 过滤）
-  fastify.get<{ Querystring: { status?: string; orderNo?: string; huanyuOrderNo?: string } }>('/api/v1/order-reminders', async (request, reply) => {
+  fastify.get<{ Querystring: { status?: string; dueOnly?: string; popupOnly?: string; orderNo?: string; huanyuOrderNo?: string } }>('/api/v1/order-reminders', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-    const { status, orderNo, huanyuOrderNo } = request.query
+    const { status, dueOnly, popupOnly, orderNo, huanyuOrderNo } = request.query
     const employeeId = request.employee.id
 
     const conditions: string[] = ['employee_id = $1']
@@ -3378,12 +3378,32 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     if (status && status !== 'all') {
       if (status === 'pending') {
         conditions.push(`status IN ('pending', 'unread')`)
-        // 日常录音上传提醒具有当天时效性，跨天自动失效，不查询历史往日的日常提醒
-        conditions.push(`NOT (type = 'upload_recording' AND remind_time < (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date)`)
+        // 上传录音提醒只在各自的当天批次窗口内有效，错过窗口后客户端启动也不补弹。
+        conditions.push(`NOT (
+          type = 'upload_recording' AND (
+            remind_time < (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+            OR (
+              COALESCE(extra_data->>'snoozed', 'false') != 'true'
+              AND (
+                (extra_data->>'slot' = '1130' AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::time >= TIME '12:00')
+                OR (extra_data->>'slot' = '1730' AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::time >= TIME '18:00')
+              )
+            )
+          )
+        )`)
       } else {
         params.push(status)
         conditions.push(`status = $${params.length}`)
       }
+    }
+    if (dueOnly === 'true') conditions.push(`remind_time <= NOW()`)
+    if (popupOnly === 'true') {
+      conditions.push(`NOT EXISTS (
+        SELECT 1 FROM order_reminder_popup_dismissals d
+         WHERE d.employee_id = order_reminders.employee_id
+           AND d.reminder_id = order_reminders.id
+           AND d.generation = order_reminders.notification_generation
+      )`)
     }
     if (orderNo && huanyuOrderNo) {
       params.push(huanyuOrderNo)
@@ -3410,6 +3430,44 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       return reply.status(500).send({ error: '查询提醒列表失败: ' + err.message })
     }
   })
+
+  // 收起桌面浮窗只记录当前提醒周期已展示，不改变提醒的业务状态。
+  fastify.post<{ Body: { items?: Array<{ id?: number; generation?: number }> } }>(
+    '/api/v1/order-reminders/dismiss-popup',
+    async (request, reply) => {
+      if (!request.employee) return reply.status(401).send({ error: '未登录' })
+      const employeeId = request.employee.id
+      const items = Array.isArray(request.body?.items) ? request.body.items.slice(0, 500) : []
+      if (items.length === 0) return reply.send({ data: { dismissed: 0 } })
+
+      let dismissed = 0
+      try {
+        for (const item of items) {
+          const id = Number(item.id)
+          const generation = Number(item.generation)
+          if (!Number.isInteger(id) || id <= 0 || !Number.isInteger(generation) || generation <= 0) continue
+          const rows = await (prisma as any).$queryRawUnsafe(
+            `INSERT INTO order_reminder_popup_dismissals (employee_id, reminder_id, generation)
+             SELECT $1, r.id, r.notification_generation
+               FROM order_reminders r
+              WHERE r.id = $2 AND r.employee_id = $1
+                AND r.notification_generation = $3
+                AND r.status IN ('pending', 'unread')
+             ON CONFLICT (employee_id, reminder_id, generation) DO NOTHING
+             RETURNING reminder_id;`,
+            employeeId,
+            id,
+            generation
+          )
+          dismissed += rows.length
+        }
+        return reply.send({ data: { dismissed } })
+      } catch (err: any) {
+        fastify.log.error('收起提醒浮窗失败:', err)
+        return reply.status(500).send({ error: '收起提醒浮窗失败: ' + err.message })
+      }
+    }
+  )
 
   // 新建手工提醒
   fastify.post<{ Body: { orderNo?: string | null; huanyuOrderNo?: string | null; remindTime: string; content: string; type?: string; extraData?: any } }>(
@@ -3460,21 +3518,30 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     async (request, reply) => {
       if (!request.employee) return reply.status(401).send({ error: '未登录' })
       const id = parseInt(request.params.id, 10)
-      const minutes = Number(request.body?.minutes) || 10
+      const minutes = request.body?.minutes == null ? 10 : Number(request.body.minutes)
+      if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 1440) {
+        return reply.status(400).send({ error: '延后分钟数必须在 1 到 1440 之间' })
+      }
       const employeeId = request.employee.id
 
       try {
         const updateSql = `
           UPDATE order_reminders 
-          SET remind_time = NOW() + ($1 || ' minutes')::INTERVAL, 
+          SET remind_time = NOW() + ($1 || ' minutes')::INTERVAL,
+              notification_generation = notification_generation + 1,
+              extra_data = CASE
+                WHEN type = 'upload_recording'
+                  THEN jsonb_set(COALESCE(extra_data, '{}'::jsonb), '{snoozed}', 'true'::jsonb, true)
+                ELSE extra_data
+              END,
               status = 'pending', 
               updated_at = NOW()
-          WHERE id = $2 AND employee_id = $3
+          WHERE id = $2 AND employee_id = $3 AND status IN ('pending', 'unread')
           RETURNING *;
         `
         const rows = await (prisma as any).$queryRawUnsafe(updateSql, String(minutes), id, employeeId)
         if (!rows || rows.length === 0) {
-          return reply.status(404).send({ error: '提醒不存在或无权操作' })
+          return reply.status(409).send({ error: '提醒已关闭或不可延后' })
         }
         return reply.send({ data: rows[0] })
       } catch (err: any) {
@@ -3540,7 +3607,23 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
 
     try {
       const reminderCountRes: any = await (prisma as any).$queryRawUnsafe(
-        "SELECT COUNT(*)::int AS count FROM order_reminders WHERE employee_id = $1 AND status = 'pending';",
+        `SELECT COUNT(*)::int AS count
+           FROM order_reminders
+          WHERE employee_id = $1
+            AND status IN ('pending', 'unread')
+            AND remind_time <= NOW()
+            AND NOT (
+              type = 'upload_recording' AND (
+                remind_time < (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+                OR (
+                  COALESCE(extra_data->>'snoozed', 'false') != 'true'
+                  AND (
+                    (extra_data->>'slot' = '1130' AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::time >= TIME '12:00')
+                    OR (extra_data->>'slot' = '1730' AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::time >= TIME '18:00')
+                  )
+                )
+              )
+            );`,
         employeeId
       )
       const remindersCount = Number(reminderCountRes?.[0]?.count || 0)

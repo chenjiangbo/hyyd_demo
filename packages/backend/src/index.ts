@@ -21,6 +21,7 @@ import {
 } from './routes/api.js'
 import { startOrderAiSchedule } from './jobs/orderAiSchedule.js'
 import { startOrderReminderSchedule } from './jobs/orderReminderSchedule.js'
+import { loadChineseWorkdayCalendar, startChineseWorkdayCalendarSync } from './jobs/chineseWorkdayCalendarSync.js'
 import { registerAdminRoutes, ADMIN_COOKIE, verifyAdminToken } from './routes/admin.js'
 import { addAdminSocket, removeAdminSocket } from './routes/adminBus.js'
 import { saveOrderDetailBundle } from './orderDetail.js'
@@ -268,6 +269,7 @@ async function start() {
     await ensureBOrderFormTables(prisma)
     await ensureReminderTables(prisma, server.log)
     await ensureSysSettingsTable(prisma, server.log)
+    await loadChineseWorkdayCalendar(prisma)
     await ensureTaikangHuanyuChannelMappingTable(prisma)
     await ensureBuckets()
 
@@ -797,6 +799,13 @@ async function start() {
 
     // 订单 AI 只在上海时区的配置时点批量分析；不再按消息静默、消息条数或转写完成自动触发。
     startOrderAiSchedule(prisma, minioClient)
+
+    // 每年 12 月 1 日至 31 日检查下一年节假日安排，发布后同步并停止当年检查。
+    await startChineseWorkdayCalendarSync(prisma, {
+      info: (m) => server.log.info(m),
+      warn: (m) => server.log.warn(m),
+      error: (m, err) => server.log.error({ err }, m)
+    })
 
     // 订单业务自动提醒后台定时扫描（约住院排队、陪诊超时/防迟到、护工时间与出院前）
     startOrderReminderSchedule(prisma, {

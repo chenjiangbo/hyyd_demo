@@ -3,7 +3,7 @@
  * 用于住院陪护结束前 2 天提醒等排除周末及法定调休节假日的倒推计算。
  */
 
-// 2025 ~ 2027 年法定节假日（放假不上班的公历日期 YYYY-MM-DD）
+// 已发布年份的法定节假日（放假不上班的公历日期 YYYY-MM-DD）。
 const OFFICIAL_HOLIDAYS = new Set<string>([
   // 2025
   '2025-01-01', // 元旦
@@ -22,14 +22,6 @@ const OFFICIAL_HOLIDAYS = new Set<string>([
   '2026-09-25', '2026-09-26', '2026-09-27', // 中秋节
   '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07', // 国庆节
 
-  // 2027
-  '2027-01-01', '2027-01-02', '2027-01-03', // 元旦
-  '2027-02-05', '2027-02-06', '2027-02-07', '2027-02-08', '2027-02-09', '2027-02-10', '2027-02-11', // 春节
-  '2027-04-04', '2027-04-05', '2027-04-06', // 清明节
-  '2027-05-01', '2027-05-02', '2027-05-03', // 劳动节
-  '2027-06-09', '2027-06-10', '2027-06-11', // 端午节
-  '2027-09-15', '2027-09-16', '2027-09-17', // 中秋节
-  '2027-10-01', '2027-10-02', '2027-10-03', '2027-10-04', '2027-10-05', '2027-10-06', '2027-10-07' // 国庆节
 ])
 
 // 法定调休上班日（周末补班的日期 YYYY-MM-DD）
@@ -38,9 +30,23 @@ const WORKDAY_MAKEUPS = new Set<string>([
   '2025-01-26', '2025-02-08', '2025-04-27', '2025-09-28', '2025-10-11',
   // 2026
   '2026-02-15', '2026-02-28', '2026-04-26', '2026-05-09', '2026-09-20', '2026-10-10',
-  // 2027
-  '2027-01-31', '2027-02-20', '2027-04-25', '2027-05-08', '2027-09-26', '2027-10-09'
 ])
+
+type CalendarDay = { date: string; isOffDay: boolean; name?: string | null }
+const loadedYears = new Set<number>()
+
+/** Load API-synced years from sys_settings into the in-memory calendar. */
+export function applyChineseWorkdayCalendarYear(year: number, days: CalendarDay[]): void {
+  if (loadedYears.has(year)) {
+    for (const date of [...OFFICIAL_HOLIDAYS]) if (date.startsWith(`${year}-`)) OFFICIAL_HOLIDAYS.delete(date)
+    for (const date of [...WORKDAY_MAKEUPS]) if (date.startsWith(`${year}-`)) WORKDAY_MAKEUPS.delete(date)
+  }
+  for (const day of days) {
+    if (day.isOffDay) OFFICIAL_HOLIDAYS.add(day.date)
+    else WORKDAY_MAKEUPS.add(day.date)
+  }
+  loadedYears.add(year)
+}
 
 export function formatYmd(date: Date): string {
   const parts = new Intl.DateTimeFormat('en-CA', {

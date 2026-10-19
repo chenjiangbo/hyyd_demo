@@ -116,8 +116,8 @@ export function getEnv(): AppEnv {
     aliyunSmsAccessKeyId: optional('ALIYUN_SMS_ACCESS_KEY_ID'),
     aliyunSmsAccessKeySecret: optional('ALIYUN_SMS_ACCESS_KEY_SECRET'),
     aliyunSmsSignName: optional('ALIYUN_SMS_SIGN_NAME') || '寰宇医道',
-    aliyunSmsTemplatePreDay: optional('ALIYUN_SMS_TEMPLATE_PRE_DAY') || 'SMS_512665048',
-    aliyunSmsTemplateSameDay: optional('ALIYUN_SMS_TEMPLATE_SAME_DAY') || 'SMS_512530051'
+    aliyunSmsTemplatePreDay: optional('ALIYUN_SMS_TEMPLATE_PRE_DAY'),
+    aliyunSmsTemplateSameDay: optional('ALIYUN_SMS_TEMPLATE_SAME_DAY')
   }
   return cached
 }

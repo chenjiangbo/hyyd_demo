@@ -3,6 +3,7 @@ import {
   fetchOrderReminders,
   snoozeOrderReminder,
   doneOrderReminder,
+  dismissOrderReminderPopups,
   type OrderReminder
 } from '../api'
 
@@ -16,7 +17,7 @@ export function DesktopReminderPopup() {
   // 轮询检查到期的提醒
   async function checkDueReminders() {
     try {
-      const list = await fetchOrderReminders({ status: 'pending' })
+      const list = await fetchOrderReminders({ status: 'pending', dueOnly: true, popupOnly: true })
       const now = new Date()
       // 筛选出达到提醒时间的项
       const due = list.filter((r) => {
@@ -34,8 +35,8 @@ export function DesktopReminderPopup() {
 
         setActiveReminders((prev) => {
           // 合并并去重
-          const existingIds = new Set(prev.map((item) => item.id))
-          const newlyAdded = due.filter((item) => !existingIds.has(item.id))
+          const existingVersions = new Set(prev.map((item) => `${item.id}_${item.notification_generation || 1}`))
+          const newlyAdded = due.filter((item) => !existingVersions.has(`${item.id}_${item.notification_generation || 1}`))
           if (newlyAdded.length > 0) {
             // 播放提示音
             try {
@@ -61,10 +62,10 @@ export function DesktopReminderPopup() {
   useEffect(() => {
     // 启动时检查一次
     void checkDueReminders()
-    // 每 5 秒高频准时轮询一次，配合 backgroundThrottling: false 绝不延误
+    // 每 15 秒查询一次；新建、完成和延后操作会通过事件立即刷新。
     const timer = setInterval(() => {
       void checkDueReminders()
-    }, 5000)
+    }, 15_000)
 
     const handleUpdate = () => {
       void checkDueReminders()
@@ -176,6 +177,21 @@ export function DesktopReminderPopup() {
       // 异常处理
     } finally {
       setIsProcessing(false)
+    }
+  }
+
+  async function handleClosePopup() {
+    const items = activeReminders.map((r) => ({
+      id: r.id,
+      generation: Number(r.notification_generation || 1)
+    }))
+    try {
+      await dismissOrderReminderPopups(items)
+      setViewMode('card')
+      setActiveReminders([])
+      window.api?.hideDesktopReminder?.()
+    } catch (err) {
+      console.error('[reminder] dismiss popup failed:', err)
     }
   }
 
@@ -358,10 +374,7 @@ export function DesktopReminderPopup() {
             </button>
             <button
               type="button"
-              onClick={() => {
-                setViewMode('card')
-                setActiveReminders([])
-              }}
+              onClick={() => void handleClosePopup()}
               className="text-text-muted hover:text-text-main p-0.5 rounded hover:bg-surface-container transition-colors cursor-pointer"
               title="关闭"
             >
@@ -534,10 +547,7 @@ export function DesktopReminderPopup() {
           </span>
           <button
             type="button"
-            onClick={() => {
-              setViewMode('card')
-              setActiveReminders([])
-            }}
+            onClick={() => void handleClosePopup()}
             className="text-text-muted hover:text-text-main p-0.5 rounded hover:bg-surface-container transition-colors cursor-pointer"
             title="关闭浮窗"
           >

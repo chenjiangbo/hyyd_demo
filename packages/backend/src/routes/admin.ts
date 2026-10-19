@@ -341,7 +341,8 @@ export function registerAdminRoutes(
       return reply.send({
         data: {
           config,
-          isConfigured: Boolean(config.accessKeyId && config.accessKeySecret)
+          isConfigured: Boolean(config.accessKeyId && config.accessKeySecret),
+          templatesConfigured: config.templatesConfigured
         }
       })
     })
@@ -351,11 +352,20 @@ export function registerAdminRoutes(
       Body: Partial<AliyunSmsConfig>
     }>('/api/v1/admin/sms-config', async (request, reply) => {
       const body = request.body || {}
-      const updated = await saveSmsConfig(prisma, body)
+      let updated: AliyunSmsConfig
+      try {
+        updated = await saveSmsConfig(prisma, body)
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('必须配置前一天和当天')) {
+          return reply.status(400).send({ error: err.message })
+        }
+        throw err
+      }
       return reply.send({
         data: {
           config: updated,
-          isConfigured: Boolean(updated.accessKeyId && updated.accessKeySecret)
+          isConfigured: Boolean(updated.accessKeyId && updated.accessKeySecret),
+          templatesConfigured: updated.templatesConfigured
         },
         message: '短信模板配置已成功保存并立即生效'
       })
@@ -380,6 +390,9 @@ export function registerAdminRoutes(
 
       const config = await getSmsConfig(prisma)
       const templateCode = batchType === 'same_day' ? config.templateSameDay : config.templatePreDay
+      if (!config.templatesConfigured || !templateCode) {
+        return reply.status(400).send({ error: '请先配置并保存前一天和当天的实际短信模板代码' })
+      }
 
       const result = await sendAliyunSms({
         phoneNumbers: phone,
@@ -562,67 +575,72 @@ export function registerAdminRoutes(
         data: {
           schedule: {
             timeZone: '上海时区（中国标准时间）',
-            scanInterval: '系统后台常驻实时扫描（每 30 秒轮询）',
+            scanInterval: '系统后台常驻扫描（每 15 秒轮询；短信按定点单次触发）',
+            clientPollInterval: '桌面浮窗每 15 秒查询到期提醒；主界面待办每 20 秒查询，完成或延后后的状态在下一轮查询时更新；收起浮窗只记录弹窗已收起，不改变待办状态',
             table: 'order_reminders',
             dailyUploadTimes: ['11:30', '17:30'],
-            dailyUploadDescription: '每天上午 11:30 与下午 17:30，系统自动向所有在岗服务人员推送提醒，督促在上下班前后及时在手机端 App 上传通话录音与通话记录。'
+            dailyUploadDescription: '每天 11:30–12:00、17:30–18:00 两个时段内为所有启用员工生成提醒；每位员工每个时段仅生成一次。未主动延后的提醒错过时段后失效；员工主动延后时按延后时间再次提醒。'
           },
           rules: [
             {
               category: '日常提醒',
               name: '通话录音与通话记录上传提醒',
-              trigger: '每天 11:30、17:30 两次固定时点到达时自动扫描触发',
-              target: '所有在岗服务人员',
+              trigger: '每天 11:30–12:00、17:30–18:00 两个时段内扫描生成，每位启用员工每个时段一次',
+              target: '所有启用员工（employee.enabled = 1）',
               content: '提醒内容: 请打开手机app上传通话录音和通话记录',
               technicalConditions: [
                 '匹配当前上海时间处于 11:30~12:00（上午批次 1130）或 17:30~18:00（下午批次 1730）',
-                '扫描员工表 employee 中所有启用状态（enabled = 1）的服务人员',
-                '为每位在岗员工批量写入 order_no 为 "SYSTEM" 的广播型提醒记录'
+                '扫描员工表 employee 中所有启用状态（enabled = 1）的员工，不按员工角色再筛选',
+                '为每位启用员工批量写入 order_no 为 "SYSTEM" 的广播型提醒记录'
               ],
-              dedupeRule: '基于 auto:call_upload_reminder:{employeeId}:{YYYY-MM-DD}:{slot} 去重，每位员工在当天同一批次时段内仅推送 1 次。'
+              dedupeRule: '基于 auto:call_upload_reminder:{employeeId}:{YYYY-MM-DD}:{slot} 去重；未延后的提醒在批次时段结束后失效，员工主动延后时按延后时间再次提醒。'
             },
             {
               category: '约住院服务',
               name: '约住院排队跟进提醒',
-              trigger: '约住院服务进行中，自步骤激活起每满 3 天上午 09:00',
+              trigger: '约住院服务进行中，从步骤激活时间起每满 3 个日历日的周期日，09:00 后提醒一次；激活时间缺失时依次按开始时间、步骤创建时间、订单创建时间计算；错过周期日不补建',
               target: '订单责任客户经理',
               content: '订单号: COD202609150012\n申请时间: 2026-09-14 09:30:00\n提醒内容: 客户意向的住院时间前还没有预约成功，请关注！',
               technicalConditions: [
-                '步骤表 b_order_service_steps 中匹配步骤编码 step_code = "hospital_booking"',
+                '步骤表匹配 step_code = "hospital_booking"，且服务类型为“全流程”或“住院”',
                 '步骤状态处于待处理 pending 或进行中 in_progress',
                 '订单未被取消（status NOT LIKE "%取消%"）且未完结（status != "已完成"）',
-                '计算步骤激活时间差 (当前时间 - 激活时间) >= 3 天，且天数满足 3 的倍数（每满 3 天）',
-                '当前时间达到上午 09:00 后触发'
+                '订单已关联责任客户经理 assigned_employee_id',
+                '按上海本地日历日期计算；基准依次取步骤激活时间、开始时间、步骤创建时间、订单创建时间',
+                '仅在基准日后的第 3、6、9……个日历日当天，上午 09:00 后生成；错过对应日期不补建，等下一个周期日'
               ],
-              dedupeRule: '基于 auto:hospital_booking:{sourceOrderNo}:{YYYY-MM-DD} 去重，同一订单在满足周期的当天仅生成 1 次提醒。'
+              dedupeRule: '同一订单复用 auto:hospital_booking:{sourceOrderNo} 一条提醒；每满 3 天进入新周期时更新并重新打开。步骤重新开始或基准时间变更时先关闭旧周期；订单不再有符合条件的约住院步骤，或订单取消、完结时自动关闭。'
             },
             {
               category: '陪诊服务',
               name: '陪诊未指派人员超时预警',
-              trigger: '前置步骤完成满 1 小时仍未指派陪诊员',
+              trigger: '前置步骤完成满 1 小时，正式陪诊明细中仍无非空 PZR',
               target: '订单责任客户经理',
               content: '订单号: COD202609170038\n申请时间: 2026-09-17 10:15:00\n提醒内容: 陪诊人员没有落实，请关注！',
               technicalConditions: [
-                '前置步骤（挂号 registration / 检查预约 check_booking / 约住院 hospital_booking）状态为已完成 completed',
-                '前置步骤完成时间 completed_at 满足已满 1 小时（completed_at <= now - 1 hour）且在 3 天内',
-                '不取主表 HY_FACT_DDCX_NEW.PZR；优先查陪诊人员明细表 fact_hy_pzrxx，无则降级读取 AI 提取的候选陪诊人（b_order_ai_field_candidates）；两处皆无才判定为未落实',
+                '前置步骤状态为 completed，且步骤和服务类型匹配：registration 对应全流程/全程门诊/单次门诊/电话问诊/MDT服务；check_booking 对应全流程/检查加急；hospital_booking 对应全流程/住院；revisit 对应全流程/全程门诊',
+                '订单还需存在待处理或进行中的陪诊、检查陪诊、住院陪诊或复诊陪诊步骤',
+                '前置步骤完成时间 completed_at 已满 1 小时',
+                '仅检查 fact_hy_pzrxx 是否存在非空 PZR；不验证人员字典，也不使用寰宇订单主表或 AI 候选字段作为已指派依据',
+                '出现非空 PZR、就诊日期结束、订单取消/完成，或订单不再存在符合条件的前置步骤及待处理/进行中陪诊步骤时关闭；同类其他步骤仍有效时，取消单个步骤不一定关闭旧提醒；无就诊日期时不按固定天数失效',
                 '订单关联的责任客户经理 assigned_employee_id 存在且订单未取消/未完结'
               ],
-              dedupeRule: '基于 auto:escort_unassigned:{sourceOrderNo} 去重，同一订单在未指派状态下全局仅告警 1 次。'
+              dedupeRule: '按订单和前置步骤编码去重；提醒保留至出现非空 PZR、订单不再符合业务条件或就诊日期结束。'
             },
             {
               category: '陪诊服务',
               name: '陪诊前一天出工短信发送异常报警',
-              trigger: '次日就诊的陪诊订单，前一天 11:00 发送出工确认短信失败或未找到手机号',
+              trigger: '次日有正式陪诊安排的订单，前一天 11:00 短信未发送、发送失败或未找到有效手机号',
               target: '订单责任客户经理',
               content: '订单号: COD202609170056\n申请时间: 2026-09-16 14:20:00\n提醒内容: 陪诊出工确认短信发送失败（原因：触发流控限流），请及时人工联系陪诊人员！',
               technicalConditions: [
-                '次日有陪诊出工安排且陪诊人员已落实',
-                '每天 11:00 启动短信自动下发批次（SMS_512665048）',
-                '解析陪诊人员手机号（依次检索本地档案表 f_hy_pzr、远端字典 dim_hy_pzr、AI 候选表 b_order_ai_field_candidates）',
-                '若阿里云接口返回失败或未检索到 11 位有效手机号，立即记录流水并报警通知客户经理人工介入'
+                '从 fact_hy_pzrxx 同一条最新且 PZR 非空的记录读取 PZR 和 BBQ_FW；该记录的 BBQ_FW 须匹配次日，短信批次不从寰宇订单主表或 AI 候选回退服务日期',
+                '每天上海时间 11:00 执行一次批次；前一天和当天两套实际模板均须配置完整。模板未配置或错过时点时记录未执行并通知人工，不补发短信',
+                '使用正式陪诊明细 fact_hy_pzrxx.PZR 的人员 ID 或姓名，在远端陪诊人员字典中按 ID 或姓名唯一精确匹配后取得手机号；不使用 AI 候选姓名或手机号',
+                '模板未配置完整、短信未启用或密钥未配置、阿里云接口返回失败、或未检索到 11 位有效手机号时，记录未发送/失败流水并提醒客户经理人工介入；不补发短信',
+                '发送请求 30 秒超时；任务中断且占用状态超过 5 分钟时核对流水：已成功则结束占用并关闭异常提醒；失败或结果未知且服务日未过时提醒人工确认，不自动重发'
               ],
-              dedupeRule: '基于 auto:escort_sms_failed:{sourceOrderNo}:pre_day:{YYYY-MM-DD} 去重，前一天仅触发 1 次即时报警。'
+              dedupeRule: '同一订单、批次和发送日仅生成一次；提醒保留到对应服务日结束，之后自动失效。'
             },
             {
               category: '陪诊服务',
@@ -631,13 +649,13 @@ export function registerAdminRoutes(
               target: '订单责任客户经理',
               content: '订单号: COD202609170056\n申请时间: 2026-09-16 14:20:00\n提醒内容: 陪诊人员没有第一次反馈信息，请关注！',
               technicalConditions: [
-                '服务日期（优先 fact_hy_pzrxx.BBQ_FW，无则取 AI 候选 escort_service_date）等于次日（tomorrow）',
-                '陪诊人员（优先 fact_hy_pzrxx.PZR，无则取 AI 候选 escort_name）已落实',
-                '【强前置门禁】：流水表 fact_hy_pz_sms_logs 中今日必须有该订单 pre_day 批次且 status="success" 的成功发送记录，未发送或发送失败（已报警）绝不重复误报',
+                '订单为有效状态、已关联责任客户经理、服务类型在陪诊反馈范围内且存在待处理/进行中陪诊步骤；从 fact_hy_pzrxx 同一条最新且 PZR 非空的记录读取 PZR 和 BBQ_FW，日期匹配次日',
+                '最新正式陪诊明细中的 PZR 非空；代码未校验人员字典',
+                '【强前置门禁】：流水表 fact_hy_pz_sms_logs 中今日必须有该订单、当前陪诊人和服务日期的 pre_day 成功发送记录；未发送或发送失败不生成未反馈提醒',
                 '当前时间到达 13:00（hours >= 13）',
-                '在陪诊反馈表 fact_hy_pzfk（feedback_type = "pre_day"）与原系统反馈表中均未查询到反馈确认记录'
+                '只取 fact_hy_pzfk 中当天零点后、当前陪诊人及服务日期的 pre_day 反馈；true/false 分别代表确认/拒绝，旧人、旧日期或旧批次反馈不参与判断'
               ],
-              dedupeRule: '基于 auto:escort_prev_day_unack:{sourceOrderNo}:{YYYY-MM-DD} 去重，同一订单在就诊前一天 13:00 仅触发 1 次。'
+              dedupeRule: '同一订单和反馈日期仅生成一次；收到反馈、服务日期结束或人工标记完成后关闭。'
             },
             {
               category: '陪诊服务',
@@ -646,24 +664,27 @@ export function registerAdminRoutes(
               target: '订单责任客户经理',
               content: '订单号: COD202609170072\n申请时间: 2026-09-16 16:40:00\n提醒内容: 陪诊人员反馈【无法出工】（原因：家中有急事无法出工），请立即处理！',
               technicalConditions: [
-                '服务日期（优先 fact_hy_pzrxx.BBQ_FW，无则取 AI 候选 escort_service_date）为次日（tomorrow）',
-                '陪诊反馈表 fact_hy_pzfk 收到前一天反馈（feedback_type = "pre_day"）且出工意向为否（will_attend = false）',
+                '订单处于有效状态、关联责任客户经理、服务类型在陪诊反馈范围内并存在有效陪诊步骤；从 fact_hy_pzrxx 同一条最新且 PZR 非空的记录读取 PZR 和 BBQ_FW，日期匹配次日',
+                'fact_hy_pzfk 中当天、当前陪诊人及服务日期的 pre_day 反馈 will_attend = false',
+                '反馈接口要求提交人员、正式服务日期和当前批次日期一致；符合上述条件时保存后立即触发提醒创建，定时扫描也会处理该反馈',
                 '提取反馈记录中的具体原因备注 remark，动态拼入告警文案'
               ],
-              dedupeRule: '基于 auto:escort_pre_day_reject:{sourceOrderNo}:{YYYY-MM-DD} 去重，收到拒单反馈时立即生成报警。'
+              dedupeRule: '同一订单和反馈日期仅生成一次；收到后续确认出工、人工标记完成或服务日结束后关闭。'
             },
             {
               category: '陪诊服务',
               name: '陪诊当天出工短信发送异常报警',
-              trigger: '今日就诊的陪诊订单，当天 07:00 发送出工打卡短信失败或未找到手机号',
+              trigger: '当日有正式陪诊安排的订单，07:00 短信未发送、发送失败或未找到有效手机号',
               target: '订单责任客户经理',
               content: '订单号: COD202609170089\n申请时间: 2026-09-16 11:05:00\n提醒内容: 陪诊当日出工打卡短信发送失败（原因：触发流控限流），请紧急人工联系陪诊人员！',
               technicalConditions: [
-                '当日有陪诊出工安排且陪诊人员已落实',
-                '每天 07:00 启动短信自动打卡下发批次（SMS_512530051）',
-                '若调用短信接口失败或未找到有效手机号，写入流水并立即生成紧急告警'
+                '从 fact_hy_pzrxx 同一条最新且 PZR 非空的记录读取 PZR 和 BBQ_FW；该记录的 BBQ_FW 须匹配当日，短信批次不从寰宇订单主表或 AI 候选回退服务日期',
+                '使用正式陪诊明细 fact_hy_pzrxx.PZR 的人员 ID 或姓名，在远端陪诊人员字典中按 ID 或姓名唯一精确匹配后取得手机号；不使用 AI 候选姓名或手机号',
+                '每天上海时间 07:00 执行一次批次；前一天和当天两套实际模板均须配置完整。模板未配置或错过时点时记录未执行并通知人工，不补发短信',
+                '模板未配置完整、短信未启用或密钥未配置、调用短信接口失败、或未找到有效手机号时，写入未发送/失败流水并生成紧急告警；不补发短信',
+                '发送请求 30 秒超时；任务中断且占用状态超过 5 分钟时核对流水：已成功则结束占用并关闭异常提醒；失败或结果未知且服务日未过时提醒人工确认，不自动重发'
               ],
-              dedupeRule: '基于 auto:escort_sms_failed:{sourceOrderNo}:same_day:{YYYY-MM-DD} 去重，当天仅触发 1 次即时报警。'
+              dedupeRule: '同一订单、批次和发送日仅生成一次；服务日结束后自动失效。'
             },
             {
               category: '陪诊服务',
@@ -672,13 +693,13 @@ export function registerAdminRoutes(
               target: '订单责任客户经理',
               content: '订单号: COD202609170089\n申请时间: 2026-09-16 11:05:00\n提醒内容: 陪诊人员没有第一次反馈信息，请关注！',
               technicalConditions: [
-                '服务日期（优先 fact_hy_pzrxx.BBQ_FW，无则取 AI 候选 escort_service_date）等于当日（today）',
-                '陪诊人员（优先 fact_hy_pzrxx.PZR，无则取 AI 候选 escort_name）已落实',
-                '【强前置门禁】：流水表 fact_hy_pz_sms_logs 中今日必须有该订单 same_day 批次且 status="success" 的成功发送记录',
+                '订单为有效状态、已关联责任客户经理、服务类型在陪诊反馈范围内且存在待处理/进行中陪诊步骤；从 fact_hy_pzrxx 同一条最新且 PZR 非空的记录读取 PZR 和 BBQ_FW，日期匹配当日',
+                '最新正式陪诊明细中的 PZR 非空；代码未校验人员字典',
+                '【强前置门禁】：流水表 fact_hy_pz_sms_logs 中今日必须有该订单、当前陪诊人和服务日期的 same_day 成功发送记录',
                 '当前时间到达 07:20（hours === 7 && minutes >= 20 或 hours > 7）',
-                '在陪诊反馈表 fact_hy_pzfk（feedback_type = "same_day"）与原系统中均无出工反馈记录'
+                '只取 fact_hy_pzfk 中当天零点后、当前陪诊人及服务日期的 same_day 反馈；true/false 分别代表确认/拒绝，旧人、旧日期或旧批次反馈不参与判断'
               ],
-              dedupeRule: '基于 auto:escort_same_day_unack:{sourceOrderNo}:{YYYY-MM-DD} 去重，同一订单在就诊当天 07:20 仅触发 1 次。'
+              dedupeRule: '同一订单和反馈日期仅生成一次；收到反馈、服务日期结束或人工标记完成后关闭。'
             },
             {
               category: '陪诊服务',
@@ -687,51 +708,52 @@ export function registerAdminRoutes(
               target: '订单责任客户经理',
               content: '订单号: COD202609170095\n申请时间: 2026-09-16 18:30:00\n提醒内容: 陪诊人员当天反馈【无法出工】（原因：突发身体不适），请紧急处理！',
               technicalConditions: [
-                '订单服务日期为当日（today）',
-                '当天反馈表 fact_hy_pzfk 中收到当日打卡拒单（feedback_type = "same_day" 且 will_attend = false）',
-                '最高优先级极速报警订单责任客户经理与现场督导'
+                '订单处于有效状态、关联责任客户经理、服务类型在陪诊反馈范围内并存在有效陪诊步骤；从 fact_hy_pzrxx 同一条最新且 PZR 非空的记录读取 PZR 和 BBQ_FW，日期匹配当日',
+                '当天反馈表 fact_hy_pzfk 收到当日打卡拒单（feedback_type = "same_day" 且 will_attend = false）',
+                '反馈接口要求提交人员、正式服务日期和当前批次日期一致；符合上述条件时保存后立即触发提醒创建，定时扫描也会处理该反馈；接收人为订单责任客户经理（assigned_employee_id）'
               ],
-              dedupeRule: '基于 auto:escort_same_day_reject:{sourceOrderNo}:{YYYY-MM-DD} 去重，收到当天拒单时即刻触发。'
+              dedupeRule: '同一订单和反馈日期仅生成一次；收到后续确认出工、人工标记完成或服务日结束后关闭。'
             },
             {
               category: '住院陪护',
               name: '确认护工开始时间提醒',
-              trigger: '客户入院后尚未确定护工进场时间，自激活起每满 2 天上午 09:00',
+              trigger: '护工开始时间和日期均未确定，从护工步骤激活日（缺失时按订单创建日）起每满 2 个日历日的周期日，09:00 后提醒；错过周期日不补建',
               target: '订单责任客户经理',
-              content: '订单号: COD202609150041\n申请时间: 2026-09-15 08:50:00\n提醒内容: 客户处于住院期间，请定期关注客户满意度情况！',
+              content: '订单号: COD202609150041\n申请时间: 2026-09-15 08:50:00\n提醒内容: 护工开始时间尚未确定，请跟进确认！',
               technicalConditions: [
-                '服务类型为住院护工协助，订单处于未完结状态',
-                '护工实际开始时间 care_start_time 仍为空（尚未确定）',
-                '自服务步骤激活起天数差 >= 2 天且满足 2 的倍数（每满 2 天）',
+                '服务类型为住院护工协助，护工步骤待处理或进行中，订单处于未取消/未完结状态且已关联责任客户经理',
+                '护工实际开始时间 care_start_time 和开始日期 care_start_date 均为空',
+                '基准取护工步骤 activated_at，缺失时取订单创建时间；仅在第 2、4、6……个日历日当天触发，错过周期日不补建',
                 '当前时间达到上午 09:00 后触发'
               ],
-              dedupeRule: '基于 auto:care_start_unassigned:{sourceOrderNo}:{YYYY-MM-DD} 去重，同一订单每 2 天在上午 09:00 仅提醒 1 次。'
+              dedupeRule: '同一订单复用 auto:care_start_unassigned:{sourceOrderNo} 一条提醒；每满 2 天进入新周期时更新并重新打开。步骤重新开始或基准时间变更时先关闭旧周期；开始日期补齐、步骤结束、订单取消或完结时自动关闭。'
             },
             {
               category: '住院陪护',
               name: '住院陪护结束前 2 工作日提醒',
-              trigger: '护工服务结束日前 2 个工作日（自动扣除法定节假日与周末）上午 09:00',
+              trigger: '按已维护的工作日日历，从护工服务结束日倒推 2 个工作日，当天 09:00 后提醒',
               target: '订单责任客户经理',
               content: '订单号: COD202609100019\n申请时间: 2026-09-10 15:20:00\n提醒内容: 客户出院时间到了，请关注客户后续行程！',
               technicalConditions: [
-                '获取订单护工服务结束日期 care_end_date',
-                '调用中国工作日日历算法 subtractWorkdays(care_end_date, 2)，精准扣除法定节假日与调休周末',
-                '当前日期达到该目标工作日且时间达到上午 09:00'
+                '仅扫描住院护工协助、护工步骤待处理或进行中、订单未取消/未完结且已关联责任客户经理的订单；先取寰宇主表 BBQ_QDFW，若为空再取 DATE_QDFW 作为结束日期；无法解析时关闭旧提醒',
+                '调用工作日日历算法 subtractWorkdays(care_end_date, 2)，扣除当前已维护的法定节假日与调休周末；后台每年 12 月 1 日至 31 日检查下一年度安排，已发布则同步并停止当年检查；未发布或异常时次日重试，12 月 31 日为当年最后一次检查',
+                '当前日期等于该目标工作日且时间达到上午 09:00；错过该日不补建'
               ],
-              dedupeRule: '基于 auto:care_end_notify:{sourceOrderNo} 去重，同一订单在结束前 2 工作日全局仅触发 1 次。'
+              dedupeRule: '按订单和服务结束日期去重；日期变更、清空、无法解析、服务日已过、步骤结束或订单取消/完结时关闭旧提醒。目标提前 2 个工作日仅生成一次。'
             }
           ],
           clientNotification: {
-            display: '电脑桌面右下角独立置顶悬浮弹窗（伴随清脆提示音，不被其他软件遮挡）',
+            display: '电脑主屏幕右下角独立置顶悬浮弹窗（始终置顶显示）',
+            validity: '关闭浮窗会记录当前提醒及周期版本已收起；新提醒、周期提醒进入新周期或延后时间到达且提醒仍有效时再次弹出。已收起的旧提醒不随列表变化或客户端重启重复弹出，仍可在待办中查看。一次关闭最多登记 500 条。',
             actions: [
-              { name: '点击单号 / 一键复制', detail: '点击单号可直接在后台工作台定位到该订单；点击复制图标可快速复制单号。' },
-              { name: '延迟 10 分钟', detail: '若员工正在通话或忙碌中，点击后系统将在 10 分钟后再次提醒。' },
-              { name: '标记已完成', detail: '员工核实并处理完毕后点击，该提醒归档并自动关闭弹窗。' }
+              { name: '点击单号 / 一键复制', detail: '点击单号会打开客户端工作台并填入单号搜索；点击复制图标可复制单号。' },
+              { name: '延迟 10 分钟', detail: '点击后提醒时间后移 10 分钟；到时若该提醒仍符合业务条件，再次弹窗。' },
+              { name: '标记已完成', detail: '将该条提醒标记为已完成并从待办中移除；一次性提醒不再重建，周期提醒仅在条件仍未解决且进入下一周期时重新提醒。' }
             ]
           },
           storage: {
             table: 'order_reminders',
-            fields: 'id, order_no, employee_id, type, content, remind_time, status, extra_data, created_at, updated_at'
+            fields: 'id, order_no, huanyu_order_no, employee_id, type, content, remind_time, status, notification_generation, extra_data, created_at, updated_at；浮窗收起记录另存 order_reminder_popup_dismissals'
           }
         }
       })

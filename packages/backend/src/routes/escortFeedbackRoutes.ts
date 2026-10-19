@@ -2,18 +2,23 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { PrismaClient } from '@prisma/client'
 import * as Minio from 'minio'
 import { listHuanyuEscorts } from '../db/remoteDictionary.js'
+import { createEscortRejectReminderForFeedback } from '../jobs/orderReminderSchedule.js'
+import { normalizeReminderDate, sameEscortId } from '../jobs/orderReminderRules.js'
 
 interface EscortFeedbackInfoQuery {
   orderNo?: string
   type?: string
+  pzrDetailId?: string
 }
 
 interface EscortFeedbackSubmitBody {
   orderNo: string
+  pzrDetailId?: string
   pzrId?: string
   pzrName?: string
   pzr?: string
   feedbackType: 'pre_day' | 'same_day'
+  serviceDate?: string
   willAttend: boolean
   screenshotUrl?: string
   remark?: string
@@ -34,7 +39,7 @@ export function registerEscortFeedbackRoutes(
   fastify.get<{ Querystring: EscortFeedbackInfoQuery }>(
     '/api/v1/escort-feedback/info',
     async (request: FastifyRequest<{ Querystring: EscortFeedbackInfoQuery }>, reply: FastifyReply) => {
-      const { orderNo, type = 'pre_day' } = request.query
+      const { orderNo, type = 'pre_day', pzrDetailId } = request.query
       if (!orderNo || !orderNo.trim()) {
         return reply.status(400).send({ error: 'orderNo 必填' })
       }
@@ -49,20 +54,42 @@ export function registerEscortFeedbackRoutes(
         include: { assignedEmployee: true }
       })
 
-      // 正式陪诊人和服务时间分别取最新有效记录，字段独立回退。
+      // 陪诊人、日期和明细编号必须来自同一条正式陪诊记录。
       const pzrRows = await prisma.$queryRawUnsafe<any[]>(`
-        SELECT
-          (SELECT "PZR" FROM "fact_hy_pzrxx"
-           WHERE ("DDBH" = $1 OR "DDBH" = $2)
-             AND "PZR" IS NOT NULL AND TRIM("PZR") != ''
-           ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC LIMIT 1) AS "PZR",
-          (SELECT "BBQ_FW" FROM "fact_hy_pzrxx"
-           WHERE ("DDBH" = $1 OR "DDBH" = $2)
-             AND "BBQ_FW" IS NOT NULL AND TRIM("BBQ_FW") != ''
-           ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC LIMIT 1) AS "BBQ_FW";
+        SELECT "ZJ" AS pzr_detail_id, "PZR", "BBQ_FW"
+        FROM "fact_hy_pzrxx"
+        WHERE ("DDBH" = $1 OR "DDBH" = $2)
+          AND NULLIF(TRIM("PZR"), '') IS NOT NULL
+        ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC;
       `, cleanOrderNo, order?.huanyuOrderNo || cleanOrderNo)
 
-      const dbPzr = pzrRows[0]
+      const shanghaiParts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
+      }).formatToParts(new Date())
+      const shanghaiValue = (key: string) => shanghaiParts.find((part) => part.type === key)?.value ?? ''
+      const shanghaiToday = `${shanghaiValue('year')}-${shanghaiValue('month')}-${shanghaiValue('day')}`
+      const shanghaiTomorrow = new Date(Date.parse(`${shanghaiToday}T00:00:00Z`) + 24 * 3600 * 1000).toISOString().slice(0, 10)
+      const requiredDate = type === 'same_day' ? shanghaiToday : shanghaiTomorrow
+      const escortDetails = pzrRows.filter((item) => normalizeReminderDate(item.BBQ_FW) === requiredDate).map((item) => ({
+        pzrDetailId: String(item.pzr_detail_id),
+        pzrId: String(item.PZR || '').trim(),
+        pzrName: String(item.PZR || '').trim(),
+        serviceDate: String(item.BBQ_FW || '').trim()
+      }))
+      if (!pzrDetailId && escortDetails.length > 1) {
+        return reply.send({ data: { requiresEscortSelection: true, escortDetails } })
+      }
+      if (!pzrDetailId && pzrRows.length > 0 && escortDetails.length === 0) {
+        return reply.status(409).send({ error: '当前反馈批次没有对应服务日期的陪诊明细' })
+      }
+      const dbPzr = pzrDetailId
+        ? pzrRows.find((item) => String(item.pzr_detail_id) === pzrDetailId)
+        : escortDetails.length === 1
+          ? pzrRows.find((item) => String(item.pzr_detail_id) === escortDetails[0].pzrDetailId)
+          : pzrRows[0]
+      if ((pzrDetailId && !dbPzr?.pzr_detail_id) || (!pzrDetailId && pzrRows.length > 1)) {
+        return reply.status(409).send({ error: '陪诊明细已变更，请重新打开反馈链接' })
+      }
 
       // 若正式库 fact_hy_pzrxx 没有，则取 AI 候选提取的数据（无需人工在页面点保存）
       let aiEscortName: string | null = null
@@ -124,19 +151,25 @@ export function registerEscortFeedbackRoutes(
         }
       }
 
-      const serviceDate = (dbPzr?.BBQ_FW ? String(dbPzr.BBQ_FW).trim() : null) || aiEscortDate || ''
+      const serviceDate = dbPzr?.PZR
+        ? String(dbPzr.BBQ_FW || '').trim()
+        : (aiEscortDate || '')
       const escortPhone = dictionaryPhone || aiEscortPhone || ''
       const sourceOrderNo = order?.sourceOrderNo || hy.BDQD_DDBH || cleanOrderNo
       const huanyuOrderNo = order?.huanyuOrderNo || hy.DDBH || ''
 
-      // 查询最新的一条同类型反馈记录
+      // 只显示当前陪诊人、服务日、当日批次的反馈，历史反馈不能阻止重新填写。
+      const normalizedServiceDate = normalizeReminderDate(serviceDate)
       const feedbacks = await prisma.$queryRawUnsafe<any[]>(`
         SELECT id, ddbh, pzr_id, pzr_name, feedback_type, will_attend, screenshot_url, remark, created_at
         FROM "fact_hy_pzfk"
         WHERE (ddbh = $1 OR ddbh = $2) AND feedback_type = $3
+          AND pzr_id = $4 AND service_date = $5
+          AND pzr_detail_id = $6
+          AND created_at >= ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date::timestamp AT TIME ZONE 'Asia/Shanghai')
         ORDER BY created_at DESC
         LIMIT 1;
-      `, sourceOrderNo, huanyuOrderNo, type)
+      `, sourceOrderNo, huanyuOrderNo, type, pzrId, normalizedServiceDate, dbPzr?.pzr_detail_id || '')
 
       const existingFeedback = feedbacks[0]
         ? {
@@ -158,6 +191,8 @@ export function registerEscortFeedbackRoutes(
           hospital,
           dept,
           pzrId,
+          pzrDetailId: dbPzr?.pzr_detail_id || '',
+          escortDetails,
           pzrName,
           pzr: pzrName,
           phone: escortPhone,
@@ -173,10 +208,10 @@ export function registerEscortFeedbackRoutes(
   fastify.post<{ Body: EscortFeedbackSubmitBody }>(
     '/api/v1/escort-feedback/submit',
     async (request: FastifyRequest<{ Body: EscortFeedbackSubmitBody }>, reply: FastifyReply) => {
-      const { orderNo, pzrId, pzrName, pzr, feedbackType, willAttend, screenshotUrl, remark } = request.body || ({} as EscortFeedbackSubmitBody)
+      const { orderNo, pzrDetailId, pzrId, pzrName, pzr, feedbackType, serviceDate, willAttend, screenshotUrl, remark } = request.body || ({} as EscortFeedbackSubmitBody)
 
-      if (!orderNo || !feedbackType) {
-        return reply.status(400).send({ error: 'orderNo 与 feedbackType 必填' })
+      if (!orderNo || !['pre_day', 'same_day'].includes(feedbackType) || typeof willAttend !== 'boolean') {
+        return reply.status(400).send({ error: '订单号、反馈批次和是否出工必须填写正确' })
       }
 
       if (willAttend === false && (!remark || !remark.trim())) {
@@ -184,17 +219,89 @@ export function registerEscortFeedbackRoutes(
       }
 
       const cleanOrderNo = orderNo.trim()
-      const effectiveType = feedbackType === 'same_day' ? 'same_day' : 'pre_day'
-      const effectivePzrId = pzrId || pzr || null
+      const effectiveType = feedbackType
+      const effectivePzrId = String(pzrId || pzr || '').trim()
       const effectivePzrName = pzrName || pzr || null
+      const normalizedServiceDate = normalizeReminderDate(serviceDate)
+      if (!pzrDetailId || !effectivePzrId || !normalizedServiceDate) {
+        return reply.status(400).send({ error: '陪诊人员和服务日期必须完整' })
+      }
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
+      }).formatToParts(new Date())
+      const value = (key: string) => parts.find((part) => part.type === key)?.value ?? ''
+      const sendYmd = `${value('year')}-${value('month')}-${value('day')}`
+      const expectedServiceDate = effectiveType === 'same_day'
+        ? sendYmd
+        : new Date(Date.parse(`${sendYmd}T00:00:00Z`) + 24 * 3600 * 1000).toISOString().slice(0, 10)
+      if (normalizedServiceDate !== expectedServiceDate) {
+        return reply.status(409).send({ error: '当前反馈批次与服务日期不符，请重新打开链接' })
+      }
+
+      // 链接打开后可能发生换人或改期，提交前必须再次核对正式信息。
+      const current = await prisma.$queryRawUnsafe<any[]>(`
+        SELECT o.source_order_no, p."ZJ" AS pzr_detail_id, NULLIF(TRIM(p."PZR"), '') AS pzr,
+               NULLIF(TRIM(p."BBQ_FW"), '') AS service_date
+        FROM orders o
+        LEFT JOIN LATERAL (
+          SELECT "ZJ", "PZR", "BBQ_FW" FROM "fact_hy_pzrxx" f
+          WHERE (f."DDBH" = o.source_order_no OR f."DDBH" = o.huanyu_order_no)
+            AND NULLIF(TRIM(f."PZR"), '') IS NOT NULL
+            AND f."ZJ" = $2
+          ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC LIMIT 1
+        ) p ON true
+        WHERE o.source_order_no = $1 OR o.huanyu_order_no = $1
+        LIMIT 1;
+      `, cleanOrderNo, pzrDetailId)
+      const currentOrder = current[0]
+      if (!currentOrder || currentOrder.pzr_detail_id !== pzrDetailId || !sameEscortId(currentOrder.pzr, effectivePzrId) || normalizeReminderDate(currentOrder.service_date) !== normalizedServiceDate) {
+        return reply.status(409).send({ error: '陪诊人员或服务日期已变更，请重新打开链接确认' })
+      }
 
       const result = await prisma.$queryRawUnsafe<any[]>(`
         INSERT INTO "fact_hy_pzfk" (
-          ddbh, pzr_id, pzr_name, feedback_type, will_attend, screenshot_url, remark, created_at
+          ddbh, pzr_id, pzr_detail_id, pzr_name, feedback_type, service_date, will_attend, screenshot_url, remark, created_at
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, NOW()
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()
         ) RETURNING id, created_at;
-      `, cleanOrderNo, effectivePzrId, effectivePzrName, effectiveType, Boolean(willAttend), screenshotUrl || null, remark ? remark.trim() : null)
+      `, currentOrder.source_order_no, effectivePzrId, pzrDetailId, effectivePzrName, effectiveType, normalizedServiceDate, willAttend, screenshotUrl || null, remark ? remark.trim() : null)
+
+      await prisma.$executeRawUnsafe(`
+        UPDATE order_reminders SET status = 'resolved', updated_at = NOW()
+        WHERE order_no = $1 AND status IN ('pending', 'unread')
+          AND extra_data->>'dedupe_key' = $2
+          AND extra_data->>'pzr' = $3 AND extra_data->>'serviceDate' = $4
+          AND extra_data->>'pzrDetailId' = $5;
+      `, currentOrder.source_order_no, `auto:escort_${effectiveType}_unack:${currentOrder.source_order_no}:${pzrDetailId}:${sendYmd}`, effectivePzrId, normalizedServiceDate, pzrDetailId)
+
+      if (willAttend === false) {
+        try {
+          await createEscortRejectReminderForFeedback(prisma, {
+            orderNo: currentOrder.source_order_no,
+            pzrDetailId,
+            feedbackType: effectiveType,
+            pzrId: effectivePzrId,
+            serviceDate: normalizedServiceDate,
+            remark: remark?.trim() || null,
+            logger: {
+              info: (message) => fastify.log.info(message),
+              warn: (message) => fastify.log.warn(message),
+              error: (message, err) => fastify.log.error({ err }, message)
+            }
+          })
+        } catch (err) {
+          // 反馈已经写入；提醒扫描仍会按原有周期处理，接口不因提醒写入异常而丢失反馈。
+          fastify.log.error({ err }, `[escortFeedback] 反馈已保存，但立即创建拒单提醒失败: ${cleanOrderNo}`)
+        }
+      } else {
+        await prisma.$executeRawUnsafe(`
+          UPDATE order_reminders SET status = 'resolved', updated_at = NOW()
+          WHERE order_no = $1 AND status IN ('pending', 'unread')
+            AND extra_data->>'dedupe_key' = $2
+            AND extra_data->>'pzr' = $3 AND extra_data->>'serviceDate' = $4
+            AND extra_data->>'pzrDetailId' = $5;
+        `, currentOrder.source_order_no, `auto:escort_${effectiveType}_reject:${currentOrder.source_order_no}:${pzrDetailId}:${sendYmd}`, effectivePzrId, normalizedServiceDate, pzrDetailId)
+      }
 
       fastify.log.info(
         `[escortFeedback] 订单 ${cleanOrderNo} 收到 ${effectiveType} 反馈: willAttend=${willAttend}, pzrId=${effectivePzrId}, pzrName=${effectivePzrName}`
@@ -252,6 +359,7 @@ export function registerEscortFeedbackRoutes(
     async (request: FastifyRequest<{ Querystring: EscortFeedbackInfoQuery }>, reply: FastifyReply) => {
       const orderNo = request.query.orderNo || ''
       const type = request.query.type || 'pre_day'
+      const pzrDetailId = request.query.pzrDetailId || ''
 
       const html = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -439,6 +547,11 @@ export function registerEscortFeedbackRoutes(
   </div>
 
   <div id="content" style="display: none;">
+    <div id="escortSelector" class="card" style="display: none;">
+      <div class="card-title">请选择本次陪诊安排</div>
+      <p style="font-size:13px;color:#6b7280;margin-bottom:10px;">此订单有多条陪诊明细，请按短信对应的服务人员和日期选择后再反馈。</p>
+      <select id="escortDetailSelect" class="form-input" style="width:100%;padding:12px;border:1px solid #d1d5db;border-radius:8px;background:white;"></select>
+    </div>
     <!-- 订单信息卡片 -->
     <div class="card">
       <div class="card-title">📋 陪诊任务信息</div>
@@ -518,6 +631,7 @@ export function registerEscortFeedbackRoutes(
   <script>
     const orderNo = "${orderNo}";
     const feedbackType = "${type}";
+    const pzrDetailId = "${pzrDetailId}";
     let willAttend = true;
     let uploadedScreenshotUrl = "";
     let orderInfo = null;
@@ -533,12 +647,36 @@ export function registerEscortFeedbackRoutes(
       }
 
       try {
-        const res = await fetch('/api/v1/escort-feedback/info?orderNo=' + encodeURIComponent(orderNo) + '&type=' + feedbackType);
+        const res = await fetch('/api/v1/escort-feedback/info?orderNo=' + encodeURIComponent(orderNo) + '&type=' + feedbackType + '&pzrDetailId=' + encodeURIComponent(pzrDetailId));
         const json = await res.json();
         document.getElementById('loading').style.display = 'none';
         document.getElementById('content').style.display = 'block';
 
         if (json.data) {
+          if (json.data.requiresEscortSelection) {
+            const selector = document.getElementById('escortSelector');
+            const select = document.getElementById('escortDetailSelect');
+            selector.style.display = 'block';
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = '请选择陪诊安排';
+            select.appendChild(placeholder);
+            json.data.escortDetails.forEach((item) => {
+              const option = document.createElement('option');
+              option.value = item.pzrDetailId;
+              option.textContent = (item.pzrName || '未命名陪诊人') + ' · ' + (item.serviceDate || '未填写服务日期') + ' · 明细 ' + item.pzrDetailId;
+              select.appendChild(option);
+            });
+            select.addEventListener('change', () => {
+              if (!select.value) return;
+              const url = new URL(window.location.href);
+              url.searchParams.set('pzrDetailId', select.value);
+              window.location.href = url.toString();
+            });
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('content').style.display = 'block';
+            return;
+          }
           orderInfo = json.data;
           document.getElementById('dispOrderNo').innerText = orderInfo.orderNo || '-';
           document.getElementById('dispCustomer').innerText = orderInfo.customerName || '-';
@@ -638,10 +776,12 @@ export function registerEscortFeedbackRoutes(
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             orderNo: orderNo || orderInfo?.orderNo,
+            pzrDetailId: orderInfo?.pzrDetailId,
             pzrId: orderInfo?.pzrId,
             pzrName: orderInfo?.pzrName,
             pzr: orderInfo?.pzr,
             feedbackType: feedbackType,
+            serviceDate: orderInfo?.serviceDate,
             willAttend: willAttend,
             screenshotUrl: uploadedScreenshotUrl,
             remark: remark

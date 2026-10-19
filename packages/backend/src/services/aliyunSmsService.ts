@@ -9,6 +9,7 @@ export interface AliyunSmsConfig {
   signName: string
   templatePreDay: string
   templateSameDay: string
+  templatesConfigured: boolean
 }
 
 export interface SendSmsParams {
@@ -49,13 +50,23 @@ export async function getSmsConfig(prisma?: PrismaClient, forceRefresh = false):
     }
   }
 
+  // 旧版本初始化时写入过示例模板号。没有显式保存标记的数据库值不能视为实际配置。
+  const useSavedTemplates = dbConfig.templatesConfigured === true
+  const templatePreDay = useSavedTemplates
+    ? String(dbConfig.templatePreDay || '').trim()
+    : String(env.aliyunSmsTemplatePreDay || '').trim()
+  const templateSameDay = useSavedTemplates
+    ? String(dbConfig.templateSameDay || '').trim()
+    : String(env.aliyunSmsTemplateSameDay || '').trim()
+
   const merged: AliyunSmsConfig = {
     enabled: dbConfig.enabled !== undefined ? Boolean(dbConfig.enabled) : false,
     accessKeyId: dbConfig.accessKeyId !== undefined && dbConfig.accessKeyId !== '' ? dbConfig.accessKeyId : (env.aliyunSmsAccessKeyId || ''),
     accessKeySecret: dbConfig.accessKeySecret !== undefined && dbConfig.accessKeySecret !== '' ? dbConfig.accessKeySecret : (env.aliyunSmsAccessKeySecret || ''),
     signName: dbConfig.signName || env.aliyunSmsSignName || '寰宇医道',
-    templatePreDay: dbConfig.templatePreDay || env.aliyunSmsTemplatePreDay || 'SMS_512665048',
-    templateSameDay: dbConfig.templateSameDay || env.aliyunSmsTemplateSameDay || 'SMS_512530051'
+    templatePreDay,
+    templateSameDay,
+    templatesConfigured: Boolean(templatePreDay && templateSameDay)
   }
 
   cachedSmsConfig = merged
@@ -67,13 +78,20 @@ export async function saveSmsConfig(
   newConfig: Partial<AliyunSmsConfig>
 ): Promise<AliyunSmsConfig> {
   const current = await getSmsConfig(prisma, true)
+  const enabled = newConfig.enabled !== undefined ? Boolean(newConfig.enabled) : current.enabled
+  const templatePreDay = newConfig.templatePreDay !== undefined ? String(newConfig.templatePreDay).trim() : current.templatePreDay
+  const templateSameDay = newConfig.templateSameDay !== undefined ? String(newConfig.templateSameDay).trim() : current.templateSameDay
+  if (enabled && (!templatePreDay || !templateSameDay)) {
+    throw new Error('启用短信前必须配置前一天和当天的实际模板代码')
+  }
   const updated: AliyunSmsConfig = {
-    enabled: newConfig.enabled !== undefined ? Boolean(newConfig.enabled) : current.enabled,
+    enabled,
     accessKeyId: newConfig.accessKeyId !== undefined ? String(newConfig.accessKeyId).trim() : current.accessKeyId,
     accessKeySecret: newConfig.accessKeySecret !== undefined ? String(newConfig.accessKeySecret).trim() : current.accessKeySecret,
     signName: newConfig.signName !== undefined ? String(newConfig.signName).trim() : current.signName,
-    templatePreDay: newConfig.templatePreDay !== undefined ? String(newConfig.templatePreDay).trim() : current.templatePreDay,
-    templateSameDay: newConfig.templateSameDay !== undefined ? String(newConfig.templateSameDay).trim() : current.templateSameDay
+    templatePreDay,
+    templateSameDay,
+    templatesConfigured: Boolean(templatePreDay && templateSameDay)
   }
 
   await prisma.$executeRawUnsafe(
@@ -116,6 +134,14 @@ export async function sendAliyunSms(
     }
   }
 
+  if (!params.templateCode?.trim()) {
+    return {
+      success: false,
+      code: 'ALIYUN_SMS_TEMPLATE_MISSING',
+      message: '未配置实际短信模板代码'
+    }
+  }
+
   const cleanPhone = (params.phoneNumbers || '').trim()
   if (!/^1\d{10}$/.test(cleanPhone)) {
     return {
@@ -154,7 +180,8 @@ export async function sendAliyunSms(
 
     const url = `https://dysmsapi.aliyuncs.com/?${canonicalizedQueryString}&Signature=${percentEncode(signature)}`
 
-    const response = await fetch(url, { method: 'GET' })
+    // 发送请求必须早于 5 分钟的 stale claim 回收窗口结束。
+    const response = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(30_000) })
     const data = (await response.json()) as any
 
     if (data && data.Code === 'OK') {
