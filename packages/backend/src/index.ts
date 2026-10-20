@@ -37,6 +37,7 @@ import { ensureBOrderFormTables } from './db/ensureBOrderFormTables.js'
 import { ensureReminderTables } from './db/ensureReminderTables.js'
 import { ensureSysSettingsTable } from './db/ensureSysSettingsTable.js'
 import { ensureTaikangHuanyuChannelMappingTable } from './db/ensureTaikangHuanyuChannelMappingTable.js'
+import { ensureOrderAttributionMismatchTable } from './db/ensureOrderAttributionMismatchTable.js'
 import { syncHuanyuOrderFromTaikang } from './huanyuOrderSync.js'
 import { pullHuanyuOrderFromMysqlByChannelOrderNo } from './huanyuMysqlPush.js'
 import { initializeOrderWorkflow } from './workflow/serviceWorkflow.js'
@@ -104,6 +105,26 @@ async function writeGreenPassHuanyuSyncLog(input: GreenPassHuanyuSyncLog): Promi
   } catch (error) {
     server.log.warn({ err: error, orderId: input.orderId, action: input.action }, '绿通寰宇同步日志写入失败')
   }
+}
+
+async function recordOrderAttributionMismatch(input: {
+  sourceOrderNo: string
+  storedEmployeeId: number
+  observedEmployeeId: number
+  observedTaikangAccount: string
+  observedTaikangUserId: number
+  batchId: string
+}): Promise<void> {
+  await prisma.$executeRaw`
+    INSERT INTO order_attribution_mismatches (
+      source_order_no, stored_employee_id, observed_employee_id,
+      observed_taikang_account, observed_taikang_user_id, batch_id
+    ) VALUES (
+      ${input.sourceOrderNo}, ${input.storedEmployeeId}, ${input.observedEmployeeId},
+      ${input.observedTaikangAccount}, ${input.observedTaikangUserId}, ${input.batchId}
+    )
+    ON CONFLICT (batch_id, source_order_no) DO NOTHING
+  `
 }
 
 /**
@@ -271,6 +292,7 @@ async function start() {
     await ensureSysSettingsTable(prisma, server.log)
     await loadChineseWorkdayCalendar(prisma)
     await ensureTaikangHuanyuChannelMappingTable(prisma)
+    await ensureOrderAttributionMismatchTable(prisma)
     await ensureBuckets()
 
     // 1. 注册 CORS 跨域插件
@@ -305,6 +327,7 @@ async function start() {
         const client = query?.client // 'ext' | 'tray'
         const employeeCode = normalizeEmployeeCode(query?.employeeCode)
         const taikangAccount = normalizeTaikangAccount(query?.taikangAccount)
+        const taikangUserId = Number(query?.taikangUserId)
 
         if (!client || (client !== 'ext' && client !== 'tray')) {
           server.log.warn('WS 连接请求缺少或包含无效 client 参数，已拒绝连接')
@@ -337,6 +360,11 @@ async function start() {
         }
 
         const employeeId = employee.id
+        const bindingStillMatches = async (): Promise<boolean> => {
+          if (client !== 'ext') return false
+          const currentBinding = await findEmployeeByTaikangAccount(prisma, taikangAccount)
+          return currentBinding.status === 'ok' && currentBinding.employee.id === employeeId
+        }
         const extInstanceId = client === 'ext'
           ? `${Date.now()}-${Math.random().toString(36).slice(2)}`
           : null
@@ -403,13 +431,55 @@ async function start() {
                 })
               }
             } else if (message.type === 'ORDERS_SYNCED') {
+              const requestId = typeof message.requestId === 'string' ? message.requestId : ''
+              const batchId = typeof message.batchId === 'string' ? message.batchId : ''
+              const accountMatches = client === 'ext' && message.protocolVersion === 2 &&
+                message.taikangAccount === taikangAccount && Number.isInteger(taikangUserId) && taikangUserId > 0 &&
+                Number(message.taikangUserId) === taikangUserId &&
+                !!requestId && !!batchId
+              if (!accountMatches || !Array.isArray(message.payload) || message.payload.length > 5000) {
+                socket.send(JSON.stringify({ type: 'ORDERS_SYNCED_ACK', requestId, ok: false, error: '采集账号或批次无效' }))
+                return
+              }
+              if (!await bindingStillMatches()) {
+                socket.send(JSON.stringify({ type: 'ORDERS_SYNCED_ACK', requestId, ok: false, error: '泰康账号的员工绑定已变化，请重新连接' }))
+                socket.close(1008, 'employee binding changed')
+                return
+              }
               server.log.info(`收到员工 ${employee.name} 同步的订单数据: ${message.payload.length} 条`)
               const orders = message.payload
               if (Array.isArray(orders)) {
-                const taikangAccount = typeof message.taikangAccount === 'string'
-                  ? message.taikangAccount.trim() || null
-                  : employee.taikangAccount
+                const acceptedPersonalOrderNos: string[] = []
+                let mismatchCount = 0
+                let mismatchRecordFailureCount = 0
+                const seenOrderNos = new Set<string>()
                 for (const orderData of orders) {
+                  const sourceOrderNo = typeof orderData?.orderId === 'string' ? orderData.orderId.trim() : ''
+                  if (!sourceOrderNo || seenOrderNos.has(sourceOrderNo) || (orderData.pool !== 'personal' && orderData.pool !== 'public')) {
+                    socket.send(JSON.stringify({ type: 'ORDERS_SYNCED_ACK', requestId, ok: false, error: '订单编号、池类型或去重校验失败' }))
+                    return
+                  }
+                  seenOrderNos.add(sourceOrderNo)
+                }
+                const recordMismatch = async (sourceOrderNo: string, storedEmployeeId: number): Promise<void> => {
+                  mismatchCount++
+                  try {
+                    await recordOrderAttributionMismatch({
+                      sourceOrderNo,
+                      storedEmployeeId,
+                      observedEmployeeId: employeeId,
+                      observedTaikangAccount: taikangAccount,
+                      observedTaikangUserId: taikangUserId,
+                      batchId
+                    })
+                    server.log.error({ sourceOrderNo, storedEmployeeId, observedEmployeeId: employeeId, taikangAccount, batchId }, '个人池订单归属不一致，仅跳过本单并已记录')
+                  } catch (error) {
+                    mismatchRecordFailureCount++
+                    server.log.error({ err: error, sourceOrderNo, batchId }, '归属不一致记录保存失败；本单仍拒绝改写，其他订单继续')
+                  }
+                }
+                for (const orderData of orders) {
+                  const sourceOrderNo = orderData.orderId.trim() as string
                   // 归属规则：
                   // - 个人池(pool=personal)：订单已申领到当前员工，assign 到 employeeId，
                   //   否则 trayapp"我的工作台"按 assignedEmployeeCode 过滤会查不到。
@@ -428,7 +498,9 @@ async function start() {
                     taikangWaitType: orderData.taikangWaitType ?? null,
                     taikangServState: orderData.taikangServState ?? null,
                     // 为历史回填保留抓单账号；用于 dim_bdyh.userid_ → CAPTION_ 的客户经理映射。
-                    taikangAccount
+                    taikangAccount,
+                    taikangUserId,
+                    collectionBatchId: pool === 'personal' ? batchId : null
                   }
                   const poolEnteredAt = parseTaikangPoolEnteredAt(orderData)
                   const sourceCategory = orderData.poolType === 'register' ? 'taikang_register' : 'taikang_green'
@@ -436,41 +508,77 @@ async function start() {
                   // 先取旧状态码，用于判断是否需要记一条状态变更历史
                   const existing = await prisma.order.findUnique({
                     where: {
-                      source_sourceOrderNo: { source: 'taikang', sourceOrderNo: orderData.orderId }
+                      source_sourceOrderNo: { source: 'taikang', sourceOrderNo }
                     },
-                    select: { orderState: true }
+                    select: { orderState: true, assignedEmployeeId: true }
                   })
 
-                  const saved = await prisma.order.upsert({
-                    where: {
-                      source_sourceOrderNo: {
-                        source: 'taikang',
-                        sourceOrderNo: orderData.orderId
+                  if (pool === 'personal' && existing?.assignedEmployeeId && existing.assignedEmployeeId !== employeeId) {
+                    await recordMismatch(sourceOrderNo, existing.assignedEmployeeId)
+                    continue
+                  }
+                  if (pool === 'public' && existing?.assignedEmployeeId) continue
+
+                  let saved
+                  if (existing) {
+                    const updated = await prisma.order.updateMany({
+                      where: {
+                        source: 'taikang', sourceOrderNo,
+                        ...(pool === 'personal'
+                          ? { OR: [{ assignedEmployeeId: null }, { assignedEmployeeId: employeeId }] }
+                          : { assignedEmployeeId: null })
+                      },
+                      data: {
+                        status: taikangStatus,
+                        orderState: newState,
+                        rawJson,
+                        sourceCategory,
+                        poolEnteredAt,
+                        assignedEmployeeId: pool === 'personal' ? employeeId : undefined
                       }
-                    },
-                    update: {
-                      status: taikangStatus,
-                      orderState: newState,
-                      rawJson,
-                      sourceCategory,
-                      poolEnteredAt,
-                      // 个人池：归属到当前员工。公共池：传 undefined = Prisma 不更新此字段，
-                      // 【不动】已有归属（避免泰康待申领池数据延迟把已申领的单抢回 null，
-                      // 否则工作台订单数会忽多忽少）。create 时公共池才设 null。
-                      assignedEmployeeId: pool === 'personal' ? employeeId : undefined
-                    },
-                    create: {
-                      source: 'taikang',
-                      sourceCategory,
-                      sourceOrderNo: orderData.orderId,
-                      customerName: orderData.patientName || '未知',
-                      status: taikangStatus,
-                      assignedEmployeeId: pool === 'personal' ? employeeId : null,
-                      orderState: newState,
-                      poolEnteredAt,
-                      rawJson
+                    })
+                    if (updated.count !== 1) {
+                      if (pool === 'public') continue
+                      const current = await prisma.order.findUnique({
+                        where: { source_sourceOrderNo: { source: 'taikang', sourceOrderNo } },
+                        select: { assignedEmployeeId: true }
+                      })
+                      if (current?.assignedEmployeeId && current.assignedEmployeeId !== employeeId) {
+                        await recordMismatch(sourceOrderNo, current.assignedEmployeeId)
+                        continue
+                      }
+                      server.log.warn({ sourceOrderNo, employeeId }, '订单写入期间发生并发变化，本单留待下一轮重试')
+                      continue
                     }
-                  })
+                    saved = await prisma.order.findUniqueOrThrow({ where: { source_sourceOrderNo: { source: 'taikang', sourceOrderNo } } })
+                  } else {
+                    try {
+                      saved = await prisma.order.create({ data: {
+                        source: 'taikang',
+                        sourceCategory,
+                        sourceOrderNo,
+                        customerName: orderData.patientName || '未知',
+                        status: taikangStatus,
+                        assignedEmployeeId: pool === 'personal' ? employeeId : null,
+                        orderState: newState,
+                        poolEnteredAt,
+                        rawJson
+                      } })
+                    } catch (error) {
+                      if ((error as { code?: string }).code !== 'P2002') throw error
+                      const concurrent = await prisma.order.findUnique({
+                        where: { source_sourceOrderNo: { source: 'taikang', sourceOrderNo } },
+                        select: { assignedEmployeeId: true }
+                      })
+                      if (pool === 'personal' && concurrent?.assignedEmployeeId && concurrent.assignedEmployeeId !== employeeId) {
+                        await recordMismatch(sourceOrderNo, concurrent.assignedEmployeeId)
+                        continue
+                      }
+                      server.log.warn({ sourceOrderNo, employeeId }, '订单已由并发请求写入，本单留待下一轮重试')
+                      continue
+                    }
+                  }
+                  if (pool === 'personal') acceptedPersonalOrderNos.push(sourceOrderNo)
 
                   // 新抓取订单落库即初始化运营主记录和必选步骤，不依赖员工打开详情页。
                   await initializeOrderWorkflow(prisma, saved.id)
@@ -512,6 +620,7 @@ async function start() {
                     }
                   }
                 }
+                socket.send(JSON.stringify({ type: 'ORDERS_SYNCED_ACK', requestId, ok: true, acceptedPersonalOrderNos, mismatchCount, mismatchRecordFailureCount }))
               }
             } else if (message.type === 'TAIKANG_ORDER_OPEN_RESULT') {
               // 只接收插件对“定位并打开泰康订单”指令的结果；不涉及任何表单写入。
@@ -572,7 +681,29 @@ async function start() {
               )
             } else if (message.type === 'ORDER_DETAIL_FETCHED') {
               // 插件抓完订单详情，把数据 + 附件回传
+              const requestId = typeof message.requestId === 'string' ? message.requestId : ''
+              const batchId = typeof message.batchId === 'string' ? message.batchId : ''
+              const validIdentity = client === 'ext' && message.protocolVersion === 2 && !!requestId && !!batchId &&
+                message.taikangAccount === taikangAccount && Number(message.taikangUserId) === taikangUserId
+              const detailAck = (ok: boolean, error?: string) => socket.send(JSON.stringify({
+                type: 'ORDER_DETAIL_ACK', requestId, ok, error
+              }))
+              if (!validIdentity) {
+                detailAck(false, '采集账号或批次无效')
+                return
+              }
+              if (!await bindingStillMatches()) {
+                detailAck(false, '泰康账号的员工绑定已变化，请重新连接')
+                socket.close(1008, 'employee binding changed')
+                return
+              }
               const payload = message.payload || {}
+              if (typeof payload.sourceOrderNo !== 'string' || !payload.sourceOrderNo.trim() ||
+                  !payload.detail?.recommendations || !Array.isArray(payload.attachments) ||
+                  typeof payload.fingerprint !== 'string') {
+                detailAck(false, '详情订单号、正文、附件或指纹无效')
+                return
+              }
               if (payload.error) {
                 server.log.warn(`员工 ${employee.name} 详情抓取失败: ${payload.error} (订单 ${payload.sourceOrderNo})`)
                 // 通知托盘
@@ -585,11 +716,23 @@ async function start() {
                 }
               } else {
                 try {
+                  const orderForAttribution = await prisma.order.findUnique({
+                    where: { source_sourceOrderNo: { source: 'taikang', sourceOrderNo: String(payload.sourceOrderNo || '') } },
+                    select: { assignedEmployeeId: true, rawJson: true }
+                  })
+                  const rawAttribution = orderForAttribution?.rawJson && typeof orderForAttribution.rawJson === 'object' && !Array.isArray(orderForAttribution.rawJson)
+                    ? orderForAttribution.rawJson as Record<string, unknown> : {}
+                  if (orderForAttribution?.assignedEmployeeId !== employeeId || rawAttribution.taikangAccount !== taikangAccount || rawAttribution.collectionBatchId !== batchId) {
+                    detailAck(false, '订单未由当前泰康账号的本批个人池确认')
+                    return
+                  }
                   const result = await saveOrderDetailBundle(prisma, minioClient, {
                     sourceOrderNo: payload.sourceOrderNo,
                     detail: payload.detail || {},
                     attachments: payload.attachments || [],
-                    fingerprint: payload.fingerprint
+                    fingerprint: payload.fingerprint,
+                    expectedEmployeeId: employeeId,
+                    expectedBatchId: batchId
                   })
                   // 详情抓取仍可补齐已关联寰宇订单中的空字段，但不能触发远程查询或生成新的 DDBH。
                   // 因此公共池订单（huanyuOrderNo 为空）打开详情也不会绕过个人池建单入口。
@@ -626,11 +769,14 @@ async function start() {
                       payload: { orderId: result.orderId, sourceOrderNo: payload.sourceOrderNo }
                     }))
                   }
+                  detailAck(true)
                 } catch (e) {
                   server.log.error('保存订单详情失败:', e as any)
+                  detailAck(false, e instanceof Error ? e.message : '保存详情失败')
                 }
               }
             } else if (message.type === 'SYNC_FINGERPRINTS') {
+              if (client === 'ext') return // 新版指纹只在详情完整保存时写入，旧版对账不再可信。
               // 插件把本地全量指纹推来对账：补齐后端缺失的 detailFingerprint，
               // 使换机/清缓存的新插件能从后端拿到完整基线、避免重抓。
               // 只有已成功入库详情的订单才允许补指纹；否则会形成"有指纹、没详情"，
@@ -659,7 +805,9 @@ async function start() {
                   source: 'taikang',
                   assignedEmployeeId: employeeId,
                   detailFingerprint: { not: null },
-                  detailFetchedAt: { not: null }
+                  detailFetchedAt: { not: null },
+                  // 旧版先写指纹再存附件；只有新版完整保存标记可作为可信基线。
+                  detailJson: { path: ['captureVersion'], equals: 2 }
                 },
                 select: { sourceOrderNo: true, detailFingerprint: true }
               })
@@ -667,7 +815,7 @@ async function start() {
               for (const r of rows) {
                 if (r.detailFingerprint) map[r.sourceOrderNo] = r.detailFingerprint
               }
-              socket.send(JSON.stringify({ type: 'FINGERPRINTS_BASELINE', payload: map }))
+              socket.send(JSON.stringify({ type: 'FINGERPRINTS_BASELINE', requestId: message.requestId, payload: map }))
               server.log.info(`下发指纹基线 ${rows.length} 条给员工 ${employee.name} (${client})`)
             } else {
               server.log.info(`收到来自员工 ${employee.name} (${client}) 的消息:`, message)

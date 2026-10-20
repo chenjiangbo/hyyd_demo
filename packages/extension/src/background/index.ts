@@ -16,8 +16,46 @@ type TaikangUser = {
 let employeeName: string | null = null;
 let backendWsUrl = DEFAULT_BACKEND_WS_URL;
 let taikangUser: TaikangUser | null = null;
+let socketAccount: TaikangUser | null = null;
 let connectionError: string | null = null;
 let reconnectDelayMs = 5_000;
+let socketReady = false;
+let connectionAttempt: Promise<void> | null = null;
+let collectorTabId: number | null = null;
+let collectorGeneration = crypto.randomUUID();
+let collectorHeartbeatAt = 0;
+const COLLECTOR_LEASE_MS = 180_000;
+type PendingMessage = { resolve: (value: any) => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout>; socket: WebSocket };
+const pendingMessages = new Map<string, PendingMessage>();
+const connectionWaiters = new Set<{ resolve: () => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+
+function failPending(reason: string): void {
+  for (const [id, pending] of pendingMessages) {
+    clearTimeout(pending.timer);
+    pending.reject(new Error(reason));
+    pendingMessages.delete(id);
+  }
+  for (const waiter of connectionWaiters) {
+    clearTimeout(waiter.timer);
+    waiter.reject(new Error(reason));
+    connectionWaiters.delete(waiter);
+  }
+}
+
+function resetCollector(): void {
+  collectorGeneration = crypto.randomUUID();
+  failPending('采集任务或登录账号已经变化');
+  socketReady = false;
+  employeeName = null;
+  taikangUser = null;
+  socketAccount = null;
+  if (ws) { const old = ws; ws = null; old.close(); }
+}
+
+function isCurrentCollector(tabId: number | undefined, generation: string): boolean {
+  return !!tabId && tabId === collectorTabId && generation === collectorGeneration &&
+    Date.now() - collectorHeartbeatAt < COLLECTOR_LEASE_MS;
+}
 
 async function loadConfig() {
   const r = await chrome.storage.local.get(['backendWsUrl']);
@@ -26,7 +64,8 @@ async function loadConfig() {
 
 // ─── WebSocket 连接 ──────────────────────────────────────────
 async function getTaikangUser(): Promise<TaikangUser | null> {
-  const tabs = await chrome.tabs.query({ url: '*://ccm.taikang.com/*' });
+  const allTabs = await chrome.tabs.query({ url: '*://ccm.taikang.com/*' });
+  const tabs = collectorTabId ? allTabs.filter((tab) => tab.id === collectorTabId) : allTabs;
   if (tabs.length === 0) {
     taikangUser = null;
     connectionError = '未检测到已打开的泰康系统页面';
@@ -59,20 +98,29 @@ async function getTaikangUser(): Promise<TaikangUser | null> {
   return null;
 }
 
-async function connectWebSocket() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-    return;
-  }
+async function connectWebSocket(): Promise<void> {
+  if (connectionAttempt) return connectionAttempt;
+  connectionAttempt = (async () => {
   const user = await getTaikangUser();
   if (!user) {
+    if (ws) resetCollector();
     return;
   }
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    if (socketAccount?.userName === user.userName && socketAccount?.userId === user.userId) return;
+    resetCollector();
+  }
 
+  taikangUser = user;
+  socketAccount = user;
   const url = `${backendWsUrl}?taikangAccount=${encodeURIComponent(user.userName)}&taikangUserId=${encodeURIComponent(String(user.userId))}&client=${CLIENT_TYPE}`;
   console.log(`[寰宇探针] 以泰康账号 ${user.userName} 连接后端`);
-  ws = new WebSocket(url);
+  const socket = new WebSocket(url);
+  ws = socket;
+  socketReady = false;
 
-  ws.onopen = () => {
+  socket.onopen = () => {
+    if (ws !== socket) return;
     console.log('[寰宇探针] 已连接后端');
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
@@ -84,13 +132,21 @@ async function connectWebSocket() {
     presenceTimer = setInterval(sendPresence, 10_000);
   };
 
-  ws.onmessage = (event) => {
+  socket.onmessage = (event) => {
+    if (ws !== socket) return;
     try {
       const data = JSON.parse(event.data);
       console.log('[寰宇探针] 收到后端消息:', data);
 
       if (data.type === 'connection_established' && data.employee) {
+        if (data.taikangAccount !== user.userName) { socket.close(); return; }
         employeeName = data.employee.name;
+        socketReady = true;
+        for (const waiter of connectionWaiters) {
+          clearTimeout(waiter.timer);
+          waiter.resolve();
+          connectionWaiters.delete(waiter);
+        }
         connectionError = null;
         reconnectDelayMs = 5_000;
         // 连接建立后主动拉一次基线（覆盖"content 早于 WS 连上时发的请求丢失"）
@@ -102,11 +158,21 @@ async function connectWebSocket() {
         connectionError = data.error || '当前泰康账号未绑定寰宇员工';
         reconnectDelayMs = 60_000;
         console.error('[寰宇探针] 员工绑定失败:', connectionError);
+        failPending(connectionError);
+      }
+
+      if ((data.type === 'ORDERS_SYNCED_ACK' || data.type === 'ORDER_DETAIL_ACK') && typeof data.requestId === 'string') {
+        const pending = pendingMessages.get(data.requestId);
+        if (pending && pending.socket === socket) {
+          clearTimeout(pending.timer);
+          pendingMessages.delete(data.requestId);
+          pending.resolve(data);
+        }
       }
 
       // 后端返回的指纹基线 → 转发给泰康标签页的 content script
       if (data.type === 'FINGERPRINTS_BASELINE') {
-        forwardBaselineToTabs(data.payload || {});
+        forwardBaselineToTabs(data.payload || {}, user.userName, data.requestId);
       }
 
       // 仅支持这一条显式白名单指令：按子订单号定位并打开订单。
@@ -119,9 +185,13 @@ async function connectWebSocket() {
     }
   };
 
-  ws.onclose = () => {
+  socket.onclose = () => {
+    if (ws !== socket) return;
     console.log(`[寰宇探针] 与后端断开，${reconnectDelayMs / 1000}s 后重连...`);
     ws = null;
+    socketReady = false;
+    socketAccount = null;
+    failPending('后台连接已断开');
     if (presenceTimer) {
       clearInterval(presenceTimer);
       presenceTimer = null;
@@ -129,9 +199,15 @@ async function connectWebSocket() {
     reconnectTimer = setTimeout(() => void connectWebSocket(), reconnectDelayMs);
   };
 
-  ws.onerror = (err) => {
+  socket.onerror = (err) => {
     console.error('[寰宇探针] WebSocket 错误:', err);
   };
+  })();
+  try {
+    await connectionAttempt;
+  } finally {
+    connectionAttempt = null;
+  }
 }
 
 // ─── PRESENCE 心跳 ───────────────────────────────────────────
@@ -149,38 +225,96 @@ async function sendPresence() {
   ws.send(JSON.stringify(payload));
 }
 
-// ─── Content Script & Popup 消息 ─────────────────────────────
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  switch (message.type) {
-    case 'SYNC_ORDERS':
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: 'ORDERS_SYNCED',
-          payload: message.payload,
-          taikangAccount: taikangUser?.userName,
-        }));
-        console.log(`[寰宇探针] 已上报 ${message.payload?.length ?? 0} 条订单`);
-      } else {
-        console.warn('[寰宇探针] 后端未连接，本次订单数据未上报');
-      }
-      break;
+async function ensureBackend(account: string, userId: number): Promise<WebSocket> {
+  await connectWebSocket();
+  if (socketAccount?.userName !== account || socketAccount.userId !== userId || !ws) {
+    throw new Error('后台连接账号与本轮采集账号不一致');
+  }
+  const socket = ws;
+  if (socketReady && socket.readyState === WebSocket.OPEN) return socket;
+  await new Promise<void>((resolve, reject) => {
+    const waiter = {
+      resolve, reject,
+      timer: setTimeout(() => {
+        connectionWaiters.delete(waiter);
+        reject(new Error('等待后台账号绑定超时'));
+      }, 20_000),
+    };
+    connectionWaiters.add(waiter);
+  });
+  if (ws !== socket || !socketReady) throw new Error('后台连接已切换');
+  return socket;
+}
 
-    case 'ORDER_DETAIL_FETCHED':
-      // content script 抓到的订单详情，转发给后端入库
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: 'ORDER_DETAIL_FETCHED',
-          payload: message.payload,
-          taikangAccount: taikangUser?.userName,
-        }));
-      } else {
-        console.warn('[寰宇探针] 后端未连接，本条详情未上报');
+async function forwardCollection(message: any, tabId: number | undefined): Promise<any> {
+  if (message.protocolVersion !== 2 || !isCurrentCollector(tabId, message.generation)) {
+    throw new Error('旧采集任务已失效');
+  }
+  if (typeof message.account !== 'string' || !Number.isInteger(message.userId) ||
+      typeof message.batchId !== 'string' || typeof message.requestId !== 'string') {
+    throw new Error('采集消息缺少账号或批次');
+  }
+  const current = await getTaikangUser();
+  if (current?.userName !== message.account || current.userId !== message.userId) {
+    resetCollector();
+    throw new Error('泰康实时账号与采集账号不一致');
+  }
+  const socket = await ensureBackend(message.account, message.userId);
+  if (!isCurrentCollector(tabId, message.generation)) throw new Error('采集任务在等待连接期间失效');
+  return new Promise((resolve, reject) => {
+    const requestId = message.requestId;
+    const timer = setTimeout(() => {
+      pendingMessages.delete(requestId);
+      reject(new Error('等待后台入库确认超时'));
+    }, 300_000);
+    pendingMessages.set(requestId, { resolve, reject, timer, socket });
+    try {
+      socket.send(JSON.stringify({
+        type: message.type === 'SYNC_ORDERS' ? 'ORDERS_SYNCED' : 'ORDER_DETAIL_FETCHED',
+        protocolVersion: 2,
+        taikangAccount: message.account,
+        taikangUserId: message.userId,
+        batchId: message.batchId,
+        requestId,
+        payload: message.payload,
+      }));
+    } catch (error) {
+      clearTimeout(timer);
+      pendingMessages.delete(requestId);
+      reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+}
+
+// ─── Content Script & Popup 消息 ─────────────────────────────
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  switch (message.type) {
+    case 'CLAIM_COLLECTOR': {
+      const tabId = sender.tab?.id;
+      if (!tabId) { sendResponse({ ok: false }); return false; }
+      if (collectorTabId !== tabId && (!collectorTabId || Date.now() - collectorHeartbeatAt >= COLLECTOR_LEASE_MS)) {
+        if (collectorTabId) resetCollector();
+        collectorTabId = tabId;
       }
-      break;
+      if (collectorTabId === tabId) collectorHeartbeatAt = Date.now();
+      sendResponse({ ok: collectorTabId === tabId, generation: collectorGeneration });
+      return false;
+    }
+    case 'INVALIDATE_COLLECTOR':
+      if (isCurrentCollector(sender.tab?.id, message.generation)) resetCollector();
+      sendResponse({ ok: true });
+      return false;
+    case 'SYNC_ORDERS':
+    case 'ORDER_DETAIL_FETCHED':
+      void forwardCollection(message, sender.tab?.id)
+        .then((ack) => sendResponse(ack))
+        .catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+      return true;
 
     case 'TAIKANG_TOKEN_STATUS':
       // content script 保活探测的结果，转发给后端供托盘展示
-      if (ws?.readyState === WebSocket.OPEN) {
+      if (isCurrentCollector(sender.tab?.id, message.generation) &&
+          message.account === socketAccount?.userName && socketReady && ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: 'TAIKANG_TOKEN_STATUS',
           ok: !!message.ok,
@@ -191,30 +325,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       break;
 
     case 'REQUEST_FINGERPRINT_BASELINE':
-      // content 启动时请求后端指纹基线；若 WS 未就绪，连接建立后会自动补拉
-      requestFingerprintBaseline();
+      if (isCurrentCollector(sender.tab?.id, message.generation)) {
+        void ensureBackend(message.account, message.userId)
+          .then(() => requestFingerprintBaseline(message.requestId)).catch(() => {});
+      }
       break;
 
     case 'SYNC_FINGERPRINTS':
-      // content 把本地全量指纹推给后端对账
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: 'SYNC_FINGERPRINTS',
-          payload: message.payload,
-          taikangAccount: taikangUser?.userName,
-        }));
-      }
+      // 旧版缓存不可证明详情完整，禁止回填指纹。
       break;
 
     case 'GET_STATUS': {
       void (async () => {
         if (!taikangUser) await getTaikangUser();
         sendResponse({
-          wsConnected: ws?.readyState === WebSocket.OPEN,
+          wsConnected: socketReady && ws?.readyState === WebSocket.OPEN,
           employeeName,
           backendWsUrl,
-          taikangAccount: taikangUser?.userName ?? null,
-          taikangNickName: taikangUser?.nickName ?? null,
+          taikangAccount: socketAccount?.userName ?? taikangUser?.userName ?? null,
+          taikangNickName: socketAccount?.nickName ?? taikangUser?.nickName ?? null,
           connectionError,
         });
       })();
@@ -276,29 +405,31 @@ async function forwardOpenTaikangOrderCommand(data: unknown): Promise<void> {
 }
 
 // ─── 指纹基线（增量起点） ────────────────────────────────────
-function requestFingerprintBaseline() {
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'GET_FINGERPRINTS', taikangAccount: taikangUser?.userName }));
+function requestFingerprintBaseline(requestId?: string) {
+  if (socketReady && ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'GET_FINGERPRINTS', taikangAccount: socketAccount?.userName, requestId }));
   }
 }
 
-async function forwardBaselineToTabs(payload: unknown) {
-  const tabs = await chrome.tabs.query({ url: '*://ccm.taikang.com/*' });
-  for (const t of tabs) {
-    if (t.id) {
-      chrome.tabs
-        .sendMessage(t.id, { type: 'FINGERPRINT_BASELINE', payload })
-        .catch(() => {/* tab 无 content script 时忽略 */});
-    }
-  }
+async function forwardBaselineToTabs(payload: unknown, account: string, requestId?: string) {
+  if (!collectorTabId || socketAccount?.userName !== account) return;
+  await chrome.tabs.sendMessage(collectorTabId, { type: 'FINGERPRINT_BASELINE', account, requestId, payload })
+    .catch(() => {/* 采集标签页已关闭 */});
 }
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (tabId !== collectorTabId) return;
+  collectorTabId = null;
+  collectorHeartbeatAt = 0;
+  resetCollector();
+});
 
 // ─── 监听配置变化 ────────────────────────────────────────────
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (changes.backendWsUrl) {
     backendWsUrl = changes.backendWsUrl?.newValue ?? backendWsUrl;
-    if (ws) ws.close();
+    resetCollector();
     void connectWebSocket();
   }
 });

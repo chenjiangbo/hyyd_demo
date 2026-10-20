@@ -25,6 +25,8 @@ export interface SaveDetailInput {
   detail: DetailBundle
   attachments: AttachmentInput[]
   fingerprint?: string // 插件算的状态指纹，存下来供增量基线比对
+  expectedEmployeeId?: number
+  expectedBatchId?: string
 }
 
 export interface SaveDetailResult {
@@ -34,9 +36,8 @@ export interface SaveDetailResult {
 }
 
 /**
- * 把插件回传的"订单详情 + 附件"写入 DB + MinIO。
- * - detail 整体写入 Order.detailJson
- * - 每张附件 base64 解码后 putObject 到 MinIO，OrderAttachment 按 [orderId, fileId] upsert
+ * 先逐张保存附件到 MinIO 与 DB，全部成功后才写详情完成时间和增量指纹。
+ * 重试时 OrderAttachment 按 [orderId, fileId] upsert。
  */
 export async function saveOrderDetailBundle(
   prisma: PrismaClient,
@@ -50,27 +51,19 @@ export async function saveOrderDetailBundle(
   if (!order) {
     throw new Error(`订单不存在: source=${source} sourceOrderNo=${input.sourceOrderNo}`)
   }
-
-  await prisma.order.update({
-    where: { id: order.id },
-    data: {
-      detailJson: input.detail as any,
-      detailFetchedAt: new Date(),
-      ...(input.fingerprint ? { detailFingerprint: input.fingerprint } : {})
-    }
-  })
+  if (input.expectedEmployeeId && order.assignedEmployeeId !== input.expectedEmployeeId) {
+    throw new Error('详情订单归属与采集员工不一致')
+  }
 
   let saved = 0
   let skipped = 0
   for (const att of input.attachments) {
     if (!att.base64 || !att.fileId) {
-      skipped++
-      continue
+      throw new Error('附件缺少图片内容或文件 ID')
     }
     const buf = Buffer.from(att.base64, 'base64')
     if (buf.length === 0) {
-      skipped++
-      continue
+      throw new Error('附件图片为空')
     }
     const ext = att.fileName.split('.').pop() || 'bin'
     const minioKey = `orders/${order.id}/${att.fileType}/${att.fileId}.${ext}`
@@ -103,6 +96,21 @@ export async function saveOrderDetailBundle(
     })
     saved++
   }
+
+  // 附件全部保存后才写详情完成时间和指纹；失败重试不会留下虚假的增量基线。
+  const completed = await prisma.order.updateMany({
+    where: {
+      id: order.id,
+      ...(input.expectedEmployeeId ? { assignedEmployeeId: input.expectedEmployeeId } : {}),
+      ...(input.expectedBatchId ? { rawJson: { path: ['collectionBatchId'], equals: input.expectedBatchId } } : {})
+    },
+    data: {
+      detailJson: { ...input.detail, captureVersion: 2 } as any,
+      detailFetchedAt: new Date(),
+      ...(input.fingerprint ? { detailFingerprint: input.fingerprint } : {})
+    }
+  })
+  if (completed.count !== 1) throw new Error('详情保存时订单归属发生变化')
 
   return { orderId: order.id, attachmentCount: saved, skipped }
 }

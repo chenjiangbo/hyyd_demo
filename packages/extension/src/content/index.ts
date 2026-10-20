@@ -5,8 +5,8 @@ console.log('[寰宇探针] Content Script 已注入');
 // ════════════════════════════════════════════════════════════
 // 个人池采集（接口直采，不解析 DOM）
 //
-// 工作流（每 5 分钟一轮，纯自动、只读）：
-//   1. getInfo 拿泰康 userId（缓存）
+// 工作流（每 2 分钟一轮，纯自动、只读）：
+//   1. getInfo 实时确认泰康账号
 //   2. 翻页拉全个人池列表 registerIndividualPool
 //   3. 上报列表给后端（基础信息 + 状态，后端 upsert）
 //   4. 对每条算「状态指纹」，与本地缓存比对：
@@ -28,6 +28,8 @@ const FETCH_FILE_TYPES = ['40', '41', '5000', '5001', '5002', '100', '99', '5010
 const POLL_INTERVAL_MS = 2 * 60 * 1000;
 const POLL_FIRST_DELAY_MS = 3000;
 const DETAIL_THROTTLE_MS = 3000; // 相邻订单详情抓取间隔，放慢到接近人工浏览，降低风控风险
+const DETAIL_REQUEST_TIMEOUT_MS = 30_000;
+const DETAIL_REQUEST_RETRY_DELAYS_MS = [800, 2000] as const;
 const PAGE_SIZE = 20;
 const MAX_PAGES = 50;
 
@@ -83,6 +85,23 @@ function findTaikangToken(): string | null {
 
 // ─── 通用请求 ────────────────────────────────────────────────
 class TaikangAuthError extends Error {}
+class TaikangSessionChanged extends Error {}
+class TaikangRequestTimeoutError extends Error {}
+
+type CollectionIdentity = {
+  userId: number;
+  userName: string;
+  nickName: string | null;
+  token: string;
+  generation: string;
+  batchId: string;
+};
+
+function assertSession(identity: CollectionIdentity): void {
+  if (collectorGeneration !== identity.generation || findTaikangToken() !== identity.token) {
+    throw new TaikangSessionChanged('泰康登录凭证已变化，本轮采集作废');
+  }
+}
 
 // 泰康鉴权失败时 HTTP 仍返回 200，靠业务 code 区分。实测失效码（success:false）：
 //   401101 ACCESS_DENIED        token 无效 / 被拒
@@ -102,12 +121,18 @@ async function apiRequest(
   base: string,
   path: string,
   init: RequestInit,
-  timeoutMs = 8000
+  timeoutMs = 8000,
+  identity?: CollectionIdentity
 ): Promise<any> {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  let timedOut = false;
+  const t = setTimeout(() => {
+    timedOut = true;
+    ctrl.abort();
+  }, timeoutMs);
   try {
-    const token = findTaikangToken();
+    if (identity) assertSession(identity);
+    const token = identity?.token ?? findTaikangToken();
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(init.headers as Record<string, string> | undefined),
@@ -127,17 +152,47 @@ async function apiRequest(
     if (!resp.ok) throw new Error(`HTTP ${resp.status} ${path}`);
     const j = await resp.json();
     classifyByPayload(j);
+    if (identity) assertSession(identity);
     return j;
+  } catch (error) {
+    if (timedOut && error instanceof Error && error.name === 'AbortError') {
+      throw new TaikangRequestTimeoutError(`泰康接口请求超时 (${timeoutMs}ms): ${path}`);
+    }
+    throw error;
   } finally {
     clearTimeout(t);
   }
 }
 
-const apiPost = (base: string, path: string, body: unknown, timeoutMs?: number) =>
-  apiRequest(base, path, { method: 'POST', body: JSON.stringify(body) }, timeoutMs);
+const apiPost = (base: string, path: string, body: unknown, timeoutMs?: number, identity?: CollectionIdentity) =>
+  apiRequest(base, path, { method: 'POST', body: JSON.stringify(body) }, timeoutMs, identity);
 
-const apiGet = (base: string, path: string, timeoutMs?: number) =>
-  apiRequest(base, path, { method: 'GET' }, timeoutMs);
+const apiGet = (base: string, path: string, timeoutMs?: number, identity?: CollectionIdentity) =>
+  apiRequest(base, path, { method: 'GET' }, timeoutMs, identity);
+
+async function apiPostDetailWithRetry(
+  path: string,
+  body: unknown,
+  identity: CollectionIdentity
+): Promise<any> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await confirmIdentity(identity);
+      return await apiPost(UNIFY_BASE, path, body, DETAIL_REQUEST_TIMEOUT_MS, identity);
+    } catch (error) {
+      if (error instanceof TaikangAuthError || error instanceof TaikangSessionChanged) throw error;
+      const isRetryable = error instanceof TaikangRequestTimeoutError ||
+        error instanceof TypeError ||
+        (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError'));
+      if (!isRetryable || attempt >= DETAIL_REQUEST_RETRY_DELAYS_MS.length) throw error;
+
+      const delayMs = DETAIL_REQUEST_RETRY_DELAYS_MS[attempt];
+      console.warn(`[寰宇探针] 详情接口 ${path} 临时失败，${delayMs}ms 后重试 (${attempt + 1}/${DETAIL_REQUEST_RETRY_DELAYS_MS.length})`, error);
+      await sleep(delayMs);
+      await confirmIdentity(identity);
+    }
+  }
+}
 
 // 子接口失败不阻塞主流程（但鉴权错误要往上抛，触发红条）
 async function safe<T>(p: Promise<T>): Promise<T | null> {
@@ -1835,23 +1890,23 @@ async function runTrackingPoolAnalysis(mode: TrackingAnalysisMode = 'all'): Prom
 }
 
 // ─── 用户身份（泰康 userId / userName） ──────────────────────
-let cachedUserId: number | null = null;
-let cachedUserName: string | null = null; // 接口入参用的登录名（如 syx）
-let cachedNickName: string | null = null; // 展示用（如 孙艳霞）
-
 async function getUser(): Promise<{ userId: number; userName: string; nickName: string | null } | null> {
-  if (cachedUserId && cachedUserName) {
-    return { userId: cachedUserId, userName: cachedUserName, nickName: cachedNickName };
-  }
+  const token = findTaikangToken();
+  if (!token) return null;
   const j = await apiGet(SYSTEM_BASE, 'system/user/getInfo');
-  cachedUserId = j?.data?.userid ?? null;
-  cachedUserName = j?.data?.username ?? null;
-  cachedNickName = j?.data?.nickName ?? j?.data?.sysUser?.nickName ?? cachedUserName;
-  if (cachedUserId && cachedUserName) {
-    console.log(`[寰宇探针] 泰康用户: ${cachedNickName} (userId=${cachedUserId}, userName=${cachedUserName})`);
-    return { userId: cachedUserId, userName: cachedUserName, nickName: cachedNickName };
+  if (findTaikangToken() !== token) throw new TaikangSessionChanged('读取泰康用户期间登录凭证变化');
+  const userId = Number(j?.data?.userid);
+  const userName = typeof j?.data?.username === 'string' ? j.data.username.trim() : '';
+  if (!Number.isInteger(userId) || userId <= 0 || !userName) return null;
+  return { userId, userName, nickName: j?.data?.nickName ?? j?.data?.sysUser?.nickName ?? userName };
+}
+
+async function confirmIdentity(identity: CollectionIdentity): Promise<void> {
+  assertSession(identity);
+  const j = await apiGet(SYSTEM_BASE, 'system/user/getInfo', undefined, identity);
+  if (Number(j?.data?.userid) !== identity.userId || j?.data?.username !== identity.userName) {
+    throw new TaikangSessionChanged('泰康账号已变化，本轮采集作废');
   }
-  return null;
 }
 
 // ─── 个人池列表 ──────────────────────────────────────────────
@@ -1861,11 +1916,12 @@ async function getUser(): Promise<{ userId: number; userName: string; nickName: 
 async function fetchPoolAll(
   path: string,
   baseBody: Record<string, unknown>,
-  poolType: 'register' | 'general'
+  poolType: 'register' | 'general',
+  identity: CollectionIdentity
 ): Promise<any[]> {
   const all: any[] = [];
   for (let pageNum = 1; pageNum <= MAX_PAGES; pageNum++) {
-    const j = await apiPost(UNIFY_BASE, path, { ...baseBody, pageNum, pageSize: PAGE_SIZE });
+    const j = await apiPost(UNIFY_BASE, path, { ...baseBody, pageNum, pageSize: PAGE_SIZE }, undefined, identity);
     const data = j?.data;
     const list: any[] = data?.list ?? [];
     for (const o of list) {
@@ -1873,23 +1929,25 @@ async function fetchPoolAll(
     }
     all.push(...list);
     if (!data?.hasNextPage) break;
+    if (pageNum === MAX_PAGES) throw new Error(`列表分页超过 ${MAX_PAGES} 页: ${path}`);
   }
   return all;
 }
 
 // 同时拉两套池：挂号协助(registerIndividualPool) + 其余绿通业务(individualPool)，
 // 按 subOrderNo 去重合并。同号不同池时优先保留挂号侧（rare 但偶发）。
-async function fetchAllOrders(userId: number, userName: string): Promise<any[]> {
+async function fetchAllOrders(identity: CollectionIdentity): Promise<any[]> {
+  const { userId, userName } = identity;
   const [register, others] = await Promise.all([
     fetchPoolAll(
       'medicalmanager/registerIndividualPool',
       { userId, serviceType: REGISTER_SERVICE_TYPE },
-      'register'
+      'register', identity
     ),
     fetchPoolAll(
       'medicalmanager/individualPool',
       { userId, userName },
-      'general'
+      'general', identity
     ),
   ]);
   const byOrderNo = new Map<string, any>();
@@ -1906,17 +1964,18 @@ async function fetchAllOrders(userId: number, userName: string): Promise<any[]> 
 // 公共池（待申领订单，所有泰康账号都能看到，无归属）。
 // 接口同样分两套：挂号协助 registerWaitingPool + 其余绿通 waitingPool。
 // 每台插件都采、不设主采集者；后端按 sourceOrderNo upsert 天然去重。
-async function fetchPublicOrders(userName: string): Promise<any[]> {
+async function fetchPublicOrders(identity: CollectionIdentity): Promise<any[]> {
+  const { userName } = identity;
   const [register, others] = await Promise.all([
     fetchPoolAll(
       'medicalmanager/registerWaitingPool',
       { provider: PROVIDER, serviceType: REGISTER_SERVICE_TYPE },
-      'register'
+      'register', identity
     ),
     fetchPoolAll(
       'medicalmanager/waitingPool',
       { provider: PROVIDER, userName },
-      'general'
+      'general', identity
     ),
   ]);
   const byOrderNo = new Map<string, any>();
@@ -1933,35 +1992,49 @@ async function fetchPublicOrders(userName: string): Promise<any[]> {
 // 统一只调 recommendations（所有业务返回结构一致的大对象）+ ecm/getImage。
 // 各业务专属辅助接口的数据基本都已包含在 recommendations 的子结构里，
 // 不再按业务类型分支调用，一套逻辑通吃所有绿通业务。
-async function fetchOrderDetail(userId: number, order: any): Promise<any> {
+async function fetchOrderDetail(identity: CollectionIdentity, order: any): Promise<any> {
+  const { userId } = identity;
   const subOrderNo = order.subOrderNo;
   const applyNo = order.applyNo;
   // 两种业务的入参不同（挂号协助用 caseStatus，其余用 orderState），列表项里都有，
   // 一并带上以兼容所有业务。
-  const recResp = await apiPost(UNIFY_BASE, 'medicalmanager/recommendations', {
+  await confirmIdentity(identity);
+  const recResp = await apiPostDetailWithRetry('medicalmanager/recommendations', {
     userId,
     subOrderNo,
     applyNo,
     orderState: order.orderState == null ? '' : String(order.orderState),
     caseStatus: order.caseStatus == null ? 'null' : String(order.caseStatus),
-  });
+  }, identity);
   const rec = recResp?.data ?? null;
   if (!rec) {
     throw new Error('EMPTY_DETAIL: recommendations 未返回详情数据');
   }
+  if (rec.subOrderNo && String(rec.subOrderNo) !== String(subOrderNo)) {
+    throw new Error('详情订单号与个人池订单号不一致');
+  }
 
   // 证件图片：每种 fileType 各拉一次，fileUrl 实际是 base64
-  const imgPages = await Promise.all(
-    FETCH_FILE_TYPES.map((ft) =>
-      safe(apiPost(UNIFY_BASE, 'ecm/getImage', { subOrderNo, fileType: ft, pageNum: 1, pageSize: 5 }))
-    )
-  );
+  await confirmIdentity(identity);
+  const imgPages = await Promise.all(FETCH_FILE_TYPES.map(async (ft) => {
+    const pages: any[] = [];
+    for (let pageNum = 1; pageNum <= MAX_PAGES; pageNum++) {
+      const page = await apiPostDetailWithRetry(
+        'ecm/getImage',
+        { subOrderNo, fileType: ft, pageNum, pageSize: 5 },
+        identity
+      );
+      pages.push(...(page?.data?.list ?? []));
+      if (!page?.data?.hasNextPage) return pages;
+    }
+    throw new Error(`图片分页超过 ${MAX_PAGES} 页: ${ft}`);
+  }));
   const attachments: any[] = [];
   imgPages.forEach((page, idx) => {
     const ft = FETCH_FILE_TYPES[idx];
-    const list: any[] = page?.data?.list ?? [];
+    const list: any[] = page;
     for (const item of list) {
-      if (!item?.fileUrl || !item?.fileId) continue;
+      if (!item?.fileUrl || !item?.fileId) throw new Error(`图片数据不完整: fileType=${ft}`);
       const { fileUrl, ...rawMeta } = item;
       attachments.push({
         fileType: ft,
@@ -1974,6 +2047,7 @@ async function fetchOrderDetail(userId: number, order: any): Promise<any> {
     }
   });
 
+  await confirmIdentity(identity);
   return {
     detail: { recommendations: rec },
     attachments,
@@ -2043,8 +2117,12 @@ function toReportedOrder(o: any) {
 // 状态指纹：状态码 + 状态名 + 关键时间戳，任一变化即重新抓详情。
 // 持久化到 chrome.storage.local，使 content script 重启（页面刷新/重开标签）
 // 后仍记得已抓过的订单及其状态，避免每次重启都全量重抓。
-const FINGERPRINT_STORAGE_KEY = 'orderFingerprints';
+const FINGERPRINT_STORAGE_PREFIX = 'orderFingerprints:v2:';
 const lastFingerprint = new Map<string, string>();
+let fingerprintAccount: string | null = null;
+let collectorGeneration: string | null = null;
+let pendingBaselineRequestId: string | null = null;
+let lastBaselineRequestId: string | null = null;
 
 // 指纹只用订单状态机字段。时间字段（mmgrApplyDate 等）经实测要么是批量固定值、
 // 要么是 null，对"判断订单是否更新"无贡献，故去掉。orderState 是状态机核心，
@@ -2055,10 +2133,14 @@ function fingerprint(o: any): string {
     .join('|');
 }
 
-async function loadFingerprints(): Promise<void> {
+async function loadFingerprints(account: string): Promise<void> {
+  if (fingerprintAccount === account) return;
+  lastFingerprint.clear();
+  fingerprintAccount = account;
   try {
-    const r = await chrome.storage.local.get(FINGERPRINT_STORAGE_KEY);
-    const obj = r[FINGERPRINT_STORAGE_KEY];
+    const key = FINGERPRINT_STORAGE_PREFIX + account;
+    const r = await chrome.storage.local.get(key);
+    const obj = r[key];
     if (obj && typeof obj === 'object') {
       for (const [k, v] of Object.entries(obj)) {
         if (typeof v === 'string') lastFingerprint.set(k, v);
@@ -2070,10 +2152,11 @@ async function loadFingerprints(): Promise<void> {
   }
 }
 
-async function saveFingerprints(): Promise<void> {
+async function saveFingerprints(account: string): Promise<void> {
+  if (fingerprintAccount !== account) return;
   try {
     await chrome.storage.local.set({
-      [FINGERPRINT_STORAGE_KEY]: Object.fromEntries(lastFingerprint),
+      [FINGERPRINT_STORAGE_PREFIX + account]: Object.fromEntries(lastFingerprint),
     });
   } catch (e) {
     console.warn('[寰宇探针] 保存指纹缓存失败:', e);
@@ -2085,60 +2168,106 @@ async function isCollectPaused(): Promise<boolean> {
   return cfg.collectPaused !== false;
 }
 
-// 把本地已知的全部指纹推给后端对账（不只新抓的）。
-// 否则：本地缓存命中而被跳过的订单，其指纹永远进不了后端，
-// 换机/清缓存时仍要重抓这些订单。
-function syncFingerprintsToBackend() {
-  if (lastFingerprint.size === 0) return;
-  chrome.runtime.sendMessage({
-    type: 'SYNC_FINGERPRINTS',
-    payload: Object.fromEntries(lastFingerprint),
-  });
+let polling = false;
+
+async function claimCollector(): Promise<string | null> {
+  const response = await chrome.runtime.sendMessage({ type: 'CLAIM_COLLECTOR' });
+  collectorGeneration = response?.ok && typeof response.generation === 'string'
+    ? response.generation : null;
+  return collectorGeneration;
 }
 
-let polling = false;
+async function sendCollected(type: 'SYNC_ORDERS' | 'ORDER_DETAIL_FETCHED', identity: CollectionIdentity, payload: unknown) {
+  assertSession(identity);
+  const response = await chrome.runtime.sendMessage({
+    type,
+    protocolVersion: 2,
+    account: identity.userName,
+    userId: identity.userId,
+    generation: identity.generation,
+    batchId: identity.batchId,
+    requestId: crypto.randomUUID(),
+    payload,
+  });
+  if (!response?.ok) {
+    await claimCollector();
+    assertSession(identity);
+    throw new Error(response?.error || '后台未确认保存');
+  }
+  return response;
+}
 
 async function pollOnce(): Promise<void> {
   if (polling) return;
   polling = true;
+  let identity: CollectionIdentity | null = null;
+  let sessionMonitor: ReturnType<typeof setInterval> | null = null;
   try {
     if (await isCollectPaused()) {
       console.log('[寰宇探针] 采集已暂停，跳过本轮');
       return; // finally 会复位 polling
     }
+    const generation = await claimCollector();
+    if (!generation) return;
+    const token = findTaikangToken();
+    if (!token) throw new TaikangAuthError('未找到泰康登录凭证');
     const user = await getUser();
+    if (token !== findTaikangToken()) throw new TaikangSessionChanged('获取账号时凭证变化');
     if (!user) {
       console.warn('[寰宇探针] 未获取到泰康用户信息，跳过本轮');
       return;
     }
-    const { userId, userName } = user;
+    identity = { ...user, token, generation, batchId: crypto.randomUUID() };
+    sessionMonitor = setInterval(() => {
+      if (!identity || findTaikangToken() === identity.token) return;
+      const oldGeneration = identity.generation;
+      collectorGeneration = null;
+      if (sessionMonitor) clearInterval(sessionMonitor);
+      sessionMonitor = null;
+      void chrome.runtime.sendMessage({ type: 'INVALIDATE_COLLECTOR', generation: oldGeneration }).catch(() => {});
+    }, 2000);
+    await loadFingerprints(user.userName);
+    const baselineRequestId = crypto.randomUUID();
+    pendingBaselineRequestId = baselineRequestId;
+    void chrome.runtime.sendMessage({
+      type: 'REQUEST_FINGERPRINT_BASELINE',
+      account: user.userName, userId: user.userId, generation, requestId: baselineRequestId,
+    }).catch(() => {});
 
     // 个人池(已申领，要抓详情)能成功拉到 = 登录态有效。登录判定只看个人池，
     // 详情阶段、公共池的个别失败都不上升为"全局过期"。
-    const personal = await fetchAllOrders(userId, userName);
+    const personal = await fetchAllOrders(identity);
     // 公共池(待申领，只上报列表不抓详情)，失败不影响个人池主流程
     let publicOrders: any[] = [];
     try {
-      publicOrders = await fetchPublicOrders(userName);
+      publicOrders = await fetchPublicOrders(identity);
     } catch (e) {
-      if (e instanceof TaikangAuthError) throw e;
+      if (e instanceof TaikangAuthError || e instanceof TaikangSessionChanged) throw e;
       console.warn('[寰宇探针] 公共池采集失败（忽略本轮公共池）:', e);
     }
-    onAuthOk();
+    await confirmIdentity(identity);
+    onAuthOk(identity);
 
     // 1. 上报全量列表（个人池 + 公共池）。同号去重，个人池优先（有归属、有详情）
     const byNo = new Map<string, any>();
     for (const o of [...publicOrders, ...personal]) {
       if (o?.subOrderNo) byNo.set(o.subOrderNo, o);
     }
-    chrome.runtime.sendMessage({
-      type: 'SYNC_ORDERS',
-      payload: [...byNo.values()].map(toReportedOrder),
-    });
+    const listAck = await sendCollected('SYNC_ORDERS', identity, [...byNo.values()].map(toReportedOrder));
+    await confirmIdentity(identity);
+    for (let waited = 0; waited < 10_000 && lastBaselineRequestId !== baselineRequestId; waited += 200) {
+      await sleep(200);
+      assertSession(identity);
+    }
+    if (lastBaselineRequestId !== baselineRequestId) {
+      // 后端基线不可用时全部重抓，不能凭本地缓存认定详情已完整保存。
+      lastFingerprint.clear();
+    }
+    const acceptedPersonal = new Set<string>(listAck.acceptedPersonalOrderNos ?? []);
 
     // 2. 增量筛选需要抓详情的订单（只对个人池——公共池待申领无详情可抓）
     const changed = personal.filter((o) => {
-      if (!o.subOrderNo) return false;
+      if (!o.subOrderNo || !acceptedPersonal.has(String(o.subOrderNo))) return false;
       return lastFingerprint.get(o.subOrderNo) !== fingerprint(o);
     });
     console.log(
@@ -2155,49 +2284,50 @@ async function pollOnce(): Promise<void> {
         break;
       }
       try {
+        await confirmIdentity(identity);
         const fp = fingerprint(o);
-        const bundle = await fetchOrderDetail(userId, o);
-        chrome.runtime.sendMessage({
-          type: 'ORDER_DETAIL_FETCHED',
-          payload: {
-            sourceOrderNo: o.subOrderNo,
-            detail: bundle.detail,
-            attachments: bundle.attachments,
-            fingerprint: fp, // 一并上报，后端存为增量基线
-          },
+        const bundle = await fetchOrderDetail(identity, o);
+        await confirmIdentity(identity);
+        await sendCollected('ORDER_DETAIL_FETCHED', identity, {
+          sourceOrderNo: o.subOrderNo,
+          detail: bundle.detail,
+          attachments: bundle.attachments,
+          fingerprint: fp,
         });
-        // 仅成功才更新指纹，失败下轮重试
+        // 只有后端确认完整保存后才推进指纹。
         lastFingerprint.set(o.subOrderNo, fp);
         savedSinceFlush++;
         console.log(
-          `[寰宇探针] 详情已交后台转发: ${o.subOrderNo} 附件=${bundle.attachments.length}`
+          `[寰宇探针] 详情已由后台确认: ${o.subOrderNo} 附件=${bundle.attachments.length}`
         );
         if (savedSinceFlush >= 10) {
-          await saveFingerprints();
+          await saveFingerprints(identity.userName);
           savedSinceFlush = 0;
         }
       } catch (e) {
         const err = e instanceof Error ? e.message : String(e);
         console.error(`[寰宇探针] 抓详情失败 ${o.subOrderNo}:`, err);
-        chrome.runtime.sendMessage({
-          type: 'ORDER_DETAIL_FETCHED',
-          payload: { sourceOrderNo: o.subOrderNo, error: err },
-        });
         // 若是鉴权类错误，可能 token 刚好过期，中断本轮剩余详情，等下轮重试
-        if (e instanceof TaikangAuthError) break;
+        if (e instanceof TaikangAuthError || e instanceof TaikangSessionChanged) throw e;
       }
       await sleep(DETAIL_THROTTLE_MS);
     }
-    // 收尾：把未落盘的指纹补存一次，并把全量指纹同步给后端对账
-    if (savedSinceFlush > 0) await saveFingerprints();
-    syncFingerprintsToBackend();
+    if (savedSinceFlush > 0) await saveFingerprints(identity.userName);
   } catch (e) {
     if (e instanceof TaikangAuthError) {
-      onAuthFail(e.message);
+      onAuthFail(e.message, identity);
+    } else if (e instanceof TaikangSessionChanged) {
+      console.warn('[寰宇探针] 登录状态变化，放弃本轮未完成数据');
+      if (identity) {
+        await chrome.runtime.sendMessage({ type: 'INVALIDATE_COLLECTOR', generation: identity.generation }).catch(() => {});
+      }
+      collectorGeneration = null;
+      setTimeout(() => void pollOnce(), 5000);
     } else {
       console.error('[寰宇探针] 轮询异常:', e);
     }
   } finally {
+    if (sessionMonitor) clearInterval(sessionMonitor);
     polling = false;
   }
 }
@@ -2211,17 +2341,18 @@ const AUTH_RETRY_DELAY_MS = 30_000;
 let authFailStreak = 0;
 let authRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
-function onAuthOk() {
+function onAuthOk(identity: CollectionIdentity) {
   authFailStreak = 0;
   if (authRetryTimer) {
     clearTimeout(authRetryTimer);
     authRetryTimer = null;
   }
   removeExpiredBanner();
-  chrome.runtime.sendMessage({ type: 'TAIKANG_TOKEN_STATUS', ok: true, at: Date.now() });
+  chrome.runtime.sendMessage({ type: 'TAIKANG_TOKEN_STATUS', ok: true, at: Date.now(),
+    account: identity.userName, generation: identity.generation });
 }
 
-function onAuthFail(reason: string) {
+function onAuthFail(reason: string, identity: CollectionIdentity | null) {
   authFailStreak++;
   console.warn(
     `[寰宇探针] 登录态校验失败 (${authFailStreak}/${AUTH_FAIL_THRESHOLD}): ${reason}`
@@ -2233,11 +2364,9 @@ function onAuthFail(reason: string) {
     return;
   }
   // 连续多轮确认失败，才认定真过期
-  cachedUserId = null;
-  cachedUserName = null;
-  cachedNickName = null;
   showExpiredBanner();
-  chrome.runtime.sendMessage({ type: 'TAIKANG_TOKEN_STATUS', ok: false, reason });
+  if (identity) chrome.runtime.sendMessage({ type: 'TAIKANG_TOKEN_STATUS', ok: false, reason,
+    account: identity.userName, generation: identity.generation });
 }
 
 // ─── 登录过期提示条（注入泰康页面顶部） ──────────────────────
@@ -2276,6 +2405,11 @@ function startPolling() {
   pollingStarted = true;
   setTimeout(() => void pollOnce(), POLL_FIRST_DELAY_MS);
   setInterval(() => void pollOnce(), POLL_INTERVAL_MS);
+  setInterval(() => {
+    void claimCollector().then((generation) => {
+      if (generation && !polling && fingerprintAccount === null) void pollOnce();
+    }).catch(() => { collectorGeneration = null; });
+  }, 15_000);
 }
 
 window.addEventListener('message', (event) => {
@@ -2314,7 +2448,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
-  if (msg?.type === 'FINGERPRINT_BASELINE' && msg.payload && typeof msg.payload === 'object') {
+  if (msg?.type === 'FINGERPRINT_BASELINE' && msg.account === fingerprintAccount &&
+      msg.requestId === pendingBaselineRequestId && msg.payload && typeof msg.payload === 'object') {
     const backendEntries = Object.entries(msg.payload).filter(([, v]) => typeof v === 'string');
     const backendKeys = new Set(backendEntries.map(([k]) => k));
 
@@ -2334,15 +2469,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     console.log(
       `[寰宇探针][后端] 载入指纹基线 ${backendEntries.length} 条（写入 ${upserted}，清理本地多余 ${removed}）`
     );
-    void saveFingerprints();
-    // 反向对账：把本地有、后端可能缺的指纹补推给后端
-    syncFingerprintsToBackend();
+    lastBaselineRequestId = msg.requestId;
+    void saveFingerprints(msg.account);
     startPolling();
   }
 
   if (msg?.type === 'CLEAR_LOCAL_CACHE') {
     lastFingerprint.clear();
-    void chrome.storage.local.remove(FINGERPRINT_STORAGE_KEY);
+    if (fingerprintAccount) void chrome.storage.local.remove(FINGERPRINT_STORAGE_PREFIX + fingerprintAccount);
     console.log('[寰宇探针][本地缓存] 已清理订单指纹缓存');
   }
 
@@ -2460,9 +2594,5 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 });
 
-// 先加载本地缓存，再向后端请求基线；基线到达或 5s 兜底后开始轮询。
-void (async () => {
-  await loadFingerprints();
-  chrome.runtime.sendMessage({ type: 'REQUEST_FINGERPRINT_BASELINE' });
-  setTimeout(startPolling, 5000);
-})();
+// 账号在首轮实时确认后才能加载相应的指纹缓存。
+setTimeout(startPolling, 5000);

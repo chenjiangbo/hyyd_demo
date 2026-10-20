@@ -72,6 +72,22 @@ model Order {
   @@map("orders")
 }
 
+// 个人池订单与后台已有归属不一致时留痕；不修改原订单归属。
+model OrderAttributionMismatch {
+  id                     Int       @id @default(autoincrement())
+  sourceOrderNo          String    @map("source_order_no")
+  storedEmployeeId       Int       @map("stored_employee_id")
+  observedEmployeeId     Int       @map("observed_employee_id")
+  observedTaikangAccount String    @map("observed_taikang_account")
+  observedTaikangUserId  Int       @map("observed_taikang_user_id")
+  batchId                String    @map("batch_id")
+  observedAt             DateTime  @default(now()) @map("observed_at")
+
+  @@unique([batchId, sourceOrderNo])
+  @@index([observedAt(sort: Desc)])
+  @@map("order_attribution_mismatches")
+}
+
 model ApplicationBrief {
   id              Int       @id @default(autoincrement())
   applicationNo   String    @unique @map("application_no")
