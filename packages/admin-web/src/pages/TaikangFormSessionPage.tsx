@@ -65,6 +65,20 @@ export default function TaikangFormSessionPage(): React.JSX.Element {
   })
   const rows = events.data?.pages.flatMap((page) => page.items) ?? []
   const missingSequence = rows.findIndex((event, index) => event.sequence !== (index ? rows[index - 1]!.sequence + 1 : 1))
+  const eventsBySequence = new Map(rows.map((event) => [event.sequence, event]))
+  const screenshotsByEvent = new Map<number, TaikangFormEvent[]>()
+  const attachedScreenshotIds = new Set<string>()
+  for (const event of rows) {
+    if (event.kind !== 'screenshot') continue
+    const relatedSequence = event.payload.relatedSequence
+    if (typeof relatedSequence !== 'number' || !Number.isSafeInteger(relatedSequence) ||
+        !eventsBySequence.has(relatedSequence) || eventsBySequence.get(relatedSequence)?.kind === 'screenshot') continue
+    const attached = screenshotsByEvent.get(relatedSequence) ?? []
+    attached.push(event)
+    screenshotsByEvent.set(relatedSequence, attached)
+    attachedScreenshotIds.add(event.id)
+  }
+  const timelineRows = rows.filter((event) => !attachedScreenshotIds.has(event.id))
 
   const download = async (): Promise<void> => {
     if (!session.data) return
@@ -121,8 +135,8 @@ export default function TaikangFormSessionPage(): React.JSX.Element {
       ) : (
         <>
           <div className="border-l-2 border-line ml-2 space-y-2">
-            {rows.map((event) => (
-              <details key={event.id} open={event.kind === 'screenshot'} className="ml-4 border border-line bg-surface rounded p-3 group">
+            {timelineRows.map((event) => (
+              <details key={event.id} open={event.kind === 'screenshot' || screenshotsByEvent.has(event.sequence)} className="ml-4 border border-line bg-surface rounded p-3 group">
                 <summary className="cursor-pointer list-none flex flex-wrap gap-2 items-baseline text-sm">
                   <span className="font-mono text-xs text-fg-subtle">#{event.sequence}</span>
                   <span className="text-xs text-fg-muted">{fmtTimeFull(event.occurredAt)}</span>
@@ -136,7 +150,22 @@ export default function TaikangFormSessionPage(): React.JSX.Element {
                     onOpen={() => setPreviewImage(`/api/v1/admin/taikang-form-sessions/${encodeURIComponent(id)}/events/${encodeURIComponent(event.id)}/image`)}
                   />
                 )}
-                {event.kind !== 'screenshot' && <pre className="mt-3 p-3 bg-surface-2 text-xs leading-relaxed overflow-auto max-h-[480px] whitespace-pre-wrap break-all">{JSON.stringify(event.payload, null, 2)}</pre>}
+                {screenshotsByEvent.get(event.sequence)?.map((screenshot) => (
+                  <div key={screenshot.id} className="mt-3">
+                    <div className="text-xs text-fg-muted">截图 #{screenshot.sequence} · {fmtTimeFull(screenshot.occurredAt)}</div>
+                    <ScreenshotThumbnail
+                      url={`/api/v1/admin/taikang-form-sessions/${encodeURIComponent(id)}/events/${encodeURIComponent(screenshot.id)}/image`}
+                      sequence={screenshot.sequence}
+                      onOpen={() => setPreviewImage(`/api/v1/admin/taikang-form-sessions/${encodeURIComponent(id)}/events/${encodeURIComponent(screenshot.id)}/image`)}
+                    />
+                  </div>
+                ))}
+                {event.kind !== 'screenshot' && (screenshotsByEvent.has(event.sequence) ? (
+                  <details className="mt-3 text-xs">
+                    <summary className="cursor-pointer text-fg-muted">查看事件数据</summary>
+                    <pre className="mt-2 p-3 bg-surface-2 leading-relaxed overflow-auto max-h-[480px] whitespace-pre-wrap break-all">{JSON.stringify(event.payload, null, 2)}</pre>
+                  </details>
+                ) : <pre className="mt-3 p-3 bg-surface-2 text-xs leading-relaxed overflow-auto max-h-[480px] whitespace-pre-wrap break-all">{JSON.stringify(event.payload, null, 2)}</pre>)}
               </details>
             ))}
           </div>
