@@ -1,12 +1,22 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
 // 暴露给渲染进程的最小 API
 const api = {
+  showWindow: () => ipcRenderer.send('window:show'),
   hideWindow: () => ipcRenderer.send('window:hide'),
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
   requestWindowClose: () => ipcRenderer.invoke('window:request-close'),
   quitApp: () => ipcRenderer.send('app:quit'),
+  hidePet: () => ipcRenderer.send('pet:hide'),
+  getPathForFile: (file: File): string => webUtils.getPathForFile(file),
+  petDropFiles: (paths: string[]) => ipcRenderer.invoke('pet:drop-files', paths),
+  petSelectOrder: (orderId: number) => ipcRenderer.invoke('pet:select-order', orderId),
+  onPetStatus: (cb: (status: { state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[] }) => void): (() => void) => {
+    const listener = (_e: unknown, status: { state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[] }): void => cb(status)
+    ipcRenderer.on('pet:status', listener)
+    return () => ipcRenderer.removeListener('pet:status', listener)
+  },
   // 自绘标题栏：最大化切换 + 查询是否最大化 + 订阅状态变化
   maximizeToggle: () => ipcRenderer.send('window:maximize-toggle'),
   isMaximized: (): Promise<boolean> => ipcRenderer.invoke('window:is-maximized'),

@@ -51,6 +51,7 @@ import {
 import { previewHuanyuMasterSave, commitHuanyuMasterSave, type MasterSaveCreation, type MasterSaveResolution } from '../services/huanyuMasterSave.js'
 import { requestAbiRefund } from '../services/abiRefundService.js'
 import { scheduleOrderIdCardOcr } from '../services/orderIdCardOcr.js'
+import { analyzeRegistrationProof } from '../services/registrationProofService.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   CreateOrderPayload,
@@ -4933,6 +4934,26 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
   // ════════════════════════════════════════════════════════════
 
   const MATERIAL_BUCKET = 'materials'
+
+  // 浮动精灵：图片先识别并返回订单候选，确认归属后再调用现有素材接口。
+  fastify.post<{
+    Body: { mimeType?: string; base64?: string }
+  }>('/api/v1/registration-proof/analyze', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const mimeType = typeof request.body?.mimeType === 'string' ? request.body.mimeType.trim() : ''
+    const base64 = typeof request.body?.base64 === 'string' ? request.body.base64.trim() : ''
+    if (!mimeType || !base64) return reply.status(400).send({ error: '图片需要 mimeType + base64' })
+    if (!/^image\/(png|jpe?g|webp|bmp|gif)$/i.test(mimeType)) {
+      return reply.status(400).send({ error: '当前只支持图片文件' })
+    }
+    try {
+      const result = await analyzeRegistrationProof(prisma, `data:${mimeType};base64,${base64}`, request.employee.id)
+      return reply.send({ data: result })
+    } catch (error: any) {
+      request.log.error(error, '挂号凭证识别失败')
+      return reply.status(502).send({ error: `挂号凭证识别失败: ${error?.message || String(error)}` })
+    }
+  })
 
   fastify.post<{
     Params: { id: string }

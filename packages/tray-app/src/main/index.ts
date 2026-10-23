@@ -1,6 +1,6 @@
-import { app, shell, BrowserWindow, Tray, Menu, nativeImage, ipcMain, clipboard, dialog, type MessageBoxReturnValue } from 'electron'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { app, shell, BrowserWindow, Tray, Menu, nativeImage, ipcMain, clipboard, dialog, screen, type MessageBoxReturnValue } from 'electron'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'fs'
+import { extname, join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { CaptureSidecarClient } from './capture-sidecar-client'
@@ -8,6 +8,7 @@ import { loadRootEnv } from './runtime-env'
 import { MaterialStore } from './material-store'
 import { MaterialSyncWorker } from './material-sync'
 import { setupReminderIPC } from './reminder-window'
+import { PetIntakeService, type PetIntakeResult } from './pet-intake-service'
 
 loadRootEnv()
 
@@ -20,14 +21,17 @@ app.setAppUserModelId('com.huanyu.trayapp')
 }
 
 let mainWindow: BrowserWindow | null = null
+let petWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
 let closePromptInFlight = false
-const launchHidden = process.argv.includes('--hidden')
 const captureSidecar = new CaptureSidecarClient()
 // 现场采集素材的本地落地 + 异步同步：粘贴→落 sqlite/文件→worker 上传后端
 const materialStore = new MaterialStore()
 const materialSync = new MaterialSyncWorker(materialStore)
+const petIntake = new PetIntakeService()
+
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'])
 
 type CloseBehavior = 'ask' | 'minimize' | 'quit'
 
@@ -142,6 +146,54 @@ function showMainWindow(): void {
   createWindow()
 }
 
+function showPetWindow(): void {
+  if (!petWindow || petWindow.isDestroyed()) {
+    createPetWindow()
+    return
+  }
+  petWindow.showInactive()
+}
+
+function createPetWindow(): void {
+  if (petWindow && !petWindow.isDestroyed()) return
+
+  petWindow = new BrowserWindow({
+    width: 168,
+    height: 218,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    alwaysOnTop: true,
+    movable: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false,
+      backgroundThrottling: false
+    }
+  })
+
+  petWindow.setAlwaysOnTop(true, 'floating')
+  petWindow.setMenuBarVisibility(false)
+  petWindow.on('closed', () => { petWindow = null })
+  petWindow.once('ready-to-show', () => {
+    const display = screen.getPrimaryDisplay()
+    const area = display.workArea
+    petWindow?.setPosition(area.x + area.width - 190, area.y + 24)
+    petWindow?.showInactive()
+  })
+
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    petWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/pet.html`)
+  } else {
+    petWindow.loadFile(join(__dirname, '../renderer/pet.html'))
+  }
+}
+
 // 登录态用小窗（聚焦工号输入），登录后放大到工作台尺寸。两套尺寸都居中显示。
 const LOGIN_SIZE = { width: 960, height: 640 }
 const MAIN_SIZE = { width: 1320, height: 880 }
@@ -172,9 +224,8 @@ function createWindow(): void {
     }
   })
 
-  mainWindow.on('ready-to-show', () => {
-    if (!launchHidden) mainWindow?.show()
-  })
+  // v2 renderer 根据是否存在登录会话决定显示登录窗口还是继续隐藏工作台。
+  // 这样已有会话的开机自启只留下托盘和浮动精灵。
 
   // 关闭窗口时按用户偏好处理：首次询问，可记住最小化到托盘或直接退出。
   mainWindow.on('close', (e) => {
@@ -214,6 +265,7 @@ function createTray(): void {
 
   const contextMenu = Menu.buildFromTemplate([
     { label: '显示工作台', click: showMainWindow },
+    { label: '显示浮动精灵', click: showPetWindow },
     { type: 'separator' },
     {
       label: '退出',
@@ -251,6 +303,7 @@ if (!gotLock) {
       writeWindowPreferences(prefs)
       return readWindowPreferences()
     })
+    ipcMain.on('window:show', () => mainWindow?.show())
     ipcMain.on('window:hide', () => mainWindow?.hide())
     ipcMain.on('window:minimize', () => mainWindow?.minimize())
     ipcMain.on('window:maximize-toggle', () => {
@@ -264,6 +317,44 @@ if (!gotLock) {
     ipcMain.on('app:quit', () => {
       isQuitting = true
       app.quit()
+    })
+    ipcMain.on('pet:hide', () => petWindow?.hide())
+    ipcMain.handle('pet:drop-files', async (_e, paths: unknown): Promise<PetIntakeResult> => {
+      if (!Array.isArray(paths) || paths.length === 0) {
+        return { state: 'unknown', message: '嗯…我没有接到文件' }
+      }
+      if (paths.length !== 1 || typeof paths[0] !== 'string') {
+        return { state: 'unknown', message: '一次先给我一张图片吧' }
+      }
+      const filePath = paths[0]
+      try {
+        if (!existsSync(filePath) || !statSync(filePath).isFile()) {
+          return { state: 'unknown', message: '这个文件已经找不到了' }
+        }
+      } catch (error) {
+        console.error('[pet] 读取拖入文件失败', error)
+        return { state: 'unknown', message: '这个文件现在读不到，我再试一次吧' }
+      }
+      if (!IMAGE_EXTENSIONS.has(extname(filePath).toLowerCase())) {
+        return { state: 'unknown', message: '嗯…这个文件我暂时还不会处理' }
+      }
+      try {
+        const result = await petIntake.processFile(filePath)
+        petWindow?.webContents.send('pet:status', result)
+        return result
+      } catch (error) {
+        const message = (error as Error).message
+        console.error('[pet] 图片处理失败', error)
+        const result = { state: 'unknown' as const, message: `这张图片处理失败了：${message}` }
+        petWindow?.webContents.send('pet:status', result)
+        return result
+      }
+    })
+    ipcMain.handle('pet:select-order', async (_e, orderId: unknown): Promise<PetIntakeResult> => {
+      if (typeof orderId !== 'number' || !Number.isInteger(orderId)) throw new Error('订单 ID 非法')
+      const result = await petIntake.selectOrder(orderId)
+      petWindow?.webContents.send('pet:status', result)
+      return result
     })
     ipcMain.handle('capture:status', () => captureSidecar.getStatus())
     ipcMain.handle('capture:conversations', (_e, channel?: string) =>
@@ -366,6 +457,7 @@ if (!gotLock) {
       'materials:set-config',
       (_e, cfg: { backendUrl: string; employeeCode: string }) => {
         materialSync.setConfig(cfg)
+        petIntake.setConfig(cfg)
         materialSync.kick()
         return { ok: true }
       }
@@ -385,6 +477,7 @@ if (!gotLock) {
     ensureAutoLaunchEnabled()
     createTray()
     createWindow()
+    createPetWindow()
     setupReminderIPC(showMainWindow, (orderNo) => {
       mainWindow?.webContents.send('app:navigate-order', orderNo)
     })
@@ -409,6 +502,7 @@ if (!gotLock) {
 
   app.on('before-quit', () => {
     isQuitting = true
+    petWindow?.close()
     captureSidecar.stop()
     materialSync.stop()
   })

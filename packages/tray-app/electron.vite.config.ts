@@ -16,7 +16,10 @@ export default defineConfig({
       rollupOptions: {
         // 桌面应用现在加载 v2（新采集工具 UI）。v1 的 index.html 保留作浏览器参考，
         // 不再作为 Electron 入口。
-        input: resolve('src/renderer/index-v2.html')
+        input: {
+          app: resolve('src/renderer/index-v2.html'),
+          pet: resolve('src/renderer/pet.html')
+        }
       }
     }
   }

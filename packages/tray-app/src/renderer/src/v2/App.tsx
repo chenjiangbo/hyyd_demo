@@ -47,6 +47,8 @@ export default function App(): React.JSX.Element {
   // 登录态用小窗，登录后放大到工作台尺寸
   useEffect(() => {
     window.api?.setWindowStage?.(session ? 'main' : 'login')
+    if (session) window.api?.hideWindow?.()
+    else window.api?.showWindow?.()
   }, [session])
 
   useEffect(() => {

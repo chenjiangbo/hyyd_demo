@@ -153,10 +153,16 @@ interface MaterialSyncCounts {
 
 interface Window {
   api?: {
+    showWindow: () => void
     hideWindow: () => void
     minimizeWindow: () => void
     requestWindowClose: () => Promise<void>
     quitApp: () => void
+    hidePet: () => void
+    getPathForFile: (file: File) => string
+    petDropFiles: (paths: string[]) => Promise<{ state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[] }>
+    petSelectOrder: (orderId: number) => Promise<{ state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[] }>
+    onPetStatus: (cb: (status: { state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[] }) => void) => () => void
     getWindowPreferences: () => Promise<{ closeBehavior: 'ask' | 'minimize' | 'quit' }>
     setWindowPreferences: (prefs: { closeBehavior: 'ask' | 'minimize' | 'quit' }) => Promise<{ closeBehavior: 'ask' | 'minimize' | 'quit' }>
     setWindowStage: (stage: 'login' | 'main') => void
