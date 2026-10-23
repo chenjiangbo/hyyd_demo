@@ -179,6 +179,17 @@ function createPetWindow(): void {
 
   petWindow.setAlwaysOnTop(true, 'floating')
   petWindow.setMenuBarVisibility(false)
+  petWindow.webContents.on('context-menu', (event) => {
+    event.preventDefault()
+    if (!petWindow || petWindow.isDestroyed()) return
+    const contextMenu = Menu.buildFromTemplate([
+      { label: '隐藏浮动精灵', click: () => petWindow?.hide() },
+      { label: '显示工作台', click: showMainWindow },
+      { type: 'separator' },
+      { label: '退出客户端', click: quitApplication }
+    ])
+    contextMenu.popup({ window: petWindow })
+  })
   petWindow.on('closed', () => { petWindow = null })
   petWindow.once('ready-to-show', () => {
     const display = screen.getPrimaryDisplay()

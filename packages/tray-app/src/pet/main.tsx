@@ -5,7 +5,18 @@ import './styles.css'
 type PetMode = 'idle' | 'dragover' | 'working' | 'done' | 'unknown' | 'candidates'
 type Candidate = { orderId: number; sourceOrderNo: string; customerName: string; hospital: string | null; department: string | null; appointmentDate: string | null }
 
-function Pet(): React.JSX.Element {
+function droppedPathFromUri(value: string): string | null {
+  const trimmed = value.trim()
+  if (!trimmed.startsWith('file://')) return null
+  try {
+    const decoded = decodeURIComponent(trimmed.replace(/^file:\/\//, ''))
+    return decoded.replace(/^\/+([A-Za-z]:[\\/])/, '$1') || null
+  } catch {
+    return null
+  }
+}
+
+export function Pet(): React.JSX.Element {
   const [mode, setMode] = useState<PetMode>('idle')
   const [message, setMessage] = useState('把图片拖给我吧')
   const [candidates, setCandidates] = useState<Candidate[]>([])
@@ -41,14 +52,16 @@ function Pet(): React.JSX.Element {
         }
       }).filter(Boolean)
       if (paths.length === 0) {
-        const uriList = event.dataTransfer?.getData('text/uri-list') ?? ''
-        const uriPath = uriList.split(/\r?\n/).find((value) => value.startsWith('file://'))
-        if (uriPath) {
-          try {
-            const filePath = decodeURIComponent(uriPath.replace(/^file:\/\//, ''))
-            if (filePath) paths.push(filePath)
-          } catch {
-            // Keep the user-facing result below when the source provides an invalid URI.
+        const transfer = event.dataTransfer
+        const uriValues = [
+          transfer?.getData('text/uri-list') ?? '',
+          transfer?.getData('text/plain') ?? ''
+        ]
+        for (const value of uriValues) {
+          const uriPath = value.split(/\r?\n/).map(droppedPathFromUri).find(Boolean)
+          if (uriPath) {
+            paths.push(uriPath)
+            break
           }
         }
       }
