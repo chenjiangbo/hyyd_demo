@@ -2425,12 +2425,68 @@ window.addEventListener('message', (event) => {
   void appendEditNetworkEvent(payload);
 });
 
+let formRecorderUserPromise: ReturnType<typeof getUser> | null = null;
+let formRecorderToken: string | null = null;
+function getFormRecorderUser(): ReturnType<typeof getUser> {
+  const token = findTaikangToken();
+  if (!token) return Promise.reject(new Error('未检测到泰康登录凭证'));
+  if (!formRecorderUserPromise || formRecorderToken !== token) {
+    formRecorderToken = token;
+    const lookup = getUser().catch((error) => {
+      if (formRecorderUserPromise === lookup) formRecorderUserPromise = null;
+      throw error;
+    });
+    formRecorderUserPromise = lookup;
+  }
+  return formRecorderUserPromise;
+}
+function showFormRecorderError(message: string): void {
+  let banner = document.getElementById('hyyd-form-recorder-status');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'hyyd-form-recorder-status';
+    banner.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483647;padding:9px 12px;background:#991b1b;color:#fff;border-radius:4px;font:13px sans-serif;max-width:360px;';
+    document.documentElement.appendChild(banner);
+  }
+  banner.textContent = '泰康填报记录未保存，请检查插件连接';
+  banner.title = message;
+}
+
+window.addEventListener('message', (event) => {
+  if (event.source !== window || event.origin !== location.origin || event.data?.source !== 'HYYD_FORM_RECORDER_V1') return;
+  const session = event.data.session;
+  const record = event.data.event;
+  if (!session || !record || typeof session !== 'object' || typeof record !== 'object') return;
+  const userPromise = getFormRecorderUser();
+  void userPromise
+    .then(async (user) => {
+      if (!user) throw new Error('未获取到泰康登录账号');
+      const response = await chrome.runtime.sendMessage({
+        type: 'RECORD_TAIKANG_FORM_EVENT',
+        account: user.userName,
+        userId: user.userId,
+        session,
+        event: record,
+      });
+      if (!response?.ok) throw new Error(response?.error || '录制事件保存失败');
+      document.getElementById('hyyd-form-recorder-status')?.remove();
+    })
+    .catch((error) => {
+      if (formRecorderUserPromise === userPromise) formRecorderUserPromise = null;
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[寰宇探针][填报记录] 保存失败:', message);
+      showFormRecorderError(message);
+    });
+});
+
+window.postMessage({ source: 'HYYD_FORM_RECORDER_READY' }, location.origin);
+
 // 接收 background 经 WS 取回的后端指纹基线。
 // 这是避免"刷新/换机时全量重抓泰康"的关键：本地无缓存时也能从后端拿到
 // 已采订单的状态指纹，只对新增/状态变化的订单访问泰康。
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'GET_TAIKANG_USER') {
-    void getUser()
+    void getFormRecorderUser()
       .then((user) => sendResponse?.(user ? { ok: true, user } : { ok: false, error: '未获取到泰康登录账号' }))
       .catch((error) => sendResponse?.({ ok: false, error: error instanceof Error ? error.message : String(error) }));
     return true;

@@ -13,6 +13,7 @@ const NAV_ITEMS: Array<{ to: string; label: string; icon: string; end?: boolean 
   { to: '/calls', label: '通话', icon: '☎' },
   { to: '/capture-health', label: '采集健康', icon: '📡' },
   { to: '/capture-diagnostic-images', label: '采集诊断图片', icon: '▧' },
+  { to: '/taikang-form-sessions', label: '泰康填报记录', icon: '▦' },
   { to: '/unmatched-refs', label: '待确认订单号', icon: '⚠' },
   { to: '/workflow-config', label: '服务步骤配置', icon: '☷' },
   { to: '/ai-schedule-config', label: 'AI调用时间配置', icon: '⏱' },

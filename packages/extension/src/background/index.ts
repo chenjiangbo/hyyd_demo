@@ -1,7 +1,9 @@
+import { countFormEvents, deleteFormEvent, nextFormEvent, queueFormEvent } from './formRecorderOutbox';
+import { DEFAULT_BACKEND_WS_URL, configuredBackendWsUrl } from '../backendConnection';
+
 console.log('[寰宇探针] Background Service Worker 已启动');
 
 let ws: WebSocket | null = null;
-const DEFAULT_BACKEND_WS_URL = 'ws://47.95.14.233:9093/ws';
 const CLIENT_TYPE = 'ext';
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let presenceTimer: ReturnType<typeof setInterval> | null = null;
@@ -27,9 +29,17 @@ let collectorHeartbeatAt = 0;
 const COLLECTOR_LEASE_MS = 180_000;
 type PendingMessage = { resolve: (value: any) => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout>; socket: WebSocket };
 const pendingMessages = new Map<string, PendingMessage>();
+const pendingFormEvents = new Map<string, { resolve: (value: any) => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+let flushingFormEvents = false;
+let formRecorderUploadError: string | null = null;
 const connectionWaiters = new Set<{ resolve: () => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 
 function failPending(reason: string): void {
+  for (const [id, pending] of pendingFormEvents) {
+    clearTimeout(pending.timer);
+    pending.reject(new Error(reason));
+    pendingFormEvents.delete(id);
+  }
   for (const [id, pending] of pendingMessages) {
     clearTimeout(pending.timer);
     pending.reject(new Error(reason));
@@ -59,7 +69,7 @@ function isCurrentCollector(tabId: number | undefined, generation: string): bool
 
 async function loadConfig() {
   const r = await chrome.storage.local.get(['backendWsUrl']);
-  backendWsUrl = (r.backendWsUrl as string) || DEFAULT_BACKEND_WS_URL;
+  backendWsUrl = configuredBackendWsUrl(r.backendWsUrl);
 }
 
 // ─── WebSocket 连接 ──────────────────────────────────────────
@@ -151,6 +161,7 @@ async function connectWebSocket(): Promise<void> {
         reconnectDelayMs = 5_000;
         // 连接建立后主动拉一次基线（覆盖"content 早于 WS 连上时发的请求丢失"）
         requestFingerprintBaseline();
+        void flushFormEvents();
       }
 
       if (data.type === 'EMPLOYEE_BINDING_NOT_FOUND' || data.type === 'EMPLOYEE_BINDING_AMBIGUOUS') {
@@ -166,6 +177,15 @@ async function connectWebSocket(): Promise<void> {
         if (pending && pending.socket === socket) {
           clearTimeout(pending.timer);
           pendingMessages.delete(data.requestId);
+          pending.resolve(data);
+        }
+      }
+
+      if (data.type === 'TAIKANG_FORM_EVENT_ACK' && typeof data.requestId === 'string') {
+        const pending = pendingFormEvents.get(data.requestId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          pendingFormEvents.delete(data.requestId);
           pending.resolve(data);
         }
       }
@@ -223,6 +243,57 @@ async function sendPresence() {
     ts: Date.now(),
   };
   ws.send(JSON.stringify(payload));
+}
+
+async function flushFormEvents(): Promise<void> {
+  if (flushingFormEvents || !socketReady || ws?.readyState !== WebSocket.OPEN || !socketAccount) return;
+  flushingFormEvents = true;
+  try {
+    for (;;) {
+      const account = socketAccount;
+      const socket = ws;
+      if (!socket || !socketReady || socket.readyState !== WebSocket.OPEN || !account) return;
+      const queued = await nextFormEvent(account.userName);
+      if (!queued) {
+        formRecorderUploadError = null;
+        return;
+      }
+      if (queued.userId !== account.userId) {
+        formRecorderUploadError = '录制账号与当前泰康账号不一致';
+        return;
+      }
+      const response = await new Promise<any>((resolve, reject) => {
+        const requestId = queued.eventId;
+        const timer = setTimeout(() => {
+          pendingFormEvents.delete(requestId);
+          reject(new Error('后台未确认填报记录'));
+        }, 30_000);
+        pendingFormEvents.set(requestId, { resolve, reject, timer });
+        try {
+          socket.send(JSON.stringify({
+            type: 'TAIKANG_FORM_EVENT',
+            requestId,
+            taikangAccount: queued.account,
+            taikangUserId: queued.userId,
+            session: queued.session,
+            event: queued.event,
+          }));
+        } catch (error) {
+          clearTimeout(timer);
+          pendingFormEvents.delete(requestId);
+          reject(error);
+        }
+      });
+      if (!response?.ok) throw new Error(response?.error || '后台拒绝了填报记录');
+      await deleteFormEvent(queued.eventId);
+      formRecorderUploadError = null;
+    }
+  } catch (error) {
+    formRecorderUploadError = error instanceof Error ? error.message : String(error);
+    console.error('[寰宇探针][填报记录] 上传失败:', formRecorderUploadError);
+  } finally {
+    flushingFormEvents = false;
+  }
 }
 
 async function ensureBackend(account: string, userId: number): Promise<WebSocket> {
@@ -289,6 +360,37 @@ async function forwardCollection(message: any, tabId: number | undefined): Promi
 // ─── Content Script & Popup 消息 ─────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
+    case 'RECORD_TAIKANG_FORM_EVENT': {
+      void (async () => {
+        const tabId = sender.tab?.id;
+        if (!tabId || !sender.tab?.url?.startsWith('https://ccm.taikang.com/') ||
+            typeof message.account !== 'string' || !Number.isInteger(message.userId) ||
+            typeof message.event?.id !== 'string' ||
+            typeof message.session?.startedAt !== 'string' ||
+            !Number.isSafeInteger(message.event?.sequence) || message.event.sequence < 1) {
+          throw new Error('录制页面或泰康账号无效');
+        }
+        const response = await chrome.tabs.sendMessage(tabId, { type: 'GET_TAIKANG_USER' });
+        if (!response?.ok || response.user?.userName !== message.account || response.user?.userId !== message.userId) {
+          throw new Error('录制账号与泰康当前登录账号不一致');
+        }
+        await queueFormEvent({
+          eventId: message.event.id,
+          queuedAt: Date.now(),
+          account: message.account,
+          userId: message.userId,
+          session: message.session,
+          event: message.event,
+        });
+        sendResponse({ ok: true });
+        void flushFormEvents();
+      })().catch((error) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        formRecorderUploadError = detail;
+        sendResponse({ ok: false, error: detail });
+      });
+      return true;
+    }
     case 'CLAIM_COLLECTOR': {
       const tabId = sender.tab?.id;
       if (!tabId) { sendResponse({ ok: false }); return false; }
@@ -338,6 +440,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'GET_STATUS': {
       void (async () => {
         if (!taikangUser) await getTaikangUser();
+        const formRecorderPendingCount = await countFormEvents();
         sendResponse({
           wsConnected: socketReady && ws?.readyState === WebSocket.OPEN,
           employeeName,
@@ -345,8 +448,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           taikangAccount: socketAccount?.userName ?? taikangUser?.userName ?? null,
           taikangNickName: socketAccount?.nickName ?? taikangUser?.nickName ?? null,
           connectionError,
+          formRecorderPendingCount,
+          formRecorderUploadError,
         });
-      })();
+      })().catch((error) => sendResponse({
+        error: error instanceof Error ? error.message : String(error),
+        formRecorderUploadError: '填报记录状态读取失败'
+      }));
       return true;
     }
   }
@@ -428,7 +536,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (changes.backendWsUrl) {
-    backendWsUrl = changes.backendWsUrl?.newValue ?? backendWsUrl;
+    backendWsUrl = configuredBackendWsUrl(changes.backendWsUrl.newValue);
     resetCollector();
     void connectWebSocket();
   }
@@ -447,6 +555,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     try {
       ws.send(JSON.stringify({ type: 'ping' }));
     } catch {/* ignore */}
+    void flushFormEvents();
   }
 });
 

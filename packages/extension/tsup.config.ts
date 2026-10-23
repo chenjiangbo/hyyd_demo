@@ -7,6 +7,7 @@ export default defineConfig({
     background: 'src/background/index.ts',
     content: 'src/content/index.ts',
     pageProbe: 'src/content/pageProbe.ts',
+    formRecorderPage: 'src/content/formRecorderPage.ts',
     popup: 'src/popup/index.ts'
   },
   format: ['iife'],

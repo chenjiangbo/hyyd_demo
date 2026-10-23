@@ -1,4 +1,5 @@
 export {};
+import { configuredBackendWsUrl } from '../backendConnection';
 
 /**
  * 寰宇探针 Popup
@@ -13,13 +14,13 @@ const EDIT_PAGE_ANALYSIS_STORAGE_KEY = 'editPageAnalysis';
 async function getConfig(): Promise<{ backendWsUrl: string; collectPaused: boolean }> {
   const r = await chrome.storage.local.get(['backendWsUrl', 'collectPaused']);
   return {
-    backendWsUrl: (r.backendWsUrl as string) || 'ws://47.95.14.233:9093/ws',
+    backendWsUrl: configuredBackendWsUrl(r.backendWsUrl),
     collectPaused: r.collectPaused !== false,
   };
 }
 
 async function setConfig() {
-  const backendWsUrl = ($('backend-ws-url') as HTMLInputElement).value.trim();
+  const backendWsUrl = configuredBackendWsUrl(($('backend-ws-url') as HTMLInputElement).value.trim());
   await chrome.storage.local.set({ backendWsUrl });
   await refreshStatus();
 }
@@ -33,15 +34,35 @@ async function refreshStatus() {
     const wsDot = $('ws-dot');
     const wsText = $('ws-text');
     const accountText = $('tk-account-text');
+    const recordDot = $('form-record-dot');
+    const recordText = $('form-record-text');
     if (chrome.runtime.lastError || !resp) {
       wsDot.className = 'dot dot-red';
       wsText.textContent = '未响应';
       accountText.textContent = '无法识别';
+      recordDot.className = 'dot dot-red';
+      recordText.textContent = '无法检查记录状态';
       return;
     }
     accountText.textContent = resp.taikangAccount
       ? `${resp.taikangNickName ? `${resp.taikangNickName}（${resp.taikangAccount}）` : resp.taikangAccount}`
       : '未识别';
+    const pending = Number(resp.formRecorderPendingCount) || 0;
+    if (resp.error) {
+      recordDot.className = 'dot dot-red';
+      recordText.textContent = '无法检查记录状态';
+      recordText.title = resp.error;
+    } else if (resp.formRecorderUploadError) {
+      recordDot.className = 'dot dot-red';
+      recordText.textContent = pending > 0 ? `${pending} 条待上传，请检查上传状态` : '记录上传状态异常';
+      recordText.title = resp.formRecorderUploadError;
+    } else if (pending > 0) {
+      recordDot.className = 'dot dot-amber';
+      recordText.textContent = `有 ${pending} 条待上传`;
+    } else {
+      recordDot.className = 'dot dot-green';
+      recordText.textContent = '暂无待传记录';
+    }
     if (resp.wsConnected) {
       wsDot.className = 'dot dot-green';
       wsText.textContent = `已连接 ${resp.employeeName ?? ''}`;
@@ -322,7 +343,7 @@ async function clearEditAnalysis() {
   await refreshEditAnalysisStatus();
 
   $('save-config').addEventListener('click', () => {
-    setConfig().catch((e) => console.error(e));
+    setConfig().catch((e) => window.alert(e instanceof Error ? e.message : String(e)));
   });
 
   $('toggle-collect').addEventListener('click', () => {

@@ -25,6 +25,7 @@ import { loadChineseWorkdayCalendar, startChineseWorkdayCalendarSync } from './j
 import { registerAdminRoutes, ADMIN_COOKIE, verifyAdminToken } from './routes/admin.js'
 import { addAdminSocket, removeAdminSocket } from './routes/adminBus.js'
 import { saveOrderDetailBundle } from './orderDetail.js'
+import { saveTaikangFormEvent } from './taikangFormRecording.js'
 import { ensureOrderIdCardOcrTable, scheduleOrderIdCardOcr } from './services/orderIdCardOcr.js'
 import { initScheduler } from './asr/transcribeScheduler.js'
 import fastifyStatic from '@fastify/static'
@@ -415,6 +416,25 @@ async function start() {
             
             if (message.type === 'ping') {
               socket.send(JSON.stringify({ type: 'pong' }))
+            } else if (message.type === 'TAIKANG_FORM_EVENT') {
+              const requestId = typeof message.requestId === 'string' ? message.requestId : ''
+              const acknowledge = (ok: boolean, error?: string, duplicate?: boolean) => {
+                socket.send(JSON.stringify({ type: 'TAIKANG_FORM_EVENT_ACK', requestId, ok, error, duplicate }))
+              }
+              if (client !== 'ext' || message.taikangAccount !== taikangAccount ||
+                  Number(message.taikangUserId) !== taikangUserId || !requestId) {
+                acknowledge(false, '泰康账号或录制请求无效')
+                return
+              }
+              if (!await bindingStillMatches()) {
+                acknowledge(false, '泰康账号的员工绑定已变化，请重新连接')
+                socket.close(1008, 'employee binding changed')
+                return
+              }
+              const saved = await saveTaikangFormEvent(
+                prisma, employeeId, taikangAccount, taikangUserId, message.session, message.event
+              )
+              acknowledge(saved.ok, saved.ok ? undefined : saved.error, saved.ok ? saved.duplicate : undefined)
             } else if (message.type === 'PRESENCE') {
               // 插件上报的"在线/泰康标签"状态心跳
               if (client === 'ext' && extInstanceId) {

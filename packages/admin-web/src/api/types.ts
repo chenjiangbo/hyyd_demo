@@ -164,6 +164,36 @@ export interface CursorPage<T> {
   nextCursor: string | null
 }
 
+export interface TaikangFormSession {
+  id: string
+  employeeId: number
+  employee: { id: number; name: string }
+  taikangAccount: string
+  taikangUserId: number
+  routeKind: 'green-order' | 'register-order' | 'expert-add' | 'hospital-add'
+  sourceOrderNo: string | null
+  serviceName: string | null
+  startedAt: string
+  lastEventAt: string
+  endedAt: string | null
+  eventCount: number
+}
+
+export interface TaikangFormEvent {
+  id: string
+  sessionId: string
+  sequence: number
+  occurredAt: string
+  kind: string
+  payload: Record<string, unknown>
+  receivedAt: string
+}
+
+export interface TaikangFormEventPage {
+  items: TaikangFormEvent[]
+  nextAfterSequence: number | null
+}
+
 export interface EmployeeDetail {
   id: number
   name: string

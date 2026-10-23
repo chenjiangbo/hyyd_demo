@@ -33,7 +33,9 @@ import type {
   UpdateSmsConfigPayload,
   TestSmsPayload,
   TestSmsResult,
-  SmsLogItem
+  SmsLogItem,
+  TaikangFormSession,
+  TaikangFormEventPage
 } from './types'
 
 export type {
@@ -274,6 +276,17 @@ export const adminApi = {
   },
   captureDiagnosticImages() {
     return request<CaptureDiagnosticImageItem[]>('/api/v1/admin/capture-diagnostic-images')
+  },
+  taikangFormSessions(params: { cursor?: string; account?: string; routeKind?: string; order?: string } = {}) {
+    return request<CursorPage<TaikangFormSession>>(`/api/v1/admin/taikang-form-sessions${qs(params)}`)
+  },
+  taikangFormSession(id: string) {
+    return request<TaikangFormSession>(`/api/v1/admin/taikang-form-sessions/${encodeURIComponent(id)}`)
+  },
+  taikangFormEvents(id: string, afterSequence?: number) {
+    return request<TaikangFormEventPage>(
+      `/api/v1/admin/taikang-form-sessions/${encodeURIComponent(id)}/events${qs({ afterSequence })}`
+    )
   },
   deleteCaptureDiagnosticImage(objectKey: string) {
     return request<{ ok: boolean }>(`/api/v1/admin/capture-diagnostic-images/${objectKey}`, { method: 'DELETE' })

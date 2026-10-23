@@ -21,8 +21,46 @@ model Employee {
   calls                   Call[]
   materials               Material[]
   unmatchedOrderRefs      UnmatchedOrderRef[]
+  taikangFormSessions      TaikangFormSession[]
 
   @@map("employees")
+}
+
+model TaikangFormSession {
+  id                String             @id @db.Uuid
+  employeeId        Int                @map("employee_id")
+  employee          Employee           @relation(fields: [employeeId], references: [id])
+  taikangAccount    String             @map("taikang_account")
+  taikangUserId     Int                @map("taikang_user_id")
+  routeKind         String             @map("route_kind")
+  sourceOrderNo     String?            @map("source_order_no")
+  serviceName       String?            @map("service_name")
+  startedAt         DateTime           @map("started_at")
+  lastEventAt       DateTime           @map("last_event_at")
+  endedAt           DateTime?          @map("ended_at")
+  eventCount        Int                @default(0) @map("event_count")
+  events            TaikangFormEvent[]
+
+  @@index([startedAt(sort: Desc), id(sort: Desc)])
+  @@index([employeeId, startedAt(sort: Desc)])
+  @@index([sourceOrderNo, startedAt(sort: Desc)])
+  @@map("taikang_form_sessions")
+}
+
+model TaikangFormEvent {
+  id          String             @id @db.Uuid
+  sessionId   String             @db.Uuid @map("session_id")
+  session     TaikangFormSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sequence    Int
+  occurredAt  DateTime           @map("occurred_at")
+  kind        String
+  payload     Json
+  payloadHash String             @map("payload_hash")
+  receivedAt  DateTime           @default(now()) @map("received_at")
+
+  @@unique([sessionId, sequence])
+  @@index([sessionId, occurredAt])
+  @@map("taikang_form_events")
 }
 
 model Order {

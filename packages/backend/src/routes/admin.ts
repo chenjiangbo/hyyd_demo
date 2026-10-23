@@ -39,6 +39,7 @@ import {
   type AliyunSmsConfig
 } from '../services/aliyunSmsService.js'
 import { findHuanyuChannelById, listHuanyuChannels } from '../db/remoteDictionary.js'
+import { registerTaikangFormAdminRoutes } from '../taikangFormRecording.js'
 
 const TAIKANG_BUSINESS_CONFIG = {
   green_pass: '泰康绿通',
@@ -346,6 +347,8 @@ export function registerAdminRoutes(
         }
       })
     })
+
+    registerTaikangFormAdminRoutes(fastify, prisma)
 
     // 保存短信模板与密钥配置（热加载，无须重启）
     fastify.put<{

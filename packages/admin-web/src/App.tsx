@@ -22,6 +22,8 @@ import SmsConfigPage from './pages/SmsConfigPage'
 import OrderAiConfigPage from './pages/OrderAiConfigPage'
 import SystemRemindersPage from './pages/SystemRemindersPage'
 import TaikangHuanyuChannelMappingPage from './pages/TaikangHuanyuChannelMappingPage'
+import TaikangFormSessionsPage from './pages/TaikangFormSessionsPage'
+import TaikangFormSessionPage from './pages/TaikangFormSessionPage'
 
 export default function App(): React.JSX.Element {
   const { status } = useAuth()
@@ -52,6 +54,8 @@ export default function App(): React.JSX.Element {
         <Route path="capture-health" element={<CaptureHealthPage />} />
         <Route path="capture-diagnostic-images" element={<CaptureDiagnosticImagesPage />} />
         <Route path="unmatched-refs" element={<UnmatchedRefsPage />} />
+        <Route path="taikang-form-sessions" element={<TaikangFormSessionsPage />} />
+        <Route path="taikang-form-sessions/:id" element={<TaikangFormSessionPage />} />
         <Route path="health" element={<HealthPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="workflow-config" element={<WorkflowConfigPage />} />
