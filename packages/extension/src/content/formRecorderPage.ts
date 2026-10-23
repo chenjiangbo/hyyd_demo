@@ -247,6 +247,7 @@
     try {
       const url = new URL(info.url, location.href);
       return (url.hostname === 'taikang.com' || url.hostname.endsWith('.taikang.com')) &&
+        !/^(?:\/ccm-unify)*(?:\/msg\/webNotice|\/ecm\/getImage)\/?$/.test(url.pathname) &&
         !/\.(?:js|css|png|jpe?g|gif|svg|ico|woff2?|ttf|map)$/i.test(url.pathname);
     }
     catch { return false; }

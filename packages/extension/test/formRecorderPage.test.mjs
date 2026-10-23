@@ -111,6 +111,33 @@ test('form-page entry and Taikang fetch round trip are recorded', async () => {
   assert.equal(events[1].event.payload.requestId, events[2].event.payload.requestId)
 })
 
+test('webNotice and getImage requests are not recorded for fetch or XHR', async () => {
+  const p = page()
+  p.setRoute('#/medicalManager/statusCommon?orderId=order-1')
+  p.ready()
+  const noticeUrl = '/ccm-unify/ccm-unify/ccm-unify/msg/webNotice?source=page'
+  const promise = p.window.fetch(noticeUrl, { method: 'POST', body: '{}' })
+  assert.equal(promise, p.nativePromise)
+  await promise
+  const xhr = new p.window.XMLHttpRequest()
+  xhr.open('POST', noticeUrl)
+  xhr.send('{}')
+  assert.equal(p.xhrSendCalls(), 1)
+  const imageUrl = '/ccm-unify/ccm-unify/ccm-unify/ecm/getImage?code=123'
+  const imagePromise = p.window.fetch(imageUrl, { method: 'POST', body: '{}' })
+  assert.equal(imagePromise, p.nativePromise)
+  await imagePromise
+  const imageXhr = new p.window.XMLHttpRequest()
+  imageXhr.open('POST', imageUrl)
+  imageXhr.send('{}')
+  assert.equal(p.xhrSendCalls(), 2)
+  assert.equal(p.messages.filter((item) => item.event?.kind === 'request').length, 0)
+
+  await p.window.fetch('/ccm-unify/ccm-unify/ccm-unify/msg/otherNotice', { method: 'POST', body: '{}' })
+  await new Promise(setImmediate)
+  assert.equal(p.messages.filter((item) => item.event?.kind === 'request').length, 2)
+})
+
 test('form-page entry and resulting state request screenshots in the same sequence', async () => {
   const p = page()
   p.setRoute('#/register/registerCommon?orderId=order-2')

@@ -45,7 +45,7 @@ async function captureFormScreenshot(windowId: number, tabId: number, expectedUr
       throw new Error('页面已切换，无法截取原操作画面');
     }
     lastScreenshotAt = Date.now();
-    const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'jpeg', quality: 85 });
+    const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'jpeg', quality: 65 });
     const stillSelected = await chrome.tabs.query({ active: true, windowId });
     if (stillSelected[0]?.id !== tabId || stillSelected[0]?.url !== expectedUrl) {
       throw new Error('截图期间页面已切换');
