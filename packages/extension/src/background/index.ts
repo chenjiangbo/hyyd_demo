@@ -32,7 +32,30 @@ const pendingMessages = new Map<string, PendingMessage>();
 const pendingFormEvents = new Map<string, { resolve: (value: any) => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 let flushingFormEvents = false;
 let formRecorderUploadError: string | null = null;
+let screenshotQueue: Promise<void> = Promise.resolve();
+let lastScreenshotAt = 0;
 const connectionWaiters = new Set<{ resolve: () => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+
+async function captureFormScreenshot(windowId: number, tabId: number, expectedUrl: string): Promise<string> {
+  const capture = screenshotQueue.then(async () => {
+    const wait = Math.max(0, lastScreenshotAt + 550 - Date.now());
+    if (wait) await new Promise<void>((resolve) => setTimeout(resolve, wait));
+    const selected = await chrome.tabs.query({ active: true, windowId });
+    if (selected[0]?.id !== tabId || selected[0]?.url !== expectedUrl) {
+      throw new Error('页面已切换，无法截取原操作画面');
+    }
+    lastScreenshotAt = Date.now();
+    const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'jpeg', quality: 85 });
+    const stillSelected = await chrome.tabs.query({ active: true, windowId });
+    if (stillSelected[0]?.id !== tabId || stillSelected[0]?.url !== expectedUrl) {
+      throw new Error('截图期间页面已切换');
+    }
+    if (!dataUrl.startsWith('data:image/jpeg;base64,')) throw new Error('截图格式无效');
+    return dataUrl;
+  });
+  screenshotQueue = capture.then(() => undefined, () => undefined);
+  return capture;
+}
 
 function failPending(reason: string): void {
   for (const [id, pending] of pendingFormEvents) {
@@ -277,6 +300,7 @@ async function flushFormEvents(): Promise<void> {
             taikangUserId: queued.userId,
             session: queued.session,
             event: queued.event,
+            ...(queued.imageDataUrl ? { imageDataUrl: queued.imageDataUrl } : {}),
           }));
         } catch (error) {
           clearTimeout(timer);
@@ -360,7 +384,8 @@ async function forwardCollection(message: any, tabId: number | undefined): Promi
 // ─── Content Script & Popup 消息 ─────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
-    case 'RECORD_TAIKANG_FORM_EVENT': {
+    case 'RECORD_TAIKANG_FORM_EVENT':
+    case 'RECORD_TAIKANG_FORM_SCREENSHOT': {
       void (async () => {
         const tabId = sender.tab?.id;
         if (!tabId || !sender.tab?.url?.startsWith('https://ccm.taikang.com/') ||
@@ -374,15 +399,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!response?.ok || response.user?.userName !== message.account || response.user?.userId !== message.userId) {
           throw new Error('录制账号与泰康当前登录账号不一致');
         }
+        let event = message.event;
+        let imageDataUrl: string | undefined;
+        let captureError: string | null = null;
+        if (message.type === 'RECORD_TAIKANG_FORM_SCREENSHOT') {
+          if (event.kind !== 'screenshot') throw new Error('截图事件格式无效');
+          try {
+            if (typeof event.payload?.href !== 'string') throw new Error('截图页面地址无效');
+            imageDataUrl = await captureFormScreenshot(sender.tab.windowId, tabId, event.payload.href);
+            event = { ...event, payload: { ...event.payload, capturedAt: new Date().toISOString() } };
+          } catch (error) {
+            captureError = error instanceof Error ? error.message : String(error);
+            event = { ...event, kind: 'capture-error', payload: { ...event.payload, error: `截图失败：${captureError}` } };
+          }
+        }
         await queueFormEvent({
-          eventId: message.event.id,
+          eventId: event.id,
           queuedAt: Date.now(),
           account: message.account,
           userId: message.userId,
           session: message.session,
-          event: message.event,
+          event,
+          ...(imageDataUrl ? { imageDataUrl } : {}),
         });
-        sendResponse({ ok: true });
+        sendResponse(captureError ? { ok: false, error: captureError } : { ok: true });
         void flushFormEvents();
       })().catch((error) => {
         const detail = error instanceof Error ? error.message : String(error);

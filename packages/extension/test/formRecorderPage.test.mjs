@@ -110,3 +110,18 @@ test('form-page entry and Taikang fetch round trip are recorded', async () => {
   assert.equal(JSON.stringify(events[2].event.payload.responseBody), '{}')
   assert.equal(events[1].event.payload.requestId, events[2].event.payload.requestId)
 })
+
+test('form-page entry and resulting state request screenshots in the same sequence', async () => {
+  const p = page()
+  p.setRoute('#/register/registerCommon?orderId=order-2')
+  p.ready()
+  await new Promise((resolve) => setTimeout(resolve, 800))
+
+  const events = p.messages.filter((message) => message.source === 'HYYD_FORM_RECORDER_V1')
+  assert.deepEqual(events.map((message) => message.event.kind),
+    ['session-start', 'page-state', 'screenshot', 'screenshot'])
+  assert.deepEqual(events.map((message) => message.event.sequence), [1, 2, 3, 4])
+  assert.equal(events[2].event.payload.relatedSequence, 1)
+  assert.equal(events[3].event.payload.relatedSequence, 2)
+  assert.equal(events[2].session.id, events[0].session.id)
+})

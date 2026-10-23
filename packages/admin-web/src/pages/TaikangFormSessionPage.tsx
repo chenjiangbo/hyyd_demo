@@ -11,6 +11,7 @@ const KIND_LABELS: Record<string, string> = {
   'session-end': '结束记录',
   action: '页面操作',
   'page-state': '页面变化',
+  screenshot: '页面截图',
   request: '接口请求',
   'capture-error': '记录异常'
 }
@@ -23,13 +24,31 @@ function eventSummary(event: TaikangFormEvent): string {
     return `${payload.method || ''} ${payload.path || ''}${status}`
   }
   if (event.kind === 'page-state') return String(payload.stage || payload.heading || '页面已变化')
+  if (event.kind === 'screenshot') return `${String(payload.trigger || '当前画面')}${typeof payload.relatedSequence === 'number' ? ` · 对应 #${payload.relatedSequence}` : ''}`
   if (event.kind === 'capture-error') return String(payload.error || '记录失败')
   return String(payload.routeKind || '')
+}
+
+function ScreenshotThumbnail({ url, sequence, onOpen }: { url: string; sequence: number; onOpen: () => void }): React.JSX.Element {
+  const [failed, setFailed] = useState(false)
+  const [retry, setRetry] = useState(0)
+  if (failed) return (
+    <div className="mt-3 text-sm text-danger">
+      截图暂时无法查看。
+      <button type="button" className="ml-2 underline" onClick={() => { setFailed(false); setRetry((value) => value + 1) }}>重试</button>
+    </div>
+  )
+  return (
+    <button type="button" onClick={onOpen} className="mt-3 block max-w-full border border-line rounded overflow-hidden cursor-zoom-in" title="查看截图">
+      <img src={`${url}?retry=${retry}`} alt={`第 ${sequence} 条记录的页面截图`} loading="lazy" className="max-h-64 max-w-full object-contain" onError={() => setFailed(true)} />
+    </button>
+  )
 }
 
 export default function TaikangFormSessionPage(): React.JSX.Element {
   const { id = '' } = useParams()
   const [downloading, setDownloading] = useState(false)
+  const [previewImage, setPreviewImage] = useState<string | null>(null)
   const session = useQuery({
     queryKey: ['taikang-form-session', id],
     queryFn: () => adminApi.taikangFormSession(id),
@@ -86,7 +105,7 @@ export default function TaikangFormSessionPage(): React.JSX.Element {
       <PageHeader
         title="填报操作记录"
         subtitle={session.data ? `${session.data.employee.name} · ${session.data.taikangAccount} · ${fmtTimeFull(session.data.startedAt)}` : undefined}
-        right={<button onClick={() => void download()} disabled={!session.data || downloading} className="px-3 py-1.5 border border-line rounded text-sm disabled:opacity-50">{downloading ? '正在下载…' : '下载完整记录'}</button>}
+        right={<button onClick={() => void download()} disabled={!session.data || downloading} className="px-3 py-1.5 border border-line rounded text-sm disabled:opacity-50">{downloading ? '正在下载…' : '下载事件数据'}</button>}
       />
       {session.isLoading ? <LoadingBlock /> : session.error ? <ErrorBlock error={session.error} onRetry={() => void session.refetch()} /> : session.data && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5 text-sm">
@@ -103,20 +122,33 @@ export default function TaikangFormSessionPage(): React.JSX.Element {
         <>
           <div className="border-l-2 border-line ml-2 space-y-2">
             {rows.map((event) => (
-              <details key={event.id} className="ml-4 border border-line bg-surface rounded p-3 group">
+              <details key={event.id} open={event.kind === 'screenshot'} className="ml-4 border border-line bg-surface rounded p-3 group">
                 <summary className="cursor-pointer list-none flex flex-wrap gap-2 items-baseline text-sm">
                   <span className="font-mono text-xs text-fg-subtle">#{event.sequence}</span>
                   <span className="text-xs text-fg-muted">{fmtTimeFull(event.occurredAt)}</span>
                   <span className="font-medium">{KIND_LABELS[event.kind] ?? event.kind}</span>
                   <span className="text-fg-muted break-all">{eventSummary(event)}</span>
                 </summary>
-                <pre className="mt-3 p-3 bg-surface-2 text-xs leading-relaxed overflow-auto max-h-[480px] whitespace-pre-wrap break-all">{JSON.stringify(event.payload, null, 2)}</pre>
+                {event.kind === 'screenshot' && (
+                  <ScreenshotThumbnail
+                    url={`/api/v1/admin/taikang-form-sessions/${encodeURIComponent(id)}/events/${encodeURIComponent(event.id)}/image`}
+                    sequence={event.sequence}
+                    onOpen={() => setPreviewImage(`/api/v1/admin/taikang-form-sessions/${encodeURIComponent(id)}/events/${encodeURIComponent(event.id)}/image`)}
+                  />
+                )}
+                {event.kind !== 'screenshot' && <pre className="mt-3 p-3 bg-surface-2 text-xs leading-relaxed overflow-auto max-h-[480px] whitespace-pre-wrap break-all">{JSON.stringify(event.payload, null, 2)}</pre>}
               </details>
             ))}
           </div>
           {events.hasNextPage && <button onClick={() => void events.fetchNextPage()} disabled={events.isFetchingNextPage} className="mt-4 px-3 py-1.5 border border-line rounded text-sm disabled:opacity-60">{events.isFetchingNextPage ? '加载中…' : '加载更多事件'}</button>}
           {events.isFetchNextPageError && <ErrorBlock error={events.error} onRetry={() => void events.fetchNextPage()} />}
         </>
+      )}
+      {previewImage && (
+        <div role="dialog" aria-modal="true" aria-label="页面截图" className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setPreviewImage(null)}>
+          <button type="button" className="absolute top-4 right-4 text-white text-2xl" onClick={() => setPreviewImage(null)} aria-label="关闭截图">×</button>
+          <img src={previewImage} alt="填报页面截图" className="max-w-full max-h-full object-contain" onClick={(event) => event.stopPropagation()} onError={() => { setPreviewImage(null); window.alert('截图暂时无法查看，请稍后重试') }} />
+        </div>
       )}
     </div>
   )

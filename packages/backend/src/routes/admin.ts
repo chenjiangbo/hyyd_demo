@@ -348,7 +348,7 @@ export function registerAdminRoutes(
       })
     })
 
-    registerTaikangFormAdminRoutes(fastify, prisma)
+    registerTaikangFormAdminRoutes(fastify, prisma, minioClient, getEnv().minioBucketScreenshots)
 
     // 保存短信模板与密钥配置（热加载，无须重启）
     fastify.put<{

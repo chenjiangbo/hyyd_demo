@@ -262,7 +262,7 @@ const minioPublicClient = new Minio.Client({
 
 // 确保 MinIO 桶存在（启动时调用）
 async function ensureBuckets() {
-  const buckets = ['order-attachments', 'recordings', 'screenshots', 'materials', 'capture-diagnostics']
+  const buckets = ['order-attachments', 'recordings', appEnv.minioBucketScreenshots, 'materials', 'capture-diagnostics']
   await Promise.all(
     buckets.map(async (name) => {
       try {
@@ -432,7 +432,8 @@ async function start() {
                 return
               }
               const saved = await saveTaikangFormEvent(
-                prisma, employeeId, taikangAccount, taikangUserId, message.session, message.event
+                prisma, minioClient, appEnv.minioBucketScreenshots,
+                employeeId, taikangAccount, taikangUserId, message.session, message.event, message.imageDataUrl
               )
               acknowledge(saved.ok, saved.ok ? undefined : saved.error, saved.ok ? saved.duplicate : undefined)
             } else if (message.type === 'PRESENCE') {

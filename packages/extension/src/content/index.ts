@@ -2462,7 +2462,7 @@ window.addEventListener('message', (event) => {
     .then(async (user) => {
       if (!user) throw new Error('未获取到泰康登录账号');
       const response = await chrome.runtime.sendMessage({
-        type: 'RECORD_TAIKANG_FORM_EVENT',
+        type: record.kind === 'screenshot' ? 'RECORD_TAIKANG_FORM_SCREENSHOT' : 'RECORD_TAIKANG_FORM_EVENT',
         account: user.userName,
         userId: user.userId,
         session,

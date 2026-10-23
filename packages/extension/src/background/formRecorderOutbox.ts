@@ -5,6 +5,7 @@ export type QueuedFormEvent = {
   userId: number;
   session: Record<string, unknown>;
   event: Record<string, unknown>;
+  imageDataUrl?: string;
 };
 
 const DATABASE = 'hyyd-taikang-form-recorder';
@@ -42,7 +43,8 @@ export async function queueFormEvent(item: QueuedFormEvent): Promise<void> {
       if (existing.result) {
         if (JSON.stringify(existing.result.event) !== JSON.stringify(item.event) ||
             JSON.stringify(existing.result.session) !== JSON.stringify(item.session) ||
-            existing.result.account !== item.account || existing.result.userId !== item.userId) {
+            existing.result.account !== item.account || existing.result.userId !== item.userId ||
+            existing.result.imageDataUrl !== item.imageDataUrl) {
           tx.abort();
           return;
         }

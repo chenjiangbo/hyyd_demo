@@ -21,6 +21,7 @@
   let lastAction: { id: number; at: number; label: string } | null = null;
   let lastState = '';
   let stateTimer: ReturnType<typeof setTimeout> | null = null;
+  let scrollTimer: ReturnType<typeof setTimeout> | null = null;
 
   function route(): { kind: string; key: string; orderId: string | null } | null {
     const hash = location.hash.replace(/^#/, '');
@@ -90,6 +91,20 @@
     else buffered.push(item);
   }
 
+  function queueScreenshot(trigger: string, relatedSequence: number, delayMs: number, actionId?: number): void {
+    const session = currentSession;
+    if (!session) return;
+    setTimeout(() => {
+      if (currentSession !== session || !route()) {
+        try { emit('capture-error', { trigger, relatedSequence, error: '截图前页面已切换' }, session); }
+        catch (error) { reportCaptureFailure(error, session); }
+        return;
+      }
+      try { emit('screenshot', { trigger, relatedSequence, relatedActionId: actionId ?? null }, session); }
+      catch (error) { reportCaptureFailure(error, session); }
+    }, delayMs);
+  }
+
   function checkRoute(): void {
     const next = route();
     if (next?.key === currentSession?.key || (!next && !currentSession)) return;
@@ -106,6 +121,7 @@
     lastState = '';
     if (next && currentSession) {
       emit('session-start', { routeKind: next.kind, orderId: next.orderId });
+      queueScreenshot('进入页面', currentSession.sequence, 700);
       queueState();
     }
   }
@@ -137,6 +153,7 @@
         if (signature !== lastState) {
           lastState = signature;
           emit('page-state', snapshot);
+          if (currentSession) queueScreenshot('页面变化', currentSession.sequence, 500);
         }
       } catch (error) { reportCaptureFailure(error, currentSession); }
     }, 250);
@@ -161,13 +178,21 @@
     if (!label) return;
     const action = { id: ++actionSequence, at: Date.now(), label };
     lastAction = action;
+    const isSensitiveField = /密码|口令|token|secret/i.test(label);
+    const inputValue = event.type === 'change' && !isSensitiveField && element instanceof HTMLInputElement &&
+      element.type !== 'password' && element.type !== 'file'
+      ? (element.type === 'checkbox' || element.type === 'radio' ? element.checked : element.value)
+      : event.type === 'change' && !isSensitiveField && (element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement)
+        ? element.value : undefined;
     emit('action', {
       actionId: action.id,
       action: event.type,
       label,
       tag: element.tagName.toLowerCase(),
-      inputType: element instanceof HTMLInputElement ? element.type : null
+      inputType: element instanceof HTMLInputElement ? element.type : null,
+      ...(inputValue !== undefined ? { value: inputValue } : {})
     });
+    if (currentSession) queueScreenshot(event.type === 'change' ? '填写内容' : '页面操作', currentSession.sequence, 650, action.id);
     queueState();
   }
 
@@ -237,6 +262,14 @@
   }, true);
   document.addEventListener('change', (event) => {
     try { actionFromEvent(event); } catch (error) { reportCaptureFailure(error, currentSession); }
+  }, true);
+  document.addEventListener('scroll', () => {
+    if (!currentSession || scrollTimer) return;
+    const session = currentSession;
+    scrollTimer = setTimeout(() => {
+      scrollTimer = null;
+      if (currentSession === session) queueScreenshot('滚动页面', session.sequence, 100);
+    }, 600);
   }, true);
   window.addEventListener('hashchange', () => {
     try { checkRoute(); } catch (error) { reportCaptureFailure(error, currentSession); }
