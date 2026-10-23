@@ -18,6 +18,7 @@ function Pet(): React.JSX.Element {
     })
     const onDragOver = (event: DragEvent): void => {
       event.preventDefault()
+      event.stopPropagation()
       event.dataTransfer!.dropEffect = 'copy'
       setMode('dragover')
       setMessage('收到啦，松开手吧')
@@ -30,22 +31,35 @@ function Pet(): React.JSX.Element {
     }
     const onDrop = async (event: DragEvent): Promise<void> => {
       event.preventDefault()
+      event.stopPropagation()
       const files = Array.from(event.dataTransfer?.files ?? [])
-      if (files.length === 0) {
+      const paths = files.map((file) => {
+        try {
+          return window.api.getPathForFile(file)
+        } catch {
+          return ''
+        }
+      }).filter(Boolean)
+      if (paths.length === 0) {
+        const uriList = event.dataTransfer?.getData('text/uri-list') ?? ''
+        const uriPath = uriList.split(/\r?\n/).find((value) => value.startsWith('file://'))
+        if (uriPath) {
+          try {
+            const filePath = decodeURIComponent(uriPath.replace(/^file:\/\//, ''))
+            if (filePath) paths.push(filePath)
+          } catch {
+            // Keep the user-facing result below when the source provides an invalid URI.
+          }
+        }
+      }
+      if (paths.length === 0) {
         setMode('unknown')
         setMessage('嗯…我没有接到文件')
         return
       }
-      const first = files[0]
-      const filePath = window.api.getPathForFile(first)
-      if (!filePath) {
-        setMode('unknown')
-        setMessage('嗯…我没有拿到这个文件')
-        return
-      }
       setMode('working')
       setMessage('让我看一看这张图片…')
-      const result = await window.api.petDropFiles([filePath])
+      const result = await window.api.petDropFiles([paths[0]])
       setMode(result.state)
       setMessage(result.message)
       setCandidates((result.candidates ?? []) as Candidate[])

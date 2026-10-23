@@ -158,8 +158,8 @@ function createPetWindow(): void {
   if (petWindow && !petWindow.isDestroyed()) return
 
   petWindow = new BrowserWindow({
-    width: 168,
-    height: 218,
+    width: 132,
+    height: 174,
     show: false,
     frame: false,
     transparent: true,
@@ -183,7 +183,7 @@ function createPetWindow(): void {
   petWindow.once('ready-to-show', () => {
     const display = screen.getPrimaryDisplay()
     const area = display.workArea
-    petWindow?.setPosition(area.x + area.width - 190, area.y + 24)
+    petWindow?.setPosition(area.x + area.width - 152, area.y + 24)
     petWindow?.showInactive()
   })
 

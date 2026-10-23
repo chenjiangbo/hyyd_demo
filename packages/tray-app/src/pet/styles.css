@@ -16,7 +16,11 @@ body { font-family: 'Microsoft YaHei', sans-serif; }
   height: 218px;
   color: #e4e7ef;
   user-select: none;
-  -webkit-app-region: drag;
+  /* The whole mascot is the file drop target. A drag-region here makes Windows
+     treat a dragged file as a window move and show the forbidden cursor. */
+  -webkit-app-region: no-drag;
+  transform: scale(.78);
+  transform-origin: top left;
   filter: drop-shadow(0 10px 12px rgba(0, 0, 0, .34));
 }
 
