@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from 'react'
+import { StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
 
@@ -20,11 +20,23 @@ export function Pet(): React.JSX.Element {
   const [mode, setMode] = useState<PetMode>('idle')
   const [message, setMessage] = useState('把图片拖给我吧')
   const [candidates, setCandidates] = useState<Candidate[]>([])
+  const [speaking, setSpeaking] = useState(false)
+  const speakingTimer = useRef<number | null>(null)
+
+  const announce = (nextMessage: string): void => {
+    setMessage(nextMessage)
+    setSpeaking(true)
+    if (speakingTimer.current !== null) window.clearTimeout(speakingTimer.current)
+    speakingTimer.current = window.setTimeout(() => {
+      setSpeaking(false)
+      speakingTimer.current = null
+    }, 1800)
+  }
 
   useEffect(() => {
     const unsubscribe = window.api.onPetStatus((status) => {
       setMode(status.state)
-      setMessage(status.message)
+      announce(status.message)
       setCandidates((status.candidates ?? []) as Candidate[])
     })
     const onDragOver = (event: DragEvent): void => {
@@ -32,12 +44,12 @@ export function Pet(): React.JSX.Element {
       event.stopPropagation()
       event.dataTransfer!.dropEffect = 'copy'
       setMode('dragover')
-      setMessage('收到啦，松开手吧')
+      announce('收到啦，松开手吧')
     }
     const onDragLeave = (event: DragEvent): void => {
       if (event.relatedTarget === null) {
         setMode('idle')
-        setMessage('把图片拖给我吧')
+        announce('把图片拖给我吧')
       }
     }
     const onDrop = async (event: DragEvent): Promise<void> => {
@@ -67,14 +79,14 @@ export function Pet(): React.JSX.Element {
       }
       if (paths.length === 0) {
         setMode('unknown')
-        setMessage('嗯…我没有接到文件')
+        announce('嗯…我没有接到文件')
         return
       }
       setMode('working')
-      setMessage('让我看一看这张图片…')
+      announce('让我看一看这张图片…')
       const result = await window.api.petDropFiles([paths[0]])
       setMode(result.state)
-      setMessage(result.message)
+      announce(result.message)
       setCandidates((result.candidates ?? []) as Candidate[])
     }
     window.addEventListener('dragover', onDragOver)
@@ -85,11 +97,12 @@ export function Pet(): React.JSX.Element {
       window.removeEventListener('dragleave', onDragLeave)
       window.removeEventListener('drop', onDrop)
       unsubscribe()
+      if (speakingTimer.current !== null) window.clearTimeout(speakingTimer.current)
     }
   }, [])
 
   return (
-    <main className={`pet-shell pet-${mode}`}>
+    <main className={`pet-shell pet-${mode} ${speaking ? 'pet-speaking' : ''}`}>
       <button className="pet-close" type="button" aria-label="隐藏精灵" onClick={() => window.api.hidePet()}>
         ×
       </button>
@@ -111,14 +124,14 @@ export function Pet(): React.JSX.Element {
               type="button"
               onClick={() => {
                 setMode('working')
-                setMessage('好，我保存到这个订单…')
+                announce('好，我保存到这个订单…')
                 void window.api.petSelectOrder(candidate.orderId).then((result) => {
                   setMode(result.state)
-                  setMessage(result.message)
+                  announce(result.message)
                   setCandidates((result.candidates ?? []) as Candidate[])
                 }).catch((error: unknown) => {
                   setMode('unknown')
-                  setMessage(error instanceof Error ? error.message : '订单保存失败了')
+                  announce(error instanceof Error ? error.message : '订单保存失败了')
                 })
               }}
             >

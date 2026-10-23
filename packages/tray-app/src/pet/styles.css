@@ -102,6 +102,7 @@ body { font-family: 'Microsoft YaHei', sans-serif; }
   background: linear-gradient(135deg, #303541, #11131a 56%, #252936);
   box-shadow: inset 0 0 0 2px #4c5260, inset 0 -8px 12px rgba(0,0,0,.4);
   animation: breathe 2.8s ease-in-out infinite;
+  transform-origin: 50% 100%;
 }
 
 .pet-screen {
@@ -191,12 +192,28 @@ body { font-family: 'Microsoft YaHei', sans-serif; }
 .pet-candidate span, .pet-candidate small { overflow: hidden; color: #aeb5c7; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 
 .pet-dragover .pet-body { border-color: #7184ff; box-shadow: 0 0 20px rgba(113,132,255,.45), inset 0 0 0 2px #a8b4ff; }
-.pet-dragover .pet-arm-left { transform: rotate(55deg) translate(-2px, -4px); }
-.pet-dragover .pet-arm-right { transform: rotate(-55deg) translate(2px, -4px); }
+.pet-dragover .pet-body { animation: welcome-bounce .62s ease-in-out infinite alternate; }
+.pet-dragover .pet-arm-left { animation: welcome-left .55s ease-in-out infinite alternate; }
+.pet-dragover .pet-arm-right { animation: welcome-right .55s ease-in-out infinite alternate; }
 .pet-dragover .pet-screen { color: #8ea2ff; }
+.pet-working .pet-body { animation: work-bob .72s ease-in-out infinite alternate; }
+.pet-working .pet-antenna { animation: antenna-pulse .55s ease-in-out infinite alternate; }
+.pet-speaking .pet-screen { animation: screen-talk .2s ease-in-out infinite alternate; }
+.pet-speaking .pet-antenna::after { animation: antenna-light .35s ease-in-out infinite alternate; }
+.pet-done .pet-body { animation: success-hop .75s cubic-bezier(.2,.8,.3,1) 2; }
 .pet-done .pet-screen { color: #45ed9b; text-shadow: 0 0 7px rgba(69,237,155,.65); }
+.pet-unknown .pet-body { animation: unsure-shake .42s ease-in-out 2; }
 .pet-unknown .pet-screen { color: #ffb454; text-shadow: 0 0 7px rgba(255,180,84,.6); }
 .pet-candidates .pet-screen { color: #8ea2ff; }
 
 @keyframes breathe { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
 @keyframes aura { 0%, 100% { transform: scaleX(.88); opacity: .55; } 50% { transform: scaleX(1); opacity: .9; } }
+@keyframes welcome-bounce { from { transform: translateY(0) rotate(-1deg); } to { transform: translateY(-5px) rotate(1deg); } }
+@keyframes welcome-left { from { transform: rotate(20deg); } to { transform: rotate(58deg) translate(-2px, -4px); } }
+@keyframes welcome-right { from { transform: rotate(-20deg); } to { transform: rotate(-58deg) translate(2px, -4px); } }
+@keyframes work-bob { from { transform: translateY(0) rotate(0); } to { transform: translateY(-2px) rotate(1deg); } }
+@keyframes antenna-pulse { from { transform: rotate(-27deg); } to { transform: rotate(-8deg); } }
+@keyframes antenna-light { from { background: #252a35; box-shadow: none; } to { background: #8ea2ff; box-shadow: 0 0 8px #8ea2ff; } }
+@keyframes screen-talk { from { transform: scaleY(1); } to { transform: scaleY(.8); } }
+@keyframes success-hop { 0%, 100% { transform: translateY(0); } 35% { transform: translateY(-11px) rotate(-3deg); } 65% { transform: translateY(1px) rotate(3deg); } }
+@keyframes unsure-shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-4px) rotate(-2deg); } 75% { transform: translateX(4px) rotate(2deg); } }
