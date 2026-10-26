@@ -7,6 +7,7 @@ import {
   type HuanyuChannelProductOption
 } from './db/remoteDictionary.js'
 import { findTaikangHuanyuChannelMapping, taikangBusinessKeyOf } from './taikangHuanyuChannelMapping.js'
+import { createHuanyuOrderOnMysql } from './huanyuMysqlPush.js'
 
 /** 订单同步所需的最小字段，既可用于实时抓单，也可用于历史回填。 */
 export interface HuanyuSourceOrder {
@@ -34,6 +35,8 @@ export interface HuanyuOrderSyncResult {
  */
 export interface HuanyuOrderSyncOptions {
   repairPatientContactMapping?: boolean
+  /** 实时绿通自动建单：只写远端 MySQL，并仅将 DDBH 关联号写回本地 orders。 */
+  writeDirectlyToRemote?: boolean
 }
 
 type JsonRecord = Record<string, unknown>
@@ -238,6 +241,61 @@ export async function syncHuanyuOrderFromTaikang(
   const repairPatientContactMapping = Boolean(options.repairPatientContactMapping)
   // 取消类订单的金额规则优先级最高，固定写 0；其他订单取维表 CPJG。
   const amount = isCancelledOrder(order.status) ? 0 : productPrice(product?.price)
+  if (options.writeDirectlyToRemote) {
+    const ddbh = order.huanyuOrderNo || generateDdbh()
+    const remoteRow = {
+      DDBH: ddbh,
+      DD_state: '待跟进',
+      BDQD: text(channel?.id ?? null, 100),
+      BDQD_DDBH: text(order.sourceOrderNo, 50),
+      BDQD_DDBH2: text(backupOrderNo, 50),
+      BDQD_FWXM: text(product?.id ?? null, 50),
+      DDJE: amount,
+      KHJL: text(manager, 50),
+      JZR_XM: text(patientName, 50),
+      JZR_ZJLX: huanyuDocumentType(field(raw, 'cardType')),
+      JZR_ZJHM: text(field(raw, 'cardId'), 50),
+      JZR_XB: text(field(raw, 'sex'), 20),
+      JZR_NL: ageFromBirthday(birthday),
+      JZR_LXDH: text(patientPhone, 18),
+      JZR_JSMC: text(field(raw, 'ecpName'), 50),
+      JZR_JSGX: text(field(raw, 'patEcpRelationship', 'relationship'), 50),
+      JZR_JSLXFS: text(familyPhone, 18),
+      JZR_JB: text(field(raw, 'suspectDisease'), 100),
+      JZR_BZ: text(field(raw, 'comments', 'comment'), 2000),
+      H_NAME: text(field(raw, 'hospital', 'intendHos', 'visitingHospital'), 100),
+      H_ADDRESS: text(field(raw, 'visitingHospitalDetailAddress'), 500),
+      H_KS: text(field(raw, 'dept', 'intendDept'), 50),
+      H_YS: text(field(raw, 'doctor', 'intendDoc'), 50),
+      DDFWBZ: text(field(raw, 'comments', 'comment'), 2000),
+      BBQ_XQ: text(field(raw, 'intendDateAmorpm'), 20),
+      DATE_XQ: text(field(raw, 'intendDate'), 20),
+      YYQDLX: '1',
+      xtsj_: order.createdAt.toISOString(),
+      expectedProvince: text(field(raw, 'intendProvince'), 50),
+      expectedCity: text(field(raw, 'intendCity'), 50),
+      expectedHospital: text(field(raw, 'intendHos', 'hospital'), 255),
+      expectedDepartment: text(field(raw, 'intendDept', 'dept'), 255)
+    }
+    await createHuanyuOrderOnMysql(remoteRow)
+    const linked = await prisma.order.updateMany({
+      where: { id: order.id, huanyuOrderNo: order.huanyuOrderNo },
+      data: { huanyuOrderNo: ddbh }
+    })
+    if (linked.count !== 1) {
+      const current = await prisma.order.findUnique({ where: { id: order.id }, select: { huanyuOrderNo: true } })
+      if (current?.huanyuOrderNo !== ddbh) {
+        throw new Error(`远程寰宇订单 ${ddbh} 已创建，但本地订单 ${order.id} 的寰宇订单号关联未能保存`)
+      }
+    }
+    return {
+      ddbh,
+      created: true,
+      channelFound: Boolean(channel),
+      productFound: Boolean(product),
+      managerFound: Boolean(manager)
+    }
+  }
   // DDBH 写回 orders 与寰宇主表写入必须同一事务：任一步失败都不能留下空关联号。
   return prisma.$transaction(async (tx) => {
     const ddbh = await stableDdbh(tx, order)

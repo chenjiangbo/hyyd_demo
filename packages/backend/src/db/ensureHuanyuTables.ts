@@ -352,7 +352,7 @@ const CREATE_STATEMENTS = [
   `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "service_date" VARCHAR(20);`,
   `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "completed_at" TIMESTAMP WITH TIME ZONE;`,
   `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "error_message" TEXT;`,
-  // 19. 泰康绿通订单回拉/本地建单决策日志。公共池不建单、个人池先查远程的依据可直接追溯。
+  // 19. 泰康绿通订单远程查重/远程建单决策日志。公共池跳过、个人池查远程的依据可追溯。
   `
     CREATE TABLE IF NOT EXISTS "order_huanyu_sync_logs" (
       "id" BIGSERIAL PRIMARY KEY,
@@ -371,7 +371,7 @@ const CREATE_STATEMENTS = [
     CREATE INDEX IF NOT EXISTS "order_huanyu_sync_logs_order_created_idx"
       ON "order_huanyu_sync_logs" ("order_id", "created_at" DESC);
   `,
-  // 处理期互斥占位：防止多个个人池客户端并发执行“查无后本地建单”。
+  // 处理期互斥占位：防止多个个人池客户端并发执行“查无后远程建单”。
   `
     CREATE TABLE IF NOT EXISTS "order_huanyu_sync_claims" (
       "order_id" INTEGER PRIMARY KEY REFERENCES "orders"("id") ON DELETE CASCADE,

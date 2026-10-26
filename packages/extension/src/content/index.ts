@@ -1988,10 +1988,8 @@ async function fetchPublicOrders(identity: CollectionIdentity): Promise<any[]> {
   return [...byOrderNo.values()];
 }
 
-// ─── 单订单详情 ──────────────────────────────────────────────
-// 统一只调 recommendations（所有业务返回结构一致的大对象）+ ecm/getImage。
-// 各业务专属辅助接口的数据基本都已包含在 recommendations 的子结构里，
-// 不再按业务类型分支调用，一套逻辑通吃所有绿通业务。
+// ─── 单订单详情与附件 ────────────────────────────────────────
+// 详情正文和附件分开采集、上报，正文保存后即可触发远程建单。
 async function fetchOrderDetail(identity: CollectionIdentity, order: any): Promise<any> {
   const { userId } = identity;
   const subOrderNo = order.subOrderNo;
@@ -2014,27 +2012,45 @@ async function fetchOrderDetail(identity: CollectionIdentity, order: any): Promi
     throw new Error('详情订单号与个人池订单号不一致');
   }
 
+  await confirmIdentity(identity);
+  return { detail: { recommendations: rec } };
+}
+
+async function fetchOrderAttachments(identity: CollectionIdentity, order: any): Promise<any> {
+  const { subOrderNo } = order;
   // 证件图片：每种 fileType 各拉一次，fileUrl 实际是 base64
   await confirmIdentity(identity);
+  let attachmentsComplete = true;
   const imgPages = await Promise.all(FETCH_FILE_TYPES.map(async (ft) => {
     const pages: any[] = [];
-    for (let pageNum = 1; pageNum <= MAX_PAGES; pageNum++) {
-      const page = await apiPostDetailWithRetry(
-        'ecm/getImage',
-        { subOrderNo, fileType: ft, pageNum, pageSize: 5 },
-        identity
-      );
-      pages.push(...(page?.data?.list ?? []));
-      if (!page?.data?.hasNextPage) return pages;
+    try {
+      for (let pageNum = 1; pageNum <= MAX_PAGES; pageNum++) {
+        const page = await apiPostDetailWithRetry(
+          'ecm/getImage',
+          { subOrderNo, fileType: ft, pageNum, pageSize: 5 },
+          identity
+        );
+        pages.push(...(page?.data?.list ?? []));
+        if (!page?.data?.hasNextPage) return pages;
+      }
+      throw new Error(`图片分页超过 ${MAX_PAGES} 页: ${ft}`);
+    } catch (error) {
+      if (error instanceof TaikangAuthError || error instanceof TaikangSessionChanged) throw error;
+      attachmentsComplete = false;
+      console.warn(`[寰宇探针] 附件采集失败，不阻挡详情建单: ${subOrderNo} fileType=${ft}`, error);
+      return pages;
     }
-    throw new Error(`图片分页超过 ${MAX_PAGES} 页: ${ft}`);
   }));
   const attachments: any[] = [];
   imgPages.forEach((page, idx) => {
     const ft = FETCH_FILE_TYPES[idx];
     const list: any[] = page;
     for (const item of list) {
-      if (!item?.fileUrl || !item?.fileId) throw new Error(`图片数据不完整: fileType=${ft}`);
+      if (!item?.fileUrl || !item?.fileId) {
+        attachmentsComplete = false;
+        console.warn(`[寰宇探针] 附件数据不完整，不阻挡详情建单: ${subOrderNo} fileType=${ft}`);
+        continue;
+      }
       const { fileUrl, ...rawMeta } = item;
       attachments.push({
         fileType: ft,
@@ -2048,10 +2064,7 @@ async function fetchOrderDetail(identity: CollectionIdentity, order: any): Promi
   });
 
   await confirmIdentity(identity);
-  return {
-    detail: { recommendations: rec },
-    attachments,
-  };
+  return { attachments, attachmentsComplete };
 }
 
 // ─── 列表项 → 上报给后端的精简结构 ──────────────────────────
@@ -2177,7 +2190,7 @@ async function claimCollector(): Promise<string | null> {
   return collectorGeneration;
 }
 
-async function sendCollected(type: 'SYNC_ORDERS' | 'ORDER_DETAIL_FETCHED', identity: CollectionIdentity, payload: unknown) {
+async function sendCollected(type: 'SYNC_ORDERS' | 'ORDER_DETAIL_FETCHED' | 'ORDER_ATTACHMENTS_FETCHED', identity: CollectionIdentity, payload: unknown) {
   assertSession(identity);
   const response = await chrome.runtime.sendMessage({
     type,
@@ -2291,15 +2304,22 @@ async function pollOnce(): Promise<void> {
         await sendCollected('ORDER_DETAIL_FETCHED', identity, {
           sourceOrderNo: o.subOrderNo,
           detail: bundle.detail,
-          attachments: bundle.attachments,
           fingerprint: fp,
         });
-        // 只有后端确认完整保存后才推进指纹。
-        lastFingerprint.set(o.subOrderNo, fp);
-        savedSinceFlush++;
-        console.log(
-          `[寰宇探针] 详情已由后台确认: ${o.subOrderNo} 附件=${bundle.attachments.length}`
-        );
+        // 正文保存 ACK 后，后端已可以创建远程主单；附件采集和保存独立进行。
+        const attachmentBundle = await fetchOrderAttachments(identity, o);
+        const attachmentAck = await sendCollected('ORDER_ATTACHMENTS_FETCHED', identity, {
+          sourceOrderNo: o.subOrderNo,
+          attachments: attachmentBundle.attachments,
+          attachmentsComplete: attachmentBundle.attachmentsComplete,
+          fingerprint: fp,
+        });
+        if (attachmentAck.attachmentsComplete !== false) {
+          // 只有附件全部采集并保存后才推进指纹；否则下轮重试附件。
+          lastFingerprint.set(o.subOrderNo, fp);
+          savedSinceFlush++;
+        }
+        console.log(`[寰宇探针] 详情正文已保存: ${o.subOrderNo} 附件=${attachmentBundle.attachments.length} 附件完整=${attachmentAck.attachmentsComplete !== false}`);
         if (savedSinceFlush >= 10) {
           await saveFingerprints(identity.userName);
           savedSinceFlush = 0;

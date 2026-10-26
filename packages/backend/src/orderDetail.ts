@@ -23,25 +23,36 @@ export interface SaveDetailInput {
   sourceOrderNo: string
   source?: string // 默认 'taikang'
   detail: DetailBundle
-  attachments: AttachmentInput[]
-  fingerprint?: string // 插件算的状态指纹，存下来供增量基线比对
   expectedEmployeeId?: number
   expectedBatchId?: string
 }
 
 export interface SaveDetailResult {
   orderId: number
+}
+
+export interface SaveOrderAttachmentsInput {
+  sourceOrderNo: string
+  source?: string
+  attachments: AttachmentInput[]
+  attachmentsComplete: boolean
+  fingerprint: string
+  expectedEmployeeId?: number
+  expectedBatchId?: string
+}
+
+export interface SaveOrderAttachmentsResult {
+  orderId: number
   attachmentCount: number
   skipped: number
+  attachmentsComplete: boolean
 }
 
 /**
- * 先逐张保存附件到 MinIO 与 DB，全部成功后才写详情完成时间和增量指纹。
- * 重试时 OrderAttachment 按 [orderId, fileId] upsert。
+ * 只保存 recommendations 详情正文。附件由独立事件异步保存，不阻挡正文保存与远程建单。
  */
 export async function saveOrderDetailBundle(
   prisma: PrismaClient,
-  minioClient: Minio.Client,
   input: SaveDetailInput
 ): Promise<SaveDetailResult> {
   const source = input.source ?? 'taikang'
@@ -55,50 +66,7 @@ export async function saveOrderDetailBundle(
     throw new Error('详情订单归属与采集员工不一致')
   }
 
-  let saved = 0
-  let skipped = 0
-  for (const att of input.attachments) {
-    if (!att.base64 || !att.fileId) {
-      throw new Error('附件缺少图片内容或文件 ID')
-    }
-    const buf = Buffer.from(att.base64, 'base64')
-    if (buf.length === 0) {
-      throw new Error('附件图片为空')
-    }
-    const ext = att.fileName.split('.').pop() || 'bin'
-    const minioKey = `orders/${order.id}/${att.fileType}/${att.fileId}.${ext}`
-    await minioClient.putObject(ATTACHMENT_BUCKET, minioKey, buf, buf.length, {
-      'Content-Type': att.mimeType
-    })
-
-    await prisma.orderAttachment.upsert({
-      where: { orderId_fileId: { orderId: order.id, fileId: String(att.fileId) } },
-      update: {
-        fileType: att.fileType,
-        fileName: att.fileName,
-        mimeType: att.mimeType,
-        minioBucket: ATTACHMENT_BUCKET,
-        minioKey,
-        byteSize: buf.length,
-        rawJson: att.rawJson ?? undefined
-      },
-      create: {
-        orderId: order.id,
-        fileType: att.fileType,
-        fileId: String(att.fileId),
-        fileName: att.fileName,
-        mimeType: att.mimeType,
-        minioBucket: ATTACHMENT_BUCKET,
-        minioKey,
-        byteSize: buf.length,
-        rawJson: att.rawJson ?? undefined
-      }
-    })
-    saved++
-  }
-
-  // 附件全部保存后才写详情完成时间和指纹；失败重试不会留下虚假的增量基线。
-  const completed = await prisma.order.updateMany({
+  const saved = await prisma.order.updateMany({
     where: {
       id: order.id,
       ...(input.expectedEmployeeId ? { assignedEmployeeId: input.expectedEmployeeId } : {}),
@@ -106,11 +74,85 @@ export async function saveOrderDetailBundle(
     },
     data: {
       detailJson: { ...input.detail, captureVersion: 2 } as any,
-      detailFetchedAt: new Date(),
-      ...(input.fingerprint ? { detailFingerprint: input.fingerprint } : {})
+      detailFetchedAt: new Date()
     }
   })
-  if (completed.count !== 1) throw new Error('详情保存时订单归属发生变化')
+  if (saved.count !== 1) throw new Error('详情保存时订单归属发生变化')
+  return { orderId: order.id }
+}
 
-  return { orderId: order.id, attachmentCount: saved, skipped }
+/** 附件独立保存；失败时不写入新指纹，插件后续可重抓并重传。 */
+export async function saveOrderAttachments(
+  prisma: PrismaClient,
+  minioClient: Minio.Client,
+  input: SaveOrderAttachmentsInput
+): Promise<SaveOrderAttachmentsResult> {
+  const source = input.source ?? 'taikang'
+  const order = await prisma.order.findUnique({
+    where: { source_sourceOrderNo: { source, sourceOrderNo: input.sourceOrderNo } }
+  })
+  if (!order) throw new Error(`订单不存在: source=${source} sourceOrderNo=${input.sourceOrderNo}`)
+  if (input.expectedEmployeeId && order.assignedEmployeeId !== input.expectedEmployeeId) {
+    throw new Error('附件订单归属与采集员工不一致')
+  }
+
+  let saved = 0
+  let skipped = 0
+  let attachmentsComplete = input.attachmentsComplete
+  for (const att of input.attachments) {
+    try {
+      if (!att.base64 || !att.fileId) throw new Error('附件缺少图片内容或文件 ID')
+      const buf = Buffer.from(att.base64, 'base64')
+      if (buf.length === 0) throw new Error('附件图片为空')
+      const ext = att.fileName.split('.').pop() || 'bin'
+      const minioKey = `orders/${order.id}/${att.fileType}/${att.fileId}.${ext}`
+      await minioClient.putObject(ATTACHMENT_BUCKET, minioKey, buf, buf.length, {
+        'Content-Type': att.mimeType
+      })
+
+      await prisma.orderAttachment.upsert({
+        where: { orderId_fileId: { orderId: order.id, fileId: String(att.fileId) } },
+        update: {
+          fileType: att.fileType,
+          fileName: att.fileName,
+          mimeType: att.mimeType,
+          minioBucket: ATTACHMENT_BUCKET,
+          minioKey,
+          byteSize: buf.length,
+          rawJson: att.rawJson ?? undefined
+        },
+        create: {
+          orderId: order.id,
+          fileType: att.fileType,
+          fileId: String(att.fileId),
+          fileName: att.fileName,
+          mimeType: att.mimeType,
+          minioBucket: ATTACHMENT_BUCKET,
+          minioKey,
+          byteSize: buf.length,
+          rawJson: att.rawJson ?? undefined
+        }
+      })
+      saved++
+    } catch (error) {
+      attachmentsComplete = false
+      skipped++
+      console.warn(`[orderDetail] attachment save failed for order ${order.id}:`, error)
+    }
+  }
+
+  // 仅在详情正文与附件均完整落库后推进指纹；否则插件会在下一轮重试。
+  if (attachmentsComplete) {
+    const fingerprintSaved = await prisma.order.updateMany({
+      where: {
+        id: order.id,
+        ...(input.expectedEmployeeId ? { assignedEmployeeId: input.expectedEmployeeId } : {}),
+        ...(input.expectedBatchId ? { rawJson: { path: ['collectionBatchId'], equals: input.expectedBatchId } } : {})
+      },
+      data: { detailFingerprint: input.fingerprint }
+    })
+    if (fingerprintSaved.count !== 1) throw new Error('保存详情指纹时订单归属发生变化')
+  }
+
+  return { orderId: order.id, attachmentCount: saved, skipped, attachmentsComplete }
 }

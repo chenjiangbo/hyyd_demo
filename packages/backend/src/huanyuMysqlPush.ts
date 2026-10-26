@@ -131,6 +131,41 @@ export interface HuanyuMysqlPullResult {
   attachmentFound: boolean
 }
 
+/** 只查远端对应的 B 端订单号，不回拉或写入本地寰宇表。 */
+export async function findHuanyuOrderNoOnMysqlByChannelOrderNo(channelOrderNo: string): Promise<string | null> {
+  const lookupNo = channelOrderNo.trim()
+  if (!lookupNo) return null
+  const connection = await mysqlWriterPool().getConnection()
+  try {
+    const [rows] = await connection.execute<RowDataPacket[]>(
+      `SELECT \`DDBH\` FROM \`HY_FACT_DDCX_NEW\` WHERE \`BDQD_DDBH\` = ? ORDER BY \`xtsj_\` DESC, \`DDBH\` DESC LIMIT 1`,
+      [lookupNo]
+    )
+    const ddbh = rows[0]?.DDBH == null ? '' : String(rows[0].DDBH).trim()
+    return ddbh || null
+  } finally {
+    connection.release()
+  }
+}
+
+/** 直接在远端寰宇主表创建订单；调用方负责先按泰康订单号查重。 */
+export async function createHuanyuOrderOnMysql(row: Record<string, unknown>): Promise<void> {
+  const columns = [
+    'DDBH', 'DD_state', 'BDQD', 'BDQD_DDBH', 'BDQD_DDBH2', 'BDQD_FWXM', 'DDJE', 'KHJL',
+    'JZR_XM', 'JZR_ZJLX', 'JZR_ZJHM', 'JZR_XB', 'JZR_NL', 'JZR_LXDH',
+    'JZR_JSMC', 'JZR_JSGX', 'JZR_JSLXFS', 'JZR_JB', 'JZR_BZ',
+    'H_NAME', 'H_ADDRESS', 'H_KS', 'H_YS', 'DDFWBZ', 'BBQ_XQ', 'DATE_XQ', 'YYQDLX', 'xtsj_',
+    'expectedProvince', 'expectedCity', 'expectedHospital', 'expectedDepartment'
+  ] as const
+  const sql = `INSERT INTO \`HY_FACT_DDCX_NEW\` (${columns.map((column) => `\`${column}\``).join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`
+  const connection = await mysqlWriterPool().getConnection()
+  try {
+    await connection.execute(sql, values(row, columns))
+  } finally {
+    connection.release()
+  }
+}
+
 export interface HuanyuMysqlPushOptions {
   /** 仅从 ON DUPLICATE KEY UPDATE 排除；新建远端行时仍按本地快照完整写入。 */
   excludeOrderUpdateColumns?: readonly string[]

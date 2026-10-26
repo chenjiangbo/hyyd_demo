@@ -24,7 +24,7 @@ import { startOrderReminderSchedule } from './jobs/orderReminderSchedule.js'
 import { loadChineseWorkdayCalendar, startChineseWorkdayCalendarSync } from './jobs/chineseWorkdayCalendarSync.js'
 import { registerAdminRoutes, ADMIN_COOKIE, verifyAdminToken } from './routes/admin.js'
 import { addAdminSocket, removeAdminSocket } from './routes/adminBus.js'
-import { saveOrderDetailBundle } from './orderDetail.js'
+import { saveOrderAttachments, saveOrderDetailBundle } from './orderDetail.js'
 import { saveTaikangFormEvent } from './taikangFormRecording.js'
 import { ensureOrderIdCardOcrTable, scheduleOrderIdCardOcr } from './services/orderIdCardOcr.js'
 import { initScheduler } from './asr/transcribeScheduler.js'
@@ -40,7 +40,7 @@ import { ensureSysSettingsTable } from './db/ensureSysSettingsTable.js'
 import { ensureTaikangHuanyuChannelMappingTable } from './db/ensureTaikangHuanyuChannelMappingTable.js'
 import { ensureOrderAttributionMismatchTable } from './db/ensureOrderAttributionMismatchTable.js'
 import { syncHuanyuOrderFromTaikang } from './huanyuOrderSync.js'
-import { pullHuanyuOrderFromMysqlByChannelOrderNo } from './huanyuMysqlPush.js'
+import { findHuanyuOrderNoOnMysqlByChannelOrderNo } from './huanyuMysqlPush.js'
 import { initializeOrderWorkflow } from './workflow/serviceWorkflow.js'
 import { parseTaikangPoolEnteredAt } from './taikangPoolTime.js'
 
@@ -73,8 +73,8 @@ const prisma = new PrismaClient()
 type GreenPassHuanyuSyncAction =
   | 'public_skipped'
   | 'missing_assignee'
-  | 'remote_pulled'
-  | 'local_created'
+  | 'remote_existing'
+  | 'remote_created'
   | 'failed'
 
 type GreenPassHuanyuSyncLog = {
@@ -89,7 +89,7 @@ type GreenPassHuanyuSyncLog = {
 }
 
 /**
- * 记录绿通“远程回拉 / 本地建单”的业务决策。日志写入失败不能影响订单同步主流程。
+ * 记录绿通“远程已存在 / 远程新建”的业务决策。日志写入失败不能影响订单同步主流程。
  */
 async function writeGreenPassHuanyuSyncLog(input: GreenPassHuanyuSyncLog): Promise<void> {
   try {
@@ -153,10 +153,10 @@ async function releaseGreenPassHuanyuSyncClaim(orderId: number): Promise<void> {
 }
 
 /**
- * 绿通订单只允许在个人池同步事件中调用本方法。
+ * 仅个人池绿通详情已保存后调用：远程已有时只关联订单号，查无时才直接在远端创建。
  *
  * 客户经理由已落库订单的 assigned_employee_id 关联 employees.name 得到；
- * 公共池和订单详情抓取都不得调用本方法，以免公共池采集人影响 KHJL。
+ * 公共池和挂号订单不得调用本方法，以免公共池采集人影响 KHJL。
  */
 async function syncGreenPassHuanyuOrderAfterPersonalPool(orderId: number): Promise<void> {
   const order = await prisma.order.findUnique({
@@ -179,34 +179,34 @@ async function syncGreenPassHuanyuOrderAfterPersonalPool(orderId: number): Promi
     throw new Error(`个人池订单 ${order.sourceOrderNo} 缺少归属员工，不能创建寰宇订单`)
   }
 
-  // 已有 DDBH 即表示之前已完成回拉或本地创建；后续同步绝不重新查询或建单。
-  if (order.huanyuOrderNo) return
-
   if (!await claimGreenPassHuanyuSync(order.id)) {
     server.log.info(`泰康个人池订单 ${order.sourceOrderNo} 正由其他同步请求处理，跳过本次重复建单`)
     return
   }
 
   try {
-    // 远程可访问且明确查无时，才允许后续本地建单。异常会进入 catch，绝不把“查询失败”当作“无订单”。
-    const pulled = await pullHuanyuOrderFromMysqlByChannelOrderNo(prisma, order.sourceOrderNo, order.id)
-    if (pulled.found) {
+    // 每次都按泰康订单号查远端，避免历史本地生成的 huanyuOrderNo 阻止远端补建。
+    // 查询失败会进入 catch，绝不把“查询失败”当作“远端无订单”。
+    const remoteDdbh = await findHuanyuOrderNoOnMysqlByChannelOrderNo(order.sourceOrderNo)
+    if (remoteDdbh) {
+      if (order.huanyuOrderNo !== remoteDdbh) {
+        await prisma.order.update({ where: { id: order.id }, data: { huanyuOrderNo: remoteDdbh } })
+      }
       await writeGreenPassHuanyuSyncLog({
         orderId: order.id,
         sourceOrderNo: order.sourceOrderNo,
         pool: 'personal',
         assignedEmployeeId: order.assignedEmployeeId,
         assignedEmployeeName: managerName,
-        action: 'remote_pulled',
-        huanyuOrderNo: pulled.ddbh
+        action: 'remote_existing',
+        huanyuOrderNo: remoteDdbh
       })
-      server.log.info(`已从 MySQL 回拉寰宇订单 ${pulled.ddbh}（泰康订单 ${order.sourceOrderNo}）`)
+      server.log.info(`泰康订单 ${order.sourceOrderNo} 已有远程寰宇订单 ${remoteDdbh}，已更新订单号关联`)
       return
     }
 
-    // 本地创建时的 KHJL 只来自 orders.assigned_employee_id → employees.name。
-    // 此函数不触发任何远程 MySQL 写入；远程写入仍仅由人工确认推送执行。
-    const result = await syncHuanyuOrderFromTaikang(prisma, order, managerName)
+    // 查无时直接创建远程订单；本地只保存 orders.huanyuOrderNo，不写寰宇镜像表。
+    const result = await syncHuanyuOrderFromTaikang(prisma, order, managerName, { writeDirectlyToRemote: true })
     if (result.created) {
       await writeGreenPassHuanyuSyncLog({
         orderId: order.id,
@@ -214,10 +214,10 @@ async function syncGreenPassHuanyuOrderAfterPersonalPool(orderId: number): Promi
         pool: 'personal',
         assignedEmployeeId: order.assignedEmployeeId,
         assignedEmployeeName: managerName,
-        action: 'local_created',
+        action: 'remote_created',
         huanyuOrderNo: result.ddbh
       })
-      server.log.info(`已创建本地寰宇订单 ${result.ddbh}（泰康订单 ${order.sourceOrderNo}，客户经理=${managerName}）`)
+      server.log.info(`已创建远程寰宇订单 ${result.ddbh}（泰康订单 ${order.sourceOrderNo}，客户经理=${managerName}）`)
     }
     if (!result.channelFound || !result.productFound) {
       server.log.warn(`寰宇订单 ${result.ddbh} 字典映射不完整：渠道=${result.channelFound}，服务项目=${result.productFound}`)
@@ -633,12 +633,15 @@ async function start() {
                         action: 'public_skipped'
                       })
                     }
-                  } else {
+                  } else if (saved.detailFetchedAt && saved.detailJson) {
                     try {
+                      // 已有详情的订单在列表同步时补偿触发，防止历史指纹使插件不再重抓。
                       await syncGreenPassHuanyuOrderAfterPersonalPool(saved.id)
                     } catch (error) {
-                      server.log.error(error, `泰康个人池订单 ${orderData.orderId} 同步寰宇订单失败，等待下一次个人池同步或人工核验`)
+                      server.log.error(error, `泰康个人池订单 ${orderData.orderId} 同步寰宇订单失败，等待下一次个人池同步或详情重试`)
                     }
+                  } else {
+                    server.log.info(`泰康个人池订单 ${orderData.orderId} 尚无已保存详情，暂不创建远程寰宇订单`)
                   }
                 }
                 socket.send(JSON.stringify({ type: 'ORDERS_SYNCED_ACK', requestId, ok: true, acceptedPersonalOrderNos, mismatchCount, mismatchRecordFailureCount }))
@@ -701,13 +704,13 @@ async function start() {
                 `泰康 token 保活: ${message.ok ? 'OK' : 'FAIL: ' + (message.reason ?? '?')}  员工=${employee.name}`
               )
             } else if (message.type === 'ORDER_DETAIL_FETCHED') {
-              // 插件抓完订单详情，把数据 + 附件回传
+              // 先单独保存 recommendations 正文并处理远程建单，不等待附件。
               const requestId = typeof message.requestId === 'string' ? message.requestId : ''
               const batchId = typeof message.batchId === 'string' ? message.batchId : ''
               const validIdentity = client === 'ext' && message.protocolVersion === 2 && !!requestId && !!batchId &&
                 message.taikangAccount === taikangAccount && Number(message.taikangUserId) === taikangUserId
-              const detailAck = (ok: boolean, error?: string) => socket.send(JSON.stringify({
-                type: 'ORDER_DETAIL_ACK', requestId, ok, error
+              const detailAck = (ok: boolean, error?: string, attachmentsComplete?: boolean) => socket.send(JSON.stringify({
+                type: 'ORDER_DETAIL_ACK', requestId, ok, error, attachmentsComplete
               }))
               if (!validIdentity) {
                 detailAck(false, '采集账号或批次无效')
@@ -720,9 +723,8 @@ async function start() {
               }
               const payload = message.payload || {}
               if (typeof payload.sourceOrderNo !== 'string' || !payload.sourceOrderNo.trim() ||
-                  !payload.detail?.recommendations || !Array.isArray(payload.attachments) ||
-                  typeof payload.fingerprint !== 'string') {
-                detailAck(false, '详情订单号、正文、附件或指纹无效')
+                  !payload.detail?.recommendations || typeof payload.fingerprint !== 'string') {
+                detailAck(false, '详情订单号、正文或指纹无效')
                 return
               }
               if (payload.error) {
@@ -747,39 +749,28 @@ async function start() {
                     detailAck(false, '订单未由当前泰康账号的本批个人池确认')
                     return
                   }
-                  const result = await saveOrderDetailBundle(prisma, minioClient, {
+                  const result = await saveOrderDetailBundle(prisma, {
                     sourceOrderNo: payload.sourceOrderNo,
                     detail: payload.detail || {},
-                    attachments: payload.attachments || [],
-                    fingerprint: payload.fingerprint,
                     expectedEmployeeId: employeeId,
                     expectedBatchId: batchId
                   })
-                  // 详情抓取仍可补齐已关联寰宇订单中的空字段，但不能触发远程查询或生成新的 DDBH。
-                  // 因此公共池订单（huanyuOrderNo 为空）打开详情也不会绕过个人池建单入口。
-                  const orderForExistingHuanyu = await prisma.order.findUnique({
+                  const detailedOrder = await prisma.order.findUnique({
                     where: { id: result.orderId },
-                    include: { assignedEmployee: { select: { name: true } } }
+                    select: { rawJson: true }
                   })
-                  if (
-                    orderForExistingHuanyu &&
-                    !isTaikangRegistrationAssistance(orderForExistingHuanyu.rawJson) &&
-                    orderForExistingHuanyu.huanyuOrderNo
-                  ) {
+                  if (detailedOrder && !isTaikangRegistrationAssistance(detailedOrder.rawJson)) {
                     try {
-                      await syncHuanyuOrderFromTaikang(
-                        prisma,
-                        orderForExistingHuanyu,
-                        orderForExistingHuanyu.assignedEmployee?.name
-                      )
+                      await syncGreenPassHuanyuOrderAfterPersonalPool(result.orderId)
                     } catch (error) {
-                      server.log.error(error, `泰康订单 ${orderForExistingHuanyu.sourceOrderNo} 补齐已关联寰宇订单字段失败`)
+                      // 详情已成功保存；后续个人池列表同步会基于已保存详情重试远程建单。
+                      server.log.error(error, `泰康个人池订单 ${payload.sourceOrderNo} 远程寰宇同步失败，等待下一轮列表同步重试`)
                     }
                   }
                   void scheduleOrderIdCardOcr(prisma, minioClient, result.orderId).catch(() => {
                     server.log.warn({ orderId: result.orderId }, '身份证附件自动识别未完成')
                   })
-                  server.log.info(`订单详情入库成功: orderId=${result.orderId} 附件=${result.attachmentCount} 跳过=${result.skipped}`)
+                  server.log.info(`订单详情正文入库成功: orderId=${result.orderId}`)
                   // 注：原本要把对应的 pending command mark done，但插件
                   // 已不再消费 command，没有指令补推回路，无需 mark。
                   // 通知托盘可以刷新弹窗
@@ -795,6 +786,57 @@ async function start() {
                   server.log.error('保存订单详情失败:', e as any)
                   detailAck(false, e instanceof Error ? e.message : '保存详情失败')
                 }
+              }
+            } else if (message.type === 'ORDER_ATTACHMENTS_FETCHED') {
+              const requestId = typeof message.requestId === 'string' ? message.requestId : ''
+              const batchId = typeof message.batchId === 'string' ? message.batchId : ''
+              const validIdentity = client === 'ext' && message.protocolVersion === 2 && !!requestId && !!batchId &&
+                message.taikangAccount === taikangAccount && Number(message.taikangUserId) === taikangUserId
+              const attachmentsAck = (ok: boolean, error?: string, attachmentsComplete?: boolean) => socket.send(JSON.stringify({
+                type: 'ORDER_ATTACHMENTS_ACK', requestId, ok, error, attachmentsComplete
+              }))
+              if (!validIdentity) {
+                attachmentsAck(false, '采集账号或批次无效')
+                return
+              }
+              if (!await bindingStillMatches()) {
+                attachmentsAck(false, '泰康账号的员工绑定已变化，请重新连接')
+                socket.close(1008, 'employee binding changed')
+                return
+              }
+              const payload = message.payload || {}
+              if (typeof payload.sourceOrderNo !== 'string' || !payload.sourceOrderNo.trim() ||
+                  !Array.isArray(payload.attachments) || typeof payload.attachmentsComplete !== 'boolean' ||
+                  typeof payload.fingerprint !== 'string') {
+                attachmentsAck(false, '附件订单号、附件列表或指纹无效')
+                return
+              }
+              try {
+                const orderForAttribution = await prisma.order.findUnique({
+                  where: { source_sourceOrderNo: { source: 'taikang', sourceOrderNo: payload.sourceOrderNo } },
+                  select: { assignedEmployeeId: true, rawJson: true }
+                })
+                const rawAttribution = orderForAttribution?.rawJson && typeof orderForAttribution.rawJson === 'object' && !Array.isArray(orderForAttribution.rawJson)
+                  ? orderForAttribution.rawJson as Record<string, unknown> : {}
+                if (orderForAttribution?.assignedEmployeeId !== employeeId || rawAttribution.taikangAccount !== taikangAccount || rawAttribution.collectionBatchId !== batchId) {
+                  attachmentsAck(false, '附件订单归属与当前采集账号或批次不一致')
+                  return
+                }
+                const result = await saveOrderAttachments(prisma, minioClient, {
+                  sourceOrderNo: payload.sourceOrderNo,
+                  attachments: payload.attachments,
+                  attachmentsComplete: payload.attachmentsComplete,
+                  fingerprint: payload.fingerprint,
+                  expectedEmployeeId: employeeId,
+                  expectedBatchId: batchId
+                })
+                if (!result.attachmentsComplete) {
+                  server.log.warn(`订单 ${payload.sourceOrderNo} 附件未完整保存；未推进采集指纹，将由插件重试`)
+                }
+                attachmentsAck(true, undefined, result.attachmentsComplete)
+              } catch (error) {
+                server.log.error(error, `订单 ${payload.sourceOrderNo} 附件保存失败`)
+                attachmentsAck(false, error instanceof Error ? error.message : '附件保存失败', false)
               }
             } else if (message.type === 'SYNC_FINGERPRINTS') {
               if (client === 'ext') return // 新版指纹只在详情完整保存时写入，旧版对账不再可信。
