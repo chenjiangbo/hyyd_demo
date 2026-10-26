@@ -42,7 +42,7 @@ export default function TitleBar(): React.JSX.Element | null {
         className="flex-1 flex items-center gap-2 pl-3 text-text-main h-full"
       >
         <span className="material-symbols-outlined filled text-lg text-trust-blue">health_and_safety</span>
-        <span className="text-body-sm font-medium">智能寰宇 · 采集工作台</span>
+        <span className="text-body-sm font-medium">寰宇智能助手</span>
       </div>
 
       {/* 右：macOS 风格窗口按钮 */}

@@ -1,5 +1,5 @@
 appId: com.electron.app
-productName: tray-app
+productName: 寰宇智能助手
 directories:
   buildResources: build
 files:
@@ -26,7 +26,7 @@ win:
   icon: resources/icon.ico
   signAndEditExecutable: false
 nsis:
-  artifactName: ${name}-${version}-setup.${ext}
+  artifactName: ${productName}-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always

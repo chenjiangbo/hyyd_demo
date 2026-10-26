@@ -31,7 +31,7 @@ export default function TopNav({ current, onChange }: Props): React.JSX.Element 
         type="button"
         onClick={() => onChange('mine')}
         className="flex items-center gap-2 pl-1 pr-2 h-8 rounded hover:bg-surface-2 transition-colors"
-        title="寰宇医道 · 采集工作台"
+        title="寰宇智能助手"
       >
         <span
           className="w-5 h-5 rounded-md bg-accent flex items-center justify-center text-[10px] font-bold text-white"
@@ -39,7 +39,7 @@ export default function TopNav({ current, onChange }: Props): React.JSX.Element 
         >
           寰
         </span>
-        <span className="text-sm font-semibold text-fg">寰宇医道</span>
+        <span className="text-sm font-semibold text-fg">寰宇智能助手</span>
       </button>
 
       <div className="w-px h-5 bg-line" />

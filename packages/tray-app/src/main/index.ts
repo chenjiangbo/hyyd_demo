@@ -13,7 +13,12 @@ import { PetIntakeService, type PetIntakeResult } from './pet-intake-service'
 loadRootEnv()
 
 // 应用显示名：否则 Windows 任务栏/托盘会显示默认 "Electron"
-app.setName('智能寰宇')
+app.setName('寰宇智能助手')
+
+// 保持旧版用户数据目录，避免应用改名后切换到新的空目录。
+if (process.platform === 'win32') {
+  app.setPath('userData', join(app.getPath('appData'), '智能寰宇'))
+}
 
 if (process.platform === 'win32') {
 app.disableHardwareAcceleration()
@@ -115,7 +120,7 @@ async function requestWindowClose(): Promise<void> {
   try {
     result = await dialog.showMessageBox(mainWindow, {
       type: 'question',
-      title: '关闭智能寰宇',
+      title: '关闭寰宇智能助手',
       message: '关闭窗口时要退出应用，还是最小化到托盘？',
       detail: '最小化后应用会继续在托盘运行，采集功能也会继续工作。',
       buttons: ['最小化到托盘', '退出应用', '取消'],
@@ -226,7 +231,7 @@ function createWindow(): void {
     show: false,
     frame: false, // 去掉 Windows 原生标题栏，用 v2 自绘标题栏 + 窗口按钮
     autoHideMenuBar: true,
-    title: '智能寰宇',
+    title: '寰宇智能助手',
     icon, // Windows 任务栏/窗口图标（否则显示 Electron 默认图标）
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -272,7 +277,7 @@ function createTray(): void {
   // Windows 任务栏托盘标准 16x16
   const trayImage = image.resize({ width: 16, height: 16 })
   tray = new Tray(trayImage)
-  tray.setToolTip('寰宇医道采集客户端')
+  tray.setToolTip('寰宇智能助手')
 
   const contextMenu = Menu.buildFromTemplate([
     { label: '显示工作台', click: showMainWindow },

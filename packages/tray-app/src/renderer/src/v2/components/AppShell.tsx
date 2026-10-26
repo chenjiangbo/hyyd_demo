@@ -155,7 +155,7 @@ export default function AppShell({
           <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-white">
             <span className="material-symbols-outlined filled text-[20px]">medical_services</span>
           </div>
-          <h1 className="text-h3-title text-primary font-nav font-black">智能寰宇</h1>
+          <h1 className="text-h3-title text-primary font-nav font-black">寰宇智能助手</h1>
         </div>
 
         {/* 一级导航 */}

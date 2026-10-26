@@ -13,4 +13,5 @@
 !macro customUnInit
   !insertmacro closeRunningTrayApp
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "智能寰宇"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "寰宇智能助手"
 !macroend

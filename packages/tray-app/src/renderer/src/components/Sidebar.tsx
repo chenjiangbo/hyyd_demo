@@ -28,7 +28,7 @@ export default function Sidebar({ current, onChange }: Props): React.JSX.Element
   return (
     <aside className="w-56 bg-slate-800 text-slate-100 flex flex-col">
       <div className="px-5 py-5 border-b border-slate-700">
-        <div className="text-lg font-semibold">寰宇医道</div>
+        <div className="text-lg font-semibold">寰宇智能助手</div>
         <div className="text-xs text-slate-400 mt-1">采集工作台</div>
       </div>
       <nav className="flex-1 py-3">

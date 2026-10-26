@@ -55,10 +55,10 @@ export default function LoginPage({
           <div className="relative z-10 p-8 flex flex-col justify-end h-full w-full text-white">
             <div className="mb-auto mt-6 flex items-center gap-3">
               <span className="material-symbols-outlined filled text-3xl">health_and_safety</span>
-              <span className="text-h2-header tracking-tight">智能寰宇</span>
+              <span className="text-h2-header tracking-tight">寰宇智能助手</span>
             </div>
             <div className="space-y-3 max-w-sm">
-              <h1 className="text-h1-display text-white">智能寰宇 · 医疗服务工作台</h1>
+              <h1 className="text-h1-display text-white">寰宇智能助手 · 医疗服务工作台</h1>
               <p className="text-body-lg text-primary-fixed opacity-90">
                 以精准与 AI 驱动的服务调度，为医患协调提供顺畅高效的全程支持。
               </p>
@@ -75,13 +75,13 @@ export default function LoginPage({
           {/* 移动端 Logo */}
           <div className="md:hidden flex items-center gap-2 mb-8 text-trust-blue">
             <span className="material-symbols-outlined filled text-3xl">health_and_safety</span>
-            <span className="text-h2-header">智能寰宇</span>
+            <span className="text-h2-header">寰宇智能助手</span>
           </div>
 
           <div className="w-full max-w-sm mx-auto my-auto space-y-5">
             <div className="space-y-1.5">
               <h2 className="text-h1-display text-text-main">欢迎回来</h2>
-              <p className="text-body-md text-text-muted">登录智能寰宇工作台，继续您的医患协调工作。</p>
+              <p className="text-body-md text-text-muted">登录寰宇智能助手，继续您的医患协调工作。</p>
             </div>
 
             <form className="space-y-4" onSubmit={handleSubmit}>
