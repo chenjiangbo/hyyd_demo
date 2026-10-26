@@ -43,12 +43,21 @@ function App(): React.JSX.Element {
         if (!cancelled) {
           setBackendOk(false)
           setPresence(null)
+          window.api?.setPetMobileStatus?.({ state: 'unknown', lastSeenAt: null, needsOpen: false })
         }
         return
       }
       try {
         const p = await api.getPresence()
-        if (!cancelled) setPresence(p)
+        if (!cancelled) {
+          setPresence(p)
+          window.api?.setPetMobileStatus?.({
+            // 后端只能证明最近是否收到心跳，不把心跳推断为前台或后台运行。
+            state: p.mobileOnline === true ? 'online' : p.mobileLastSeenAt ? 'stale' : 'unknown',
+            lastSeenAt: p.mobileLastSeenAt ?? null,
+            needsOpen: p.mobileState === 'needs_open'
+          })
+        }
       } catch {
         // 忽略，下次再试
       }

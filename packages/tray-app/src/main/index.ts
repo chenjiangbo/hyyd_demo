@@ -1,5 +1,5 @@
 import { app, shell, BrowserWindow, Tray, Menu, nativeImage, ipcMain, clipboard, dialog, screen, type MessageBoxReturnValue } from 'electron'
-import { existsSync, readFileSync, statSync, writeFileSync } from 'fs'
+import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { extname, join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -31,6 +31,11 @@ let tray: Tray | null = null
 let isQuitting = false
 let closePromptInFlight = false
 let isAuthenticated = false
+let pendingPetMobileStatus: PetMobileStatus | null = null
+let pendingPetMobileReminder: string | null = null
+let petNeedsOpenActive = false
+let pendingPetOrderReminder: string | null = null
+let lastPetOrderReminderKey: string | null = null
 const captureSidecar = new CaptureSidecarClient()
 // 现场采集素材的本地落地 + 异步同步：粘贴→落 sqlite/文件→worker 上传后端
 const materialStore = new MaterialStore()
@@ -38,6 +43,21 @@ const materialSync = new MaterialSyncWorker(materialStore)
 const petIntake = new PetIntakeService()
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'])
+const PET_IDLE_SIZE = { width: 80, height: 80 }
+const PET_SPEAKING_SIZE = { width: 240, height: 220 }
+const PET_CHARACTER_SIZE = { width: 56, height: 61 }
+type PetBubbleSide = 'left' | 'right'
+type PetMobileStatus = { state: 'online' | 'stale' | 'unknown'; lastSeenAt: string | null }
+let petBubbleSide: PetBubbleSide = 'left'
+
+function writePetDiagnostic(event: string, data: unknown = null): void {
+  const row = { at: new Date().toISOString(), event, data }
+  try {
+    appendFileSync(join(app.getPath('userData'), 'pet-diagnostics.jsonl'), `${JSON.stringify(row)}\n`, 'utf8')
+  } catch (error) {
+    console.error('[pet-diagnostics] 写入失败', error)
+  }
+}
 
 type CloseBehavior = 'ask' | 'minimize' | 'quit'
 
@@ -188,9 +208,11 @@ function switchServer(): void {
 function createPetWindow(): void {
   if (petWindow && !petWindow.isDestroyed()) return
 
+  writePetDiagnostic('window:create')
+
   petWindow = new BrowserWindow({
-    width: 132,
-    height: 174,
+    width: PET_IDLE_SIZE.width,
+    height: PET_IDLE_SIZE.height,
     show: false,
     frame: false,
     transparent: true,
@@ -220,11 +242,26 @@ function createPetWindow(): void {
     ])
     contextMenu.popup({ window: petWindow })
   })
+  petWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    writePetDiagnostic('renderer:console', { level, message, line, sourceId })
+  })
   petWindow.on('closed', () => { petWindow = null })
+  petWindow.webContents.on('did-finish-load', () => {
+    if (!petWindow || petWindow.isDestroyed()) return
+    if (pendingPetMobileStatus) petWindow.webContents.send('pet:mobile-status', pendingPetMobileStatus)
+    if (pendingPetMobileReminder) {
+      petWindow.webContents.send('pet:mobile-reminder', pendingPetMobileReminder)
+      pendingPetMobileReminder = null
+    }
+    if (pendingPetOrderReminder) {
+      petWindow.webContents.send('pet:mobile-reminder', pendingPetOrderReminder)
+      pendingPetOrderReminder = null
+    }
+  })
   petWindow.once('ready-to-show', () => {
     const display = screen.getPrimaryDisplay()
     const area = display.workArea
-    petWindow?.setPosition(area.x + area.width - 152, area.y + 24)
+    petWindow?.setPosition(area.x + area.width - PET_IDLE_SIZE.width - 24, area.y + 24)
     petWindow?.showInactive()
   })
 
@@ -233,6 +270,43 @@ function createPetWindow(): void {
   } else {
     petWindow.loadFile(join(__dirname, '../renderer/pet.html'))
   }
+}
+
+function resizePetWindow(expanded: boolean, bubbleSize?: { width: number; height: number }): { bubbleSide: PetBubbleSide } {
+  if (!petWindow || petWindow.isDestroyed()) throw new Error('浮动精灵窗口尚未创建')
+
+  const bounds = petWindow.getBounds()
+  const display = screen.getDisplayMatching(bounds)
+  const area = display.workArea
+  const wasExpanded = bounds.width > PET_IDLE_SIZE.width || bounds.height > PET_IDLE_SIZE.height
+  const currentCharacterLeft = wasExpanded ? (petBubbleSide === 'left' ? bounds.width - 68 : 12) : 12
+  const currentCharacterTop = wasExpanded ? bounds.height - 75 : 9
+  const characterAnchorX = bounds.x + currentCharacterLeft + PET_CHARACTER_SIZE.width / 2
+  const characterAnchorY = bounds.y + currentCharacterTop + PET_CHARACTER_SIZE.height / 2
+  const target = expanded
+    ? (() => {
+        const measuredWidth = bubbleSize?.width ?? PET_SPEAKING_SIZE.width - 36
+        const measuredHeight = bubbleSize?.height ?? 240
+        return {
+          width: Math.max(PET_SPEAKING_SIZE.width, Math.ceil(measuredWidth + (petBubbleSide === 'left' ? 36 : 90))),
+          height: Math.max(PET_SPEAKING_SIZE.height, Math.ceil(measuredHeight + 60))
+        }
+      })()
+    : PET_IDLE_SIZE
+
+  if (expanded && !wasExpanded) {
+    petBubbleSide = characterAnchorX > area.x + area.width / 2 ? 'left' : 'right'
+  }
+
+  const targetCharacterLeft = expanded ? (petBubbleSide === 'left' ? target.width - 68 : 12) : 12
+  const targetCharacterTop = expanded ? target.height - 75 : 9
+  const x = Math.round(characterAnchorX - targetCharacterLeft - PET_CHARACTER_SIZE.width / 2)
+  const y = Math.round(characterAnchorY - targetCharacterTop - PET_CHARACTER_SIZE.height / 2)
+  const clampedX = Math.max(area.x, Math.min(x, area.x + area.width - target.width))
+  const nextBounds = { x: clampedX, y, width: target.width, height: target.height }
+  petWindow.setBounds(nextBounds, true)
+  writePetDiagnostic('window:resize', { expanded, side: petBubbleSide, before: bounds, anchor: { x: characterAnchorX, y: characterAnchorY }, after: petWindow.getBounds() })
+  return { bubbleSide: petBubbleSide }
 }
 
 // 登录态用小窗（聚焦工号输入），登录后放大到工作台尺寸。两套尺寸都居中显示。
@@ -364,6 +438,64 @@ if (!gotLock) {
       app.quit()
     })
     ipcMain.on('pet:hide', () => petWindow?.hide())
+    ipcMain.on('pet:debug-log', (_e, payload: unknown) => {
+      if (!payload || typeof payload !== 'object') throw new Error('浮动精灵诊断日志非法')
+      writePetDiagnostic('renderer:event', payload)
+    })
+    ipcMain.on('pet:order-reminder', (_e, payload: unknown) => {
+      if (!payload || typeof payload !== 'object') throw new Error('订单提醒数据非法')
+      const value = payload as { key?: unknown; message?: unknown }
+      if (typeof value.key !== 'string' || value.key.length === 0 || typeof value.message !== 'string' || value.message.length === 0) {
+        throw new Error('订单提醒数据非法')
+      }
+      if (value.key === lastPetOrderReminderKey) return
+      lastPetOrderReminderKey = value.key
+      pendingPetOrderReminder = value.message
+      petWindow?.webContents.send('pet:mobile-reminder', value.message)
+      writePetDiagnostic('order-reminder', { key: value.key })
+    })
+    ipcMain.on('pet:mobile-status', (_e, status: unknown) => {
+      if (!status || typeof status !== 'object') throw new Error('移动端状态非法')
+      const value = status as { state?: unknown; lastSeenAt?: unknown; needsOpen?: unknown }
+      if (value.state !== 'online' && value.state !== 'stale' && value.state !== 'unknown') throw new Error('移动端心跳状态非法')
+      if (value.lastSeenAt !== null && typeof value.lastSeenAt !== 'string') throw new Error('移动端最近心跳时间非法')
+      if (typeof value.needsOpen !== 'boolean') throw new Error('移动端提醒状态非法')
+
+      const nextStatus: PetMobileStatus = { state: value.state, lastSeenAt: value.lastSeenAt }
+      pendingPetMobileStatus = nextStatus
+      petWindow?.webContents.send('pet:mobile-status', nextStatus)
+      if (value.needsOpen && !petNeedsOpenActive) {
+        petNeedsOpenActive = true
+        const message = '手机 App 好像有一会儿没联系我了，打开一下 App，我才能继续收到资料哦。'
+        pendingPetMobileReminder = message
+        petWindow?.webContents.send('pet:mobile-reminder', message)
+      } else if (!value.needsOpen) {
+        petNeedsOpenActive = false
+        pendingPetMobileReminder = null
+      }
+    })
+    ipcMain.handle('pet:get-bounds', () => petWindow?.getBounds() ?? null)
+    ipcMain.on('pet:move', (_e, x: unknown, y: unknown) => {
+      if (!petWindow || petWindow.isDestroyed()) return
+      if (typeof x !== 'number' || !Number.isInteger(x) || typeof y !== 'number' || !Number.isInteger(y)) {
+        throw new Error('浮动精灵位置非法')
+      }
+      const before = petWindow.getPosition()
+      petWindow.setPosition(x, y)
+      writePetDiagnostic('window:move', { before, after: [x, y] })
+    })
+    ipcMain.handle('pet:set-expanded', (_e, expanded: unknown): { bubbleSide: PetBubbleSide } => {
+      if (typeof expanded !== 'boolean') throw new Error('浮动精灵展开状态非法')
+      return resizePetWindow(expanded)
+    })
+    ipcMain.handle('pet:set-bubble-size', (_e, size: unknown): { bubbleSide: PetBubbleSide } => {
+      if (!size || typeof size !== 'object') throw new Error('浮动精灵气泡尺寸非法')
+      const value = size as { width?: unknown; height?: unknown }
+      if (typeof value.width !== 'number' || !Number.isFinite(value.width) || value.width <= 0 || typeof value.height !== 'number' || !Number.isFinite(value.height) || value.height <= 0) {
+        throw new Error('浮动精灵气泡尺寸非法')
+      }
+      return resizePetWindow(true, { width: Math.ceil(value.width), height: Math.ceil(value.height) })
+    })
     ipcMain.handle('pet:drop-files', async (_e, paths: unknown): Promise<PetIntakeResult> => {
       if (!Array.isArray(paths) || paths.length === 0) {
         return { state: 'unknown', message: '嗯…我没有接到文件' }

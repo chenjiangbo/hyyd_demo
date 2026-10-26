@@ -1,0 +1,118 @@
+.pet-bubble {
+  position: absolute;
+  top: 120px;
+  left: 18px;
+  z-index: 7;
+  display: flex;
+  width: max-content;
+  min-width: 224px;
+  max-width: 360px;
+  max-height: none;
+  flex-direction: column;
+  padding: 15px 17px;
+  overflow: visible;
+  border: 1px solid rgba(238, 174, 115, .72);
+  border-radius: 16px;
+  color: #623327;
+  background: rgba(255, 252, 247, .98);
+  box-shadow: 0 9px 24px rgba(106, 54, 30, .2);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  -webkit-app-region: no-drag;
+}
+
+.pet-expanded.pet-bubble-right .pet-bubble { left: 70px; }
+.pet-bubble__tail {
+  position: absolute;
+  right: -10px;
+  bottom: 22px;
+  width: 18px;
+  height: 18px;
+  border-top: 1px solid rgba(238, 174, 115, .72);
+  border-right: 1px solid rgba(238, 174, 115, .72);
+  background: rgba(255, 252, 247, .98);
+  transform: rotate(45deg);
+}
+
+.pet-bubble--candidate-list,
+.pet-bubble--form { top: 28px; max-height: min(70vh, 620px); overflow-y: auto; }
+.pet-bubble--error { border-color: rgba(223, 127, 72, .9); }
+.pet-bubble--error .pet-bubble__tail { border-color: rgba(223, 127, 72, .9); }
+
+.pet-expanded.pet-bubble-right .pet-bubble__tail {
+  right: auto;
+  left: -10px;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 1px solid rgba(238, 174, 115, .72);
+  border-left: 1px solid rgba(238, 174, 115, .72);
+  transform: rotate(45deg);
+}
+
+.pet-bubble__text { margin: 0; white-space: pre-wrap; }
+.pet-bubble__title { margin: 0 0 9px; color: #7a3826; font-size: 15px; line-height: 1.4; }
+.pet-bubble__description { margin: -3px 0 11px; color: #976b5e; font-size: 12px; line-height: 1.45; }
+.pet-bubble__progress { height: 5px; margin-top: 12px; overflow: hidden; border-radius: 4px; background: #f5dfcf; }
+.pet-bubble__progress span { display: block; height: 100%; border-radius: inherit; background: #e8683d; transition: width .2s ease; }
+.pet-bubble__actions { display: flex; flex-shrink: 0; flex-wrap: wrap; gap: 7px; margin-top: 13px; }
+.pet-bubble__action {
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid #e3c2ad;
+  border-radius: 8px;
+  color: #7a3929;
+  background: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  -webkit-app-region: no-drag;
+}
+.pet-bubble__action:hover { background: #fff3eb; }
+.pet-bubble__action--primary { border-color: #d95432; color: #fff; background: #e3613b; }
+.pet-bubble__action--danger { border-color: #df8b78; color: #a33d2b; }
+.pet-bubble__candidate-list { display: grid; gap: 6px; }
+.pet-bubble__candidate {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 9px;
+  border: 1px solid #f0d9c9;
+  border-radius: 9px;
+  color: #71382b;
+  background: #fffaf5;
+  text-align: left;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.pet-bubble__candidate:hover { border-color: #e78c62; background: #fff1e7; }
+.pet-bubble__candidate strong { font-size: 13px; line-height: 1.35; }
+.pet-bubble__candidate span,
+.pet-bubble__candidate small { color: #976b5e; font-size: 11px; line-height: 1.4; }
+.pet-bubble__fields { display: grid; gap: 9px; }
+.pet-bubble__field { display: grid; gap: 4px; color: #805246; font-size: 12px; }
+.pet-bubble__form-header { flex-shrink: 0; }
+.pet-bubble__form-body { min-height: 0; overflow-y: auto; }
+.pet-bubble__form-section { margin: 0 0 12px; padding: 8px 9px 10px; border: 1px solid #f0d9c9; border-radius: 9px; }
+.pet-bubble__form-section legend { padding: 0 4px; color: #7a3826; font-size: 12px; font-weight: 600; }
+.pet-bubble__field input,
+.pet-bubble__field textarea,
+.pet-bubble__field select { box-sizing: border-box; width: 100%; min-height: 32px; padding: 5px 8px; border: 1px solid #e6cdbd; border-radius: 7px; color: #542b21; background: #fff; font: inherit; -webkit-app-region: no-drag; }
+.pet-bubble__field textarea { resize: vertical; }
+.pet-bubble__field input:focus,
+.pet-bubble__field textarea:focus,
+.pet-bubble__field select:focus { outline: 2px solid rgba(220, 103, 61, .25); border-color: #db704b; }
+.pet-bubble__field input[aria-invalid='true'],
+.pet-bubble__field textarea[aria-invalid='true'],
+.pet-bubble__field select[aria-invalid='true'] { border-color: #c54b35; }
+.pet-bubble__field small { color: #a17365; font-size: 11px; line-height: 1.35; }
+.pet-bubble__field-error { color: #b84631 !important; }
+.pet-bubble__choices { display: flex; flex-wrap: wrap; gap: 7px; }
+.pet-bubble__choice,
+.pet-bubble__checkbox { display: inline-flex; align-items: center; gap: 5px; color: #673a2f; font-size: 12px; }
+.pet-bubble__choice input,
+.pet-bubble__checkbox input { width: auto; min-height: auto; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-bubble__progress span { transition: none; }
+}

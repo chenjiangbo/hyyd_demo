@@ -1,0 +1,59 @@
+.pet-avatar {
+  display: block;
+  width: 56px;
+  height: 61px;
+  overflow: visible;
+  shape-rendering: geometricPrecision;
+  filter: drop-shadow(0 5px 3px rgba(91, 46, 31, .16));
+}
+
+.pet-avatar__effect-ring ellipse:first-child { fill: rgba(241, 91, 54, .2); }
+.pet-avatar__energy-ring {
+  fill: none;
+  stroke: #f2873b;
+  stroke-width: 2.5;
+  stroke-dasharray: 5 7;
+  opacity: 0;
+  transform-origin: 74px 101px;
+}
+
+.pet-avatar__pixel,
+.pet-avatar__floating-pixel { transform-box: fill-box; transform-origin: center; }
+.pet-avatar__pixel { animation: pet-pixel-breathe 4s ease-in-out infinite; animation-delay: var(--pixel-delay); }
+.pet-avatar__floating-pixel { animation: pet-pixel-float 3.7s ease-in-out infinite; animation-delay: var(--pixel-delay); }
+.pet-avatar__face-panel { transform-origin: 74px 87px; }
+.pet-avatar__eyes { transform-box: fill-box; transform-origin: center; will-change: transform; animation: pet-blink 5.8s ease-in-out infinite; }
+.pet-avatar__mouth { opacity: 0; transform-origin: 74px 105px; }
+.pet-avatar__receiving-file { opacity: 0; transform-origin: 19px 75px; }
+
+.pet-avatar--dragover .pet-avatar__face-panel { transform: translateY(-3px) scale(1.045); }
+.pet-avatar--dragover .pet-avatar__floating-pixel { animation-name: pet-pixel-alert; }
+.pet-avatar--dragover .pet-avatar__energy-ring,
+.pet-avatar--working .pet-avatar__energy-ring { opacity: .85; animation: pet-ring 2.7s linear infinite; }
+.pet-avatar--receiving .pet-avatar__receiving-file { opacity: 1; animation: pet-file-in .9s cubic-bezier(.36,.06,.68,.99) forwards; }
+.pet-avatar--receiving .pet-avatar__body-pixels { animation: pet-gather .9s ease-in-out; transform-origin: 74px 87px; }
+.pet-avatar--working .pet-avatar__body-pixels { animation: pet-work-sway 1.5s ease-in-out infinite; transform-origin: 74px 87px; }
+.pet-avatar--working .pet-avatar__floating-pixel { animation-name: pet-pixel-working; }
+.pet-avatar--done .pet-avatar__body-pixels { animation: pet-success 700ms ease-out 1; transform-origin: 74px 87px; }
+.pet-avatar--done .pet-avatar__energy-ring { opacity: 0; }
+.pet-avatar--speaking .pet-avatar__mouth,
+.pet-avatar--done .pet-avatar__mouth { opacity: 1; animation: pet-talk 350ms ease-in-out infinite alternate; }
+.pet-avatar--speaking .pet-avatar__eyes { animation: pet-happy-eyes 1.6s ease-in-out infinite; }
+.pet-avatar--unknown .pet-avatar__face-panel { animation: pet-unsure .42s ease-in-out 2; }
+.pet-avatar--candidates .pet-avatar__eyes { animation: pet-focus 1.7s ease-in-out infinite; }
+.pet-avatar--reduced-motion * { animation: none !important; transition: none !important; }
+
+@keyframes pet-pixel-breathe { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(1px, -2px); } }
+@keyframes pet-pixel-float { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(1px, -3px); } }
+@keyframes pet-pixel-alert { from { transform: translate(0, 0) scale(1); } to { transform: translate(2px, -5px) scale(1.08); } }
+@keyframes pet-pixel-working { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+@keyframes pet-blink { 0%, 42%, 45%, 100% { transform: scaleY(1); } 43.3% { transform: scaleY(.12); } }
+@keyframes pet-happy-eyes { 0%, 100% { transform: scaleY(.85); } 50% { transform: scaleY(.65); } }
+@keyframes pet-focus { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(1px); } }
+@keyframes pet-ring { to { transform: rotate(360deg); } }
+@keyframes pet-file-in { 0% { transform: translate(-34px, -18px) rotate(-15deg) scale(1.1); opacity: 0; } 15%, 70% { opacity: 1; } 100% { transform: translate(39px, 24px) rotate(14deg) scale(.12); opacity: 0; } }
+@keyframes pet-gather { 0%, 100% { transform: scale(1); } 45% { transform: scale(.97); } }
+@keyframes pet-work-sway { 0%, 100% { transform: rotate(-1.5deg) scale(1); } 50% { transform: rotate(1.5deg) scale(1.015); } }
+@keyframes pet-success { 0%, 100% { transform: translateY(0) scale(1); } 40% { transform: translateY(-6px) scale(1.04); } }
+@keyframes pet-talk { from { transform: scaleY(.35); } to { transform: scaleY(1); } }
+@keyframes pet-unsure { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-2px); } 75% { transform: translateX(2px); } }

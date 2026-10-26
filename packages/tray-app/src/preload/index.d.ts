@@ -133,10 +133,19 @@ declare global {
       requestWindowClose: () => Promise<void>
       quitApp: () => void
       hidePet: () => void
+      petDebugLog: (payload: unknown) => void
+      getPetBounds: () => Promise<{ x: number; y: number; width: number; height: number } | null>
+      movePet: (x: number, y: number) => void
+      setPetExpanded: (expanded: boolean) => Promise<{ bubbleSide: 'left' | 'right' }>
+      setPetBubbleSize: (size: { width: number; height: number }) => Promise<{ bubbleSide: 'left' | 'right' }>
+      setPetMobileStatus: (status: { state: 'online' | 'stale' | 'unknown'; lastSeenAt: string | null; needsOpen: boolean }) => void
+      onPetMobileStatus: (cb: (status: { state: 'online' | 'stale' | 'unknown'; lastSeenAt: string | null }) => void) => () => void
+      onPetReminder: (cb: (message: string) => void) => () => void
+      showPetReminder: (data: { key: string; message: string }) => void
       getPathForFile: (file: File) => string
       petDropFiles: (paths: string[]) => Promise<{ state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[] }>
       petSelectOrder: (orderId: number) => Promise<{ state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[] }>
-      onPetStatus: (cb: (status: { state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[] }) => void) => () => void
+      onPetStatus: (cb: (status: { state: 'done' | 'unknown' | 'candidates' | 'warning'; message: string; candidates?: unknown[] }) => void) => () => void
       getWindowPreferences: () => Promise<{ closeBehavior: 'ask' | 'minimize' | 'quit' }>
       setWindowPreferences: (prefs: { closeBehavior: 'ask' | 'minimize' | 'quit' }) => Promise<{ closeBehavior: 'ask' | 'minimize' | 'quit' }>
       setWindowStage: (stage: 'login' | 'main') => void

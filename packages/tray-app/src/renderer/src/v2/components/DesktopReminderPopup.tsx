@@ -27,6 +27,14 @@ export function DesktopReminderPopup() {
       })
 
       if (due.length > 0) {
+        const reminderKey = due
+          .map((item) => `${item.id}_${item.notification_generation || 1}`)
+          .sort()
+          .join('|')
+        window.api?.showPetReminder?.({
+          key: reminderKey,
+          message: due.length === 1 ? '有一条订单提醒到了，我已经放在右下角啦。' : `有 ${due.length} 条订单提醒到了，我已经放在右下角啦。`
+        })
         // 如果在 Electron 环境中，调用原生独立桌面右下角浮窗，传递全部到期提醒
         if (window.api?.showDesktopReminder) {
           void window.api.showDesktopReminder(due)

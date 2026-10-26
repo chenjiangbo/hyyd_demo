@@ -10,11 +10,32 @@ const api = {
   requestWindowClose: () => ipcRenderer.invoke('window:request-close'),
   quitApp: () => ipcRenderer.send('app:quit'),
   hidePet: () => ipcRenderer.send('pet:hide'),
+  petDebugLog: (payload: unknown): void => ipcRenderer.send('pet:debug-log', payload),
+  getPetBounds: (): Promise<{ x: number; y: number; width: number; height: number } | null> =>
+    ipcRenderer.invoke('pet:get-bounds'),
+  movePet: (x: number, y: number): void => ipcRenderer.send('pet:move', x, y),
+  setPetExpanded: (expanded: boolean): Promise<{ bubbleSide: 'left' | 'right' }> =>
+    ipcRenderer.invoke('pet:set-expanded', expanded),
+  setPetBubbleSize: (size: { width: number; height: number }): Promise<{ bubbleSide: 'left' | 'right' }> =>
+    ipcRenderer.invoke('pet:set-bubble-size', size),
+  setPetMobileStatus: (status: { state: 'online' | 'stale' | 'unknown'; lastSeenAt: string | null; needsOpen: boolean }): void =>
+    ipcRenderer.send('pet:mobile-status', status),
+  onPetMobileStatus: (cb: (status: { state: 'online' | 'stale' | 'unknown'; lastSeenAt: string | null }) => void): (() => void) => {
+    const listener = (_e: unknown, status: { state: 'online' | 'stale' | 'unknown'; lastSeenAt: string | null }): void => cb(status)
+    ipcRenderer.on('pet:mobile-status', listener)
+    return () => ipcRenderer.removeListener('pet:mobile-status', listener)
+  },
+  onPetReminder: (cb: (message: string) => void): (() => void) => {
+    const listener = (_e: unknown, message: string): void => cb(message)
+    ipcRenderer.on('pet:mobile-reminder', listener)
+    return () => ipcRenderer.removeListener('pet:mobile-reminder', listener)
+  },
+  showPetReminder: (data: { key: string; message: string }): void => ipcRenderer.send('pet:order-reminder', data),
   getPathForFile: (file: File): string => webUtils.getPathForFile(file),
   petDropFiles: (paths: string[]) => ipcRenderer.invoke('pet:drop-files', paths),
   petSelectOrder: (orderId: number) => ipcRenderer.invoke('pet:select-order', orderId),
-  onPetStatus: (cb: (status: { state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[] }) => void): (() => void) => {
-    const listener = (_e: unknown, status: { state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[] }): void => cb(status)
+  onPetStatus: (cb: (status: { state: 'done' | 'unknown' | 'candidates' | 'warning'; message: string; candidates?: unknown[] }) => void): (() => void) => {
+    const listener = (_e: unknown, status: { state: 'done' | 'unknown' | 'candidates' | 'warning'; message: string; candidates?: unknown[] }): void => cb(status)
     ipcRenderer.on('pet:status', listener)
     return () => ipcRenderer.removeListener('pet:status', listener)
   },
