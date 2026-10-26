@@ -473,20 +473,6 @@ function ReminderTodoBell(): React.JSX.Element {
     setTimeout(() => setCopiedKey(null), 1200)
   }
 
-  const handleOpenOrder = (orderNo: string, e?: React.MouseEvent): void => {
-    e?.stopPropagation()
-    if (!orderNo) return
-    const cleanNo = orderNo.trim()
-    setOpen(false)
-    if (window.api?.openOrderFromReminder) {
-      void window.api.openOrderFromReminder(cleanNo)
-    } else {
-      window.dispatchEvent(
-        new CustomEvent('huanyu-navigate-order', { detail: { orderNo: cleanNo } })
-      )
-    }
-  }
-
   const handleDone = async (id: number): Promise<void> => {
     try {
       await doneOrderReminder(id)
@@ -586,9 +572,16 @@ function ReminderTodoBell(): React.JSX.Element {
                             )}
                           </div>
                           <div className="space-y-1 text-[13px] leading-relaxed text-text-main font-normal">
+                            {[{ label: 'B端订单号', value: it.order_no || it.orderNo }, { label: '寰宇订单号', value: it.huanyu_order_no || it.huanyuOrderNo }].filter((item) => item.value && item.value !== 'SYSTEM' && item.value !== 'ALL').map((item) => (
+                              <div key={item.label} className="flex items-center text-[13px]">
+                                <span className="w-[72px] shrink-0 whitespace-nowrap text-text-muted">{item.label}：</span>
+                                <span className="flex-1 font-mono break-all text-text-main">{item.value}</span>
+                                <IconCopyButton title={`复制${item.label}`} copied={copiedKey === `bell-${it.id}-${item.label}`} onClick={(e) => copy(item.value!, `bell-${it.id}-${item.label}`, e)} />
+                              </div>
+                            ))}
                             {(() => {
                               const normalized = (it.content || '').replace(/\\n/g, '\n')
-                              const lines = normalized.split('\n').filter(Boolean)
+                              const lines = normalized.split('\n').filter(Boolean).filter((line) => !/^(B端订单号|寰宇订单号|订单号)[：:]/.test(line.trim()))
                               return lines.map((line, idx) => {
                                 const colonIdx = line.indexOf(':') > -1 ? line.indexOf(':') : line.indexOf('：')
                                 if (colonIdx > -1) {
@@ -604,14 +597,7 @@ function ReminderTodoBell(): React.JSX.Element {
                                       <span className="w-[72px] shrink-0 whitespace-nowrap text-text-muted">{label}：</span>
                                       {isOrderField ? (
                                         <div className="flex-1 flex items-center gap-1.5 min-w-0">
-                                          <button
-                                            type="button"
-                                            onClick={(e) => handleOpenOrder(val, e)}
-                                            className="font-mono text-primary hover:underline font-medium break-all text-left cursor-pointer transition-colors"
-                                            title="点击在工作台中搜索此订单"
-                                          >
-                                            {val}
-                                          </button>
+                                          <span className="font-mono text-text-main font-medium break-all text-left">{val}</span>
                                           <IconCopyButton
                                             title={`复制订单号 ${val}`}
                                             copied={copiedKey === `bell-${it.id}-${idx}`}
@@ -636,14 +622,7 @@ function ReminderTodoBell(): React.JSX.Element {
                             <div className="flex items-start text-[13px] pt-1 border-t border-border-subtle/50 mt-1">
                               <span className="w-[72px] shrink-0 whitespace-nowrap text-text-muted">订单号：</span>
                               <div className="flex-1 flex items-center gap-1.5 min-w-0">
-                                <button
-                                  type="button"
-                                  onClick={(e) => handleOpenOrder(fallbackOrderNo, e)}
-                                  className="font-mono text-primary hover:underline font-medium break-all text-left cursor-pointer transition-colors"
-                                  title="点击在工作台中搜索此订单"
-                                >
-                                  {fallbackOrderNo}
-                                </button>
+                                <span className="font-mono text-text-main font-medium break-all text-left">{fallbackOrderNo}</span>
                                 <IconCopyButton
                                   title={`复制订单号 ${fallbackOrderNo}`}
                                   copied={copiedKey === `bell-fallback-${it.id}`}
