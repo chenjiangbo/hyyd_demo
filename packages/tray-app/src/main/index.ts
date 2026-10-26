@@ -30,6 +30,7 @@ let petWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
 let closePromptInFlight = false
+let isAuthenticated = false
 const captureSidecar = new CaptureSidecarClient()
 // 现场采集素材的本地落地 + 异步同步：粘贴→落 sqlite/文件→worker 上传后端
 const materialStore = new MaterialStore()
@@ -141,22 +142,22 @@ async function requestWindowClose(): Promise<void> {
   if (result.response === 1) quitApplication()
 }
 
-function showMainWindow(): void {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
-    return
-  }
-  createWindow()
-}
-
 function showPetWindow(): void {
   if (!petWindow || petWindow.isDestroyed()) {
     createPetWindow()
     return
   }
   petWindow.showInactive()
+}
+
+function activateClient(): void {
+  if (isAuthenticated) showPetWindow()
+  else if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show()
+    mainWindow.focus()
+  } else {
+    createWindow()
+  }
 }
 
 function createPetWindow(): void {
@@ -189,7 +190,6 @@ function createPetWindow(): void {
     if (!petWindow || petWindow.isDestroyed()) return
     const contextMenu = Menu.buildFromTemplate([
       { label: '隐藏浮动精灵', click: () => petWindow?.hide() },
-      { label: '显示工作台', click: showMainWindow },
       { type: 'separator' },
       { label: '退出客户端', click: quitApplication }
     ])
@@ -280,7 +280,6 @@ function createTray(): void {
   tray.setToolTip('寰宇智能助手')
 
   const contextMenu = Menu.buildFromTemplate([
-    { label: '显示工作台', click: showMainWindow },
     { label: '显示浮动精灵', click: showPetWindow },
     { type: 'separator' },
     {
@@ -293,17 +292,17 @@ function createTray(): void {
   ])
   tray.setContextMenu(contextMenu)
 
-  // 单击图标显示主窗口（macOS 默认双击）
-  tray.on('click', showMainWindow)
-  tray.on('double-click', showMainWindow)
+  // 已登录时点击托盘图标显示浮动精灵；未登录时回到登录窗。
+  tray.on('click', activateClient)
+  tray.on('double-click', activateClient)
 }
 
-// 单实例锁：第二次启动直接拉起已有窗口
+// 单实例锁：第二次启动只显示浮动精灵，不打开工作台。
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
-  app.on('second-instance', showMainWindow)
+  app.on('second-instance', activateClient)
 
   app.whenReady().then(() => {
     electronApp.setAppUserModelId('com.huanyu.collector')
@@ -319,8 +318,12 @@ if (!gotLock) {
       writeWindowPreferences(prefs)
       return readWindowPreferences()
     })
+    // 仅未登录时由渲染层主动显示登录窗；已登录时工作台保持隐藏。
     ipcMain.on('window:show', () => mainWindow?.show())
     ipcMain.on('window:hide', () => mainWindow?.hide())
+    ipcMain.on('session:set-authenticated', (_e, value: unknown) => {
+      isAuthenticated = value === true
+    })
     ipcMain.on('window:minimize', () => mainWindow?.minimize())
     ipcMain.on('window:maximize-toggle', () => {
       if (!mainWindow) return
@@ -494,9 +497,7 @@ if (!gotLock) {
     createTray()
     createWindow()
     createPetWindow()
-    setupReminderIPC(showMainWindow, (orderNo) => {
-      mainWindow?.webContents.send('app:navigate-order', orderNo)
-    })
+    setupReminderIPC()
     // sidecar 是订单生命周期沟通数据的核心来源；Windows 桌面端默认随应用启动。
     // 如需排障关闭，启动 app 前设环境变量 HYYD_ENABLE_SIDECAR=0。
     if (process.env.HYYD_ENABLE_SIDECAR !== '0') {
@@ -510,10 +511,7 @@ if (!gotLock) {
     // 素材同步 worker：每 10s 扫一轮 pending/pending_delete
     materialSync.start()
 
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow()
-      else showMainWindow()
-    })
+    app.on('activate', activateClient)
   })
 
   app.on('before-quit', () => {

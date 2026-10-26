@@ -128,6 +128,7 @@ declare global {
     api: {
       showWindow: () => void
       hideWindow: () => void
+      setAuthenticated: (value: boolean) => void
       minimizeWindow: () => void
       requestWindowClose: () => Promise<void>
       quitApp: () => void
@@ -170,9 +171,7 @@ declare global {
       hideDesktopReminder: (dismissCurrent?: boolean) => Promise<{ ok: boolean }>
       resizeDesktopReminder: (dims: { width?: number; height?: number }) => Promise<{ ok: boolean }>
       getCurrentReminder: () => Promise<unknown>
-      openOrderFromReminder: (orderNo: string) => Promise<{ ok: boolean }>
       onReminderData: (cb: (data: unknown) => void) => () => void
-      onNavigateOrder: (cb: (orderNo: string) => void) => () => void
     }
   }
 }

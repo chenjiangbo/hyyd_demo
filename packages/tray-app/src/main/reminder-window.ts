@@ -92,10 +92,7 @@ export function hideReminderWindow(_dismissCurrent = false): void {
   }
 }
 
-export function setupReminderIPC(
-  showMainWindowFn: () => void,
-  navigateOrderFn: (orderNo: string) => void
-): void {
+export function setupReminderIPC(): void {
   // 预创建浮窗实例（隐藏状态，避免首次弹出时冷启动延迟）
   createReminderWindow()
 
@@ -122,9 +119,4 @@ export function setupReminderIPC(
     return { ok: true }
   })
 
-  ipcMain.handle('reminder:open-order', (_e, orderNo: string) => {
-    showMainWindowFn()
-    navigateOrderFn(orderNo)
-    return { ok: true }
-  })
 }

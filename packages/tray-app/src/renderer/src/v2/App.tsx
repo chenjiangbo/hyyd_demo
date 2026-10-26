@@ -46,6 +46,7 @@ export default function App(): React.JSX.Element {
 
   // 登录态用小窗，登录后放大到工作台尺寸
   useEffect(() => {
+    window.api?.setAuthenticated?.(!!session)
     window.api?.setWindowStage?.(session ? 'main' : 'login')
     if (session) window.api?.hideWindow?.()
     else window.api?.showWindow?.()
@@ -83,34 +84,6 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('huanyu-order-notice', handleOrderNotice)
     return () => window.removeEventListener('huanyu-order-notice', handleOrderNotice)
-  }, [])
-
-  // 监听来自桌面右下角提醒浮窗 / 内部提醒组件的"打开订单"点击
-  useEffect(() => {
-    const handleNavigate = (orderNo: string): void => {
-      setOpenOrder(null)
-      setOpenApplication(null)
-      setOpenHuanyuCreate(false)
-      setNav('workbench')
-      setSearch(orderNo)
-    }
-
-    const cleanup = window.api?.onNavigateOrder?.((orderNo) => {
-      handleNavigate(orderNo)
-    })
-
-    const handleWebNavigate = (e: Event): void => {
-      const customEvent = e as CustomEvent<{ orderNo: string }>
-      if (customEvent.detail?.orderNo) {
-        handleNavigate(customEvent.detail.orderNo)
-      }
-    }
-    window.addEventListener('huanyu-navigate-order', handleWebNavigate)
-
-    return () => {
-      cleanup?.()
-      window.removeEventListener('huanyu-navigate-order', handleWebNavigate)
-    }
   }, [])
 
   let content: React.JSX.Element

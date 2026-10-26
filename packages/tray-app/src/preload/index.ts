@@ -5,6 +5,7 @@ import { electronAPI } from '@electron-toolkit/preload'
 const api = {
   showWindow: () => ipcRenderer.send('window:show'),
   hideWindow: () => ipcRenderer.send('window:hide'),
+  setAuthenticated: (value: boolean) => ipcRenderer.send('session:set-authenticated', value),
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
   requestWindowClose: () => ipcRenderer.invoke('window:request-close'),
   quitApp: () => ipcRenderer.send('app:quit'),
@@ -85,16 +86,10 @@ const api = {
   resizeDesktopReminder: (dims: { width?: number; height?: number }) =>
     ipcRenderer.invoke('reminder:resize', dims),
   getCurrentReminder: () => ipcRenderer.invoke('reminder:get-current'),
-  openOrderFromReminder: (orderNo: string) => ipcRenderer.invoke('reminder:open-order', orderNo),
   onReminderData: (cb: (data: unknown) => void): (() => void) => {
     const listener = (_e: unknown, data: unknown): void => cb(data)
     ipcRenderer.on('reminder:data', listener)
     return () => ipcRenderer.removeListener('reminder:data', listener)
-  },
-  onNavigateOrder: (cb: (orderNo: string) => void): (() => void) => {
-    const listener = (_e: unknown, orderNo: string): void => cb(orderNo)
-    ipcRenderer.on('app:navigate-order', listener)
-    return () => ipcRenderer.removeListener('app:navigate-order', listener)
   }
 }
 
