@@ -160,6 +160,31 @@ function activateClient(): void {
   }
 }
 
+function switchServer(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow()
+  const window = mainWindow
+  if (!window || window.isDestroyed()) return
+
+  const showLogin = (): void => {
+    if (window.isDestroyed()) return
+    window.show()
+    window.focus()
+    void window.webContents.executeJavaScript(`
+      localStorage.removeItem('hyyd.v2.employeeCode')
+      localStorage.removeItem('hyyd.v2.displayName')
+      window.location.reload()
+    `).catch((error: unknown) => {
+      console.error('[client] 切换服务器时清除登录状态失败', error)
+    })
+  }
+
+  if (window.webContents.isLoading()) {
+    window.webContents.once('did-finish-load', showLogin)
+  } else {
+    showLogin()
+  }
+}
+
 function createPetWindow(): void {
   if (petWindow && !petWindow.isDestroyed()) return
 
@@ -281,6 +306,7 @@ function createTray(): void {
 
   const contextMenu = Menu.buildFromTemplate([
     { label: '显示浮动精灵', click: showPetWindow },
+    { label: '切换服务器', click: switchServer },
     { type: 'separator' },
     {
       label: '退出',
