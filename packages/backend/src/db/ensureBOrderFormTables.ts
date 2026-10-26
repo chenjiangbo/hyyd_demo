@@ -14,6 +14,24 @@ import { DEFAULT_WORKFLOW_TEMPLATES } from '../workflow/defaultWorkflowConfig.js
  * 这些运营表单数据由 API 使用参数化 SQL 读写；不修改 B 端原始抓取快照。
  */
 const CREATE_STATEMENTS = [
+  `
+    CREATE TABLE IF NOT EXISTS b_order_huanyu_services (
+      id BIGSERIAL PRIMARY KEY,
+      order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      huanyu_order_no VARCHAR(64) NOT NULL UNIQUE,
+      discovered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      source VARCHAR(24) NOT NULL DEFAULT 'remote_lookup',
+      workflow_enabled BOOLEAN NOT NULL DEFAULT false,
+      CONSTRAINT b_order_huanyu_services_order_no_key UNIQUE (order_id, huanyu_order_no)
+    );
+  `,
+  `CREATE INDEX IF NOT EXISTS b_order_huanyu_services_order_idx ON b_order_huanyu_services (order_id, discovered_at);`,
+  `ALTER TABLE b_order_huanyu_services ADD COLUMN IF NOT EXISTS workflow_enabled BOOLEAN NOT NULL DEFAULT false;`,
+  `INSERT INTO b_order_huanyu_services (order_id, huanyu_order_no, source)
+     SELECT id, huanyu_order_no, 'legacy_primary' FROM orders WHERE huanyu_order_no IS NOT NULL
+     ON CONFLICT (huanyu_order_no) DO NOTHING;`,
+  `UPDATE b_order_huanyu_services s SET workflow_enabled = true
+     FROM orders o WHERE s.order_id = o.id AND s.huanyu_order_no = o.huanyu_order_no;`,
   // 模板及其版本。code + version 是稳定的业务标识，历史版本不应原地修改。
   `
     CREATE TABLE IF NOT EXISTS b_order_form_templates (
@@ -128,6 +146,17 @@ const CREATE_STATEMENTS = [
     CREATE INDEX IF NOT EXISTS b_order_operations_employee_idx
       ON b_order_operations (assigned_employee_id, effective_status, updated_at DESC);
   `,
+  // 一个 B 端订单可以对应多次寰宇服务；运营步骤必须按具体寰宇服务单隔离。
+  `ALTER TABLE b_order_operations ADD COLUMN IF NOT EXISTS huanyu_order_no VARCHAR(64);`,
+  `UPDATE b_order_operations op SET huanyu_order_no = o.huanyu_order_no FROM orders o
+     WHERE op.order_id = o.id AND op.huanyu_order_no IS NULL AND o.huanyu_order_no IS NOT NULL;`,
+  `ALTER TABLE b_order_operations DROP CONSTRAINT IF EXISTS b_order_operations_order_key;`,
+  `DO $$ BEGIN
+     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'b_order_operations_order_huanyu_key') THEN
+       ALTER TABLE b_order_operations ADD CONSTRAINT b_order_operations_order_huanyu_key UNIQUE (order_id, huanyu_order_no);
+     END IF;
+   END $$;`,
+  `CREATE INDEX IF NOT EXISTS b_order_operations_huanyu_idx ON b_order_operations (huanyu_order_no, effective_status, updated_at DESC);`,
 
   // 服务步骤承载生命周期；occurrence_no 支持复诊等同类步骤重复发生。
   `
@@ -418,6 +447,23 @@ const CREATE_STATEMENTS = [
   `
     CREATE INDEX IF NOT EXISTS b_order_ai_field_candidates_order_field_idx
       ON b_order_ai_field_candidates (order_id, field_code, status, created_at DESC);
+  `,
+  `ALTER TABLE b_order_ai_field_candidates ADD COLUMN IF NOT EXISTS huanyu_order_no VARCHAR(64);`,
+  `UPDATE b_order_ai_field_candidates c SET huanyu_order_no = o.huanyu_order_no FROM orders o WHERE c.order_id = o.id AND c.huanyu_order_no IS NULL AND o.huanyu_order_no IS NOT NULL;`,
+  `CREATE INDEX IF NOT EXISTS b_order_ai_field_candidates_huanyu_idx ON b_order_ai_field_candidates (huanyu_order_no, field_code, status, created_at DESC);`,
+  `
+    CREATE TABLE IF NOT EXISTS b_order_ai_service_events (
+      id BIGSERIAL PRIMARY KEY,
+      order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      huanyu_order_no VARCHAR(64) NOT NULL,
+      event_code VARCHAR(100) NOT NULL,
+      evidence TEXT NOT NULL,
+      event_key VARCHAR(180) NOT NULL UNIQUE,
+      occurred_at TIMESTAMPTZ,
+      planned_at TIMESTAMPTZ,
+      source_run_id BIGINT REFERENCES b_order_ai_analysis_runs(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
   `,
 
   // 人工确认推送远端 MySQL 时的不可变审计记录；失败可在页面再次点击重试。

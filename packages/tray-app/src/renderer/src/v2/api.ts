@@ -252,6 +252,7 @@ export interface HuanyuEscortOption extends HuanyuChannelOption {
 
 export interface OrderAiFieldCandidate {
   id: number
+  huanyuOrderNo: string
   fieldCode: string
   fieldLabel: string
   value: string

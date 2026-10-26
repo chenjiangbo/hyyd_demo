@@ -49,6 +49,7 @@ export type WorkflowEventCode = (typeof WORKFLOW_EVENT_CODES)[number]
 export interface WorkflowAnalysisEvent {
   code: WorkflowEventCode
   evidence: string
+  huanyuOrderNo?: string
   occurredAt?: string
   plannedAt?: string
 }

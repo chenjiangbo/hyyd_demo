@@ -144,6 +144,7 @@ async function createReminderIfAbsent(
   prisma: PrismaClient,
   params: {
     orderNo: string
+    huanyuOrderNo?: string | null
     employeeId: number
     type: 'hospital_booking' | 'escort' | 'hospital_care' | 'system' | 'upload_recording'
     content: string
@@ -153,9 +154,17 @@ async function createReminderIfAbsent(
   }
 ): Promise<boolean> {
   try {
+    let huanyuOrderNo = params.huanyuOrderNo || String(params.extra?.huanyuOrderNo ?? '').trim() || null
+    if (!huanyuOrderNo && params.orderNo && !['SYSTEM', 'ALL'].includes(params.orderNo)) {
+      const linked = await prisma.$queryRawUnsafe<Array<{ huanyu_order_no: string | null }>>(
+        `SELECT huanyu_order_no FROM orders WHERE source_order_no = $1 LIMIT 1`, params.orderNo
+      )
+      huanyuOrderNo = linked[0]?.huanyu_order_no || null
+    }
+    const dedupeKey = huanyuOrderNo ? `${params.dedupeKey}:hy:${huanyuOrderNo}` : params.dedupeKey
     const existing = await prisma.$queryRawUnsafe<any[]>(
       `SELECT id, extra_data->>'pzr' AS pzr, extra_data->>'serviceDate' AS service_date FROM order_reminders WHERE extra_data->>'dedupe_key' = $1 ORDER BY id DESC LIMIT 1;`,
-      params.dedupeKey
+      dedupeKey
     )
     if (existing && existing.length > 0) {
       const current = existing[0]
@@ -163,12 +172,12 @@ async function createReminderIfAbsent(
       const nextDate = String(params.extra?.serviceDate ?? '').trim()
       if (nextPzr && nextDate && (current.pzr !== nextPzr || current.service_date !== nextDate)) {
         await prisma.$executeRawUnsafe(`
-          UPDATE order_reminders SET order_no = $1, employee_id = $2, type = $3, content = $4,
+          UPDATE order_reminders SET order_no = $1, huanyu_order_no = $2, employee_id = $3, type = $4, content = $5,
             remind_time = NOW(), status = 'pending', notification_generation = notification_generation + 1,
-            extra_data = $5::jsonb, updated_at = NOW()
-          WHERE id = $6;
-        `, params.orderNo, params.employeeId, params.type, params.content,
-        JSON.stringify({ dedupe_key: params.dedupeKey, ...(params.extra ?? {}) }), current.id)
+            extra_data = $6::jsonb, updated_at = NOW()
+          WHERE id = $7;
+        `, params.orderNo, huanyuOrderNo, params.employeeId, params.type, params.content,
+        JSON.stringify({ dedupe_key: dedupeKey, ...(params.extra ?? {}), huanyuOrderNo }), current.id)
         return true
       }
       return false
@@ -176,16 +185,17 @@ async function createReminderIfAbsent(
 
     await prisma.$executeRawUnsafe(
       `INSERT INTO order_reminders (
-        order_no, employee_id, type, content, remind_time, status, extra_data, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, NOW(), 'pending', $5::jsonb, NOW(), NOW());`,
+        order_no, huanyu_order_no, employee_id, type, content, remind_time, status, extra_data, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, NOW(), 'pending', $6::jsonb, NOW(), NOW());`,
       params.orderNo,
+      huanyuOrderNo,
       params.employeeId,
       params.type,
       params.content,
-      JSON.stringify({ dedupe_key: params.dedupeKey, ...(params.extra ?? {}) })
+      JSON.stringify({ dedupe_key: dedupeKey, ...(params.extra ?? {}), huanyuOrderNo })
     )
 
-    params.logger?.info(`[orderReminderSchedule] 已为员工 ${params.employeeId} 生成提醒: ${params.dedupeKey}`)
+    params.logger?.info(`[orderReminderSchedule] 已为员工 ${params.employeeId} 生成提醒: ${dedupeKey}`)
     return true
   } catch (err) {
     params.logger?.error(`[orderReminderSchedule] 创建提醒失败 (${params.dedupeKey}):`, err)
@@ -216,6 +226,7 @@ async function createEscortRejectReminder(
     if (!row.assigned_employee_id) return
     await createReminderIfAbsent(prisma, {
       orderNo: row.source_order_no,
+      huanyuOrderNo: row.huanyu_order_no,
       employeeId: row.assigned_employee_id,
       type: 'escort',
       content: `订单号: ${row.source_order_no}\n陪诊人员: ${row.pzr || '未填写'}\n服务日期: ${serviceDate}\n提醒内容: 陪诊人员反馈无法出工，请及时处理！`,
@@ -227,6 +238,7 @@ async function createEscortRejectReminder(
   }
   await notifyManagerEscortException(prisma, {
     orderNo: row.source_order_no,
+    huanyuOrderNo: row.huanyu_order_no,
     employeeId: row.assigned_employee_id,
     pzr: row.pzr,
     pzrDetailId: row.pzr_detail_id,
@@ -238,10 +250,7 @@ async function createEscortRejectReminder(
   })
 }
 
-/**
- * 陪诊反馈接口写入“无法出工”后立即发送客户经理短信。资格规则与周期扫描保持一致：
- * 只处理有效订单、指定服务类型、存在陪诊步骤、已有正式陪诊人且日期匹配的订单。
- */
+/** 陪诊反馈接口写入“无法出工”后，按对应寰宇订单触发客户经理异常通知。 */
 export async function createEscortRejectReminderForFeedback(
   prisma: PrismaClient,
   params: { orderNo: string; pzrDetailId: string; feedbackType: 'pre_day' | 'same_day'; pzrId: string; serviceDate: string; remark?: string | null; logger?: LoggerLike }
@@ -249,48 +258,40 @@ export async function createEscortRejectReminderForFeedback(
   const { ymd } = shanghaiNowParts()
   const expectedDate = params.feedbackType === 'pre_day' ? addShanghaiCalendarDays(ymd, 1) : ymd
   const rows = await prisma.$queryRawUnsafe<EscortRejectReminderRow[]>(`
-    SELECT o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at,
+    SELECT o.id AS order_id, o.source_order_no, hs.huanyu_order_no, o.created_at AS order_created_at,
            o.assigned_employee_id
     FROM orders o
-    JOIN b_order_operations op ON op.order_id = o.id
-    WHERE (o.source_order_no = $1 OR o.huanyu_order_no = $1)
+    JOIN b_order_huanyu_services hs ON hs.order_id = o.id
+    WHERE (o.source_order_no = $1 OR hs.huanyu_order_no = $1)
       AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
-      AND op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
-      AND EXISTS (
-        SELECT 1 FROM b_order_service_steps cstep
-        WHERE cstep.operation_id = op.id
-          AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
-          AND cstep.step_status IN ('pending', 'in_progress')
-      )
-    ORDER BY o.created_at ASC, o.id ASC
-    LIMIT 1;
+    ORDER BY o.created_at ASC, o.id ASC, hs.workflow_enabled DESC, hs.huanyu_order_no ASC;
   `, params.orderNo)
 
-  const row = rows[0]
-  if (!row?.source_order_no) return false
+  for (const row of rows) {
+    const remoteOrder = await findRemoteReminderOrder(row.source_order_no, row.huanyu_order_no || undefined)
+    if (!remoteOrder) continue
+    const detail = (await listRemoteEscortReminderDetails(remoteOrder.orderNo)).find((item) =>
+      item.detailId === params.pzrDetailId &&
+      item.pzrId === params.pzrId &&
+      normalizeYmdValue(item.serviceDate) === expectedDate
+    )
+    if (!detail || normalizeYmdValue(detail.serviceDate) !== params.serviceDate) continue
 
-  const remoteOrder = await findRemoteReminderOrder(row.source_order_no, row.huanyu_order_no || undefined)
-  if (!remoteOrder) return false
-  const detail = (await listRemoteEscortReminderDetails(remoteOrder.orderNo)).find((item) =>
-    item.detailId === params.pzrDetailId &&
-    item.pzrId === params.pzrId &&
-    normalizeYmdValue(item.serviceDate) === expectedDate
-  )
-  if (!detail || normalizeYmdValue(detail.serviceDate) !== params.serviceDate) return false
-
-  await createEscortRejectReminder(prisma, {
-    ...row,
-    pzr: detail.pzrId,
-    pzr_detail_id: detail.detailId,
-    service_date: detail.serviceDate
-  }, {
-    feedbackType: params.feedbackType,
-    ymd,
-    serviceDate: params.serviceDate,
-    remark: params.remark,
-    logger: params.logger
-  })
-  return true
+    await createEscortRejectReminder(prisma, {
+      ...row,
+      pzr: detail.pzrId,
+      pzr_detail_id: detail.detailId,
+      service_date: detail.serviceDate
+    }, {
+      feedbackType: params.feedbackType,
+      ymd,
+      serviceDate: params.serviceDate,
+      remark: params.remark,
+      logger: params.logger
+    })
+    return true
+  }
+  return false
 }
 
 /**
@@ -300,6 +301,7 @@ async function upsertPeriodicReminder(
   prisma: PrismaClient,
   params: {
     orderNo: string
+    huanyuOrderNo?: string | null
     employeeId: number
     type: 'hospital_booking' | 'hospital_care'
     content: string
@@ -310,24 +312,26 @@ async function upsertPeriodicReminder(
   }
 ): Promise<boolean> {
   try {
+    const dedupeKey = params.huanyuOrderNo ? `${params.dedupeKey}:hy:${params.huanyuOrderNo}` : params.dedupeKey
     const existing = await prisma.$queryRawUnsafe<any[]>(
       `SELECT id, status, notification_generation, extra_data->>'occurrence' AS occurrence, extra_data->>'cycleIdentity' AS cycle_identity FROM order_reminders WHERE extra_data->>'dedupe_key' = $1 ORDER BY id DESC LIMIT 1;`,
-      params.dedupeKey
+      dedupeKey
     )
     const occurrence = existing?.[0] ? Number(existing[0].occurrence ?? 0) : null
     const cycleIdentity = String(params.extra?.cycleIdentity ?? '')
     if (existing?.[0] && !shouldAdvancePeriodicReminder(occurrence, existing[0].cycle_identity, params.occurrence, cycleIdentity)) return false
 
     const extraData = JSON.stringify({
-      dedupe_key: params.dedupeKey,
+      dedupe_key: dedupeKey,
       occurrence: params.occurrence,
       ...(params.extra ?? {})
     })
     if (existing?.[0]) {
       const generation = Math.max(params.occurrence, Number(existing[0].notification_generation || 1) + 1)
       await prisma.$executeRawUnsafe(
-        `UPDATE order_reminders SET order_no = $1, employee_id = $2, type = $3, content = $4, remind_time = NOW(), status = 'pending', notification_generation = $7, extra_data = $5::jsonb, updated_at = NOW() WHERE id = $6;`,
+        `UPDATE order_reminders SET order_no = $1, huanyu_order_no = $2, employee_id = $3, type = $4, content = $5, remind_time = NOW(), status = 'pending', notification_generation = $8, extra_data = $6::jsonb, updated_at = NOW() WHERE id = $7;`,
         params.orderNo,
+        params.huanyuOrderNo ?? null,
         params.employeeId,
         params.type,
         params.content,
@@ -337,8 +341,9 @@ async function upsertPeriodicReminder(
       )
     } else {
       await prisma.$executeRawUnsafe(
-        `INSERT INTO order_reminders (order_no, employee_id, type, content, remind_time, status, notification_generation, extra_data, created_at, updated_at) VALUES ($1, $2, $3, $4, NOW(), 'pending', $6, $5::jsonb, NOW(), NOW());`,
+        `INSERT INTO order_reminders (order_no, huanyu_order_no, employee_id, type, content, remind_time, status, notification_generation, extra_data, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, NOW(), 'pending', $7, $6::jsonb, NOW(), NOW());`,
         params.orderNo,
+        params.huanyuOrderNo ?? null,
         params.employeeId,
         params.type,
         params.content,
@@ -354,29 +359,33 @@ async function upsertPeriodicReminder(
   }
 }
 
-async function closeReminderByKey(prisma: PrismaClient, dedupeKey: string, status: 'resolved' | 'expired' = 'resolved'): Promise<void> {
+async function closeReminderByKey(prisma: PrismaClient, dedupeKey: string, status: 'resolved' | 'expired' = 'resolved', huanyuOrderNo?: string | null): Promise<void> {
+  const serviceDedupeKey = huanyuOrderNo ? `${dedupeKey}:hy:${huanyuOrderNo}` : dedupeKey
   await prisma.$executeRawUnsafe(
     `UPDATE order_reminders SET status = $1, updated_at = NOW() WHERE extra_data->>'dedupe_key' = $2 AND status IN ('pending', 'unread');`,
     status,
-    dedupeKey
+    serviceDedupeKey
   )
 }
 
-async function closeReminderKeysExcept(prisma: PrismaClient, prefix: string, activeKey: string | null, status: 'resolved' | 'expired' | 'superseded'): Promise<void> {
+async function closeReminderKeysExcept(prisma: PrismaClient, prefix: string, activeKey: string | null, status: 'resolved' | 'expired' | 'superseded', huanyuOrderNo?: string | null): Promise<void> {
+  const servicePrefix = huanyuOrderNo ? `${prefix}%:hy:${huanyuOrderNo}` : `${prefix}%`
+  const serviceActiveKey = activeKey && huanyuOrderNo ? `${activeKey}:hy:${huanyuOrderNo}` : activeKey
   await prisma.$executeRawUnsafe(
     `UPDATE order_reminders SET status = $1, updated_at = NOW() WHERE extra_data->>'dedupe_key' LIKE $2 AND ($3::text IS NULL OR extra_data->>'dedupe_key' != $3) AND status IN ('pending', 'unread');`,
     status,
-    `${prefix}%`,
-    activeKey
+    servicePrefix,
+    serviceActiveKey
   )
 }
 
-async function closeStalePeriodicCycle(prisma: PrismaClient, dedupeKey: string, cycleIdentity: string): Promise<void> {
+async function closeStalePeriodicCycle(prisma: PrismaClient, dedupeKey: string, cycleIdentity: string, huanyuOrderNo?: string | null): Promise<void> {
+  const serviceDedupeKey = huanyuOrderNo ? `${dedupeKey}:hy:${huanyuOrderNo}` : dedupeKey
   await prisma.$executeRawUnsafe(`
     UPDATE order_reminders SET status = 'superseded', updated_at = NOW()
     WHERE extra_data->>'dedupe_key' = $1 AND status IN ('pending', 'unread')
       AND extra_data->>'cycleIdentity' IS DISTINCT FROM $2;
-  `, dedupeKey, cycleIdentity)
+  `, serviceDedupeKey, cycleIdentity)
 }
 
 async function reconcileReminderLifecycle(prisma: PrismaClient, logger?: LoggerLike): Promise<void> {
@@ -557,7 +566,7 @@ async function reconcileReminderLifecycle(prisma: PrismaClient, logger?: LoggerL
 async function reconcileStaleSmsClaims(prisma: PrismaClient, logger?: LoggerLike): Promise<void> {
   const { ymd: today } = shanghaiNowParts()
   const claims = await prisma.$queryRawUnsafe<any[]>(`
-    SELECT c.order_no, c.batch_type, c.send_ymd, c.pzr_detail_id, c.pzr_id, c.service_date, c.claimed_at, c.error_message,
+    SELECT c.order_no, c.huanyu_order_no, c.batch_type, c.send_ymd, c.pzr_detail_id, c.pzr_id, c.service_date, c.claimed_at, c.error_message,
            o.created_at AS order_created_at, o.assigned_employee_id
       FROM "fact_hy_pz_sms_send_claims" c
       LEFT JOIN orders o ON o.source_order_no = c.order_no
@@ -576,8 +585,9 @@ async function reconcileStaleSmsClaims(prisma: PrismaClient, logger?: LoggerLike
       SELECT status, error_message FROM "fact_hy_pz_sms_logs"
        WHERE order_no = $1 AND batch_type = $2 AND send_ymd = $3
          AND params_json->>'pzrDetailId' = $4
+         AND COALESCE(params_json->>'huanyuOrderNo', '') = $5
        ORDER BY id DESC LIMIT 1;
-    `, claim.order_no, claim.batch_type, claim.send_ymd, claim.pzr_detail_id)
+    `, claim.order_no, claim.batch_type, claim.send_ymd, claim.pzr_detail_id, claim.huanyu_order_no || '')
     const log = logs[0]
     if (log) {
       await finishEscortSmsClaim(
@@ -587,14 +597,16 @@ async function reconcileStaleSmsClaims(prisma: PrismaClient, logger?: LoggerLike
         claim.send_ymd,
         log.status === 'success' ? 'sent' : 'failed',
         log.error_message || null,
-        claim.pzr_detail_id
+        claim.pzr_detail_id,
+        claim.huanyu_order_no
       )
       if (log.status === 'success') {
-        await closeReminderByKey(prisma, `auto:escort_sms_failed:${claim.order_no}:${claim.batch_type}:${claim.pzr_detail_id}:${claim.send_ymd}`)
+        await closeReminderByKey(prisma, `auto:escort_sms_failed:${claim.order_no}:${claim.huanyu_order_no}:${claim.batch_type}:${claim.pzr_detail_id}:${claim.send_ymd}`)
       }
       if (log.status !== 'success' && serviceDate >= today) {
         await notifyManagerEscortException(prisma, {
           orderNo: claim.order_no,
+          huanyuOrderNo: claim.huanyu_order_no,
           employeeId: claim.assigned_employee_id,
           pzr: claim.pzr_id,
           pzrDetailId: claim.pzr_detail_id,
@@ -607,12 +619,13 @@ async function reconcileStaleSmsClaims(prisma: PrismaClient, logger?: LoggerLike
       }
       continue
     }
-    await finishEscortSmsClaim(prisma, claim.order_no, claim.batch_type, claim.send_ymd, 'unknown', '发送任务中断，供应商结果未知', claim.pzr_detail_id)
+    await finishEscortSmsClaim(prisma, claim.order_no, claim.batch_type, claim.send_ymd, 'unknown', '发送任务中断，供应商结果未知', claim.pzr_detail_id, claim.huanyu_order_no)
 
     // 不重发结果未知的短信；只在服务日尚未结束且当前仍有责任人时通知人工确认。
     if (serviceDate < today) continue
     await notifyManagerEscortException(prisma, {
       orderNo: claim.order_no,
+      huanyuOrderNo: claim.huanyu_order_no,
       employeeId: claim.assigned_employee_id,
       pzr: claim.pzr_id,
       pzrDetailId: claim.pzr_detail_id,
@@ -634,7 +647,7 @@ export async function scanHospitalBookingReminders(prisma: PrismaClient, logger?
   const steps = await queryInPages(prisma, `
     SELECT 
       s.id, s.occurrence_no, s.activated_at, s.started_at, s.created_at AS step_created_at,
-      o.id AS order_id, o.source_order_no, o.created_at AS order_created_at, o.assigned_employee_id, o.status AS order_status,
+      o.id AS order_id, o.source_order_no, op.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id, o.status AS order_status,
       op.service_type
     FROM b_order_service_steps s
     JOIN b_order_operations op ON s.operation_id = op.id
@@ -650,15 +663,16 @@ export async function scanHospitalBookingReminders(prisma: PrismaClient, logger?
   const seenOrders = new Set<string>()
   for (const row of steps) {
     if (!row.source_order_no) continue
-    if (seenOrders.has(row.source_order_no)) continue
-    seenOrders.add(row.source_order_no)
+    const serviceKey = `${row.source_order_no}:${row.huanyu_order_no || ''}`
+    if (seenOrders.has(serviceKey)) continue
+    seenOrders.add(serviceKey)
 
     // 约住院只按客户明确同意开始安排住院的业务时间计时，不能回退到步骤创建/激活时间。
     const baseTime = row.started_at
     if (!baseTime) continue
     const cycleIdentity = `${row.id}:${row.occurrence_no ?? 0}:${new Date(baseTime).toISOString()}`
     const dedupeKey = `auto:hospital_booking:${row.source_order_no}`
-    await closeStalePeriodicCycle(prisma, dedupeKey, cycleIdentity)
+    await closeStalePeriodicCycle(prisma, dedupeKey, cycleIdentity, row.huanyu_order_no)
 
     const diffDays = shanghaiCalendarDayDiff(baseTime, ymd)
 
@@ -667,6 +681,7 @@ export async function scanHospitalBookingReminders(prisma: PrismaClient, logger?
 
       await upsertPeriodicReminder(prisma, {
         orderNo: row.source_order_no,
+        huanyuOrderNo: row.huanyu_order_no,
         employeeId: row.assigned_employee_id,
         type: 'hospital_booking',
         content,
@@ -692,7 +707,7 @@ async function scanEscortUnassignedReminders(prisma: PrismaClient, logger?: Logg
   const completedPreSteps = await queryInPages(prisma, `
     SELECT 
       s.id, s.step_code, s.completed_at,
-      o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id, o.status AS order_status,
+      o.id AS order_id, o.source_order_no, op.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id, o.status AS order_status,
       op.service_type
     FROM b_order_service_steps s
     JOIN b_order_operations op ON s.operation_id = op.id
@@ -728,17 +743,18 @@ async function scanEscortUnassignedReminders(prisma: PrismaClient, logger?: Logg
     const formalDetails = await listRemoteEscortReminderDetails(remoteOrder.orderNo)
 
     if (formalDetails.length > 0) {
-      await closeReminderByKey(prisma, dedupeKey)
+      await closeReminderByKey(prisma, dedupeKey, 'resolved', row.huanyu_order_no)
       for (const detail of formalDetails) {
         const detailId = String(detail.detailId || '')
         const detailKey = `${dedupeKey}:${detailId}`
         if (detail.pzrId) {
-          await closeReminderByKey(prisma, detailKey)
+          await closeReminderByKey(prisma, detailKey, 'resolved', row.huanyu_order_no)
           continue
         }
         const serviceDate = normalizeYmdValue(detail.serviceDate)
         await createReminderIfAbsent(prisma, {
           orderNo: row.source_order_no,
+          huanyuOrderNo: row.huanyu_order_no,
           employeeId: row.assigned_employee_id,
           type: 'escort',
           content: `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 陪诊明细 ${detailId} 尚未落实陪诊人员，请关注！`,
@@ -759,6 +775,7 @@ async function scanEscortUnassignedReminders(prisma: PrismaClient, logger?: Logg
 
     await createReminderIfAbsent(prisma, {
       orderNo: row.source_order_no,
+      huanyuOrderNo: row.huanyu_order_no,
       employeeId: row.assigned_employee_id,
       type: 'escort',
       content,
@@ -777,7 +794,7 @@ async function scanEscortUnassignedReminders(prisma: PrismaClient, logger?: Logg
            SET extra_data = jsonb_set(COALESCE(extra_data, '{}'::jsonb), '{serviceDate}', to_jsonb($2::text), true),
                updated_at = NOW()
          WHERE extra_data->>'dedupe_key' = $1 AND status IN ('pending', 'unread');
-      `, dedupeKey, serviceDate)
+      `, row.huanyu_order_no ? `${dedupeKey}:hy:${row.huanyu_order_no}` : dedupeKey, serviceDate)
     } else {
       await prisma.$executeRawUnsafe(`
         UPDATE order_reminders
@@ -806,22 +823,23 @@ async function claimEscortSmsSend(
   sendYmd: string,
   pzrId: string,
   serviceDate: string,
-  pzrDetailId: string
+  pzrDetailId: string,
+  huanyuOrderNo = ''
 ): Promise<boolean> {
   const legacyClaims = await prisma.$queryRawUnsafe<any[]>(`
     SELECT 1 FROM "fact_hy_pz_sms_send_claims"
-    WHERE order_no = $1 AND batch_type = $2 AND send_ymd = $3
-      AND pzr_detail_id = '' AND pzr_id = $4 AND service_date = $5
+    WHERE order_no = $1 AND huanyu_order_no = $2 AND batch_type = $3 AND send_ymd = $4
+      AND pzr_detail_id = '' AND pzr_id = $5 AND service_date = $6
     LIMIT 1;
-  `, orderNo, batchType, sendYmd, pzrId, serviceDate)
+  `, orderNo, huanyuOrderNo, batchType, sendYmd, pzrId, serviceDate)
   if (legacyClaims.length > 0) return false
 
   const rows = await prisma.$queryRawUnsafe<any[]>(`
-    INSERT INTO "fact_hy_pz_sms_send_claims" ("order_no", "batch_type", "send_ymd", "pzr_id", "service_date", "pzr_detail_id")
-    VALUES ($1, $2, $3, $4, $5, $6)
-    ON CONFLICT ("order_no", "batch_type", "send_ymd", "pzr_detail_id") DO NOTHING
+    INSERT INTO "fact_hy_pz_sms_send_claims" ("order_no", "huanyu_order_no", "batch_type", "send_ymd", "pzr_id", "service_date", "pzr_detail_id")
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    ON CONFLICT ("order_no", "huanyu_order_no", "batch_type", "send_ymd", "pzr_detail_id") DO NOTHING
     RETURNING "order_no";
-  `, orderNo, batchType, sendYmd, pzrId, serviceDate, pzrDetailId)
+  `, orderNo, huanyuOrderNo, batchType, sendYmd, pzrId, serviceDate, pzrDetailId)
   return rows.length > 0
 }
 
@@ -832,17 +850,19 @@ async function finishEscortSmsClaim(
   sendYmd: string,
   status: 'sent' | 'failed' | 'skipped' | 'unknown',
   errorMessage: string | null = null,
-  pzrDetailId = ''
+  pzrDetailId = '',
+  huanyuOrderNo = ''
 ): Promise<void> {
   await prisma.$executeRawUnsafe(`
     UPDATE "fact_hy_pz_sms_send_claims"
        SET status = $4, error_message = $5, completed_at = NOW()
-     WHERE order_no = $1 AND batch_type = $2 AND send_ymd = $3 AND pzr_detail_id = $6;
-  `, orderNo, batchType, sendYmd, status, errorMessage, pzrDetailId)
+     WHERE order_no = $1 AND batch_type = $2 AND send_ymd = $3 AND pzr_detail_id = $6 AND huanyu_order_no = $7;
+  `, orderNo, batchType, sendYmd, status, errorMessage, pzrDetailId, huanyuOrderNo)
 }
 
 type ManagerEscortAlertParams = {
   orderNo: string
+  huanyuOrderNo?: string | null
   employeeId: number | null | undefined
   pzr: string | null | undefined
   pzrDetailId: string | null | undefined
@@ -866,6 +886,7 @@ async function notifyManagerEscortException(prisma: PrismaClient, params: Manage
     if (!params.employeeId) return
     await createReminderIfAbsent(prisma, {
       orderNo: params.orderNo,
+      huanyuOrderNo: params.huanyuOrderNo,
       employeeId: params.employeeId,
       type: 'escort',
       content: `订单号: ${params.orderNo}\n陪诊人员: ${params.pzr || '未填写'}\n服务日期: ${params.serviceDate}\n提醒内容: ${params.alertType}，请及时处理！`,
@@ -892,16 +913,16 @@ async function dispatchManagerEscortException(prisma: PrismaClient, params: Mana
   if (!isSmsTemplateEnabled(config, templateCode)) return
 
   const detailId = params.pzrDetailId || 'unknown-detail'
-  if (!(await claimEscortSmsSend(prisma, params.orderNo, params.batchType, params.sendYmd, params.pzr || '', params.serviceDate, detailId))) {
+  if (!(await claimEscortSmsSend(prisma, params.orderNo, params.batchType, params.sendYmd, params.pzr || '', params.serviceDate, detailId, params.huanyuOrderNo || ''))) {
     return
   }
 
-  const remoteOrder = await findRemoteReminderOrder(params.orderNo)
+  const remoteOrder = await findRemoteReminderOrder(params.orderNo, params.huanyuOrderNo || undefined)
   const phone = String(remoteOrder?.managerPhone || '').replace(/\D/g, '')
   const customerName = remoteOrder?.customerName || '未填写'
   const hospitalName = remoteOrder?.hospitalName || '未填写'
   const escortContact = (await resolveEscortPhone(remoteOrder?.orderNo || '', params.pzr) || '').replace(/\D/g, '')
-  const logParams = JSON.stringify({ orderNo: params.orderNo, customerName, hospitalName, pzrDetailId: detailId, alertType: params.alertType, managerName: remoteOrder?.managerName || '', escortContact })
+  const logParams = JSON.stringify({ orderNo: params.orderNo, huanyuOrderNo: params.huanyuOrderNo || '', customerName, hospitalName, pzrDetailId: detailId, alertType: params.alertType, managerName: remoteOrder?.managerName || '', escortContact })
   const baseValues = [params.orderNo, params.batchType, phone || null, params.pzr || null, params.serviceDate, templateCode, config.signName || '寰宇医道', logParams, params.sendYmd]
 
   if (!/^1\d{10}$/.test(phone)) {
@@ -911,7 +932,7 @@ async function dispatchManagerEscortException(prisma: PrismaClient, params: Mana
         params_json, status, error_code, error_message, send_ymd, created_at
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, 'failed', 'NO_MANAGER_PHONE', '责任客户经理未配置有效手机号', $9, NOW());
     `, ...baseValues)
-    await finishEscortSmsClaim(prisma, params.orderNo, params.batchType, params.sendYmd, 'failed', '责任客户经理未配置有效手机号', detailId)
+    await finishEscortSmsClaim(prisma, params.orderNo, params.batchType, params.sendYmd, 'failed', '责任客户经理未配置有效手机号', detailId, params.huanyuOrderNo || '')
     params.logger?.warn(`[orderReminderSchedule] 客户经理异常短信未发送：责任客户经理无有效手机号，订单 ${params.orderNo}`)
     return
   }
@@ -938,7 +959,7 @@ async function dispatchManagerEscortException(prisma: PrismaClient, params: Mana
         params_json, biz_id, request_id, status, send_ymd, created_at
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, 'success', $11, NOW());
     `, params.orderNo, params.batchType, phone, params.pzr || null, params.serviceDate, templateCode, config.signName || '寰宇医道', logParams, result.bizId || null, result.requestId || null, params.sendYmd)
-    await finishEscortSmsClaim(prisma, params.orderNo, params.batchType, params.sendYmd, 'sent', null, detailId)
+    await finishEscortSmsClaim(prisma, params.orderNo, params.batchType, params.sendYmd, 'sent', null, detailId, params.huanyuOrderNo || '')
     params.logger?.info(`[orderReminderSchedule] 已短信通知客户经理 ${remoteOrder?.managerName || '未匹配'}：${params.alertType}，订单 ${params.orderNo}`)
     return
   }
@@ -949,7 +970,7 @@ async function dispatchManagerEscortException(prisma: PrismaClient, params: Mana
       params_json, request_id, status, error_code, error_message, send_ymd, created_at
     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, 'failed', $10, $11, $12, NOW());
   `, params.orderNo, params.batchType, phone, params.pzr || null, params.serviceDate, templateCode, config.signName || '寰宇医道', logParams, result.requestId || null, result.code, result.message, params.sendYmd)
-  await finishEscortSmsClaim(prisma, params.orderNo, params.batchType, params.sendYmd, 'failed', result.message, detailId)
+  await finishEscortSmsClaim(prisma, params.orderNo, params.batchType, params.sendYmd, 'failed', result.message, detailId, params.huanyuOrderNo || '')
   params.logger?.warn(`[orderReminderSchedule] 客户经理异常短信发送失败：订单 ${params.orderNo}，错误: ${result.message}`)
 }
 
@@ -969,11 +990,12 @@ async function recordSkippedEscortSms(
       order_no, batch_type, pzr_name, service_date, template_code, sign_name,
       params_json, status, error_code, error_message, send_ymd, created_at
     ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, 'failed', 'NOT_SENT', $8, $9, NOW());
-  `, row.source_order_no, batchType, row.pzr, serviceDate, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no, pzrDetailId: row.pzr_detail_id }), reason, sendYmd)
-  await finishEscortSmsClaim(prisma, row.source_order_no, batchType, sendYmd, 'skipped', reason, row.pzr_detail_id)
+  `, row.source_order_no, batchType, row.pzr, serviceDate, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no, huanyuOrderNo: row.huanyu_order_no || '', pzrDetailId: row.pzr_detail_id }), reason, sendYmd)
+  await finishEscortSmsClaim(prisma, row.source_order_no, batchType, sendYmd, 'skipped', reason, row.pzr_detail_id, row.huanyu_order_no || '')
   const batchLabel = batchType === 'pre_day' ? '前一天确认' : '当天打卡'
   await notifyManagerEscortException(prisma, {
     orderNo: row.source_order_no,
+    huanyuOrderNo: row.huanyu_order_no,
     employeeId: row.assigned_employee_id,
     pzr: row.pzr,
     pzrDetailId: row.pzr_detail_id,
@@ -1010,17 +1032,22 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, al
 
   const preDayOrders = await queryInPages(prisma, `
     SELECT 
-      o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
+      o.id AS order_id, o.source_order_no, hs.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
       op.service_type
-    FROM orders o
-    JOIN b_order_operations op ON op.order_id = o.id
+    FROM b_order_huanyu_services hs
+    JOIN orders o ON o.id = hs.order_id
+    LEFT JOIN b_order_operations op ON op.order_id = o.id AND op.huanyu_order_no = hs.huanyu_order_no
     WHERE (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
-      AND op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
-      AND EXISTS (
-        SELECT 1 FROM b_order_service_steps cstep
-        WHERE cstep.operation_id = op.id
-          AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
-          AND cstep.step_status IN ('pending', 'in_progress')
+      AND (
+        hs.workflow_enabled = false OR (
+          op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
+          AND EXISTS (
+            SELECT 1 FROM b_order_service_steps cstep
+            WHERE cstep.operation_id = op.id
+              AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
+              AND cstep.step_status IN ('pending', 'in_progress')
+          )
+        )
       )
     ORDER BY o.created_at ASC, o.id ASC
   `)
@@ -1037,7 +1064,7 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, al
 
     if (!templateEnabled) continue
 
-    if (!(await claimEscortSmsSend(prisma, row.source_order_no, 'pre_day', ymd, row.pzr, tomorrowYmd, row.pzr_detail_id))) {
+    if (!(await claimEscortSmsSend(prisma, row.source_order_no, 'pre_day', ymd, row.pzr, tomorrowYmd, row.pzr_detail_id, row.huanyu_order_no))) {
       continue
     }
 
@@ -1057,7 +1084,7 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, al
         phoneNumbers: cleanPhone,
         signName,
         templateCode,
-        templateParam: { orderNo: row.source_order_no }
+        templateParam: { orderNo: row.huanyu_order_no }
       }, smsConfig)
 
       if (result.success) {
@@ -1066,9 +1093,9 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, al
             order_no, batch_type, phone, pzr_name, service_date, template_code, sign_name,
             params_json, biz_id, request_id, status, send_ymd, created_at
           ) VALUES ($1, 'pre_day', $2, $3, $4, $5, $6, $7::jsonb, $8, $9, 'success', $10, NOW());
-        `, row.source_order_no, cleanPhone, row.pzr, tomorrowYmd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no, pzrDetailId: row.pzr_detail_id }), result.bizId, result.requestId, ymd)
-        await finishEscortSmsClaim(prisma, row.source_order_no, 'pre_day', ymd, 'sent', null, row.pzr_detail_id)
-        await closeReminderByKey(prisma, `auto:escort_sms_failed:${row.source_order_no}:pre_day:${row.pzr_detail_id}:${ymd}`)
+        `, row.source_order_no, cleanPhone, row.pzr, tomorrowYmd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no, huanyuOrderNo: row.huanyu_order_no, pzrDetailId: row.pzr_detail_id }), result.bizId, result.requestId, ymd)
+        await finishEscortSmsClaim(prisma, row.source_order_no, 'pre_day', ymd, 'sent', null, row.pzr_detail_id, row.huanyu_order_no)
+        await closeReminderByKey(prisma, `auto:escort_sms_failed:${row.source_order_no}:${row.huanyu_order_no}:pre_day:${row.pzr_detail_id}:${ymd}`)
 
         logger?.info(`[orderReminderSchedule] 前一天出工确认短信发送成功: 订单 ${row.source_order_no}, 手机 ${cleanPhone}, bizId=${result.bizId}`)
       } else {
@@ -1077,13 +1104,14 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, al
             order_no, batch_type, phone, pzr_name, service_date, template_code, sign_name,
             params_json, request_id, status, error_code, error_message, send_ymd, created_at
           ) VALUES ($1, 'pre_day', $2, $3, $4, $5, $6, $7::jsonb, $8, 'failed', $9, $10, $11, NOW());
-        `, row.source_order_no, cleanPhone, row.pzr, tomorrowYmd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no, pzrDetailId: row.pzr_detail_id }), result.requestId, result.code, result.message, ymd)
-        await finishEscortSmsClaim(prisma, row.source_order_no, 'pre_day', ymd, 'failed', result.message, row.pzr_detail_id)
+        `, row.source_order_no, cleanPhone, row.pzr, tomorrowYmd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no, huanyuOrderNo: row.huanyu_order_no, pzrDetailId: row.pzr_detail_id }), result.requestId, result.code, result.message, ymd)
+        await finishEscortSmsClaim(prisma, row.source_order_no, 'pre_day', ymd, 'failed', result.message, row.pzr_detail_id, row.huanyu_order_no)
 
         logger?.warn(`[orderReminderSchedule] 前一天出工确认短信发送失败: 订单 ${row.source_order_no}, 错误: ${result.message}`)
 
         await notifyManagerEscortException(prisma, {
           orderNo: row.source_order_no,
+          huanyuOrderNo: row.huanyu_order_no,
           employeeId: row.assigned_employee_id,
           pzr: row.pzr,
           pzrDetailId: row.pzr_detail_id,
@@ -1100,13 +1128,14 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, al
           order_no, batch_type, pzr_name, service_date, template_code, sign_name,
           params_json, status, error_code, error_message, send_ymd, created_at
         ) VALUES ($1, 'pre_day', $2, $3, $4, $5, $6::jsonb, 'failed', 'NO_PHONE', '未配置有效陪诊人员手机号', $7, NOW());
-      `, row.source_order_no, row.pzr, tomorrowYmd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no, pzrDetailId: row.pzr_detail_id }), ymd)
-      await finishEscortSmsClaim(prisma, row.source_order_no, 'pre_day', ymd, 'failed', '未配置有效陪诊人员手机号', row.pzr_detail_id)
+      `, row.source_order_no, row.pzr, tomorrowYmd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no, huanyuOrderNo: row.huanyu_order_no, pzrDetailId: row.pzr_detail_id }), ymd)
+      await finishEscortSmsClaim(prisma, row.source_order_no, 'pre_day', ymd, 'failed', '未配置有效陪诊人员手机号', row.pzr_detail_id, row.huanyu_order_no)
 
       logger?.warn(`[orderReminderSchedule] 前一天出工短信未发送：未找到陪诊人手机号: 订单 ${row.source_order_no}, 陪诊人 ${row.pzr}`)
 
         await notifyManagerEscortException(prisma, {
         orderNo: row.source_order_no,
+        huanyuOrderNo: row.huanyu_order_no,
         employeeId: row.assigned_employee_id,
           pzr: row.pzr,
           pzrDetailId: row.pzr_detail_id,
@@ -1120,15 +1149,16 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, al
     } catch (err: any) {
       const reason = String(err?.message || err || '短信任务异常')
       logger?.error(`[orderReminderSchedule] 前一天短信订单处理异常: ${row.source_order_no}`, err)
-      const logged = await prisma.$queryRawUnsafe<any[]>(`SELECT status FROM "fact_hy_pz_sms_logs" WHERE order_no = $1 AND batch_type = 'pre_day' AND send_ymd = $2 AND params_json->>'pzrDetailId' = $3 ORDER BY id DESC LIMIT 1;`, row.source_order_no, ymd, row.pzr_detail_id).catch(() => [])
+      const logged = await prisma.$queryRawUnsafe<any[]>(`SELECT status FROM "fact_hy_pz_sms_logs" WHERE order_no = $1 AND batch_type = 'pre_day' AND send_ymd = $2 AND params_json->>'pzrDetailId' = $3 AND params_json->>'huanyuOrderNo' = $4 ORDER BY id DESC LIMIT 1;`, row.source_order_no, ymd, row.pzr_detail_id, row.huanyu_order_no).catch(() => [])
       if (logged[0]?.status === 'success') {
-        await finishEscortSmsClaim(prisma, row.source_order_no, 'pre_day', ymd, 'sent', null, row.pzr_detail_id).catch(() => {})
+        await finishEscortSmsClaim(prisma, row.source_order_no, 'pre_day', ymd, 'sent', null, row.pzr_detail_id, row.huanyu_order_no).catch(() => {})
         continue
       }
-      await finishEscortSmsClaim(prisma, row.source_order_no, 'pre_day', ymd, 'unknown', reason, row.pzr_detail_id).catch(() => {})
+      await finishEscortSmsClaim(prisma, row.source_order_no, 'pre_day', ymd, 'unknown', reason, row.pzr_detail_id, row.huanyu_order_no).catch(() => {})
       if (row.source_order_no) {
         await notifyManagerEscortException(prisma, {
           orderNo: row.source_order_no,
+          huanyuOrderNo: row.huanyu_order_no,
           employeeId: row.assigned_employee_id,
           pzr: row.pzr,
           pzrDetailId: row.pzr_detail_id,
@@ -1165,17 +1195,22 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, a
 
   const sameDayOrders = await queryInPages(prisma, `
     SELECT 
-      o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
+      o.id AS order_id, o.source_order_no, hs.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
       op.service_type
-    FROM orders o
-    JOIN b_order_operations op ON op.order_id = o.id
+    FROM b_order_huanyu_services hs
+    JOIN orders o ON o.id = hs.order_id
+    LEFT JOIN b_order_operations op ON op.order_id = o.id AND op.huanyu_order_no = hs.huanyu_order_no
     WHERE (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
-      AND op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
-      AND EXISTS (
-        SELECT 1 FROM b_order_service_steps cstep
-        WHERE cstep.operation_id = op.id
-          AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
-          AND cstep.step_status IN ('pending', 'in_progress')
+      AND (
+        hs.workflow_enabled = false OR (
+          op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
+          AND EXISTS (
+            SELECT 1 FROM b_order_service_steps cstep
+            WHERE cstep.operation_id = op.id
+              AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
+              AND cstep.step_status IN ('pending', 'in_progress')
+          )
+        )
       )
     ORDER BY o.created_at ASC, o.id ASC
   `)
@@ -1192,7 +1227,7 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, a
 
     if (!templateEnabled) continue
 
-    if (!(await claimEscortSmsSend(prisma, row.source_order_no, 'same_day', ymd, row.pzr, ymd, row.pzr_detail_id))) {
+    if (!(await claimEscortSmsSend(prisma, row.source_order_no, 'same_day', ymd, row.pzr, ymd, row.pzr_detail_id, row.huanyu_order_no))) {
       continue
     }
 
@@ -1212,7 +1247,7 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, a
         phoneNumbers: cleanPhone,
         signName,
         templateCode,
-        templateParam: { orderNo: row.source_order_no }
+        templateParam: { orderNo: row.huanyu_order_no }
       }, smsConfig)
 
       if (result.success) {
@@ -1221,9 +1256,9 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, a
             order_no, batch_type, phone, pzr_name, service_date, template_code, sign_name,
             params_json, biz_id, request_id, status, send_ymd, created_at
           ) VALUES ($1, 'same_day', $2, $3, $4, $5, $6, $7::jsonb, $8, $9, 'success', $10, NOW());
-        `, row.source_order_no, cleanPhone, row.pzr, ymd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no, pzrDetailId: row.pzr_detail_id }), result.bizId, result.requestId, ymd)
-        await finishEscortSmsClaim(prisma, row.source_order_no, 'same_day', ymd, 'sent', null, row.pzr_detail_id)
-        await closeReminderByKey(prisma, `auto:escort_sms_failed:${row.source_order_no}:same_day:${row.pzr_detail_id}:${ymd}`)
+        `, row.source_order_no, cleanPhone, row.pzr, ymd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no, huanyuOrderNo: row.huanyu_order_no, pzrDetailId: row.pzr_detail_id }), result.bizId, result.requestId, ymd)
+        await finishEscortSmsClaim(prisma, row.source_order_no, 'same_day', ymd, 'sent', null, row.pzr_detail_id, row.huanyu_order_no)
+        await closeReminderByKey(prisma, `auto:escort_sms_failed:${row.source_order_no}:${row.huanyu_order_no}:same_day:${row.pzr_detail_id}:${ymd}`)
 
         logger?.info(`[orderReminderSchedule] 当日出工打卡短信发送成功: 订单 ${row.source_order_no}, 手机 ${cleanPhone}, bizId=${result.bizId}`)
       } else {
@@ -1232,13 +1267,14 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, a
             order_no, batch_type, phone, pzr_name, service_date, template_code, sign_name,
             params_json, request_id, status, error_code, error_message, send_ymd, created_at
           ) VALUES ($1, 'same_day', $2, $3, $4, $5, $6, $7::jsonb, $8, 'failed', $9, $10, $11, NOW());
-        `, row.source_order_no, cleanPhone, row.pzr, ymd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no, pzrDetailId: row.pzr_detail_id }), result.requestId, result.code, result.message, ymd)
-        await finishEscortSmsClaim(prisma, row.source_order_no, 'same_day', ymd, 'failed', result.message, row.pzr_detail_id)
+        `, row.source_order_no, cleanPhone, row.pzr, ymd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no, huanyuOrderNo: row.huanyu_order_no, pzrDetailId: row.pzr_detail_id }), result.requestId, result.code, result.message, ymd)
+        await finishEscortSmsClaim(prisma, row.source_order_no, 'same_day', ymd, 'failed', result.message, row.pzr_detail_id, row.huanyu_order_no)
 
         logger?.warn(`[orderReminderSchedule] 当日出工打卡短信发送失败: 订单 ${row.source_order_no}, 错误: ${result.message}`)
 
         await notifyManagerEscortException(prisma, {
           orderNo: row.source_order_no,
+          huanyuOrderNo: row.huanyu_order_no,
           employeeId: row.assigned_employee_id,
           pzr: row.pzr,
           pzrDetailId: row.pzr_detail_id,
@@ -1255,13 +1291,14 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, a
           order_no, batch_type, pzr_name, service_date, template_code, sign_name,
           params_json, status, error_code, error_message, send_ymd, created_at
         ) VALUES ($1, 'same_day', $2, $3, $4, $5, $6::jsonb, 'failed', 'NO_PHONE', '未配置有效陪诊人员手机号', $7, NOW());
-      `, row.source_order_no, row.pzr, ymd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no, pzrDetailId: row.pzr_detail_id }), ymd)
-      await finishEscortSmsClaim(prisma, row.source_order_no, 'same_day', ymd, 'failed', '未配置有效陪诊人员手机号', row.pzr_detail_id)
+      `, row.source_order_no, row.pzr, ymd, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no, huanyuOrderNo: row.huanyu_order_no, pzrDetailId: row.pzr_detail_id }), ymd)
+      await finishEscortSmsClaim(prisma, row.source_order_no, 'same_day', ymd, 'failed', '未配置有效陪诊人员手机号', row.pzr_detail_id, row.huanyu_order_no)
 
       logger?.warn(`[orderReminderSchedule] 当日出工短信未发送：未找到陪诊人手机号: 订单 ${row.source_order_no}, 陪诊人 ${row.pzr}`)
 
         await notifyManagerEscortException(prisma, {
         orderNo: row.source_order_no,
+        huanyuOrderNo: row.huanyu_order_no,
         employeeId: row.assigned_employee_id,
           pzr: row.pzr,
           pzrDetailId: row.pzr_detail_id,
@@ -1275,15 +1312,16 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, a
     } catch (err: any) {
       const reason = String(err?.message || err || '短信任务异常')
       logger?.error(`[orderReminderSchedule] 当天短信订单处理异常: ${row.source_order_no}`, err)
-      const logged = await prisma.$queryRawUnsafe<any[]>(`SELECT status FROM "fact_hy_pz_sms_logs" WHERE order_no = $1 AND batch_type = 'same_day' AND send_ymd = $2 AND params_json->>'pzrDetailId' = $3 ORDER BY id DESC LIMIT 1;`, row.source_order_no, ymd, row.pzr_detail_id).catch(() => [])
+      const logged = await prisma.$queryRawUnsafe<any[]>(`SELECT status FROM "fact_hy_pz_sms_logs" WHERE order_no = $1 AND batch_type = 'same_day' AND send_ymd = $2 AND params_json->>'pzrDetailId' = $3 AND params_json->>'huanyuOrderNo' = $4 ORDER BY id DESC LIMIT 1;`, row.source_order_no, ymd, row.pzr_detail_id, row.huanyu_order_no).catch(() => [])
       if (logged[0]?.status === 'success') {
-        await finishEscortSmsClaim(prisma, row.source_order_no, 'same_day', ymd, 'sent', null, row.pzr_detail_id).catch(() => {})
+        await finishEscortSmsClaim(prisma, row.source_order_no, 'same_day', ymd, 'sent', null, row.pzr_detail_id, row.huanyu_order_no).catch(() => {})
         continue
       }
-      await finishEscortSmsClaim(prisma, row.source_order_no, 'same_day', ymd, 'unknown', reason, row.pzr_detail_id).catch(() => {})
+      await finishEscortSmsClaim(prisma, row.source_order_no, 'same_day', ymd, 'unknown', reason, row.pzr_detail_id, row.huanyu_order_no).catch(() => {})
       if (row.source_order_no) {
         await notifyManagerEscortException(prisma, {
           orderNo: row.source_order_no,
+          huanyuOrderNo: row.huanyu_order_no,
           employeeId: row.assigned_employee_id,
           pzr: row.pzr,
           pzrDetailId: row.pzr_detail_id,
@@ -1315,17 +1353,22 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
   // 1. 场景 2.2：前一天出工确认（11:00 发短信，13:00 检查未反馈或异常反馈）
   const preDayOrders = await queryInPages(prisma, `
     SELECT 
-      o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
+      o.id AS order_id, o.source_order_no, hs.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
       op.service_type
-    FROM orders o
-    JOIN b_order_operations op ON op.order_id = o.id
+    FROM b_order_huanyu_services hs
+    JOIN orders o ON o.id = hs.order_id
+    LEFT JOIN b_order_operations op ON op.order_id = o.id AND op.huanyu_order_no = hs.huanyu_order_no
     WHERE (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
-      AND op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
-      AND EXISTS (
-        SELECT 1 FROM b_order_service_steps cstep
-        WHERE cstep.operation_id = op.id
-          AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
-          AND cstep.step_status IN ('pending', 'in_progress')
+      AND (
+        hs.workflow_enabled = false OR (
+          op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
+          AND EXISTS (
+            SELECT 1 FROM b_order_service_steps cstep
+            WHERE cstep.operation_id = op.id
+              AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
+              AND cstep.step_status IN ('pending', 'in_progress')
+          )
+        )
       )
     ORDER BY o.created_at ASC, o.id ASC
   `)
@@ -1353,7 +1396,7 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
 
     // 情况 A：已提交但反馈【无法出工（不去）】，立即短信通知客户经理
     if (feedback && feedback.will_attend === false) {
-      await closeReminderByKey(prisma, `auto:escort_pre_day_unack:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`)
+      await closeReminderByKey(prisma, `auto:escort_pre_day_unack:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`, 'resolved', row.huanyu_order_no)
       await createEscortRejectReminder(prisma, row, {
         feedbackType: 'pre_day',
         ymd,
@@ -1366,8 +1409,8 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
 
     // 情况 B：已提交且确认出工，正常通过，无需提醒
     if (feedback && feedback.will_attend === true) {
-      await closeReminderByKey(prisma, `auto:escort_pre_day_unack:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`)
-      await closeReminderByKey(prisma, `auto:escort_pre_day_reject:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`)
+      await closeReminderByKey(prisma, `auto:escort_pre_day_unack:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`, 'resolved', row.huanyu_order_no)
+      await closeReminderByKey(prisma, `auto:escort_pre_day_reject:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`, 'resolved', row.huanyu_order_no)
       continue
     }
 
@@ -1376,10 +1419,10 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
       // 强前置门禁：必须检查今天是否向该陪诊员成功发送过前一天出工短信！
       const smsLog = await prisma.$queryRawUnsafe<any[]>(`
         SELECT 1 FROM "fact_hy_pz_sms_send_claims"
-        WHERE order_no = $1 AND batch_type = 'pre_day' AND send_ymd = $2 AND status = 'sent'
-          AND pzr_id = $3 AND service_date = $4 AND pzr_detail_id = $5
+        WHERE order_no = $1 AND huanyu_order_no = $2 AND batch_type = 'pre_day' AND send_ymd = $3 AND status = 'sent'
+          AND pzr_id = $4 AND service_date = $5 AND pzr_detail_id = $6
         LIMIT 1;
-      `, row.source_order_no, ymd, row.pzr, tomorrowYmd, row.pzr_detail_id)
+      `, row.source_order_no, row.huanyu_order_no, ymd, row.pzr, tomorrowYmd, row.pzr_detail_id)
 
       if (!smsLog || smsLog.length === 0) {
         // 未发送短信或发送失败时，不发送未反馈短信。
@@ -1389,6 +1432,7 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
       if (row.assigned_employee_id) {
         await createReminderIfAbsent(prisma, {
           orderNo: row.source_order_no,
+          huanyuOrderNo: row.huanyu_order_no,
           employeeId: row.assigned_employee_id,
           type: 'escort',
           content: `订单号: ${row.source_order_no}\n陪诊人员: ${row.pzr}\n服务日期: ${tomorrowYmd}\n提醒内容: 陪诊人员前一天确认短信后仍未反馈，请及时处理！`,
@@ -1405,17 +1449,22 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
   const isAfter720 = hours > 7 || (hours === 7 && minutes >= 20)
   const sameDayOrders = await queryInPages(prisma, `
     SELECT 
-      o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
+      o.id AS order_id, o.source_order_no, hs.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
       op.service_type
-    FROM orders o
-    JOIN b_order_operations op ON op.order_id = o.id
+    FROM b_order_huanyu_services hs
+    JOIN orders o ON o.id = hs.order_id
+    LEFT JOIN b_order_operations op ON op.order_id = o.id AND op.huanyu_order_no = hs.huanyu_order_no
     WHERE (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
-      AND op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
-      AND EXISTS (
-        SELECT 1 FROM b_order_service_steps cstep
-        WHERE cstep.operation_id = op.id
-          AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
-          AND cstep.step_status IN ('pending', 'in_progress')
+      AND (
+        hs.workflow_enabled = false OR (
+          op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
+          AND EXISTS (
+            SELECT 1 FROM b_order_service_steps cstep
+            WHERE cstep.operation_id = op.id
+              AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
+              AND cstep.step_status IN ('pending', 'in_progress')
+          )
+        )
       )
     ORDER BY o.created_at ASC, o.id ASC
   `)
@@ -1442,7 +1491,7 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
 
     // 情况 A：当天反馈【无法出工（不去）】，立即短信通知客户经理
     if (feedback && feedback.will_attend === false) {
-      await closeReminderByKey(prisma, `auto:escort_same_day_unack:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`)
+      await closeReminderByKey(prisma, `auto:escort_same_day_unack:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`, 'resolved', row.huanyu_order_no)
       await createEscortRejectReminder(prisma, row, {
         feedbackType: 'same_day',
         ymd,
@@ -1456,8 +1505,8 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
 
     // 情况 B：已反馈确认出工，正常通过
     if (feedback && feedback.will_attend === true) {
-      await closeReminderByKey(prisma, `auto:escort_same_day_unack:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`)
-      await closeReminderByKey(prisma, `auto:escort_same_day_reject:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`)
+      await closeReminderByKey(prisma, `auto:escort_same_day_unack:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`, 'resolved', row.huanyu_order_no)
+      await closeReminderByKey(prisma, `auto:escort_same_day_reject:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`, 'resolved', row.huanyu_order_no)
       continue
     }
 
@@ -1466,10 +1515,10 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
       // 强前置门禁：必须检查今天是否向该陪诊员成功发送过当日出工打卡短信！
       const smsLog = await prisma.$queryRawUnsafe<any[]>(`
         SELECT 1 FROM "fact_hy_pz_sms_send_claims"
-        WHERE order_no = $1 AND batch_type = 'same_day' AND send_ymd = $2 AND status = 'sent'
-          AND pzr_id = $3 AND service_date = $4 AND pzr_detail_id = $5
+        WHERE order_no = $1 AND huanyu_order_no = $2 AND batch_type = 'same_day' AND send_ymd = $3 AND status = 'sent'
+          AND pzr_id = $4 AND service_date = $5 AND pzr_detail_id = $6
         LIMIT 1;
-      `, row.source_order_no, ymd, row.pzr, ymd, row.pzr_detail_id)
+      `, row.source_order_no, row.huanyu_order_no, ymd, row.pzr, ymd, row.pzr_detail_id)
 
       if (!smsLog || smsLog.length === 0) {
         continue
@@ -1477,6 +1526,7 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
 
       await notifyManagerEscortException(prisma, {
         orderNo: row.source_order_no,
+        huanyuOrderNo: row.huanyu_order_no,
         employeeId: row.assigned_employee_id,
         pzr: row.pzr,
         pzrDetailId: row.pzr_detail_id,
@@ -1499,7 +1549,7 @@ export async function scanHospitalCareReminders(prisma: PrismaClient, logger?: L
 
   const careOrders = await queryInPages(prisma, `
     SELECT 
-      o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id, o.status AS order_status,
+      o.id AS order_id, o.source_order_no, op.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id, o.status AS order_status,
       op.service_type,
       s.id AS care_step_id, s.occurrence_no, s.started_at AS care_requested_at,
       s.planned_at AS care_end_date, s.evidence_json AS care_evidence
@@ -1515,8 +1565,9 @@ export async function scanHospitalCareReminders(prisma: PrismaClient, logger?: L
   const seenCareOrders = new Set<string>()
   for (const row of careOrders) {
     if (!row.assigned_employee_id || !row.source_order_no) continue
-    if (seenCareOrders.has(row.source_order_no)) continue
-    seenCareOrders.add(row.source_order_no)
+    const serviceKey = `${row.source_order_no}:${row.huanyu_order_no || ''}`
+    if (seenCareOrders.has(serviceKey)) continue
+    seenCareOrders.add(serviceKey)
 
     const evidence = (row.care_evidence && typeof row.care_evidence === 'object' ? row.care_evidence : {}) as Record<string, unknown>
     const admittedAt = evidence.admittedAt ? new Date(String(evidence.admittedAt)) : null
@@ -1530,7 +1581,7 @@ export async function scanHospitalCareReminders(prisma: PrismaClient, logger?: L
       if (baseTime) {
         const cycleIdentity = `${row.care_step_id}:${row.occurrence_no ?? 0}:${new Date(baseTime).toISOString()}`
         const dedupeKey = `auto:care_start_unassigned:${row.source_order_no}`
-        await closeStalePeriodicCycle(prisma, dedupeKey, cycleIdentity)
+        await closeStalePeriodicCycle(prisma, dedupeKey, cycleIdentity, row.huanyu_order_no)
         const diffDays = shanghaiCalendarDayDiff(baseTime, ymd)
 
         if (hours >= 9 && diffDays >= 2 && diffDays % 2 === 0) {
@@ -1538,6 +1589,7 @@ export async function scanHospitalCareReminders(prisma: PrismaClient, logger?: L
 
           await upsertPeriodicReminder(prisma, {
             orderNo: row.source_order_no,
+            huanyuOrderNo: row.huanyu_order_no,
             employeeId: row.assigned_employee_id,
             type: 'hospital_care',
             content,
@@ -1549,7 +1601,7 @@ export async function scanHospitalCareReminders(prisma: PrismaClient, logger?: L
         }
       }
     } else {
-      await closeReminderByKey(prisma, `auto:care_start_unassigned:${row.source_order_no}`)
+      await closeReminderByKey(prisma, `auto:care_start_unassigned:${row.source_order_no}`, 'resolved', row.huanyu_order_no)
     }
 
     // 3.2 护工结束前 2 个工作日提醒（扣除节假日）
@@ -1560,13 +1612,14 @@ export async function scanHospitalCareReminders(prisma: PrismaClient, logger?: L
         const endDate = new Date(year, month - 1, day)
         const { ymd: targetRemindYmd } = subtractWorkdays(endDate, 2)
         const dedupeKey = `auto:care_end_notify:${row.source_order_no}:${serviceYmd}`
-        await closeReminderKeysExcept(prisma, `auto:care_end_notify:${row.source_order_no}:`, dedupeKey, 'superseded')
+        await closeReminderKeysExcept(prisma, `auto:care_end_notify:${row.source_order_no}:`, dedupeKey, 'superseded', row.huanyu_order_no)
 
         if (hours >= 9 && ymd === targetRemindYmd && ymd <= serviceYmd) {
           const content = `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 护工服务结束日期临近，请确认客户后续安排！`
 
           await createReminderIfAbsent(prisma, {
             orderNo: row.source_order_no,
+            huanyuOrderNo: row.huanyu_order_no,
             employeeId: row.assigned_employee_id,
             type: 'hospital_care',
             content,
@@ -1576,7 +1629,7 @@ export async function scanHospitalCareReminders(prisma: PrismaClient, logger?: L
           })
         }
     } else {
-      await closeReminderKeysExcept(prisma, `auto:care_end_notify:${row.source_order_no}:`, null, 'expired')
+      await closeReminderKeysExcept(prisma, `auto:care_end_notify:${row.source_order_no}:`, null, 'expired', row.huanyu_order_no)
     }
   }
 }

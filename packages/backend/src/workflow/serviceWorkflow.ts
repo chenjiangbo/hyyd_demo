@@ -36,7 +36,7 @@ type StoredStep = {
   note: string | null
 }
 
-type OperationRow = { id: bigint; service_type: string | null }
+type OperationRow = { id: bigint; service_type: string | null; huanyu_order_no: string | null }
 
 type WorkflowConfigRow = {
   code: string
@@ -163,16 +163,29 @@ function toWorkflowStep(row: StoredStep): WorkflowStep {
   }
 }
 
-async function ensureOperation(db: DbClient, orderId: number, serviceType: string): Promise<OperationRow> {
+async function ensureOperation(db: DbClient, orderId: number, serviceType: string, huanyuOrderNo: string | null): Promise<OperationRow> {
+  if (!huanyuOrderNo) {
+    const existing = await db.$queryRaw<OperationRow[]>`
+      SELECT id, service_type, huanyu_order_no FROM b_order_operations
+      WHERE order_id = ${orderId} AND huanyu_order_no IS NULL ORDER BY id LIMIT 1
+    `
+    if (existing[0]) return existing[0]
+    const rows = await db.$queryRaw<OperationRow[]>`
+      INSERT INTO b_order_operations (order_id, service_type, current_step_code)
+      VALUES (${orderId}, ${serviceType}, 'initial_contact')
+      RETURNING id, service_type, huanyu_order_no
+    `
+    return rows[0]!
+  }
   const rows = await db.$queryRaw<OperationRow[]>`
-    INSERT INTO b_order_operations (order_id, service_type, current_step_code)
-    VALUES (${orderId}, ${serviceType}, 'initial_contact')
-    ON CONFLICT (order_id) DO UPDATE
+    INSERT INTO b_order_operations (order_id, huanyu_order_no, service_type, current_step_code)
+    VALUES (${orderId}, ${huanyuOrderNo}, ${serviceType}, 'initial_contact')
+    ON CONFLICT (order_id, huanyu_order_no) DO UPDATE
       SET service_type = COALESCE(b_order_operations.service_type, EXCLUDED.service_type),
           updated_at = now()
-    RETURNING id, service_type
+    RETURNING id, service_type, huanyu_order_no
   `
-  return rows[0]
+  return rows[0]!
 }
 
 async function insertDefinition(
@@ -268,23 +281,33 @@ async function workflowForOperation(db: DbClient, operation: OperationRow, servi
   return { operationId: Number(operation.id), serviceType, steps: roots }
 }
 
-export async function getOrderWorkflow(prisma: PrismaClient, orderId: number): Promise<OrderWorkflow | null> {
-  const order = await prisma.order.findUnique({ where: { id: orderId }, select: { id: true, rawJson: true } })
+export async function getOrderWorkflow(prisma: PrismaClient, orderId: number, huanyuOrderNo?: string | null): Promise<OrderWorkflow | null> {
+  const order = await prisma.order.findUnique({ where: { id: orderId }, select: { id: true, rawJson: true, huanyuOrderNo: true } })
   if (!order) return null
+  const selectedHuanyuOrderNo = huanyuOrderNo ?? order.huanyuOrderNo
+  if (selectedHuanyuOrderNo) {
+    const links = await prisma.$queryRaw<Array<{ found: boolean; workflow_enabled: boolean }>>`
+      SELECT true AS found, workflow_enabled FROM b_order_huanyu_services
+      WHERE order_id = ${orderId} AND huanyu_order_no = ${selectedHuanyuOrderNo} LIMIT 1
+    `
+    if (!links[0]?.found) throw new Error(`寰宇订单 ${selectedHuanyuOrderNo} 未关联当前 B 端订单`)
+    if (!links[0]?.workflow_enabled) throw new Error(`寰宇订单 ${selectedHuanyuOrderNo} 当前仅参与 AI 分析，未建立服务流程`)
+  }
   const serviceType = serviceTypeOf(order.rawJson)
   return prisma.$transaction(async (tx) => {
-    const operation = await ensureOperation(tx, order.id, serviceType)
+    const operation = await ensureOperation(tx, order.id, serviceType, selectedHuanyuOrderNo ?? null)
     await seedInitialWorkflow(tx, operation.id, serviceType)
     return workflowForOperation(tx, operation, serviceType)
   })
 }
 
 /** 新订单写入 orders 后立即调用；幂等，不会重置已有步骤状态。 */
-export async function initializeOrderWorkflow(prisma: PrismaClient, orderId: number): Promise<void> {
-  await getOrderWorkflow(prisma, orderId)
+export async function initializeOrderWorkflow(prisma: PrismaClient, orderId: number, huanyuOrderNo?: string | null): Promise<void> {
+  await getOrderWorkflow(prisma, orderId, huanyuOrderNo)
 }
 
 export type WorkflowEventInput = {
+  huanyuOrderNo?: string | null
   code: string
   source: Exclude<WorkflowSource, 'system'>
   sourceRef?: string | null
@@ -421,7 +444,16 @@ export async function applyOrderWorkflowEvent(
   if (!order) return null
   const serviceType = serviceTypeOf(order.rawJson)
   return prisma.$transaction(async (tx) => {
-    const operation = await ensureOperation(tx, order.id, serviceType)
+    const selectedHuanyuOrderNo = input.huanyuOrderNo ?? order.huanyuOrderNo
+    if (selectedHuanyuOrderNo) {
+      const links = await tx.$queryRaw<Array<{ found: boolean; workflow_enabled: boolean }>>`
+        SELECT true AS found, workflow_enabled FROM b_order_huanyu_services
+        WHERE order_id = ${order.id} AND huanyu_order_no = ${selectedHuanyuOrderNo} LIMIT 1
+      `
+      if (!links[0]?.found) throw new Error(`寰宇订单 ${selectedHuanyuOrderNo} 未关联当前 B 端订单`)
+      if (!links[0]?.workflow_enabled) throw new Error(`寰宇订单 ${selectedHuanyuOrderNo} 当前仅参与 AI 分析，未建立服务流程`)
+    }
+    const operation = await ensureOperation(tx, order.id, serviceType, selectedHuanyuOrderNo ?? null)
     await seedInitialWorkflow(tx, operation.id, serviceType)
     const eventKey = `${input.source}:${input.sourceRef ?? input.code}:${input.code}`.slice(0, 180)
     const inserted = await tx.$queryRaw<Array<{ id: bigint }>>`
@@ -599,28 +631,9 @@ export async function applyOrderWorkflowEvent(
           WHERE operation_id = ${operation.id}
             AND step_code = 'end'
         `
-        // 3. 将订单主表 orders 的 status 更新为 '已取消'
-        await tx.order.update({
-          where: { id: order.id },
-          data: { status: '已取消' }
-        })
-        // 4. 同步更新本地镜像表 HY_FACT_DDCX_NEW 的 DD_state 为 '已取消'
-        try {
-          const raw = (order.rawJson ?? {}) as Record<string, unknown>
-          const huanyuOrderNo = order.huanyuOrderNo || (typeof raw.orderNo === 'string' ? raw.orderNo : null) || (typeof raw.crmApplyNo === 'string' ? raw.crmApplyNo : null)
-          const sourceOrderNo = order.sourceOrderNo || (typeof raw.sourceOrderNo === 'string' ? raw.sourceOrderNo : null)
-          if (huanyuOrderNo || sourceOrderNo) {
-            await tx.$executeRaw`
-              UPDATE "HY_FACT_DDCX_NEW"
-              SET "DD_state" = '已取消',
-                  xtsj_ = now()
-              WHERE (${huanyuOrderNo ? Prisma.sql`"DDBH" = ${huanyuOrderNo}` : Prisma.sql`FALSE`})
-                 OR (${sourceOrderNo ? Prisma.sql`"BDQD_DDBH" = ${sourceOrderNo}` : Prisma.sql`FALSE`})
-            `
-          }
-        } catch (syncErr) {
-          console.warn(`[workflow] 订单 ${order.id} 同步 HY_FACT_DDCX_NEW 取消状态跳过:`, (syncErr as Error).message)
-        }
+        // B 端订单是多个寰宇服务的父级；取消 H1 不能把同一 B 端下的 H2 一并取消。
+        // 服务取消状态只落在当前寰宇服务实例的步骤轨迹中。
+        // 远程寰宇订单的状态由其自身业务入口维护，客户端不保存寰宇订单镜像。
         break
       default:
         throw new Error(`不支持的业务流程事件: ${input.code}`)

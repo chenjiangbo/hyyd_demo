@@ -17,6 +17,7 @@ import {
 import { extractOrderServiceFields, ORDER_AI_FIELD_PROMPT_VERSION } from '../llm/orderAiExtraction.js'
 import { understandImage } from '../llm/imageUnderstandService.js'
 import { applyOrderWorkflowEvent } from '../workflow/serviceWorkflow.js'
+import { findHuanyuOrderNosOnMysqlByChannelOrderNo } from '../huanyuMysqlPush.js'
 
 async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = []
@@ -167,13 +168,15 @@ async function persistFieldCandidates(
     for (const candidate of input.candidates) {
       await tx.$executeRaw`
         INSERT INTO b_order_ai_field_candidates (
-          run_id, order_id, field_code, field_label, value_text, normalized_value_json,
+          run_id, order_id, huanyu_order_no, field_code, field_label, value_text, normalized_value_json,
           candidate_type, confidence, requires_confirmation, evidence_json
-        ) VALUES (
-          ${runId}, ${input.orderId}, ${candidate.fieldCode}, ${candidate.fieldLabel}, ${candidate.value},
+        ) SELECT
+          ${runId}, ${input.orderId},
+          ${candidate.huanyuOrderNo}, ${candidate.fieldCode}, ${candidate.fieldLabel}, ${candidate.value},
           ${JSON.stringify(candidate.normalizedValue)}::jsonb, ${candidate.candidateType},
           ${candidate.confidence}, ${candidate.requiresConfirmation}, ${JSON.stringify(candidate.evidence)}::jsonb
-        )
+        FROM b_order_huanyu_services
+        WHERE order_id = ${input.orderId} AND huanyu_order_no = ${candidate.huanyuOrderNo}
       `
     }
   })
@@ -234,13 +237,15 @@ async function completeRunningAnalysisRun(
     for (const candidate of input.candidates) {
       await tx.$executeRaw`
         INSERT INTO b_order_ai_field_candidates (
-          run_id, order_id, field_code, field_label, value_text, normalized_value_json,
+          run_id, order_id, huanyu_order_no, field_code, field_label, value_text, normalized_value_json,
           candidate_type, confidence, requires_confirmation, evidence_json
-        ) VALUES (
-          ${input.runId}, ${input.orderId}, ${candidate.fieldCode}, ${candidate.fieldLabel}, ${candidate.value},
+        ) SELECT
+          ${input.runId}, ${input.orderId},
+          ${candidate.huanyuOrderNo}, ${candidate.fieldCode}, ${candidate.fieldLabel}, ${candidate.value},
           ${JSON.stringify(candidate.normalizedValue)}::jsonb, ${candidate.candidateType},
           ${candidate.confidence}, ${candidate.requiresConfirmation}, ${JSON.stringify(candidate.evidence)}::jsonb
-        )
+        FROM b_order_huanyu_services
+        WHERE order_id = ${input.orderId} AND huanyu_order_no = ${candidate.huanyuOrderNo}
       `
     }
     await tx.$executeRaw`
@@ -304,6 +309,20 @@ export async function analyzeOrderFields(
   const lastCallId = order.fieldAiLastCallId ?? 0
   const lastMaterialId = order.fieldAiLastMaterialId ?? 0
   const applicationNo = applicationNoOf(order.rawJson)
+  let newlyDiscoveredHuanyuOrder = false
+  try {
+    const remoteHuanyuOrderNos = await findHuanyuOrderNosOnMysqlByChannelOrderNo(order.sourceOrderNo)
+    for (const huanyuOrderNo of remoteHuanyuOrderNos) {
+      const inserted = await prisma.$executeRaw`
+        INSERT INTO b_order_huanyu_services (order_id, huanyu_order_no, source, workflow_enabled)
+        VALUES (${orderId}, ${huanyuOrderNo}, 'ai_analysis_discovery', false)
+        ON CONFLICT (huanyu_order_no) DO NOTHING
+      `
+      newlyDiscoveredHuanyuOrder ||= inserted > 0
+    }
+  } catch (error) {
+    console.warn(`[order-ai-field] orderId=${orderId} 远端寰宇订单发现失败，使用本地已关联单号: ${describeError(error)}`)
+  }
   const captureWhere = applicationNo ? { OR: [{ applicationNo }, { orderId }] } : { orderId }
   const [msgs, calls, mats] = await Promise.all([
     prisma.message.findMany({ where: captureWhere, orderBy: { id: 'asc' } }),
@@ -314,6 +333,7 @@ export async function analyzeOrderFields(
   const maxCallId = calls.at(-1)?.id ?? lastCallId
   const maxMaterialId = mats.at(-1)?.id ?? lastMaterialId
   const hasNewContent =
+    newlyDiscoveredHuanyuOrder ||
     msgs.some((m) => m.id > lastMsgId && (m.contentText ?? '').trim().length > 0) ||
     calls.some((c) => c.id > lastCallId && ((c.asrText ?? '').trim().length > 0 || (c.durationSec ?? 0) > 0)) ||
     mats.some((m) => m.id > lastMaterialId && (m.type === 'image' || (m.textContent ?? '').trim().length > 0))
@@ -332,6 +352,33 @@ export async function analyzeOrderFields(
     if (material.type === 'image') await ensureImageUnderstood(prisma, minio, material)
   }
   const raw = (order.rawJson ?? {}) as Record<string, unknown>
+  const applicationOrders = applicationNo
+    ? await prisma.$queryRaw<Array<{ id: number; source_order_no: string; huanyu_order_no: string | null; service_type: string | null }>>`
+        SELECT id, source_order_no, huanyu_order_no, COALESCE(raw_json->>'serviceType', raw_json->>'itemName') AS service_type
+        FROM orders WHERE raw_json->>'crmApplyNo' = ${applicationNo}
+      `
+    : [{ id: order.id, source_order_no: order.sourceOrderNo, huanyu_order_no: order.huanyuOrderNo, service_type: String(raw.serviceType ?? raw.itemName ?? '') || null }]
+  const huanyuOrders: Array<{ orderNo: string; serviceType: string | null; bOrderNo: string }> = []
+  for (const applicationOrder of applicationOrders) {
+    try {
+      const discovered = await findHuanyuOrderNosOnMysqlByChannelOrderNo(applicationOrder.source_order_no)
+      for (const huanyuOrderNo of discovered) {
+        await prisma.$executeRaw`
+          INSERT INTO b_order_huanyu_services (order_id, huanyu_order_no, source, workflow_enabled)
+          VALUES (${applicationOrder.id}, ${huanyuOrderNo}, 'ai_analysis_discovery', false)
+          ON CONFLICT (huanyu_order_no) DO NOTHING
+        `
+      }
+    } catch (error) {
+      console.warn(`[order-ai-field] B端订单 ${applicationOrder.source_order_no} 远端单号发现失败: ${describeError(error)}`)
+    }
+    const links = await prisma.$queryRaw<Array<{ huanyu_order_no: string }>>`
+      SELECT huanyu_order_no FROM b_order_huanyu_services WHERE order_id = ${applicationOrder.id} ORDER BY discovered_at, id
+    `
+    const linked = links.map((link) => link.huanyu_order_no)
+    if (linked.length === 0 && applicationOrder.huanyu_order_no) linked.push(applicationOrder.huanyu_order_no)
+    for (const orderNo of linked) huanyuOrders.push({ orderNo, serviceType: applicationOrder.service_type, bOrderNo: applicationOrder.source_order_no })
+  }
   const bFormSaved = await loadBFormSavedValues(prisma, orderId)
   const runId = await createRunningAnalysisRun(prisma, { orderId, applicationNo, maxMessageId, maxCallId, maxMaterialId })
 
@@ -340,6 +387,7 @@ export async function analyzeOrderFields(
       orderId,
       applicationNo,
       serviceType: String(raw.serviceType ?? raw.itemName ?? '').trim() || '未识别服务',
+      huanyuOrders,
       currentValues: {
         hospital: order.hospital,
         department: order.dept,
@@ -370,14 +418,36 @@ export async function analyzeOrderFields(
       runId, orderId, model: extraction.model, raw: extraction.raw, candidates: extraction.candidates
     })
     for (const event of extraction.workflowEvents) {
-      const fingerprint = createHash('sha256').update(`${orderId}:${event.code}:${event.evidence}`).digest('hex').slice(0, 32)
+      const fingerprint = createHash('sha256').update(`${orderId}:${event.huanyuOrderNo}:${event.code}:${event.evidence}`).digest('hex').slice(0, 32)
       try {
-        await applyOrderWorkflowEvent(prisma, orderId, {
-          code: event.code, source: 'ai', sourceRef: `qwen:${event.code}:${fingerprint}`, confidence: 0.85,
-          evidence: [{ text: event.evidence, model: extraction.model || 'qwen-plus' }], occurredAt: event.occurredAt, plannedAt: event.plannedAt
-        })
+        await prisma.$executeRaw`
+          INSERT INTO b_order_ai_service_events (
+            order_id, huanyu_order_no, event_code, evidence, event_key, occurred_at, planned_at, source_run_id
+          ) SELECT
+            ${orderId},
+            ${event.huanyuOrderNo}, ${event.code}, ${event.evidence}, ${fingerprint},
+            ${event.occurredAt ? new Date(event.occurredAt) : null}, ${event.plannedAt ? new Date(event.plannedAt) : null}, ${runId}
+          FROM b_order_huanyu_services WHERE order_id = ${orderId} AND huanyu_order_no = ${event.huanyuOrderNo}
+          ON CONFLICT (event_key) DO NOTHING
+        `
+        const workflowLinks = await prisma.$queryRaw<Array<{ workflow_enabled: boolean }>>`
+          SELECT workflow_enabled FROM b_order_huanyu_services
+          WHERE order_id = ${orderId} AND huanyu_order_no = ${event.huanyuOrderNo}
+        `
+        if (workflowLinks[0]?.workflow_enabled) {
+          await applyOrderWorkflowEvent(prisma, orderId, {
+            code: event.code,
+            source: 'ai',
+            sourceRef: `qwen:${event.code}:${fingerprint}`,
+            huanyuOrderNo: event.huanyuOrderNo,
+            confidence: 0.85,
+            evidence: [{ text: event.evidence, model: extraction.model || 'qwen-plus' }],
+            occurredAt: event.occurredAt,
+            plannedAt: event.plannedAt
+          })
+        }
       } catch (error) {
-        console.warn(`[order-ai-field] orderId=${orderId} runId=${runId} 服务步骤 ${event.code} 写入失败: ${describeError(error)}`)
+        console.warn(`[order-ai-field] orderId=${orderId} huanyuOrderNo=${event.huanyuOrderNo} runId=${runId} 服务事件 ${event.code} 写入失败: ${describeError(error)}`)
       }
     }
     console.log(`[order-ai-field] orderId=${orderId} runId=${runId} status=succeeded materialMaxId=${maxMaterialId} messageMaxId=${maxMessageId} callMaxId=${maxCallId} model=${extraction.model} candidates=${extraction.candidates.length} events=${extraction.workflowEvents.length}`)
@@ -544,6 +614,9 @@ export async function refreshOrderBrief(
       orderId,
       applicationNo,
       serviceType: String(raw.serviceType ?? raw.itemName ?? '').trim() || '未识别服务',
+      huanyuOrders: (await prisma.$queryRaw<Array<{ huanyu_order_no: string }>>`
+        SELECT huanyu_order_no FROM b_order_huanyu_services WHERE order_id = ${orderId} ORDER BY discovered_at, id
+      `).map((row) => ({ orderNo: row.huanyu_order_no })),
       currentValues: {
         hospital: order.hospital,
         department: order.dept,
@@ -584,12 +657,18 @@ export async function refreshOrderBrief(
     })
     // 自动应用 AI 识别出的工作流事件（包括 service_cancelled 取消关单、各履约环节等）
     for (const event of extractionEvents) {
-      const fingerprint = createHash('sha256').update(`${orderId}:${event.code}:${event.evidence}`).digest('hex').slice(0, 32)
+      const fingerprint = createHash('sha256').update(`${orderId}:${event.huanyuOrderNo}:${event.code}:${event.evidence}`).digest('hex').slice(0, 32)
       try {
+        const workflowLinks = await prisma.$queryRaw<Array<{ workflow_enabled: boolean }>>`
+          SELECT workflow_enabled FROM b_order_huanyu_services
+          WHERE order_id = ${orderId} AND huanyu_order_no = ${event.huanyuOrderNo}
+        `
+        if (!workflowLinks[0]?.workflow_enabled) continue
         await applyOrderWorkflowEvent(prisma, orderId, {
           code: event.code,
           source: 'ai',
           sourceRef: `qwen:${event.code}:${fingerprint}`,
+          huanyuOrderNo: event.huanyuOrderNo,
           confidence: 0.85,
           evidence: [{ text: event.evidence, model: extraction.model ?? 'qwen-plus' }], occurredAt: event.occurredAt, plannedAt: event.plannedAt
         })

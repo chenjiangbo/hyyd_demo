@@ -1,7 +1,7 @@
 import { chat } from './gatewayClient.js'
 import { WORKFLOW_EVENT_CODES, type WorkflowAnalysisEvent } from './orderBriefService.js'
 
-export const ORDER_AI_FIELD_PROMPT_VERSION = 'order-fields-v5-escort-datetime-source-id-max-10000'
+export const ORDER_AI_FIELD_PROMPT_VERSION = 'order-fields-v6-huanyu-service-segmentation'
 
 export type OrderAiSourceMessage = {
   id: number
@@ -19,6 +19,7 @@ export type OrderAiSourceCall = {
 }
 
 export type OrderAiFieldCandidate = {
+  huanyuOrderNo: string
   fieldCode: string
   fieldLabel: string
   value: string
@@ -121,7 +122,8 @@ export const ORDER_AI_FIELD_DEFINITIONS: readonly OrderAiFieldDefinition[] = [
 
 export const ORDER_AI_PROMPT_RULES = [
   '你是医疗服务订单的结构化业务执行信息提取助手。',
-  '沟通记录按申请号采集，但本次只能分析指定的一张订单；绝不把另一服务订单的信息写入本订单。',
+  '沟通记录按申请号采集；同一申请下可能有多个 B 端订单，每个 B 端订单又可能有多个寰宇服务单。必须按时间线把信息分段，并为每条服务字段/事件选择一个给定的寰宇订单号。',
+  '寰宇服务单号只能从本次提供的候选列表中选择，禁止编造。不同服务单之间不得串用字段或流程事件。根据订单日期、服务类型、初诊/复诊表达和前后时间线归属；证据不足以确定某个寰宇服务单时，不输出该字段或事件。',
   '订单基础资料已由泰康同步，不重复提取姓名、证件、联系人、套餐、订单号、初始就医意向或内部人员。',
   '只提取沟通后新增、变更或明确确认的服务执行信息，且只能返回给定字段白名单中的 field_code。',
   '【时间字段业务提取准则】：',
@@ -182,8 +184,8 @@ export const ORDER_AI_PROMPT_RULES = [
 ] as const
 
 export const ORDER_AI_PROMPT_INPUTS = [
-  '当前订单：订单 ID、申请号、服务类型',
-  '本单允许提取字段：由服务类型匹配后的字段白名单',
+  '当前 B 端订单及申请号下全部关联 B 端订单、寰宇服务单候选号与服务类型',
+  '允许提取字段：申请内候选服务类型对应字段白名单的并集；每个结果必须标明寰宇订单号',
   '当前已保存正式值：仅用于判断变更，模型不得照搬',
   '申请号下沟通时间线：企微消息、微信消息、已完成转写的通话录音'
 ] as const
@@ -252,12 +254,14 @@ function normalizeEscortRecordsDateTime(value: unknown): unknown {
   })
 }
 
-function normalizeCandidates(raw: unknown, allowed: Map<string, OrderAiFieldDefinition>): OrderAiFieldCandidate[] {
+function normalizeCandidates(raw: unknown, allowed: Map<string, OrderAiFieldDefinition>, huanyuOrderNos: Set<string>): OrderAiFieldCandidate[] {
   if (!Array.isArray(raw)) return []
   const latest = new Map<string, OrderAiFieldCandidate>()
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue
     const record = item as Record<string, unknown>
+    const huanyuOrderNo = stringValue(record.huanyu_order_no)
+    if (!huanyuOrderNo || !huanyuOrderNos.has(huanyuOrderNo)) continue
     const fieldCode = stringValue(record.field_code)
     const definition = fieldCode ? allowed.get(fieldCode) : null
     const rawValue = stringValue(record.value)
@@ -309,7 +313,8 @@ function normalizeCandidates(raw: unknown, allowed: Map<string, OrderAiFieldDefi
       normalizedValue = normalizedSchemes
     }
 
-    latest.set(fieldCode!, {
+    latest.set(`${huanyuOrderNo}:${fieldCode}`, {
+      huanyuOrderNo,
       fieldCode: fieldCode!,
       fieldLabel: definition.label,
       value: value.slice(0, 2000),
@@ -323,15 +328,16 @@ function normalizeCandidates(raw: unknown, allowed: Map<string, OrderAiFieldDefi
 
   // 1. 若提取到了多笔/多阶段 escort_records，自动将第 1 笔填充到 escort_name / escort_service_date / escort_phone，
   // 确保旧系统视图与下游定时提醒服务无缝兼容。
-  const escortRecordsCand = latest.get('escort_records')
+  const escortRecordsCand = [...latest.values()].find((candidate) => candidate.fieldCode === 'escort_records')
   if (escortRecordsCand && Array.isArray(escortRecordsCand.normalizedValue) && escortRecordsCand.normalizedValue.length > 0) {
     const first = escortRecordsCand.normalizedValue[0] as Record<string, unknown>
     const firstEscortName = stringValue(first.escort_name || first.escortName)
     const firstEscortPhone = stringValue(first.escort_phone || first.escortPhone)
     const firstEscortDate = stringValue(first.service_date || first.serviceDate)
 
-    if (firstEscortName && !latest.has('escort_name') && allowed.has('escort_name')) {
-      latest.set('escort_name', {
+    if (firstEscortName && ![...latest.values()].some((candidate) => candidate.huanyuOrderNo === escortRecordsCand.huanyuOrderNo && candidate.fieldCode === 'escort_name') && allowed.has('escort_name')) {
+      latest.set(`${escortRecordsCand.huanyuOrderNo}:escort_name`, {
+        huanyuOrderNo: escortRecordsCand.huanyuOrderNo,
         fieldCode: 'escort_name',
         fieldLabel: allowed.get('escort_name')!.label,
         value: firstEscortName,
@@ -342,8 +348,9 @@ function normalizeCandidates(raw: unknown, allowed: Map<string, OrderAiFieldDefi
         evidence: escortRecordsCand.evidence
       })
     }
-    if (firstEscortPhone && !latest.has('escort_phone') && allowed.has('escort_phone')) {
-      latest.set('escort_phone', {
+    if (firstEscortPhone && ![...latest.values()].some((candidate) => candidate.huanyuOrderNo === escortRecordsCand.huanyuOrderNo && candidate.fieldCode === 'escort_phone') && allowed.has('escort_phone')) {
+      latest.set(`${escortRecordsCand.huanyuOrderNo}:escort_phone`, {
+        huanyuOrderNo: escortRecordsCand.huanyuOrderNo,
         fieldCode: 'escort_phone',
         fieldLabel: allowed.get('escort_phone')!.label,
         value: firstEscortPhone,
@@ -354,8 +361,9 @@ function normalizeCandidates(raw: unknown, allowed: Map<string, OrderAiFieldDefi
         evidence: escortRecordsCand.evidence
       })
     }
-    if (firstEscortDate && !latest.has('escort_service_date') && allowed.has('escort_service_date')) {
-      latest.set('escort_service_date', {
+    if (firstEscortDate && ![...latest.values()].some((candidate) => candidate.huanyuOrderNo === escortRecordsCand.huanyuOrderNo && candidate.fieldCode === 'escort_service_date') && allowed.has('escort_service_date')) {
+      latest.set(`${escortRecordsCand.huanyuOrderNo}:escort_service_date`, {
+        huanyuOrderNo: escortRecordsCand.huanyuOrderNo,
         fieldCode: 'escort_service_date',
         fieldLabel: allowed.get('escort_service_date')!.label,
         value: firstEscortDate,
@@ -366,13 +374,14 @@ function normalizeCandidates(raw: unknown, allowed: Map<string, OrderAiFieldDefi
         evidence: escortRecordsCand.evidence
       })
     }
-  } else if (!latest.has('escort_records') && allowed.has('escort_records')) {
+  } else if (![...latest.values()].some((candidate) => candidate.fieldCode === 'escort_records') && allowed.has('escort_records')) {
     // 2. 反向兼容：若仅提取了单值 escort_name / escort_service_date，自动包装成只有 1 项的 escort_records
-    const singleName = latest.get('escort_name')
-    const singleDate = latest.get('escort_service_date')
-    const singlePhone = latest.get('escort_phone')
+    const singleName = [...latest.values()].find((candidate) => candidate.fieldCode === 'escort_name')
+    const singleDate = [...latest.values()].find((candidate) => candidate.fieldCode === 'escort_service_date')
+    const singlePhone = [...latest.values()].find((candidate) => candidate.fieldCode === 'escort_phone' && candidate.huanyuOrderNo === singleName?.huanyuOrderNo)
     if (singleName && singleName.value) {
-      latest.set('escort_records', {
+      latest.set(`${singleName.huanyuOrderNo}:escort_records`, {
+        huanyuOrderNo: singleName.huanyuOrderNo,
         fieldCode: 'escort_records',
         fieldLabel: allowed.get('escort_records')!.label,
         value: `陪诊人: ${singleName.value}${singleDate ? `，服务日期: ${singleDate.value}` : ''}`,
@@ -394,15 +403,16 @@ function normalizeCandidates(raw: unknown, allowed: Map<string, OrderAiFieldDefi
   return [...latest.values()]
 }
 
-function normalizeEvents(raw: unknown): WorkflowAnalysisEvent[] {
+function normalizeEvents(raw: unknown, huanyuOrderNos: Set<string>): WorkflowAnalysisEvent[] {
   if (!Array.isArray(raw)) return []
   return raw.flatMap((item) => {
     if (!item || typeof item !== 'object') return []
     const value = item as Record<string, unknown>
     const code = stringValue(value.code)
     const evidence = stringValue(value.evidence)
-    return code && evidence && (WORKFLOW_EVENT_CODES as readonly string[]).includes(code)
-      ? [{ code: code as WorkflowAnalysisEvent['code'], evidence: evidence.slice(0, 1000) }]
+    const huanyuOrderNo = stringValue(value.huanyu_order_no)
+    return code && evidence && huanyuOrderNo && huanyuOrderNos.has(huanyuOrderNo) && (WORKFLOW_EVENT_CODES as readonly string[]).includes(code)
+      ? [{ code: code as WorkflowAnalysisEvent['code'], evidence: evidence.slice(0, 1000), huanyuOrderNo }]
       : []
   })
 }
@@ -411,11 +421,16 @@ export async function extractOrderServiceFields(input: {
   orderId: number
   applicationNo: string | null
   serviceType: string
+  huanyuOrders?: Array<{ orderNo: string; serviceType?: string | null }>
   currentValues: Record<string, unknown>
   messages: OrderAiSourceMessage[]
   calls: OrderAiSourceCall[]
 }): Promise<OrderAiExtraction> {
-  const allowedFields = fieldsFor(input.serviceType)
+  const allowedByCode = new Map<string, OrderAiFieldDefinition>()
+  for (const serviceType of new Set([input.serviceType, ...(input.huanyuOrders ?? []).map((order) => order.serviceType).filter((value): value is string => Boolean(value))])) {
+    for (const field of fieldsFor(serviceType)) allowedByCode.set(field.code, field)
+  }
+  const allowedFields = [...allowedByCode.values()]
   const allowedMap = new Map(allowedFields.map((field) => [field.code, field]))
   const sourceTimeline = timeline(input.messages, input.calls)
   const system = [
@@ -423,15 +438,16 @@ export async function extractOrderServiceFields(input: {
     'JSON 格式：',
     JSON.stringify({
       field_candidates: [
-        { field_code: '白名单字段', value: '候选值', normalized_value: '可选标准化值', candidate_type: 'new_or_confirmed | change_candidate | ambiguous', confidence: 0.0, requires_confirmation: false, evidence: [{ source_id: '消息#123 或 通话#456' }] },
+        { huanyu_order_no: '必须是候选列表中的准确单号', field_code: '白名单字段', value: '候选值', normalized_value: '可选标准化值', candidate_type: 'new_or_confirmed | change_candidate | ambiguous', confidence: 0.0, requires_confirmation: false, evidence: [{ source_id: '消息#123 或 通话#456' }] },
         { field_code: 'recommended_schemes', value: '识别到2条专员推荐方案', normalized_value: [{ province: '北京市', city: '北京市', hospital: '北京协和医院', department: '心内科', doctor: '张医生', evidence_source_id: '通话#456' }, { province: '上海市', city: '上海市', hospital: '瑞金医院', department: '心内科', doctor: '李医生', evidence_source_id: '消息#123' }], candidate_type: 'new_or_confirmed', confidence: 0.9, requires_confirmation: true, evidence: [{ source_id: '通话#456' }] },
         { field_code: 'escort_records', value: '共识别到2次陪诊：1. 2026-09-28 00:00:00 张三(门诊陪诊)；2. 2026-09-29 00:00:00 李四(检查陪诊)', normalized_value: [{ sequence: '1', service_date: '2026-09-28 00:00:00', escort_name: '张三', escort_phone: '13800000001', service_scene: '门诊陪诊' }, { sequence: '2', service_date: '2026-09-29 00:00:00', escort_name: '李四', escort_phone: '13900000002', service_scene: '检查陪诊' }], candidate_type: 'new_or_confirmed', confidence: 0.95, requires_confirmation: false, evidence: [{ source_id: '消息#123' }] }
       ],
-      workflow_events: [{ code: WORKFLOW_EVENT_CODES.join(' | '), evidence: '明确完成或确认的原文事实' }]
+      workflow_events: [{ huanyu_order_no: '必须是候选列表中的准确单号', code: WORKFLOW_EVENT_CODES.join(' | '), evidence: '明确完成或确认的原文事实' }]
     })
   ].join('\n')
   const user = [
     `【当前订单】订单ID=${input.orderId}；申请号=${input.applicationNo || '无'}；服务类型=${input.serviceType}`,
+    `【允许归属的寰宇服务订单】${JSON.stringify(input.huanyuOrders ?? [])}。每条字段候选和服务事件都必须填写 huanyu_order_no。`,
     `【本单允许提取字段】${allowedFields.map((field) => `${field.code}（${field.label}）`).join('；')}`,
     `【当前已保存正式值，仅用于判断变更，不得照搬】${JSON.stringify(input.currentValues)}`,
     `【申请号下沟通时间线】\n${sourceTimeline || '（无可分析的企微、微信或已转写通话）'}`
@@ -439,8 +455,8 @@ export async function extractOrderServiceFields(input: {
   const result = await chat([{ role: 'system', content: system }, { role: 'user', content: user }], { temperature: 0, maxTokens: 10000 })
   const parsed = parseObject(result.content)
   return {
-    candidates: normalizeCandidates(parsed.field_candidates, allowedMap),
-    workflowEvents: normalizeEvents(parsed.workflow_events),
+    candidates: normalizeCandidates(parsed.field_candidates, allowedMap, new Set((input.huanyuOrders ?? []).map((order) => order.orderNo))),
+    workflowEvents: normalizeEvents(parsed.workflow_events, new Set((input.huanyuOrders ?? []).map((order) => order.orderNo))),
     model: result.model,
     raw: result.content
   }

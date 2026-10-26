@@ -793,6 +793,7 @@ export function registerApiRoutes(
     if (typeof body.code !== 'string' || !body.code.trim()) return reply.status(400).send({ error: '缺少业务事件 code' })
     if (!['form', 'ai', 'manual'].includes(String(body.source))) return reply.status(400).send({ error: '业务事件 source 无效' })
     const source = body.source as WorkflowEventInput['source']
+    const huanyuOrderNo = typeof body.huanyuOrderNo === 'string' && body.huanyuOrderNo.trim() ? body.huanyuOrderNo.trim() : null
     if (body.confidence != null && (typeof body.confidence !== 'number' || body.confidence < 0 || body.confidence > 1)) {
       return reply.status(400).send({ error: '置信度必须在 0 到 1 之间' })
     }
@@ -803,6 +804,7 @@ export function registerApiRoutes(
       const workflow = await applyOrderWorkflowEvent(prisma, orderId, {
         code: body.code.trim(),
         source,
+        huanyuOrderNo,
         sourceRef: typeof body.sourceRef === 'string' ? body.sourceRef : null,
         confidence: body.confidence ?? null,
         evidence: body.evidence,
@@ -1696,7 +1698,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
           }
           const pendingCandidates = await prisma.$queryRaw<Array<{ id: bigint; field_code: string; value_text: string }>>`
             SELECT id, field_code, value_text FROM b_order_ai_field_candidates
-            WHERE order_id = ${syncedOrder.id} AND status = 'pending'
+            WHERE order_id = ${syncedOrder.id} AND huanyu_order_no = ${syncedOrder.huanyuOrderNo ?? ''} AND status = 'pending'
           `
           for (const candidate of pendingCandidates) {
             const saved = candidateValueByCode[candidate.field_code]
@@ -3945,6 +3947,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     if (!order) return reply.status(404).send({ error: '订单不存在' })
     const rows = await prisma.$queryRaw<Array<{
       id: bigint
+      huanyu_order_no: string
       field_code: string
       field_label: string
       value_text: string
@@ -3955,15 +3958,15 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       evidence_json: unknown
       created_at: Date
     }>>`
-      SELECT DISTINCT ON (field_code)
-        id, field_code, field_label, value_text, normalized_value_json, candidate_type, confidence,
+      SELECT DISTINCT ON (huanyu_order_no, field_code)
+        id, huanyu_order_no, field_code, field_label, value_text, normalized_value_json, candidate_type, confidence,
         requires_confirmation, evidence_json, created_at
       FROM b_order_ai_field_candidates
       WHERE order_id = ${orderId} AND status = 'pending'
-      ORDER BY field_code, created_at DESC, id DESC
+      ORDER BY huanyu_order_no, field_code, created_at DESC, id DESC
     `
     return reply.send({ data: rows.map((row) => ({
-      id: Number(row.id), fieldCode: row.field_code, fieldLabel: row.field_label,
+      id: Number(row.id), huanyuOrderNo: row.huanyu_order_no, fieldCode: row.field_code, fieldLabel: row.field_label,
       value: row.value_text, normalizedValue: row.normalized_value_json, candidateType: row.candidate_type,
       confidence: Number(row.confidence), requiresConfirmation: row.requires_confirmation,
       evidence: row.evidence_json, createdAt: row.created_at.toISOString()

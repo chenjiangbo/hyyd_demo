@@ -40,7 +40,7 @@ import { ensureSysSettingsTable } from './db/ensureSysSettingsTable.js'
 import { ensureTaikangHuanyuChannelMappingTable } from './db/ensureTaikangHuanyuChannelMappingTable.js'
 import { ensureOrderAttributionMismatchTable } from './db/ensureOrderAttributionMismatchTable.js'
 import { syncHuanyuOrderFromTaikang } from './huanyuOrderSync.js'
-import { findHuanyuOrderNoOnMysqlByChannelOrderNo } from './huanyuMysqlPush.js'
+import { findHuanyuOrderNoOnMysqlByChannelOrderNo, findHuanyuOrderNosOnMysqlByChannelOrderNo } from './huanyuMysqlPush.js'
 import { initializeOrderWorkflow } from './workflow/serviceWorkflow.js'
 import { parseTaikangPoolEnteredAt } from './taikangPoolTime.js'
 
@@ -187,11 +187,21 @@ async function syncGreenPassHuanyuOrderAfterPersonalPool(orderId: number): Promi
   try {
     // 每次都按泰康订单号查远端，避免历史本地生成的 huanyuOrderNo 阻止远端补建。
     // 查询失败会进入 catch，绝不把“查询失败”当作“远端无订单”。
-    const remoteDdbh = await findHuanyuOrderNoOnMysqlByChannelOrderNo(order.sourceOrderNo)
-    if (remoteDdbh) {
-      if (order.huanyuOrderNo !== remoteDdbh) {
-        await prisma.order.update({ where: { id: order.id }, data: { huanyuOrderNo: remoteDdbh } })
+    const remoteDdbhs = await findHuanyuOrderNosOnMysqlByChannelOrderNo(order.sourceOrderNo)
+    if (remoteDdbhs.length > 0) {
+      const primaryDdbh = order.huanyuOrderNo || remoteDdbhs[0]!
+      for (const remoteDdbh of remoteDdbhs) {
+        await prisma.$executeRaw`
+          INSERT INTO b_order_huanyu_services (order_id, huanyu_order_no, source, workflow_enabled)
+          VALUES (${order.id}, ${remoteDdbh}, ${remoteDdbh === primaryDdbh ? 'remote_primary' : 'remote_copied'}, ${remoteDdbh === primaryDdbh})
+          ON CONFLICT (huanyu_order_no) DO UPDATE
+            SET workflow_enabled = b_order_huanyu_services.workflow_enabled OR EXCLUDED.workflow_enabled
+        `
       }
+      if (!order.huanyuOrderNo) {
+        await prisma.order.update({ where: { id: order.id }, data: { huanyuOrderNo: primaryDdbh } })
+      }
+      await initializeOrderWorkflow(prisma, order.id, primaryDdbh)
       await writeGreenPassHuanyuSyncLog({
         orderId: order.id,
         sourceOrderNo: order.sourceOrderNo,
@@ -199,15 +209,21 @@ async function syncGreenPassHuanyuOrderAfterPersonalPool(orderId: number): Promi
         assignedEmployeeId: order.assignedEmployeeId,
         assignedEmployeeName: managerName,
         action: 'remote_existing',
-        huanyuOrderNo: remoteDdbh
+        huanyuOrderNo: primaryDdbh
       })
-      server.log.info(`泰康订单 ${order.sourceOrderNo} 已有远程寰宇订单 ${remoteDdbh}，已更新订单号关联`)
+      server.log.info(`泰康订单 ${order.sourceOrderNo} 已关联 ${remoteDdbhs.length} 个远程寰宇服务单`)
       return
     }
 
     // 查无时直接创建远程订单；本地只保存 orders.huanyuOrderNo，不写寰宇镜像表。
     const result = await syncHuanyuOrderFromTaikang(prisma, order, managerName, { writeDirectlyToRemote: true })
     if (result.created) {
+      await prisma.$executeRaw`
+        INSERT INTO b_order_huanyu_services (order_id, huanyu_order_no, source, workflow_enabled)
+        VALUES (${order.id}, ${result.ddbh}, 'created_by_assistant', true)
+        ON CONFLICT (huanyu_order_no) DO UPDATE SET workflow_enabled = true
+      `
+      await initializeOrderWorkflow(prisma, order.id, result.ddbh)
       await writeGreenPassHuanyuSyncLog({
         orderId: order.id,
         sourceOrderNo: order.sourceOrderNo,
@@ -601,8 +617,8 @@ async function start() {
                   }
                   if (pool === 'personal') acceptedPersonalOrderNos.push(sourceOrderNo)
 
-                  // 新抓取订单落库即初始化运营主记录和必选步骤，不依赖员工打开详情页。
-                  await initializeOrderWorkflow(prisma, saved.id)
+                  // 寰宇服务流程只在 H1 已创建并完成关联后初始化；列表采集阶段不能预设流程。
+                  if (saved.huanyuOrderNo) await initializeOrderWorkflow(prisma, saved.id, saved.huanyuOrderNo)
 
                   // 首次出现（existing 为空）或状态码变化 → 记一条历史
                   const oldState = existing?.orderState ?? null

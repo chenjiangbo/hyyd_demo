@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { PrismaClient } from '@prisma/client'
 import * as Minio from 'minio'
-import { listHuanyuEscorts } from '../db/remoteDictionary.js'
+import { findRemoteReminderOrder, listHuanyuEscorts, listRemoteEscortReminderDetails } from '../db/remoteDictionary.js'
 import { createEscortRejectReminderForFeedback } from '../jobs/orderReminderSchedule.js'
 import { normalizeReminderDate, sameEscortId } from '../jobs/orderReminderRules.js'
 
@@ -13,6 +13,7 @@ interface EscortFeedbackInfoQuery {
 
 interface EscortFeedbackSubmitBody {
   orderNo: string
+  huanyuOrderNo?: string
   pzrDetailId?: string
   pzrId?: string
   pzrName?: string
@@ -46,22 +47,38 @@ export function registerEscortFeedbackRoutes(
 
       const cleanOrderNo = orderNo.trim()
 
-      // 查询订单基础信息
-      const order = await prisma.order.findFirst({
+      // 通过本地 B 端订单及 H 订单关联表识别当前 H 单；H2 也能定位到同一 B 端订单。
+      let order = await prisma.order.findFirst({
         where: {
           OR: [{ sourceOrderNo: cleanOrderNo }, { huanyuOrderNo: cleanOrderNo }]
         },
         include: { assignedEmployee: true }
       })
+      const linkedOrders = await prisma.$queryRawUnsafe<any[]>(`
+        SELECT o.id, o.source_order_no, hs.huanyu_order_no, hs.workflow_enabled
+        FROM orders o
+        JOIN b_order_huanyu_services hs ON hs.order_id = o.id
+        WHERE o.source_order_no = $1 OR hs.huanyu_order_no = $1
+        ORDER BY CASE WHEN hs.huanyu_order_no = $1 THEN 0 ELSE 1 END,
+                 hs.workflow_enabled DESC, hs.huanyu_order_no ASC;
+      `, cleanOrderNo)
+      if (!order && linkedOrders[0]?.id) {
+        order = await prisma.order.findUnique({
+          where: { id: Number(linkedOrders[0].id) },
+          include: { assignedEmployee: true }
+        })
+      }
+      const currentHuanyuOrderNo = String(
+        linkedOrders.find((link) => link.huanyu_order_no === cleanOrderNo)?.huanyu_order_no ||
+        linkedOrders[0]?.huanyu_order_no || order?.huanyuOrderNo || ''
+      ).trim()
 
-      // 陪诊人、日期和明细编号必须来自同一条正式陪诊记录。
-      const pzrRows = await prisma.$queryRawUnsafe<any[]>(`
-        SELECT "ZJ" AS pzr_detail_id, "PZR", "BBQ_FW"
-        FROM "fact_hy_pzrxx"
-        WHERE ("DDBH" = $1 OR "DDBH" = $2)
-          AND NULLIF(TRIM("PZR"), '') IS NOT NULL
-        ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC;
-      `, cleanOrderNo, order?.huanyuOrderNo || cleanOrderNo)
+      // 陪诊明细始终按当前寰宇订单号从远程库读取，不从本地镜像或 B 端号拼查。
+      const pzrRows = currentHuanyuOrderNo
+        ? (await listRemoteEscortReminderDetails(currentHuanyuOrderNo))
+            .filter((item) => item.pzrId)
+            .map((item) => ({ pzr_detail_id: item.detailId, PZR: item.pzrId, BBQ_FW: item.serviceDate }))
+        : []
 
       const shanghaiParts = new Intl.DateTimeFormat('en-CA', {
         timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
@@ -77,7 +94,12 @@ export function registerEscortFeedbackRoutes(
         serviceDate: String(item.BBQ_FW || '').trim()
       }))
       if (!pzrDetailId && escortDetails.length > 1) {
-        return reply.send({ data: { requiresEscortSelection: true, escortDetails } })
+        return reply.send({ data: {
+          requiresEscortSelection: true,
+          orderNo: order?.sourceOrderNo || '',
+          huanyuOrderNo: currentHuanyuOrderNo,
+          escortDetails
+        } })
       }
       if (!pzrDetailId && pzrRows.length > 0 && escortDetails.length === 0) {
         return reply.status(409).send({ error: '当前反馈批次没有对应服务日期的陪诊明细' })
@@ -91,7 +113,7 @@ export function registerEscortFeedbackRoutes(
         return reply.status(409).send({ error: '陪诊明细已变更，请重新打开反馈链接' })
       }
 
-      // 若正式库 fact_hy_pzrxx 没有，则取 AI 候选提取的数据（无需人工在页面点保存）
+      // 若远程陪诊明细尚未落实，则读取当前寰宇订单对应的 AI 候选。
       let aiEscortName: string | null = null
       let aiEscortDate: string | null = null
       let aiEscortPhone: string | null = null
@@ -103,11 +125,12 @@ export function registerEscortFeedbackRoutes(
           SELECT field_code, value_text
           FROM b_order_ai_field_candidates
           WHERE order_id = $1
+            AND huanyu_order_no = $2
             AND field_code IN ('escort_name', 'escort_service_date', 'escort_phone', 'hospital', 'department')
             AND status != 'dismissed'
             AND TRIM(value_text) NOT IN ('', '无', '待定', '暂无', '待安排', '待分配', '未指派', '未安排', '无陪诊', '不需陪诊', '不需要陪诊')
           ORDER BY created_at DESC;
-        `, order.id)
+        `, order.id, currentHuanyuOrderNo)
 
         for (const c of aiCandidates) {
           if (c.field_code === 'escort_name' && !aiEscortName) aiEscortName = c.value_text?.trim() || null
@@ -118,21 +141,13 @@ export function registerEscortFeedbackRoutes(
         }
       }
 
-      // 查询寰宇订单基础快照信息（仅取就诊人、医院、科室等，绝不取 PZR）
-      const huanyuRows = await prisma.$queryRawUnsafe<any[]>(`
-        SELECT 
-          h."DDBH", h."BDQD_DDBH", h."JZR_XM", h."H_NAME", h."H_KS", h."H_YS",
-          h."BBQ_FW", h."DATE_FW"
-        FROM "HY_FACT_DDCX_NEW" h
-        WHERE h."BDQD_DDBH" = $1 OR h."DDBH" = $1
-        LIMIT 1;
-      `, cleanOrderNo)
-
-      const hy = huanyuRows[0] || {}
-
-      const customerName = String(order?.customerName || '').trim() || String(hy.JZR_XM || '').trim() || '客户'
-      const hospital = String(hy.H_NAME || '').trim() || aiHospital || '以约定的为准'
-      const dept = String(hy.H_KS || '').trim() || aiDepartment || '以约定的为准'
+      // 订单基础信息也直接按当前寰宇订单号读取远程主库。
+      const remoteOrder = currentHuanyuOrderNo
+        ? await findRemoteReminderOrder(order?.sourceOrderNo || '', currentHuanyuOrderNo)
+        : null
+      const customerName = String(order?.customerName || '').trim() || remoteOrder?.customerName || '客户'
+      const hospital = remoteOrder?.hospitalName || aiHospital || '以约定的为准'
+      const dept = remoteOrder?.departmentName || aiDepartment || '以约定的为准'
       const pzrId = (dbPzr?.PZR ? String(dbPzr.PZR).trim() : null) || aiEscortName || ''
       let pzrName = pzrId || '陪诊人员'
       let dictionaryPhone = ''
@@ -155,8 +170,8 @@ export function registerEscortFeedbackRoutes(
         ? String(dbPzr.BBQ_FW || '').trim()
         : (aiEscortDate || '')
       const escortPhone = dictionaryPhone || aiEscortPhone || ''
-      const sourceOrderNo = order?.sourceOrderNo || hy.BDQD_DDBH || cleanOrderNo
-      const huanyuOrderNo = order?.huanyuOrderNo || hy.DDBH || ''
+      const sourceOrderNo = order?.sourceOrderNo || remoteOrder?.sourceOrderNo || cleanOrderNo
+      const huanyuOrderNo = currentHuanyuOrderNo || remoteOrder?.orderNo || ''
 
       // 只显示当前陪诊人、服务日、当日批次的反馈，历史反馈不能阻止重新填写。
       const normalizedServiceDate = normalizeReminderDate(serviceDate)
@@ -240,21 +255,25 @@ export function registerEscortFeedbackRoutes(
 
       // 链接打开后可能发生换人或改期，提交前必须再次核对正式信息。
       const current = await prisma.$queryRawUnsafe<any[]>(`
-        SELECT o.source_order_no, p."ZJ" AS pzr_detail_id, NULLIF(TRIM(p."PZR"), '') AS pzr,
-               NULLIF(TRIM(p."BBQ_FW"), '') AS service_date
+        SELECT o.id AS order_id, o.source_order_no, hs.huanyu_order_no, o.assigned_employee_id
         FROM orders o
-        LEFT JOIN LATERAL (
-          SELECT "ZJ", "PZR", "BBQ_FW" FROM "fact_hy_pzrxx" f
-          WHERE (f."DDBH" = o.source_order_no OR f."DDBH" = o.huanyu_order_no)
-            AND NULLIF(TRIM(f."PZR"), '') IS NOT NULL
-            AND f."ZJ" = $2
-          ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC LIMIT 1
-        ) p ON true
-        WHERE o.source_order_no = $1 OR o.huanyu_order_no = $1
+        JOIN b_order_huanyu_services hs ON hs.order_id = o.id
+        WHERE (o.source_order_no = $1 OR hs.huanyu_order_no = $1)
+          AND ($2 = '' OR hs.huanyu_order_no = $2)
+          AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
+        ORDER BY CASE WHEN hs.huanyu_order_no = $1 THEN 0 ELSE 1 END,
+                 hs.workflow_enabled DESC, hs.huanyu_order_no ASC
         LIMIT 1;
-      `, cleanOrderNo, pzrDetailId)
+      `, cleanOrderNo, String(request.body?.huanyuOrderNo || '').trim())
       const currentOrder = current[0]
-      if (!currentOrder || currentOrder.pzr_detail_id !== pzrDetailId || !sameEscortId(currentOrder.pzr, effectivePzrId) || normalizeReminderDate(currentOrder.service_date) !== normalizedServiceDate) {
+      const currentPzr = currentOrder
+        ? (await listRemoteEscortReminderDetails(currentOrder.huanyu_order_no)).find((item) =>
+            item.detailId === pzrDetailId &&
+            sameEscortId(item.pzrId, effectivePzrId) &&
+            normalizeReminderDate(item.serviceDate) === normalizedServiceDate
+          )
+        : null
+      if (!currentOrder || !currentPzr) {
         return reply.status(409).send({ error: '陪诊人员或服务日期已变更，请重新打开链接确认' })
       }
 
@@ -264,7 +283,7 @@ export function registerEscortFeedbackRoutes(
         ) VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()
         ) RETURNING id, created_at;
-      `, currentOrder.source_order_no, effectivePzrId, pzrDetailId, effectivePzrName, effectiveType, normalizedServiceDate, willAttend, screenshotUrl || null, remark ? remark.trim() : null)
+      `, currentOrder.huanyu_order_no, effectivePzrId, pzrDetailId, effectivePzrName, effectiveType, normalizedServiceDate, willAttend, screenshotUrl || null, remark ? remark.trim() : null)
 
       await prisma.$executeRawUnsafe(`
         UPDATE order_reminders SET status = 'resolved', updated_at = NOW()
@@ -272,12 +291,12 @@ export function registerEscortFeedbackRoutes(
           AND extra_data->>'dedupe_key' = $2
           AND extra_data->>'pzr' = $3 AND extra_data->>'serviceDate' = $4
           AND extra_data->>'pzrDetailId' = $5;
-      `, currentOrder.source_order_no, `auto:escort_${effectiveType}_unack:${currentOrder.source_order_no}:${pzrDetailId}:${sendYmd}`, effectivePzrId, normalizedServiceDate, pzrDetailId)
+      `, currentOrder.source_order_no, `auto:escort_${effectiveType}_unack:${currentOrder.source_order_no}:${pzrDetailId}:${sendYmd}:hy:${currentOrder.huanyu_order_no}`, effectivePzrId, normalizedServiceDate, pzrDetailId)
 
       if (willAttend === false) {
         try {
           await createEscortRejectReminderForFeedback(prisma, {
-            orderNo: currentOrder.source_order_no,
+            orderNo: currentOrder.huanyu_order_no,
             pzrDetailId,
             feedbackType: effectiveType,
             pzrId: effectivePzrId,
@@ -300,7 +319,7 @@ export function registerEscortFeedbackRoutes(
             AND extra_data->>'dedupe_key' = $2
             AND extra_data->>'pzr' = $3 AND extra_data->>'serviceDate' = $4
             AND extra_data->>'pzrDetailId' = $5;
-        `, currentOrder.source_order_no, `auto:escort_${effectiveType}_reject:${currentOrder.source_order_no}:${pzrDetailId}:${sendYmd}`, effectivePzrId, normalizedServiceDate, pzrDetailId)
+        `, currentOrder.source_order_no, `auto:escort_${effectiveType}_reject:${currentOrder.source_order_no}:${pzrDetailId}:${sendYmd}:hy:${currentOrder.huanyu_order_no}`, effectivePzrId, normalizedServiceDate, pzrDetailId)
       }
 
       fastify.log.info(
@@ -556,8 +575,12 @@ export function registerEscortFeedbackRoutes(
     <div class="card">
       <div class="card-title">📋 陪诊任务信息</div>
       <div class="info-row">
-        <span class="info-label">订单号</span>
+        <span class="info-label">B端订单号</span>
         <span class="info-val" id="dispOrderNo">-</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">寰宇订单号</span>
+        <span class="info-val" id="dispHuanyuOrderNo">-</span>
       </div>
       <div class="info-row">
         <span class="info-label">就诊人</span>
@@ -654,6 +677,8 @@ export function registerEscortFeedbackRoutes(
 
         if (json.data) {
           if (json.data.requiresEscortSelection) {
+            document.getElementById('dispOrderNo').innerText = json.data.orderNo || '-';
+            document.getElementById('dispHuanyuOrderNo').innerText = json.data.huanyuOrderNo || '-';
             const selector = document.getElementById('escortSelector');
             const select = document.getElementById('escortDetailSelect');
             selector.style.display = 'block';
@@ -679,6 +704,7 @@ export function registerEscortFeedbackRoutes(
           }
           orderInfo = json.data;
           document.getElementById('dispOrderNo').innerText = orderInfo.orderNo || '-';
+          document.getElementById('dispHuanyuOrderNo').innerText = orderInfo.huanyuOrderNo || '-';
           document.getElementById('dispCustomer').innerText = orderInfo.customerName || '-';
           document.getElementById('dispHospital').innerText = orderInfo.hospital + (orderInfo.dept ? ' · ' + orderInfo.dept : '');
           document.getElementById('dispServiceDate').innerText = orderInfo.serviceDate || '以约定时间为准';
@@ -775,7 +801,8 @@ export function registerEscortFeedbackRoutes(
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            orderNo: orderNo || orderInfo?.orderNo,
+            orderNo: orderNo || orderInfo?.huanyuOrderNo || orderInfo?.orderNo,
+            huanyuOrderNo: orderInfo?.huanyuOrderNo,
             pzrDetailId: orderInfo?.pzrDetailId,
             pzrId: orderInfo?.pzrId,
             pzrName: orderInfo?.pzrName,

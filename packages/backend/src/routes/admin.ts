@@ -529,8 +529,8 @@ export function registerAdminRoutes(
             timeZone: scheduleStatus.timeZone,
             times: scheduleStatus.slots,
             setting: 'order_ai_schedule（在管理后台「AI调用时间配置」中可视化调节）',
-            condition: '仅在时点到达且订单自上次分析后存在新的企微消息、微信消息或已完成转写的通话录音时调用；不会因静默、消息条数或转写完成即时自动调用。',
-            scope: '沟通记录按申请号聚合；每张订单按自己的服务类型与字段白名单独立分析。页面手动调用入口保留。'
+            condition: '仅在时点到达且订单自上次分析后存在新的沟通内容，或页面手动触发时调用；不会因静默、消息条数或转写完成即时自动调用。',
+            scope: '沟通记录按申请号聚合；AI 对申请下候选 B 端订单和寰宇服务单分段归属，结果以寰宇订单号隔离保存。页面手动调用入口保留。'
           },
           prompt: {
             version: ORDER_AI_FIELD_PROMPT_VERSION,
@@ -545,13 +545,18 @@ export function registerAdminRoutes(
             requiresConfirmation: field.requiresConfirmation === true
           })),
           readRules: [
-            'B 端订单与寰宇订单页面均优先展示对应本地 PostgreSQL 正式字段值。',
+            '沟通仍按申请号汇集；AI 候选字段与服务事件必须归属到候选列表中的寰宇订单号，再关联其 B 端订单。',
             '正式字段为空时，页面才可展示本订单最新、待处理的 AI 字段候选值；正式字段已有值时不再用 AI 值覆盖展示。',
             '人工保存后写回本地 PostgreSQL 正式字段，并把对应候选标记为 adopted；之后只展示正式字段值。',
             'change_candidate 与 ambiguous 仅提示人工复核，不自动覆盖正式字段，也不自动推进步骤。',
-            '仅字段提取器返回且有明确证据的 workflow_events 可以尝试推进服务步骤；金额、诊断、ICD10 始终需要人工确认。'
+            'workflow_events 按寰宇订单号独立留存，不能直接推进共享的 B 端服务步骤；金额、诊断、ICD10 始终需要人工确认。'
           ],
           storage: [
+            {
+              table: 'b_order_huanyu_services',
+              purpose: 'B 端订单与远程寰宇服务单号的一对多关联，不保存寰宇订单详情镜像。',
+              fields: 'order_id、huanyu_order_no、discovered_at、source'
+            },
             {
               table: 'b_order_ai_analysis_runs',
               purpose: '一轮订单 AI 分析的批次与可追溯原始结果。',
@@ -560,7 +565,12 @@ export function registerAdminRoutes(
             {
               table: 'b_order_ai_field_candidates',
               purpose: 'AI 从该订单沟通中提取的待采纳字段候选值，不直接写正式业务字段。',
-              fields: 'run_id、order_id、field_code、field_label、value_text、normalized_value_json、candidate_type、confidence、requires_confirmation、evidence_json、status、adopted_at、adopted_by_employee_id'
+              fields: 'run_id、order_id、huanyu_order_no、field_code、field_label、value_text、normalized_value_json、candidate_type、confidence、requires_confirmation、evidence_json、status、adopted_at、adopted_by_employee_id'
+            },
+            {
+              table: 'b_order_ai_service_events',
+              purpose: 'AI 识别到的服务事实事件，按具体寰宇订单号隔离留存。',
+              fields: 'order_id、huanyu_order_no、event_code、evidence、event_key、occurred_at、planned_at、source_run_id'
             },
             {
               table: 'b_order_huanyu_push_logs',

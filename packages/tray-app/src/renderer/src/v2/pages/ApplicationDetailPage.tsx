@@ -862,6 +862,7 @@ function ApplicationAiSummaryCard({
               >
                 <span className="text-text-muted">{candidate.fieldLabel}:</span>
                 <span className="font-semibold text-text-main">{candidate.value}</span>
+                <span className="rounded bg-surface-container px-1.5 py-0.5 text-[10px] font-mono text-text-muted">寰宇单 {candidate.huanyuOrderNo}</span>
                 {candidate.requiresConfirmation && (
                   <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 border border-amber-200">
                     需确认
@@ -5238,7 +5239,7 @@ function ServiceInformationFlow({ order, onEscortEntryActiveChange }: { order: O
           <div className="min-h-36 py-5">
             {tabs.map((tab, index) => (
               <div key={tab.key} hidden={activeTabIndex !== index}>
-                <PersistedFormScope key={`${order.id}-${tab.key}`} orderId={order.id} tabCode={tab.key} serviceType={serviceType} formData={formDataOrderId === order.id ? formData : null} aiCandidates={aiCandidates} loaded={formsLoaded && formDataOrderId === order.id} onRegisterSaveHandler={registerSaveHandler}>
+                <PersistedFormScope key={`${order.id}-${tab.key}`} orderId={order.id} huanyuOrderNo={order.huanyuOrderNo ?? undefined} tabCode={tab.key} serviceType={serviceType} formData={formDataOrderId === order.id ? formData : null} aiCandidates={aiCandidates} loaded={formsLoaded && formDataOrderId === order.id} onRegisterSaveHandler={registerSaveHandler}>
                 <div className="text-body-sm font-semibold text-text-main">{tab.label}</div>
                 {tab.key === 'claim' ? (
                   <ClaimInformationView order={order} />
@@ -5605,6 +5606,7 @@ const PersistedFormContext = createContext<PersistedFormContextValue | null>(nul
 
 function PersistedFormScope({
   orderId,
+  huanyuOrderNo,
   tabCode,
   serviceType = '',
   formData,
@@ -5614,6 +5616,7 @@ function PersistedFormScope({
   children
 }: {
   orderId: number
+  huanyuOrderNo?: string
   tabCode: string
   serviceType?: string
   formData: BOrderFormData | null
@@ -5622,6 +5625,7 @@ function PersistedFormScope({
   onRegisterSaveHandler?: (tabCode: string, handler: (() => void) | null) => void
   children: React.ReactNode
 }): React.JSX.Element {
+  const scopedAiCandidates = huanyuOrderNo ? aiCandidates.filter((candidate) => candidate.huanyuOrderNo === huanyuOrderNo) : []
   const pendingRef = useRef<Record<string, unknown>>({})
   const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve())
   const aiCommittersRef = useRef(new Map<string, () => unknown | null>())
@@ -5636,7 +5640,7 @@ function PersistedFormScope({
   const aiSourceFor = useCallback((label: string, visibleValue: string): OrderAiFieldCandidate | null => {
     for (const key of bOrderAiKeysForServiceTab(serviceType, tabCode)) {
       const stored = currentTabData[key] ?? {}
-      const { value, filled } = overlayBOrderAi(key, stored, aiCandidates)
+      const { value, filled } = overlayBOrderAi(key, stored, scopedAiCandidates)
       for (const [property, candidate] of Object.entries(filled)) {
         const shown = property === '$value' ? value : (value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>)[property] : undefined)
         const actual = property === '$value' ? stored : (stored && typeof stored === 'object' && !Array.isArray(stored) ? (stored as Record<string, unknown>)[property] : undefined)
@@ -5645,7 +5649,7 @@ function PersistedFormScope({
       }
     }
     return null
-  }, [formData, savedOverrides, aiCandidates, serviceType, tabCode])
+  }, [formData, savedOverrides, scopedAiCandidates, serviceType, tabCode])
   const aiSourceForField = useCallback((key: string, property: string, visibleValue: string): OrderAiFieldCandidate | null => {
     if (!visibleValue) return null
     const stored = currentTabData[key] ?? {}
@@ -5653,12 +5657,12 @@ function PersistedFormScope({
     if (String(actual ?? '').trim()) return null
     const rule = bOrderAiRules(key).find((item) => item.property === property)
     if (!rule) return null
-    const candidate = aiCandidates.find((item) => item.fieldCode === rule.candidate)
+    const candidate = scopedAiCandidates.find((item) => item.fieldCode === rule.candidate)
     if (!candidate) return null
-    const { value, filled } = overlayBOrderAi(key, stored, aiCandidates)
+    const { value, filled } = overlayBOrderAi(key, stored, scopedAiCandidates)
     const shown = property === '$value' ? value : (value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>)[property] : undefined)
     return filled[property] === candidate && String(shown ?? '') === visibleValue ? candidate : null
-  }, [currentTabData, aiCandidates])
+  }, [currentTabData, scopedAiCandidates])
   const persistPatch = useCallback((patch: Record<string, unknown>): Promise<void> => {
     if (!Object.keys(patch).length) return Promise.resolve()
     const save = saveQueueRef.current.catch(() => undefined).then(() => saveBOrderFormTab(orderId, tabCode, patch))
@@ -5728,7 +5732,7 @@ function PersistedFormScope({
   }, [orderId, tabCode, serviceType])
 
   return (
-    <PersistedFormContext.Provider value={{ orderId, tabCode, loaded, tabData: currentTabData, aiCandidates, aiSourceFor, aiSourceForField, registerAiCommit, saveField, saveImmediately, submitTab }}>
+    <PersistedFormContext.Provider value={{ orderId, tabCode, loaded, tabData: currentTabData, aiCandidates: scopedAiCandidates, aiSourceFor, aiSourceForField, registerAiCommit, saveField, saveImmediately, submitTab }}>
       {children}
       {saveStatus && <div role="status" className={'mt-2 text-right text-[11px] ' + (saveStatus === 'error' ? 'text-error' : 'text-text-muted')}>
         {saveStatus === 'dirty' ? '有未保存的修改' : saveStatus === 'saving' ? '保存中…' : saveStatus === 'saved' ? '已保存' : '保存失败，请重试'}

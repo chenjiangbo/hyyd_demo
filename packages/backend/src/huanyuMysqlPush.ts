@@ -148,6 +148,22 @@ export async function findHuanyuOrderNoOnMysqlByChannelOrderNo(channelOrderNo: s
   }
 }
 
+/** 查询该 B 端订单关联的全部寰宇服务单号，供复诊/复制单场景建立一对多关联。 */
+export async function findHuanyuOrderNosOnMysqlByChannelOrderNo(channelOrderNo: string): Promise<string[]> {
+  const lookupNo = channelOrderNo.trim()
+  if (!lookupNo) return []
+  const connection = await mysqlWriterPool().getConnection()
+  try {
+    const [rows] = await connection.execute<RowDataPacket[]>(
+      `SELECT DISTINCT \`DDBH\` FROM \`HY_FACT_DDCX_NEW\` WHERE \`BDQD_DDBH\` = ? ORDER BY \`xtsj_\` ASC, \`DDBH\` ASC`,
+      [lookupNo]
+    )
+    return rows.map((row) => String(row.DDBH ?? '').trim()).filter(Boolean)
+  } finally {
+    connection.release()
+  }
+}
+
 /** 直接在远端寰宇主表创建订单；调用方负责先按泰康订单号查重。 */
 export async function createHuanyuOrderOnMysql(row: Record<string, unknown>): Promise<void> {
   const columns = [

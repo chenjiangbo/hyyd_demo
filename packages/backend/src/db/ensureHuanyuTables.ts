@@ -331,6 +331,7 @@ const CREATE_STATEMENTS = [
   `
     CREATE TABLE IF NOT EXISTS "fact_hy_pz_sms_send_claims" (
       "order_no" VARCHAR(100) NOT NULL,
+      "huanyu_order_no" VARCHAR(100) NOT NULL DEFAULT '',
       "batch_type" VARCHAR(20) NOT NULL,
       "send_ymd" VARCHAR(20) NOT NULL,
       "pzr_detail_id" VARCHAR(100) NOT NULL DEFAULT '',
@@ -340,13 +341,18 @@ const CREATE_STATEMENTS = [
       "status" VARCHAR(20) NOT NULL DEFAULT 'sending',
       "completed_at" TIMESTAMP WITH TIME ZONE,
       "error_message" TEXT,
-      PRIMARY KEY ("order_no", "batch_type", "send_ymd", "pzr_detail_id")
+      PRIMARY KEY ("order_no", "huanyu_order_no", "batch_type", "send_ymd", "pzr_detail_id")
     );
   `,
   `ALTER TABLE "fact_hy_pz_sms_logs" ADD COLUMN IF NOT EXISTS "pzr_detail_id" VARCHAR(100);`,
   `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "pzr_detail_id" VARCHAR(100) NOT NULL DEFAULT '';`,
+  `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "huanyu_order_no" VARCHAR(100) NOT NULL DEFAULT '';`,
+  `UPDATE "fact_hy_pz_sms_send_claims" c
+     SET "huanyu_order_no" = o.huanyu_order_no
+    FROM orders o
+   WHERE c.order_no = o.source_order_no AND c.huanyu_order_no = '' AND o.huanyu_order_no IS NOT NULL;`,
   `ALTER TABLE "fact_hy_pz_sms_send_claims" DROP CONSTRAINT IF EXISTS "fact_hy_pz_sms_send_claims_pkey";`,
-  `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD CONSTRAINT "fact_hy_pz_sms_send_claims_pkey" PRIMARY KEY ("order_no", "batch_type", "send_ymd", "pzr_detail_id");`,
+  `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD CONSTRAINT "fact_hy_pz_sms_send_claims_pkey" PRIMARY KEY ("order_no", "huanyu_order_no", "batch_type", "send_ymd", "pzr_detail_id");`,
   `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "status" VARCHAR(20) NOT NULL DEFAULT 'sending';`,
   `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "pzr_id" VARCHAR(100);`,
   `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "service_date" VARCHAR(20);`,

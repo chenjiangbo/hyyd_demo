@@ -33,6 +33,7 @@ export interface RemoteReminderOrder {
   sourceOrderNo: string
   customerName: string
   hospitalName: string
+  departmentName: string
   managerName: string
   managerPhone: string
   status: string
@@ -102,7 +103,7 @@ export async function findRemoteReminderOrder(sourceOrderNo: string, huanyuOrder
   const huanyu = searchTerm(huanyuOrderNo)
   if (!source && !huanyu) return null
   const [rows] = await readOnlyPool().execute<RowDataPacket[]>(`
-    SELECT h.DDBH AS orderNo, h.BDQD_DDBH AS sourceOrderNo, h.JZR_XM AS customerName, h.H_NAME AS hospitalName,
+    SELECT h.DDBH AS orderNo, h.BDQD_DDBH AS sourceOrderNo, h.JZR_XM AS customerName, h.H_NAME AS hospitalName, h.H_KS AS departmentName,
            h.KHJL AS managerName, u.TEL_ AS managerPhone, h.DD_state AS status,
            h.BBQ_FW AS serviceDate, h.BBQ_FW AS careStartTime, h.DATE_FW AS careStartDate,
            h.BBQ_QDFW AS careEndTime, h.DATE_QDFW AS careEndDate
@@ -115,7 +116,7 @@ export async function findRemoteReminderOrder(sourceOrderNo: string, huanyuOrder
   if (!row) return null
   return {
     orderNo: String(row.orderNo ?? '').trim(), sourceOrderNo: String(row.sourceOrderNo ?? '').trim(),
-    customerName: String(row.customerName ?? '').trim(), hospitalName: String(row.hospitalName ?? '').trim(), managerName: String(row.managerName ?? '').trim(),
+    customerName: String(row.customerName ?? '').trim(), hospitalName: String(row.hospitalName ?? '').trim(), departmentName: String(row.departmentName ?? '').trim(), managerName: String(row.managerName ?? '').trim(),
     managerPhone: String(row.managerPhone ?? '').trim(), status: String(row.status ?? '').trim(),
     serviceDate: String(row.serviceDate ?? '').trim(), careStartTime: String(row.careStartTime ?? '').trim(), careStartDate: String(row.careStartDate ?? '').trim(),
     careEndTime: String(row.careEndTime ?? '').trim(), careEndDate: String(row.careEndDate ?? '').trim()
