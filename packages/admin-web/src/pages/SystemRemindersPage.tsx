@@ -56,7 +56,7 @@ export default function SystemRemindersPage(): React.JSX.Element {
     <div className="space-y-6 max-w-7xl mx-auto pb-12">
       <PageHeader
         title="系统提醒说明"
-        subtitle="展示自动生成的提醒规则、短信异常、桌面弹窗及关闭方式；员工手工创建的备忘也使用同一待办和弹窗。"
+        subtitle="展示自动生成的待办规则，以及陪诊短信通知、桌面弹窗和关闭方式；员工手工创建的备忘也使用同一待办和弹窗。"
       />
 
       {!config && !error && <LoadingBlock label="正在加载系统提醒说明…" />}
@@ -184,7 +184,7 @@ export default function SystemRemindersPage(): React.JSX.Element {
                     <h3 className="font-bold text-base text-amber-950">陪诊服务（7 个时效节点与闭环预警）</h3>
                   </div>
                   <span className="text-xs font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded border border-amber-300">
-                    接收对象：责任客户经理
+                    接收对象：责任客户经理（陪诊异常通过短信发送）
                   </span>
                 </div>
                 <div className="space-y-2 text-sm">
@@ -208,7 +208,7 @@ export default function SystemRemindersPage(): React.JSX.Element {
                       <span>② 出工确认短信异常/无号码报警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      逐条读取 PZR 非空的正式陪诊明细，以 ZJ 区分安排；服务日期匹配次日的明细分别发送。两套短信模板都配置完整且短信已启用、密钥齐全时才发送；错过 11:00、配置缺失、发送失败或无有效手机号则<code className="text-rose-900 font-medium">提醒客户经理</code>人工联系。发送请求 30 秒超时；中断超过 5 分钟核对明细对应流水，成功则关闭该明细异常提醒，失败或结果未知时提醒人工；不自动补发。
+                      逐条读取 PZR 非空的正式陪诊明细，以 ZJ 区分安排；服务日期匹配次日的明细分别发送。短信总开关、通道配置和“前一天通知”模板均已启用时才发送；模板或通道未启用时静默跳过。错过 11:00、发送失败或无有效手机号时，若“客户经理异常提醒”模板已启用，则立即短信通知责任客户经理；不生成桌面待办，也不补发。
                     </p>
                   </div>
 
@@ -220,7 +220,7 @@ export default function SystemRemindersPage(): React.JSX.Element {
                       <span>③ 陪诊人员未第1次反馈预警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      门禁：按 ZJ 分别检查正式陪诊明细；日期匹配次日且该明细 11:00 短信发送成功后，13:00 才检查对应陪诊人、服务日和明细的反馈。收到该明细反馈、换人改期或服务日结束后关闭：<code className="text-amber-900 font-medium">陪诊人员没有第一次反馈信息，请关注！</code>
+                      门禁：按 ZJ 分别检查正式陪诊明细；日期匹配次日且该明细 11:00 短信发送成功后，13:00 才检查对应陪诊人、服务日和明细的反馈。未反馈时，若“客户经理异常提醒”模板已启用，则短信通知责任客户经理；收到反馈、换人或改期后不再重复发送。
                     </p>
                   </div>
 
@@ -232,7 +232,7 @@ export default function SystemRemindersPage(): React.JSX.Element {
                       <span>④ 前一天反馈【无法出工】预警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      前一天“无法出工”反馈提交后核对当前正式陪诊人和次日服务日期，符合条件立即生成；定时扫描只读取当天、当前陪诊人及服务日的反馈。客户端约每 15 秒查询一次，发现后弹窗；后续确认、换人改期或服务日结束后关闭：<code className="text-red-900 font-medium">陪诊人员反馈【无法出工】（原因：xxx），请立即处理！</code>
+                      前一天“无法出工”反馈提交后核对当前正式陪诊人和次日服务日期，符合条件立即短信通知责任客户经理；定时扫描也会补齐遗漏事件。通知依赖“客户经理异常提醒”模板；模板未启用时静默跳过，不生成桌面待办。
                     </p>
                   </div>
 
@@ -244,7 +244,7 @@ export default function SystemRemindersPage(): React.JSX.Element {
                       <span>⑤ 当天打卡短信异常/无号码紧急报警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      逐条读取 PZR 非空的正式陪诊明细，以 ZJ 区分安排；服务日期匹配当日的明细分别发送。两套短信模板都配置完整且短信已启用、密钥齐全时才发送；错过 07:00、配置缺失、发送失败或无有效手机号则<code className="text-rose-900 font-medium">提醒客户经理</code>人工联系。发送请求 30 秒超时；中断超过 5 分钟核对明细对应流水，成功则关闭该明细异常提醒，失败或结果未知时提醒人工；不自动补发。
+                      逐条读取 PZR 非空的正式陪诊明细，以 ZJ 区分安排；服务日期匹配当日的明细分别发送。短信总开关、通道配置和“当日通知”模板均已启用时才发送；模板或通道未启用时静默跳过。错过 07:00、发送失败或无有效手机号时，若“客户经理异常提醒”模板已启用，则立即短信通知责任客户经理；不生成桌面待办，也不补发。
                     </p>
                   </div>
 
@@ -256,7 +256,7 @@ export default function SystemRemindersPage(): React.JSX.Element {
                       <span>⑥ 当天未反馈出工信息预警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      门禁：按 ZJ 分别检查正式陪诊明细；日期匹配当日且该明细 07:00 短信发送成功后，07:20 才检查对应陪诊人、服务日和明细的反馈。收到该明细反馈、换人改期或服务日结束后关闭：<code className="text-amber-900 font-medium">陪诊人员没有第一次反馈信息，请关注！</code>
+                      门禁：按 ZJ 分别检查正式陪诊明细；日期匹配当日且该明细 07:00 短信发送成功后，07:20 才检查对应陪诊人、服务日和明细的反馈。未反馈时，若“客户经理异常提醒”模板已启用，则短信通知责任客户经理；收到反馈、换人或改期后不再重复发送。
                     </p>
                   </div>
 
@@ -268,7 +268,7 @@ export default function SystemRemindersPage(): React.JSX.Element {
                       <span>⑦ 当天反馈【无法出工】极速报警</span>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      当天“无法出工”反馈提交后核对当前正式陪诊人和当日服务日期，符合条件立即生成；定时扫描只读取当天、当前陪诊人及服务日的反馈。客户端约每 15 秒查询一次，发现后弹窗；后续确认、换人改期或服务日结束后关闭：<code className="text-red-900 font-medium">陪诊人员当天反馈【无法出工】（原因：xxx），请紧急处理！</code>
+                      当天“无法出工”反馈提交后核对当前正式陪诊人和当日服务日期，符合条件立即短信通知责任客户经理；定时扫描也会补齐遗漏事件。通知依赖“客户经理异常提醒”模板；模板未启用时静默跳过，不生成桌面待办。
                     </p>
                   </div>
                 </div>
@@ -332,7 +332,7 @@ export default function SystemRemindersPage(): React.JSX.Element {
               </div>
             </div>
             <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-700">
-              一次性提醒创建时绑定当时的订单责任客户经理；后续更换负责人不会自动迁移已有提醒。周期提醒在下一个符合条件的周期更新接收人。员工手工创建的备忘也进入同一待办和弹窗，但不属于上面的 11 类自动提醒。
+              待办创建时绑定当时的订单责任客户经理；后续更换负责人不会自动迁移已有待办。周期待办在下一个符合条件的周期更新接收人。陪诊短信异常通知不进入桌面待办；员工手工创建的备忘仍进入同一待办和弹窗。
             </div>
           </Card>
 
@@ -424,6 +424,7 @@ function RuleDetailCard({ rule, index }: { rule: SystemReminderRule; index: numb
     badge: 'bg-surface-2 text-slate-700 border-line',
     border: 'border-line'
   }
+  const isSmsNotification = rule.target.includes('短信')
 
   // 渲染真实的弹窗多行字段结构
   const renderFormattedPopupContent = (rawContent: string) => {
@@ -486,7 +487,7 @@ function RuleDetailCard({ rule, index }: { rule: SystemReminderRule; index: numb
         </div>
       </div>
 
-      {/* 左右分栏：左侧技术判定规则与防重机制，右侧真实弹窗样式预览 */}
+      {/* 左右分栏：左侧技术判定规则与防重机制，右侧通知文案预览 */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         {/* 左侧：技术匹配与触发规则 (7 列) */}
         <div className="lg:col-span-7 space-y-3">
@@ -526,13 +527,12 @@ function RuleDetailCard({ rule, index }: { rule: SystemReminderRule; index: numb
           )}
         </div>
 
-        {/* 右侧：100% 真实还原桌面端弹窗浮窗样式 (5 列) */}
+        {/* 右侧：通知文案预览 (5 列) */}
         <div className="lg:col-span-5">
           <div className="font-bold text-xs text-slate-500 uppercase tracking-wide mb-1.5 flex items-center gap-1.5">
-            <span>💬</span> 桌面端弹窗预览（样式示意）
+            <span>{isSmsNotification ? '📱' : '💬'}</span> {isSmsNotification ? '客户经理短信模板预览' : '桌面端弹窗预览（样式示意）'}
           </div>
 
-          {/* 桌面端弹窗卡片外观 */}
           <div
             className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-lg relative overflow-hidden"
             style={{
@@ -543,38 +543,42 @@ function RuleDetailCard({ rule, index }: { rule: SystemReminderRule; index: numb
             <div className="flex items-center justify-between border-b border-slate-100 pb-2 mb-2">
               <div className="flex items-center gap-1.5">
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold bg-red-50 text-red-700 border border-red-200">
-                  <span>⚠️</span> 系统提醒
+                  <span>{isSmsNotification ? '📱' : '⚠️'}</span> {isSmsNotification ? '短信通知' : '系统提醒'}
                 </span>
                 <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-bold bg-red-100 text-red-700 animate-pulse">
-                  待处理
+                  {isSmsNotification ? '即时发送' : '待处理'}
                 </span>
               </div>
               <div className="flex items-center gap-1.5 text-slate-400">
-                <span className="text-xs font-medium">刚刚</span>
-                <span className="text-xs font-bold hover:text-slate-600 cursor-pointer">✕</span>
+                <span className="text-xs font-medium">{isSmsNotification ? '发送给责任客户经理' : '刚刚'}</span>
+                {!isSmsNotification && <span className="text-xs font-bold hover:text-slate-600 cursor-pointer">✕</span>}
               </div>
             </div>
 
-            {/* 中间内容区域（真实解析展示多行内容） */}
             <div className="my-2 bg-slate-50 p-2.5 rounded-lg border border-slate-200/80">
               {renderFormattedPopupContent(rule.content)}
             </div>
 
-            {/* 底部操作按钮 */}
-            <div className="flex items-center justify-between border-t border-slate-100 pt-2.5 gap-2">
-              <button
-                type="button"
-                className="flex-1 rounded-lg border border-slate-200 bg-slate-50 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs hover:bg-slate-100"
-              >
-                延后 10 分钟
-              </button>
-              <button
-                type="button"
-                className="flex-1 rounded-lg bg-emerald-600 py-1.5 text-xs font-bold text-white shadow-xs hover:bg-emerald-700"
-              >
-                已完成
-              </button>
-            </div>
+            {isSmsNotification ? (
+              <div className="border-t border-slate-100 pt-2.5 text-xs text-slate-500">
+                使用“客户经理异常提醒”模板发送，不创建桌面待办或弹窗。
+              </div>
+            ) : (
+              <div className="flex items-center justify-between border-t border-slate-100 pt-2.5 gap-2">
+                <button
+                  type="button"
+                  className="flex-1 rounded-lg border border-slate-200 bg-slate-50 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs hover:bg-slate-100"
+                >
+                  延后 10 分钟
+                </button>
+                <button
+                  type="button"
+                  className="flex-1 rounded-lg bg-emerald-600 py-1.5 text-xs font-bold text-white shadow-xs hover:bg-emerald-700"
+                >
+                  已完成
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

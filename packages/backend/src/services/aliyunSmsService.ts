@@ -9,6 +9,12 @@ export interface AliyunSmsConfig {
   signName: string
   templatePreDay: string
   templateSameDay: string
+  /** 客户经理收到陪诊异常时使用的模板。留空即表示该类通知未启用。 */
+  templateManagerAlert: string
+  /**
+   * 兼容历史配置：表示管理员已在后台保存过模板字段，字段可以刻意留空。
+   * 不作为任何短信发送的开关。
+   */
   templatesConfigured: boolean
 }
 
@@ -58,6 +64,9 @@ export async function getSmsConfig(prisma?: PrismaClient, forceRefresh = false):
   const templateSameDay = useSavedTemplates
     ? String(dbConfig.templateSameDay || '').trim()
     : String(env.aliyunSmsTemplateSameDay || '').trim()
+  const templateManagerAlert = useSavedTemplates
+    ? String(dbConfig.templateManagerAlert || '').trim()
+    : ''
 
   const merged: AliyunSmsConfig = {
     enabled: dbConfig.enabled !== undefined ? Boolean(dbConfig.enabled) : false,
@@ -66,7 +75,8 @@ export async function getSmsConfig(prisma?: PrismaClient, forceRefresh = false):
     signName: dbConfig.signName || env.aliyunSmsSignName || '寰宇医道',
     templatePreDay,
     templateSameDay,
-    templatesConfigured: Boolean(templatePreDay && templateSameDay)
+    templateManagerAlert,
+    templatesConfigured: useSavedTemplates
   }
 
   cachedSmsConfig = merged
@@ -81,9 +91,9 @@ export async function saveSmsConfig(
   const enabled = newConfig.enabled !== undefined ? Boolean(newConfig.enabled) : current.enabled
   const templatePreDay = newConfig.templatePreDay !== undefined ? String(newConfig.templatePreDay).trim() : current.templatePreDay
   const templateSameDay = newConfig.templateSameDay !== undefined ? String(newConfig.templateSameDay).trim() : current.templateSameDay
-  if (enabled && (!templatePreDay || !templateSameDay)) {
-    throw new Error('启用短信前必须配置前一天和当天的实际模板代码')
-  }
+  const templateManagerAlert = newConfig.templateManagerAlert !== undefined
+    ? String(newConfig.templateManagerAlert).trim()
+    : current.templateManagerAlert
   const updated: AliyunSmsConfig = {
     enabled,
     accessKeyId: newConfig.accessKeyId !== undefined ? String(newConfig.accessKeyId).trim() : current.accessKeyId,
@@ -91,7 +101,9 @@ export async function saveSmsConfig(
     signName: newConfig.signName !== undefined ? String(newConfig.signName).trim() : current.signName,
     templatePreDay,
     templateSameDay,
-    templatesConfigured: Boolean(templatePreDay && templateSameDay)
+    templateManagerAlert,
+    // 保存过模板字段后，空值也应被视为管理员刻意关闭该类别，不能回退到环境变量。
+    templatesConfigured: true
   }
 
   await prisma.$executeRawUnsafe(
@@ -104,6 +116,19 @@ export async function saveSmsConfig(
 
   cachedSmsConfig = updated
   return updated
+}
+
+/** 所有业务短信共用的通道前置条件。 */
+export function isSmsChannelEnabled(config: Pick<AliyunSmsConfig, 'enabled' | 'accessKeyId' | 'accessKeySecret' | 'signName'>): boolean {
+  return Boolean(config.enabled && config.accessKeyId.trim() && config.accessKeySecret.trim() && config.signName.trim())
+}
+
+/** 模板留空代表该类短信未启用，不是一次发送失败。 */
+export function isSmsTemplateEnabled(
+  config: Pick<AliyunSmsConfig, 'enabled' | 'accessKeyId' | 'accessKeySecret' | 'signName'>,
+  templateCode: string | null | undefined
+): boolean {
+  return isSmsChannelEnabled(config) && Boolean(templateCode?.trim())
 }
 
 function percentEncode(str: string): string {
@@ -122,9 +147,18 @@ export async function sendAliyunSms(
   configOverride?: Partial<AliyunSmsConfig>
 ): Promise<SendSmsResult> {
   const activeConfig = cachedSmsConfig || (await getSmsConfig())
+  const enabled = configOverride?.enabled ?? activeConfig.enabled
   const accessKeyId = configOverride?.accessKeyId ?? activeConfig.accessKeyId
   const accessKeySecret = configOverride?.accessKeySecret ?? activeConfig.accessKeySecret
   const signName = params.signName || configOverride?.signName || activeConfig.signName || '寰宇医道'
+
+  if (!enabled) {
+    return {
+      success: false,
+      code: 'ALIYUN_SMS_DISABLED',
+      message: '短信功能未启用'
+    }
+  }
 
   if (!accessKeyId || !accessKeySecret) {
     return {

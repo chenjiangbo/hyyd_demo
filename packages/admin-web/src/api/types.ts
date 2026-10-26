@@ -447,6 +447,7 @@ export interface SmsConfig {
   signName: string
   templatePreDay: string
   templateSameDay: string
+  templateManagerAlert: string
 }
 
 export interface SmsConfigResponse {
@@ -462,12 +463,13 @@ export interface UpdateSmsConfigPayload {
   signName?: string
   templatePreDay?: string
   templateSameDay?: string
+  templateManagerAlert?: string
 }
 
 export interface TestSmsPayload {
   phone: string
   orderNo?: string
-  batchType: 'pre_day' | 'same_day'
+  batchType: 'pre_day' | 'same_day' | 'manager_alert'
 }
 
 export interface TestSmsResult {
@@ -486,7 +488,7 @@ export interface TestSmsResult {
 export interface SmsLogItem {
   id: number
   order_no: string
-  batch_type: 'pre_day' | 'same_day'
+  batch_type: 'pre_day' | 'same_day' | 'mgr_pre_missed' | 'mgr_same_missed' | 'mgr_pre_failed' | 'mgr_same_failed' | 'mgr_pre_reject' | 'mgr_same_reject' | 'mgr_pre_unack' | 'mgr_same_unack'
   phone: string | null
   pzr_name: string | null
   service_date: string | null

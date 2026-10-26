@@ -1,35 +1,19 @@
 /**
  * 寰宇系统订单自动提醒调度任务。
- * 负责扫描并自动生成以下业务提醒（写入 order_reminders 表推送给订单责任客户经理）：
+ * 负责扫描订单待办与陪诊短信通知：
  * 1. 【约住院】：每 3 天上午 09:00 提醒一次跟进排队；
  * 2.1 【陪诊未指派】：前置步骤完成满 1 小时未指派陪诊人；
- * 2.2 【陪诊前一天未反馈】：前一天 11:00 发短信，13:00 未反馈提醒客户经理；
- * 2.3 【陪诊当天出工未反馈】：当天 07:00 发短信，07:20 未反馈报警客户经理；
+ * 2.2 【陪诊前一天未反馈】：前一天 11:00 发短信，13:00 未反馈短信通知客户经理；
+ * 2.3 【陪诊当天出工未反馈】：当天 07:00 发短信，07:20 未反馈短信通知客户经理；
  * 3.1 【住院陪护确认护工开始时间】：入院后未定护工时间，每 2 天上午 09:00 提醒；
  * 3.2 【住院陪护结束前提醒】：护工结束日前 2 个工作日（排除周末与节假日）上午 09:00 提醒。
  */
 
 import type { PrismaClient } from '@prisma/client'
 import { formatYmd, subtractWorkdays } from '../lib/chineseWorkdays.js'
-import { sendAliyunSms, getSmsConfig } from '../services/aliyunSmsService.js'
-import { listHuanyuEscorts } from '../db/remoteDictionary.js'
+import { sendAliyunSms, getSmsConfig, isSmsTemplateEnabled } from '../services/aliyunSmsService.js'
+import { findRemoteReminderOrder, listRemoteEscortReminderDetails } from '../db/remoteDictionary.js'
 import { normalizeReminderDate, shouldAdvancePeriodicReminder } from './orderReminderRules.js'
-
-// 每条正式陪诊明细独立处理；陪诊人、服务日期和 ZJ 始终来自同一行。
-const FORMAL_ESCORT_JOINS = `
-  LEFT JOIN LATERAL (
-    SELECT "ZJ", "PZR", "BBQ_FW" FROM "fact_hy_pzrxx" p
-    WHERE (p."DDBH" = o.huanyu_order_no OR p."DDBH" = o.source_order_no)
-      AND NULLIF(TRIM(p."PZR"), '') IS NOT NULL
-  ) p ON true
-`
-const FORMAL_ESCORT_DATE_YMD = `
-  CASE WHEN TRIM(p."BBQ_FW") ~ '^[0-9]{4}[-/.]?[0-9]{1,2}[-/.]?[0-9]{1,2}'
-    THEN substring(TRIM(p."BBQ_FW") from '^([0-9]{4})') || '-' ||
-      lpad(substring(TRIM(p."BBQ_FW") from '^[0-9]{4}[-/.]?([0-9]{1,2})'), 2, '0') || '-' ||
-      lpad(substring(TRIM(p."BBQ_FW") from '^[0-9]{4}[-/.]?[0-9]{1,2}[-/.]?([0-9]{1,2})'), 2, '0')
-    ELSE NULL END
-`
 
 export interface LoggerLike {
   info: (msg: string) => void
@@ -214,45 +198,48 @@ interface EscortRejectReminderRow {
   source_order_no: string
   huanyu_order_no?: string | null
   order_created_at?: Date | string | null
-  assigned_employee_id: number
+  assigned_employee_id?: number | null
   pzr?: string | null
   pzr_detail_id?: string | null
   service_date?: string | null
 }
 
-/** 使用同一文案和去重键创建陪诊拒单提醒，供即时反馈和定时扫描共用。 */
+/** 前一天拒单保留系统提醒；当天拒单才短信通知客户经理。 */
 async function createEscortRejectReminder(
   prisma: PrismaClient,
   row: EscortRejectReminderRow,
   params: { feedbackType: 'pre_day' | 'same_day'; ymd: string; serviceDate?: string; remark?: string | null; time?: string; logger?: LoggerLike }
 ): Promise<void> {
   const isPreDay = params.feedbackType === 'pre_day'
-  const detailId = row.pzr_detail_id || 'unknown-detail'
-  const dedupeKey = `auto:escort_${params.feedbackType}_reject:${row.source_order_no}:${detailId}:${params.ymd}`
-  const reasonText = params.remark ? `（原因：${params.remark}）` : ''
-  const timingText = isPreDay ? '' : '当天'
-  const urgencyText = isPreDay ? '请立即处理！' : '请紧急处理！'
-
-  await createReminderIfAbsent(prisma, {
+  const serviceDate = params.serviceDate ?? (isPreDay ? addShanghaiCalendarDays(params.ymd, 1) : params.ymd)
+  if (isPreDay) {
+    if (!row.assigned_employee_id) return
+    await createReminderIfAbsent(prisma, {
+      orderNo: row.source_order_no,
+      employeeId: row.assigned_employee_id,
+      type: 'escort',
+      content: `订单号: ${row.source_order_no}\n陪诊人员: ${row.pzr || '未填写'}\n服务日期: ${serviceDate}\n提醒内容: 陪诊人员反馈无法出工，请及时处理！`,
+      dedupeKey: `auto:escort_pre_day_reject:${row.source_order_no}:${row.pzr_detail_id || 'unknown'}:${params.ymd}`,
+      logger: params.logger,
+      extra: { serviceDate, pzr: row.pzr, pzrDetailId: row.pzr_detail_id, willAttend: false, remark: params.remark }
+    })
+    return
+  }
+  await notifyManagerEscortException(prisma, {
     orderNo: row.source_order_no,
     employeeId: row.assigned_employee_id,
-    type: 'escort',
-    content: `订单号: ${row.source_order_no}\n陪诊明细: ${detailId}\n陪诊人员: ${row.pzr || '未填写'}\n服务日期: ${params.serviceDate || ''}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 陪诊人员${timingText}反馈【无法出工】${reasonText}，${urgencyText}`,
-    dedupeKey,
+    pzr: row.pzr,
+    pzrDetailId: row.pzr_detail_id,
+    serviceDate,
+    sendYmd: params.ymd,
+    batchType: 'mgr_same_reject',
+    alertType: '陪诊人员反馈无法出工',
     logger: params.logger,
-    extra: {
-      serviceDate: params.serviceDate ?? (isPreDay ? addShanghaiCalendarDays(params.ymd, 1) : params.ymd),
-      ...(params.time ? { triggerTime: params.time } : {}),
-      pzr: row.pzr,
-      pzrDetailId: row.pzr_detail_id,
-      willAttend: false,
-      remark: params.remark
-    }
   })
 }
 
 /**
- * 陪诊反馈接口写入“无法出工”后立即建立提醒。资格规则与周期扫描保持一致：
+ * 陪诊反馈接口写入“无法出工”后立即发送客户经理短信。资格规则与周期扫描保持一致：
  * 只处理有效订单、指定服务类型、存在陪诊步骤、已有正式陪诊人且日期匹配的订单。
  */
 export async function createEscortRejectReminderForFeedback(
@@ -263,13 +250,10 @@ export async function createEscortRejectReminderForFeedback(
   const expectedDate = params.feedbackType === 'pre_day' ? addShanghaiCalendarDays(ymd, 1) : ymd
   const rows = await prisma.$queryRawUnsafe<EscortRejectReminderRow[]>(`
     SELECT o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at,
-           o.assigned_employee_id, p."ZJ" AS pzr_detail_id, NULLIF(TRIM(p."PZR"), '') AS pzr,
-           ${FORMAL_ESCORT_DATE_YMD} AS service_date
+           o.assigned_employee_id
     FROM orders o
     JOIN b_order_operations op ON op.order_id = o.id
-    ${FORMAL_ESCORT_JOINS}
     WHERE (o.source_order_no = $1 OR o.huanyu_order_no = $1)
-      AND o.assigned_employee_id IS NOT NULL
       AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
       AND op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
       AND EXISTS (
@@ -278,18 +262,28 @@ export async function createEscortRejectReminderForFeedback(
           AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
           AND cstep.step_status IN ('pending', 'in_progress')
       )
-      AND NULLIF(TRIM(p."PZR"), '') IS NOT NULL
-      AND ${FORMAL_ESCORT_DATE_YMD} = $2
-      AND NULLIF(TRIM(p."PZR"), '') = $3
-      AND p."ZJ" = $4
-    ORDER BY o.created_at ASC, o.id ASC, p."ZJ" ASC
+    ORDER BY o.created_at ASC, o.id ASC
     LIMIT 1;
-  `, params.orderNo, expectedDate, params.pzrId, params.pzrDetailId)
+  `, params.orderNo)
 
   const row = rows[0]
-  if (!row?.source_order_no || !row.assigned_employee_id || normalizeYmdValue(row.service_date) !== params.serviceDate) return false
+  if (!row?.source_order_no) return false
 
-  await createEscortRejectReminder(prisma, row, {
+  const remoteOrder = await findRemoteReminderOrder(row.source_order_no, row.huanyu_order_no || undefined)
+  if (!remoteOrder) return false
+  const detail = (await listRemoteEscortReminderDetails(remoteOrder.orderNo)).find((item) =>
+    item.detailId === params.pzrDetailId &&
+    item.pzrId === params.pzrId &&
+    normalizeYmdValue(item.serviceDate) === expectedDate
+  )
+  if (!detail || normalizeYmdValue(detail.serviceDate) !== params.serviceDate) return false
+
+  await createEscortRejectReminder(prisma, {
+    ...row,
+    pzr: detail.pzrId,
+    pzr_detail_id: detail.detailId,
+    service_date: detail.serviceDate
+  }, {
     feedbackType: params.feedbackType,
     ymd,
     serviceDate: params.serviceDate,
@@ -417,7 +411,7 @@ async function reconcileReminderLifecycle(prisma: PrismaClient, logger?: LoggerL
        );
   `)
 
-  // 陪诊未落实提醒以业务条件关闭：陪诊人员正式落实、前置步骤/陪诊步骤失效，或订单结束。
+  // 陪诊未落实提醒由远程陪诊明细扫描负责关闭；这里仅关闭本地流程已失效的提醒。
   await prisma.$executeRawUnsafe(`
     UPDATE order_reminders r
        SET status = 'resolved', updated_at = NOW()
@@ -448,11 +442,6 @@ async function reconcileReminderLifecycle(prisma: PrismaClient, logger?: LoggerL
                  AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
                  AND cstep.step_status IN ('pending', 'in_progress')
             )
-            AND NOT EXISTS (
-              SELECT 1 FROM "fact_hy_pzrxx" p
-               WHERE (p."DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND p."DDBH" = o.huanyu_order_no))
-                 AND p."PZR" IS NOT NULL AND TRIM(p."PZR") != ''
-            )
        );
   `)
 
@@ -467,10 +456,7 @@ async function reconcileReminderLifecycle(prisma: PrismaClient, logger?: LoggerL
          SELECT 1
            FROM orders o
            JOIN b_order_operations op ON op.order_id = o.id
-           JOIN fact_hy_pzrxx p ON p."ZJ" = r.extra_data->>'pzrDetailId'
           WHERE o.source_order_no = r.order_no
-            AND (p."DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND p."DDBH" = o.huanyu_order_no))
-            AND NULLIF(TRIM(p."PZR"), '') IS NULL
             AND o.assigned_employee_id IS NOT NULL
             AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
             AND EXISTS (
@@ -492,7 +478,7 @@ async function reconcileReminderLifecycle(prisma: PrismaClient, logger?: LoggerL
        );
   `)
 
-  // 护工开始时间已补齐或订单结束时，关闭其周期跟进提醒。
+  // 护工开始时间已补齐时由远程订单扫描关闭；这里仅关闭流程已结束的提醒。
   await prisma.$executeRawUnsafe(`
     UPDATE order_reminders r
        SET status = 'resolved', updated_at = NOW()
@@ -504,39 +490,12 @@ async function reconcileReminderLifecycle(prisma: PrismaClient, logger?: LoggerL
            FROM orders o
            JOIN b_order_operations op ON op.order_id = o.id AND op.service_type = '住院护工协助'
            JOIN b_order_service_steps s ON s.operation_id = op.id AND s.step_code = 'hospital_care' AND s.step_status IN ('pending', 'in_progress')
-           LEFT JOIN "HY_FACT_DDCX_NEW" h ON (h."BDQD_DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND h."DDBH" = o.huanyu_order_no))
           WHERE (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
-            AND COALESCE(NULLIF(TRIM(h."BBQ_FW"), ''), NULLIF(TRIM(h."DATE_FW"), '')) IS NULL
             AND r.extra_data->>'dedupe_key' = 'auto:care_start_unassigned:' || o.source_order_no
        );
   `)
 
-  // 陪诊提醒只属于创建时的人员和日期。换人、改期、取消步骤后旧提醒失效。
-  await prisma.$executeRawUnsafe(`
-    UPDATE order_reminders r SET status = 'superseded', updated_at = NOW()
-    WHERE r.type = 'escort' AND r.status IN ('pending', 'unread')
-      AND (r.extra_data->>'dedupe_key' ~ '^auto:escort_(pre_day|same_day)_(unack|reject):'
-           OR (r.extra_data->>'dedupe_key' LIKE 'auto:escort_sms_failed:%' AND r.extra_data->>'pzr' IS NOT NULL))
-      AND r.extra_data->>'serviceDate' IS NOT NULL
-      AND NOT EXISTS (
-        SELECT 1 FROM orders o
-        JOIN b_order_operations op ON op.order_id = o.id
-        ${FORMAL_ESCORT_JOINS}
-        WHERE o.source_order_no = r.order_no
-          AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
-          AND op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
-          AND EXISTS (
-            SELECT 1 FROM b_order_service_steps s WHERE s.operation_id = op.id
-              AND s.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
-              AND s.step_status IN ('pending', 'in_progress')
-          )
-          AND r.extra_data->>'pzr' = NULLIF(TRIM(p."PZR"), '')
-          AND r.extra_data->>'pzrDetailId' = p."ZJ"
-          AND r.extra_data->>'serviceDate' = ${FORMAL_ESCORT_DATE_YMD}
-      );
-  `)
-
-  // 护工结束日发生变动、步骤结束或订单完结时立即关闭旧提醒。
+  // 护工结束日变更由远程订单扫描关闭；流程结束或服务日期过去时关闭旧提醒。
   await prisma.$executeRawUnsafe(`
     UPDATE order_reminders r SET status = 'superseded', updated_at = NOW()
     WHERE r.type = 'hospital_care' AND r.status IN ('pending', 'unread')
@@ -547,10 +506,8 @@ async function reconcileReminderLifecycle(prisma: PrismaClient, logger?: LoggerL
           SELECT 1 FROM orders o
           JOIN b_order_operations op ON op.order_id = o.id AND op.service_type = '住院护工协助'
           JOIN b_order_service_steps s ON s.operation_id = op.id AND s.step_code = 'hospital_care' AND s.step_status IN ('pending', 'in_progress')
-          LEFT JOIN "HY_FACT_DDCX_NEW" h ON (h."BDQD_DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND h."DDBH" = o.huanyu_order_no))
           WHERE o.source_order_no = r.order_no
             AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
-            AND r.extra_data->>'careEndDate' = replace(replace(LEFT(TRIM(COALESCE(NULLIF(TRIM(h."BBQ_QDFW"), ''), NULLIF(TRIM(h."DATE_QDFW"), ''))), 10), '/', '-'), '.', '-')
         )
       );
   `)
@@ -604,7 +561,9 @@ async function reconcileStaleSmsClaims(prisma: PrismaClient, logger?: LoggerLike
            o.created_at AS order_created_at, o.assigned_employee_id
       FROM "fact_hy_pz_sms_send_claims" c
       LEFT JOIN orders o ON o.source_order_no = c.order_no
-     WHERE c.status = 'sending' AND c.claimed_at < NOW() - INTERVAL '5 minutes'
+     WHERE c.status = 'sending'
+       AND c.batch_type IN ('pre_day', 'same_day')
+       AND c.claimed_at < NOW() - INTERVAL '5 minutes'
      ORDER BY c.claimed_at ASC
      LIMIT 500;
   `)
@@ -633,17 +592,17 @@ async function reconcileStaleSmsClaims(prisma: PrismaClient, logger?: LoggerLike
       if (log.status === 'success') {
         await closeReminderByKey(prisma, `auto:escort_sms_failed:${claim.order_no}:${claim.batch_type}:${claim.pzr_detail_id}:${claim.send_ymd}`)
       }
-      if (log.status !== 'success' && serviceDate >= today && claim.assigned_employee_id) {
-        const batchLabel = claim.batch_type === 'pre_day' ? '前一天确认' : '当天打卡'
-        const failureReason = log.error_message || '短信流水记录失败状态，但提醒创建可能中断'
-        await createReminderIfAbsent(prisma, {
+      if (log.status !== 'success' && serviceDate >= today) {
+        await notifyManagerEscortException(prisma, {
           orderNo: claim.order_no,
           employeeId: claim.assigned_employee_id,
-          type: 'escort',
-          content: `订单号: ${claim.order_no}\n申请时间: ${formatDateDisplay(claim.order_created_at)}\n提醒内容: 陪诊${batchLabel}短信未成功（${failureReason}），不会补发，请及时人工联系陪诊人员！`,
-          dedupeKey: `auto:escort_sms_failed:${claim.order_no}:${claim.batch_type}:${claim.pzr_detail_id}:${claim.send_ymd}`,
+          pzr: claim.pzr_id,
+          pzrDetailId: claim.pzr_detail_id,
+          serviceDate,
+          sendYmd: claim.send_ymd,
+          batchType: claim.batch_type === 'pre_day' ? 'mgr_pre_failed' : 'mgr_same_failed',
+          alertType: claim.batch_type === 'pre_day' ? '陪诊前一天确认短信发送失败' : '陪诊当天出工短信发送失败',
           logger,
-          extra: { failureReason, batchType: claim.batch_type, pzr: claim.pzr_id, pzrDetailId: claim.pzr_detail_id, serviceDate }
         })
       }
       continue
@@ -651,16 +610,17 @@ async function reconcileStaleSmsClaims(prisma: PrismaClient, logger?: LoggerLike
     await finishEscortSmsClaim(prisma, claim.order_no, claim.batch_type, claim.send_ymd, 'unknown', '发送任务中断，供应商结果未知', claim.pzr_detail_id)
 
     // 不重发结果未知的短信；只在服务日尚未结束且当前仍有责任人时通知人工确认。
-    if (serviceDate < today || !claim.assigned_employee_id) continue
-    const batchLabel = claim.batch_type === 'pre_day' ? '前一天确认' : '当天打卡'
-    await createReminderIfAbsent(prisma, {
+    if (serviceDate < today) continue
+    await notifyManagerEscortException(prisma, {
       orderNo: claim.order_no,
       employeeId: claim.assigned_employee_id,
-      type: 'escort',
-      content: `订单号: ${claim.order_no}\n申请时间: ${formatDateDisplay(claim.order_created_at)}\n提醒内容: 陪诊${batchLabel}短信发送结果未知（任务中断），系统不会补发，请人工确认是否需要联系陪诊人员。`,
-      dedupeKey: `auto:escort_sms_failed:${claim.order_no}:${claim.batch_type}:${claim.pzr_detail_id}:${claim.send_ymd}`,
+      pzr: claim.pzr_id,
+      pzrDetailId: claim.pzr_detail_id,
+      serviceDate,
+      sendYmd: claim.send_ymd,
+      batchType: claim.batch_type === 'pre_day' ? 'mgr_pre_failed' : 'mgr_same_failed',
+      alertType: claim.batch_type === 'pre_day' ? '陪诊前一天确认短信结果未知' : '陪诊当天反馈短信结果未知',
       logger,
-      extra: { failureReason: '发送任务中断，供应商结果未知', batchType: claim.batch_type, pzr: claim.pzr_id, pzrDetailId: claim.pzr_detail_id, serviceDate }
     })
   }
 }
@@ -681,7 +641,7 @@ export async function scanHospitalBookingReminders(prisma: PrismaClient, logger?
     JOIN orders o ON op.order_id = o.id
     WHERE s.step_code = 'hospital_booking'
       AND op.service_type IN ('全流程', '住院')
-      AND s.step_status IN ('pending', 'in_progress')
+      AND s.step_status = 'in_progress'
       AND o.assigned_employee_id IS NOT NULL
       AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
     ORDER BY o.id ASC, s.occurrence_no DESC NULLS LAST, s.id DESC
@@ -689,11 +649,12 @@ export async function scanHospitalBookingReminders(prisma: PrismaClient, logger?
 
   const seenOrders = new Set<string>()
   for (const row of steps) {
-    if (!row.assigned_employee_id || !row.source_order_no) continue
+    if (!row.source_order_no) continue
     if (seenOrders.has(row.source_order_no)) continue
     seenOrders.add(row.source_order_no)
 
-    const baseTime = row.activated_at || row.started_at || row.step_created_at || row.order_created_at
+    // 约住院只按客户明确同意开始安排住院的业务时间计时，不能回退到步骤创建/激活时间。
+    const baseTime = row.started_at
     if (!baseTime) continue
     const cycleIdentity = `${row.id}:${row.occurrence_no ?? 0}:${new Date(baseTime).toISOString()}`
     const dedupeKey = `auto:hospital_booking:${row.source_order_no}`
@@ -721,8 +682,8 @@ export async function scanHospitalBookingReminders(prisma: PrismaClient, logger?
 /**
  * 场景 2.1：【陪诊】派单超时预警（前置完成满 1 小时未抓取到陪诊人）
  * 逻辑：
- * 1. 彻底不取 HY_FACT_DDCX_NEW.PZR
- * 2. 优先查正式表 fact_hy_pzrxx（有值则直接视为已落实）
+ * 1. 陪诊明细和服务日期从远程寰宇库读取
+ * 2. 任一远程陪诊明细有值即视为该明细已落实
  * 3. 未确认的 AI 候选不视为陪诊人员已落实
  * 4. 仅当正式表中无陪诊人员，且前置完成满 1 小时，才写入超时未落实预警
  * 5. 不向数据库做任何回写
@@ -732,24 +693,10 @@ async function scanEscortUnassignedReminders(prisma: PrismaClient, logger?: Logg
     SELECT 
       s.id, s.step_code, s.completed_at,
       o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id, o.status AS order_status,
-      op.service_type,
-      COALESCE(NULLIF(TRIM(p."BBQ_FW"), ''), NULLIF(TRIM(h."BBQ_FW"), ''), NULLIF(TRIM(h."DATE_FW"), '')) AS service_date,
-      EXISTS(
-        SELECT 1 FROM "fact_hy_pzrxx" p 
-        WHERE (p."DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND p."DDBH" = o.huanyu_order_no))
-          AND p."PZR" IS NOT NULL AND TRIM(p."PZR") != ''
-      ) AS has_db_pzr
+      op.service_type
     FROM b_order_service_steps s
     JOIN b_order_operations op ON s.operation_id = op.id
     JOIN orders o ON op.order_id = o.id
-    LEFT JOIN "HY_FACT_DDCX_NEW" h ON (h."BDQD_DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND h."DDBH" = o.huanyu_order_no))
-    LEFT JOIN LATERAL (
-      SELECT "PZR", "BBQ_FW" FROM "fact_hy_pzrxx" p
-      WHERE (p."DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND p."DDBH" = o.huanyu_order_no))
-        AND p."PZR" IS NOT NULL AND TRIM(p."PZR") != ''
-      ORDER BY "xtsj" DESC NULLS LAST, "ZJ" DESC
-      LIMIT 1
-    ) p ON true
     WHERE (
       (s.step_code = 'registration' AND op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务'))
       OR (s.step_code = 'check_booking' AND op.service_type IN ('全流程', '检查加急'))
@@ -775,24 +722,21 @@ async function scanEscortUnassignedReminders(prisma: PrismaClient, logger?: Logg
 
     const dedupeKey = `auto:escort_unassigned:${row.source_order_no}:${row.step_code}`
 
+    const remoteOrder = await findRemoteReminderOrder(row.source_order_no, row.huanyu_order_no || undefined)
+    if (!remoteOrder) continue
     // 同一订单可能有多条陪诊明细；逐条检查空陪诊人明细，不能用“任意一条已指派”代替整单判断。
-    const formalDetails = await prisma.$queryRawUnsafe<any[]>(`
-      SELECT "ZJ" AS pzr_detail_id, NULLIF(TRIM("PZR"), '') AS pzr, NULLIF(TRIM("BBQ_FW"), '') AS service_date
-      FROM "fact_hy_pzrxx"
-      WHERE "DDBH" = $1 OR "DDBH" = $2
-      ORDER BY "ZJ" ASC;
-    `, row.source_order_no, row.huanyu_order_no || row.source_order_no)
+    const formalDetails = await listRemoteEscortReminderDetails(remoteOrder.orderNo)
 
     if (formalDetails.length > 0) {
       await closeReminderByKey(prisma, dedupeKey)
       for (const detail of formalDetails) {
-        const detailId = String(detail.pzr_detail_id || '')
+        const detailId = String(detail.detailId || '')
         const detailKey = `${dedupeKey}:${detailId}`
-        if (detail.pzr) {
+        if (detail.pzrId) {
           await closeReminderByKey(prisma, detailKey)
           continue
         }
-        const serviceDate = normalizeYmdValue(detail.service_date)
+        const serviceDate = normalizeYmdValue(detail.serviceDate)
         await createReminderIfAbsent(prisma, {
           orderNo: row.source_order_no,
           employeeId: row.assigned_employee_id,
@@ -823,10 +767,10 @@ async function scanEscortUnassignedReminders(prisma: PrismaClient, logger?: Logg
       extra: {
         preStepCode: row.step_code,
         completedAt: row.completed_at,
-        ...(normalizeYmdValue(row.service_date) ? { serviceDate: normalizeYmdValue(row.service_date) } : {})
+        ...(normalizeYmdValue(remoteOrder.serviceDate) ? { serviceDate: normalizeYmdValue(remoteOrder.serviceDate) } : {})
       }
     })
-    const serviceDate = normalizeYmdValue(row.service_date)
+    const serviceDate = normalizeYmdValue(remoteOrder.serviceDate)
     if (serviceDate) {
       await prisma.$executeRawUnsafe(`
         UPDATE order_reminders
@@ -848,30 +792,17 @@ async function scanEscortUnassignedReminders(prisma: PrismaClient, logger?: Logg
  * 辅助方法：按已确认的陪诊人员姓名查询字典手机号，不回退到 AI 字段候选。
  */
 async function resolveEscortPhone(
-  prisma: PrismaClient,
-  pzrName: string | null | undefined
+  remoteOrderNo: string,
+  pzrId: string | null | undefined
 ): Promise<string | null> {
-  const cleanName = (pzrName || '').trim()
-  if (cleanName) {
-    try {
-      const escorts = await listHuanyuEscorts(cleanName)
-      const exactMatches = escorts.filter((e) => e.id === cleanName || e.name === cleanName)
-      const matched = exactMatches.length === 1 ? exactMatches[0] : null
-      if (matched && matched.phone && String(matched.phone).trim()) {
-        return String(matched.phone).trim()
-      }
-    } catch {
-      // 忽略远端异常
-    }
-  }
-
-  return null
+  const details = await listRemoteEscortReminderDetails(remoteOrderNo)
+  return details.find((detail) => detail.pzrId === String(pzrId || '').trim())?.phone || null
 }
 
 async function claimEscortSmsSend(
   prisma: PrismaClient,
   orderNo: string,
-  batchType: 'pre_day' | 'same_day',
+  batchType: string,
   sendYmd: string,
   pzrId: string,
   serviceDate: string,
@@ -897,7 +828,7 @@ async function claimEscortSmsSend(
 async function finishEscortSmsClaim(
   prisma: PrismaClient,
   orderNo: string,
-  batchType: 'pre_day' | 'same_day',
+  batchType: string,
   sendYmd: string,
   status: 'sent' | 'failed' | 'skipped' | 'unknown',
   errorMessage: string | null = null,
@@ -908,6 +839,118 @@ async function finishEscortSmsClaim(
        SET status = $4, error_message = $5, completed_at = NOW()
      WHERE order_no = $1 AND batch_type = $2 AND send_ymd = $3 AND pzr_detail_id = $6;
   `, orderNo, batchType, sendYmd, status, errorMessage, pzrDetailId)
+}
+
+type ManagerEscortAlertParams = {
+  orderNo: string
+  employeeId: number | null | undefined
+  pzr: string | null | undefined
+  pzrDetailId: string | null | undefined
+  serviceDate: string
+  sendYmd: string
+  /** 以不同批次类型参与幂等，避免同一陪诊明细的不同异常互相覆盖。 */
+  batchType: 'mgr_pre_missed' | 'mgr_same_missed' | 'mgr_pre_failed' | 'mgr_same_failed' | 'mgr_pre_reject' | 'mgr_same_reject' | 'mgr_pre_unack' | 'mgr_same_unack'
+  alertType: string
+  logger?: LoggerLike
+}
+
+/**
+ * 客户经理陪诊异常短信的唯一出口。
+ *
+ * 总开关关闭、通道未配齐或异常模板留空时，代表该类短信未启用，静默跳过；
+ * 只有短信功能已启用后遇到真实业务异常，才尝试发送并记录发送结果。
+ */
+async function notifyManagerEscortException(prisma: PrismaClient, params: ManagerEscortAlertParams): Promise<void> {
+  // 前一天批次的异常保留为本地系统提醒，不能发送客户经理短信。
+  if (params.batchType.startsWith('mgr_pre_')) {
+    if (!params.employeeId) return
+    await createReminderIfAbsent(prisma, {
+      orderNo: params.orderNo,
+      employeeId: params.employeeId,
+      type: 'escort',
+      content: `订单号: ${params.orderNo}\n陪诊人员: ${params.pzr || '未填写'}\n服务日期: ${params.serviceDate}\n提醒内容: ${params.alertType}，请及时处理！`,
+      dedupeKey: `auto:escort_pre_day_exception:${params.orderNo}:${params.pzrDetailId || 'unknown'}:${params.batchType}:${params.sendYmd}`,
+      logger: params.logger,
+      extra: { serviceDate: params.serviceDate, pzr: params.pzr, pzrDetailId: params.pzrDetailId, alertType: params.alertType }
+    })
+    return
+  }
+  try {
+    await dispatchManagerEscortException(prisma, params)
+  } catch (err) {
+    // 客户经理短信自身的日志或通道异常不能回流为陪诊短信异常，避免同一事件被重复通知。
+    params.logger?.error(`[orderReminderSchedule] 客户经理异常短信处理失败：订单 ${params.orderNo}`, err)
+  }
+}
+
+async function dispatchManagerEscortException(prisma: PrismaClient, params: ManagerEscortAlertParams): Promise<void> {
+  if (!params.orderNo) return
+
+  const config = await getSmsConfig(prisma)
+  const templateCode = config.templateManagerAlert.trim()
+  // 异常提醒模板留空或总通道不可用，都表示这一类通知没有启用；不写发送流水或原因。
+  if (!isSmsTemplateEnabled(config, templateCode)) return
+
+  const detailId = params.pzrDetailId || 'unknown-detail'
+  if (!(await claimEscortSmsSend(prisma, params.orderNo, params.batchType, params.sendYmd, params.pzr || '', params.serviceDate, detailId))) {
+    return
+  }
+
+  const remoteOrder = await findRemoteReminderOrder(params.orderNo)
+  const phone = String(remoteOrder?.managerPhone || '').replace(/\D/g, '')
+  const customerName = remoteOrder?.customerName || '未填写'
+  const hospitalName = remoteOrder?.hospitalName || '未填写'
+  const escortContact = (await resolveEscortPhone(remoteOrder?.orderNo || '', params.pzr) || '').replace(/\D/g, '')
+  const logParams = JSON.stringify({ orderNo: params.orderNo, customerName, hospitalName, pzrDetailId: detailId, alertType: params.alertType, managerName: remoteOrder?.managerName || '', escortContact })
+  const baseValues = [params.orderNo, params.batchType, phone || null, params.pzr || null, params.serviceDate, templateCode, config.signName || '寰宇医道', logParams, params.sendYmd]
+
+  if (!/^1\d{10}$/.test(phone)) {
+    await prisma.$executeRawUnsafe(`
+      INSERT INTO "fact_hy_pz_sms_logs" (
+        order_no, batch_type, phone, pzr_name, service_date, template_code, sign_name,
+        params_json, status, error_code, error_message, send_ymd, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, 'failed', 'NO_MANAGER_PHONE', '责任客户经理未配置有效手机号', $9, NOW());
+    `, ...baseValues)
+    await finishEscortSmsClaim(prisma, params.orderNo, params.batchType, params.sendYmd, 'failed', '责任客户经理未配置有效手机号', detailId)
+    params.logger?.warn(`[orderReminderSchedule] 客户经理异常短信未发送：责任客户经理无有效手机号，订单 ${params.orderNo}`)
+    return
+  }
+
+  const result = await sendAliyunSms({
+    phoneNumbers: phone,
+    signName: config.signName,
+    templateCode,
+    templateParam: {
+      orderNo: params.orderNo,
+      customerName,
+      hospitalName,
+      serviceDate: params.serviceDate,
+      escortName: params.pzr || '未填写',
+      escortContact: escortContact || '未填写',
+      alertType: params.alertType
+    }
+  }, config)
+
+  if (result.success) {
+    await prisma.$executeRawUnsafe(`
+      INSERT INTO "fact_hy_pz_sms_logs" (
+        order_no, batch_type, phone, pzr_name, service_date, template_code, sign_name,
+        params_json, biz_id, request_id, status, send_ymd, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, 'success', $11, NOW());
+    `, params.orderNo, params.batchType, phone, params.pzr || null, params.serviceDate, templateCode, config.signName || '寰宇医道', logParams, result.bizId || null, result.requestId || null, params.sendYmd)
+    await finishEscortSmsClaim(prisma, params.orderNo, params.batchType, params.sendYmd, 'sent', null, detailId)
+    params.logger?.info(`[orderReminderSchedule] 已短信通知客户经理 ${remoteOrder?.managerName || '未匹配'}：${params.alertType}，订单 ${params.orderNo}`)
+    return
+  }
+
+  await prisma.$executeRawUnsafe(`
+    INSERT INTO "fact_hy_pz_sms_logs" (
+      order_no, batch_type, phone, pzr_name, service_date, template_code, sign_name,
+      params_json, request_id, status, error_code, error_message, send_ymd, created_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, 'failed', $10, $11, $12, NOW());
+  `, params.orderNo, params.batchType, phone, params.pzr || null, params.serviceDate, templateCode, config.signName || '寰宇医道', logParams, result.requestId || null, result.code, result.message, params.sendYmd)
+  await finishEscortSmsClaim(prisma, params.orderNo, params.batchType, params.sendYmd, 'failed', result.message, detailId)
+  params.logger?.warn(`[orderReminderSchedule] 客户经理异常短信发送失败：订单 ${params.orderNo}，错误: ${result.message}`)
 }
 
 async function recordSkippedEscortSms(
@@ -928,17 +971,17 @@ async function recordSkippedEscortSms(
     ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, 'failed', 'NOT_SENT', $8, $9, NOW());
   `, row.source_order_no, batchType, row.pzr, serviceDate, templateCode, signName, JSON.stringify({ orderNo: row.source_order_no, pzrDetailId: row.pzr_detail_id }), reason, sendYmd)
   await finishEscortSmsClaim(prisma, row.source_order_no, batchType, sendYmd, 'skipped', reason, row.pzr_detail_id)
-  if (!row.assigned_employee_id) return
-
   const batchLabel = batchType === 'pre_day' ? '前一天确认' : '当天打卡'
-  await createReminderIfAbsent(prisma, {
+  await notifyManagerEscortException(prisma, {
     orderNo: row.source_order_no,
     employeeId: row.assigned_employee_id,
-    type: 'escort',
-    content: `订单号: ${row.source_order_no}\n陪诊明细: ${row.pzr_detail_id}\n陪诊人员: ${row.pzr || '未填写'}\n服务日期: ${serviceDate}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 陪诊${batchLabel}短信未按时发送（${reason}），系统不会补发，请及时人工联系陪诊人员！`,
-    dedupeKey: `auto:escort_sms_failed:${row.source_order_no}:${batchType}:${row.pzr_detail_id}:${sendYmd}`,
-    logger,
-    extra: { failureReason: reason, batchType, pzr: row.pzr, pzrDetailId: row.pzr_detail_id, serviceDate, smsNotSent: true }
+    pzr: row.pzr,
+    pzrDetailId: row.pzr_detail_id,
+    serviceDate,
+    sendYmd,
+    batchType: batchType === 'pre_day' ? 'mgr_pre_missed' : 'mgr_same_missed',
+    alertType: `陪诊${batchLabel}短信未按时发送`,
+    logger
   })
 }
 
@@ -957,7 +1000,9 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, al
   const smsConfig = await getSmsConfig(prisma)
   const inSendWindow = hours === 11 && minutes === 0
   const templateCode = smsConfig.templatePreDay.trim()
-  const canSend = allowSend && inSendWindow && smsConfig.enabled && smsConfig.templatesConfigured && Boolean(smsConfig.accessKeyId && smsConfig.accessKeySecret && templateCode)
+  // 通道关闭、配置不完整或该模板留空时，这类短信未启用：静默跳过。
+  const templateEnabled = isSmsTemplateEnabled(smsConfig, templateCode)
+  const canSend = allowSend && inSendWindow && templateEnabled
 
   const tomorrow = new Date(Date.now() + 24 * 3600 * 1000)
   const tomorrowYmd = formatYmd(tomorrow)
@@ -966,14 +1011,10 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, al
   const preDayOrders = await queryInPages(prisma, `
     SELECT 
       o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
-      op.service_type,
-      p."ZJ" AS pzr_detail_id, NULLIF(TRIM(p."PZR"), '') AS pzr,
-      ${FORMAL_ESCORT_DATE_YMD} AS service_date
+      op.service_type
     FROM orders o
     JOIN b_order_operations op ON op.order_id = o.id
-    ${FORMAL_ESCORT_JOINS}
-    WHERE o.assigned_employee_id IS NOT NULL
-      AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
+    WHERE (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
       AND op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
       AND EXISTS (
         SELECT 1 FROM b_order_service_steps cstep
@@ -981,14 +1022,20 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, al
           AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
           AND cstep.step_status IN ('pending', 'in_progress')
       )
-      AND ${FORMAL_ESCORT_DATE_YMD} = $1
-      AND NULLIF(TRIM(p."PZR"), '') IS NOT NULL
-    ORDER BY o.created_at ASC, o.id ASC, p."ZJ" ASC
-  `, tomorrowYmd)
+    ORDER BY o.created_at ASC, o.id ASC
+  `)
 
-  for (const row of preDayOrders) {
+  for (const baseRow of preDayOrders) {
+    const remoteOrder = await findRemoteReminderOrder(baseRow.source_order_no, baseRow.huanyu_order_no)
+    if (!remoteOrder) continue
+    const remoteDetails = await listRemoteEscortReminderDetails(remoteOrder.orderNo)
+    for (const detail of remoteDetails) {
+      if (!detail.pzrId || normalizeYmdValue(detail.serviceDate) !== tomorrowYmd) continue
+      const row = { ...baseRow, pzr_detail_id: detail.detailId, pzr: detail.pzrId, service_date: detail.serviceDate, remote_order_no: remoteOrder.orderNo }
     try {
-    if (!row.assigned_employee_id || !row.source_order_no) continue
+    if (!row.source_order_no) continue
+
+    if (!templateEnabled) continue
 
     if (!(await claimEscortSmsSend(prisma, row.source_order_no, 'pre_day', ymd, row.pzr, tomorrowYmd, row.pzr_detail_id))) {
       continue
@@ -997,12 +1044,12 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, al
     if (!canSend) {
       const reason = !allowSend || !inSendWindow
         ? '已错过前一天 11:00 发送时点'
-        : !smsConfig.templatesConfigured ? '前一天和当天短信模板未配置完整' : '短信功能未启用或密钥未配置'
+        : '短信未执行'
       await recordSkippedEscortSms(prisma, row, 'pre_day', ymd, tomorrowYmd, templateCode, signName, reason, logger)
       continue
     }
 
-    const phone = await resolveEscortPhone(prisma, row.pzr)
+    const phone = await resolveEscortPhone(row.remote_order_no, row.pzr)
     const cleanPhone = (phone || '').replace(/\D/g, '')
 
     if (cleanPhone && cleanPhone.length === 11) {
@@ -1035,17 +1082,16 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, al
 
         logger?.warn(`[orderReminderSchedule] 前一天出工确认短信发送失败: 订单 ${row.source_order_no}, 错误: ${result.message}`)
 
-        const dedupeKey = `auto:escort_sms_failed:${row.source_order_no}:pre_day:${row.pzr_detail_id}:${ymd}`
-        const content = `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 陪诊出工确认短信发送失败（原因：${result.message}），请及时人工联系陪诊人员！`
-
-        await createReminderIfAbsent(prisma, {
+        await notifyManagerEscortException(prisma, {
           orderNo: row.source_order_no,
           employeeId: row.assigned_employee_id,
-          type: 'escort',
-          content,
-          dedupeKey,
+          pzr: row.pzr,
+          pzrDetailId: row.pzr_detail_id,
+          serviceDate: tomorrowYmd,
+          sendYmd: ymd,
+          batchType: 'mgr_pre_failed',
+          alertType: '陪诊前一天确认短信发送失败',
           logger,
-          extra: { failureReason: result.message, phone: cleanPhone, pzr: row.pzr, pzrDetailId: row.pzr_detail_id, batchType: 'pre_day', serviceDate: tomorrowYmd }
         })
       }
     } else {
@@ -1059,17 +1105,16 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, al
 
       logger?.warn(`[orderReminderSchedule] 前一天出工短信未发送：未找到陪诊人手机号: 订单 ${row.source_order_no}, 陪诊人 ${row.pzr}`)
 
-      const dedupeKey = `auto:escort_sms_failed:${row.source_order_no}:pre_day:${row.pzr_detail_id}:${ymd}`
-      const content = `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 未找到陪诊人员有效手机号，出工确认短信无法发送，请及时人工联系陪诊人员！`
-
-      await createReminderIfAbsent(prisma, {
+        await notifyManagerEscortException(prisma, {
         orderNo: row.source_order_no,
         employeeId: row.assigned_employee_id,
-        type: 'escort',
-        content,
-        dedupeKey,
+          pzr: row.pzr,
+          pzrDetailId: row.pzr_detail_id,
+          serviceDate: tomorrowYmd,
+          sendYmd: ymd,
+          batchType: 'mgr_pre_failed',
+          alertType: '陪诊人员无有效手机号',
         logger,
-        extra: { failureReason: '未配置有效陪诊人员手机号', pzr: row.pzr, pzrDetailId: row.pzr_detail_id, batchType: 'pre_day', serviceDate: tomorrowYmd }
       })
     }
     } catch (err: any) {
@@ -1081,17 +1126,20 @@ async function sendPreDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, al
         continue
       }
       await finishEscortSmsClaim(prisma, row.source_order_no, 'pre_day', ymd, 'unknown', reason, row.pzr_detail_id).catch(() => {})
-      if (row.assigned_employee_id && row.source_order_no) {
-        await createReminderIfAbsent(prisma, {
+      if (row.source_order_no) {
+        await notifyManagerEscortException(prisma, {
           orderNo: row.source_order_no,
           employeeId: row.assigned_employee_id,
-          type: 'escort',
-          content: `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 前一天陪诊短信任务异常，发送结果可能未知，系统不会补发，请人工确认是否需要联系陪诊人员。`,
-          dedupeKey: `auto:escort_sms_failed:${row.source_order_no}:pre_day:${row.pzr_detail_id}:${ymd}`,
+          pzr: row.pzr,
+          pzrDetailId: row.pzr_detail_id,
+          serviceDate: tomorrowYmd,
+          sendYmd: ymd,
+          batchType: 'mgr_pre_failed',
+          alertType: '陪诊前一天确认短信结果未知',
           logger,
-          extra: { failureReason: reason, batchType: 'pre_day', pzr: row.pzr, pzrDetailId: row.pzr_detail_id, serviceDate: tomorrowYmd }
         })
       }
+    }
     }
   }
 }
@@ -1109,21 +1157,19 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, a
   const smsConfig = await getSmsConfig(prisma)
   const inSendWindow = hours === 7 && minutes === 0
   const templateCode = smsConfig.templateSameDay.trim()
-  const canSend = allowSend && inSendWindow && smsConfig.enabled && smsConfig.templatesConfigured && Boolean(smsConfig.accessKeyId && smsConfig.accessKeySecret && templateCode)
+  // 通道关闭、配置不完整或该模板留空时，这类短信未启用：静默跳过。
+  const templateEnabled = isSmsTemplateEnabled(smsConfig, templateCode)
+  const canSend = allowSend && inSendWindow && templateEnabled
 
   const signName = smsConfig.signName || '寰宇医道'
 
   const sameDayOrders = await queryInPages(prisma, `
     SELECT 
       o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
-      op.service_type,
-      p."ZJ" AS pzr_detail_id, NULLIF(TRIM(p."PZR"), '') AS pzr,
-      ${FORMAL_ESCORT_DATE_YMD} AS service_date
+      op.service_type
     FROM orders o
     JOIN b_order_operations op ON op.order_id = o.id
-    ${FORMAL_ESCORT_JOINS}
-    WHERE o.assigned_employee_id IS NOT NULL
-      AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
+    WHERE (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
       AND op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
       AND EXISTS (
         SELECT 1 FROM b_order_service_steps cstep
@@ -1131,14 +1177,20 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, a
           AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
           AND cstep.step_status IN ('pending', 'in_progress')
       )
-      AND ${FORMAL_ESCORT_DATE_YMD} = $1
-      AND NULLIF(TRIM(p."PZR"), '') IS NOT NULL
-    ORDER BY o.created_at ASC, o.id ASC, p."ZJ" ASC
-  `, ymd)
+    ORDER BY o.created_at ASC, o.id ASC
+  `)
 
-  for (const row of sameDayOrders) {
+  for (const baseRow of sameDayOrders) {
+    const remoteOrder = await findRemoteReminderOrder(baseRow.source_order_no, baseRow.huanyu_order_no)
+    if (!remoteOrder) continue
+    const remoteDetails = await listRemoteEscortReminderDetails(remoteOrder.orderNo)
+    for (const detail of remoteDetails) {
+      if (!detail.pzrId || normalizeYmdValue(detail.serviceDate) !== ymd) continue
+      const row = { ...baseRow, pzr_detail_id: detail.detailId, pzr: detail.pzrId, service_date: detail.serviceDate, remote_order_no: remoteOrder.orderNo }
     try {
-    if (!row.assigned_employee_id || !row.source_order_no) continue
+    if (!row.source_order_no) continue
+
+    if (!templateEnabled) continue
 
     if (!(await claimEscortSmsSend(prisma, row.source_order_no, 'same_day', ymd, row.pzr, ymd, row.pzr_detail_id))) {
       continue
@@ -1147,12 +1199,12 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, a
     if (!canSend) {
       const reason = !allowSend || !inSendWindow
         ? '已错过当天 07:00 发送时点'
-        : !smsConfig.templatesConfigured ? '前一天和当天短信模板未配置完整' : '短信功能未启用或密钥未配置'
+        : '短信未执行'
       await recordSkippedEscortSms(prisma, row, 'same_day', ymd, ymd, templateCode, signName, reason, logger)
       continue
     }
 
-    const phone = await resolveEscortPhone(prisma, row.pzr)
+    const phone = await resolveEscortPhone(row.remote_order_no, row.pzr)
     const cleanPhone = (phone || '').replace(/\D/g, '')
 
     if (cleanPhone && cleanPhone.length === 11) {
@@ -1185,17 +1237,16 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, a
 
         logger?.warn(`[orderReminderSchedule] 当日出工打卡短信发送失败: 订单 ${row.source_order_no}, 错误: ${result.message}`)
 
-        const dedupeKey = `auto:escort_sms_failed:${row.source_order_no}:same_day:${row.pzr_detail_id}:${ymd}`
-        const content = `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 陪诊当日出工打卡短信发送失败（原因：${result.message}），请紧急人工联系陪诊人员！`
-
-        await createReminderIfAbsent(prisma, {
+        await notifyManagerEscortException(prisma, {
           orderNo: row.source_order_no,
           employeeId: row.assigned_employee_id,
-          type: 'escort',
-          content,
-          dedupeKey,
+          pzr: row.pzr,
+          pzrDetailId: row.pzr_detail_id,
+          serviceDate: ymd,
+          sendYmd: ymd,
+          batchType: 'mgr_same_failed',
+          alertType: '陪诊当天出工短信发送失败',
           logger,
-          extra: { failureReason: result.message, phone: cleanPhone, pzr: row.pzr, pzrDetailId: row.pzr_detail_id, batchType: 'same_day', serviceDate: ymd }
         })
       }
     } else {
@@ -1209,17 +1260,16 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, a
 
       logger?.warn(`[orderReminderSchedule] 当日出工短信未发送：未找到陪诊人手机号: 订单 ${row.source_order_no}, 陪诊人 ${row.pzr}`)
 
-      const dedupeKey = `auto:escort_sms_failed:${row.source_order_no}:same_day:${row.pzr_detail_id}:${ymd}`
-      const content = `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 未找到陪诊人员有效手机号，当日出工打卡短信无法发送，请紧急人工联系陪诊人员！`
-
-      await createReminderIfAbsent(prisma, {
+        await notifyManagerEscortException(prisma, {
         orderNo: row.source_order_no,
         employeeId: row.assigned_employee_id,
-        type: 'escort',
-        content,
-        dedupeKey,
+          pzr: row.pzr,
+          pzrDetailId: row.pzr_detail_id,
+          serviceDate: ymd,
+          sendYmd: ymd,
+          batchType: 'mgr_same_failed',
+          alertType: '陪诊人员无有效手机号',
         logger,
-        extra: { failureReason: '未配置有效陪诊人员手机号', pzr: row.pzr, pzrDetailId: row.pzr_detail_id, batchType: 'same_day', serviceDate: ymd }
       })
     }
     } catch (err: any) {
@@ -1231,17 +1281,20 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, a
         continue
       }
       await finishEscortSmsClaim(prisma, row.source_order_no, 'same_day', ymd, 'unknown', reason, row.pzr_detail_id).catch(() => {})
-      if (row.assigned_employee_id && row.source_order_no) {
-        await createReminderIfAbsent(prisma, {
+      if (row.source_order_no) {
+        await notifyManagerEscortException(prisma, {
           orderNo: row.source_order_no,
           employeeId: row.assigned_employee_id,
-          type: 'escort',
-          content: `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 当天陪诊短信任务异常，发送结果可能未知，系统不会补发，请人工确认是否需要联系陪诊人员。`,
-          dedupeKey: `auto:escort_sms_failed:${row.source_order_no}:same_day:${row.pzr_detail_id}:${ymd}`,
+          pzr: row.pzr,
+          pzrDetailId: row.pzr_detail_id,
+          serviceDate: ymd,
+          sendYmd: ymd,
+          batchType: 'mgr_same_failed',
+          alertType: '陪诊当天反馈短信结果未知',
           logger,
-          extra: { failureReason: reason, batchType: 'same_day', pzr: row.pzr, pzrDetailId: row.pzr_detail_id, serviceDate: ymd }
         })
       }
+    }
     }
   }
 }
@@ -1249,10 +1302,10 @@ async function sendSameDayEscortSms(prisma: PrismaClient, logger?: LoggerLike, a
 /**
  * 场景 2.2-B & 2.3-B：【陪诊】前一天出工反馈监控（13:00）与当天防迟到出工监控（07:20）
  * 核心门禁：
- * 1. 绝不取 HY_FACT_DDCX_NEW.PZR
- * 2. 仅使用正式陪诊信息；未确认的 AI 候选不作为短信对象或反馈监控对象
+ * 1. 订单和正式陪诊信息从远程寰宇库读取；
+ * 2. 反馈表 fact_hy_pzfk 仍从本地读取，未确认的 AI 候选不作为短信对象或反馈监控对象
  * 3. 严格限定白名单服务类型，排除住院护工协助等非陪诊订单
- * 4. 【关键门禁】：未反馈提醒仅在今天成功发送过对应批次短信的前提下才触发！未发短信或发送失败（已报警）绝不重复误报！
+ * 4. 【关键门禁】：未反馈短信仅在今天成功发送过对应批次短信的前提下才触发，未发短信或发送失败时不重复通知。
  */
 export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger?: LoggerLike, now = new Date()): Promise<void> {
   const { ymd, time, hours, minutes } = shanghaiNowParts(now)
@@ -1263,14 +1316,10 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
   const preDayOrders = await queryInPages(prisma, `
     SELECT 
       o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
-      op.service_type,
-      p."ZJ" AS pzr_detail_id, NULLIF(TRIM(p."PZR"), '') AS pzr,
-      ${FORMAL_ESCORT_DATE_YMD} AS service_date
+      op.service_type
     FROM orders o
     JOIN b_order_operations op ON op.order_id = o.id
-    ${FORMAL_ESCORT_JOINS}
-    WHERE o.assigned_employee_id IS NOT NULL
-      AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
+    WHERE (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
       AND op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
       AND EXISTS (
         SELECT 1 FROM b_order_service_steps cstep
@@ -1278,12 +1327,16 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
           AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
           AND cstep.step_status IN ('pending', 'in_progress')
       )
-      AND ${FORMAL_ESCORT_DATE_YMD} = $1
-      AND NULLIF(TRIM(p."PZR"), '') IS NOT NULL
-    ORDER BY o.created_at ASC, o.id ASC, p."ZJ" ASC
-  `, tomorrowYmd)
+    ORDER BY o.created_at ASC, o.id ASC
+  `)
 
-  for (const row of preDayOrders) {
+  for (const baseRow of preDayOrders) {
+    const remoteOrder = await findRemoteReminderOrder(baseRow.source_order_no, baseRow.huanyu_order_no)
+    if (!remoteOrder) continue
+    const remoteDetails = await listRemoteEscortReminderDetails(remoteOrder.orderNo)
+    for (const detail of remoteDetails) {
+      if (!detail.pzrId || normalizeYmdValue(detail.serviceDate) !== tomorrowYmd) continue
+      const row = { ...baseRow, pzr_detail_id: detail.detailId, pzr: detail.pzrId, service_date: detail.serviceDate }
     // 检查 fact_hy_pzfk 表中的前一天反馈
     const feedbackList = await prisma.$queryRawUnsafe<any[]>(`
       SELECT will_attend, remark, created_at
@@ -1298,7 +1351,7 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
 
     const feedback = feedbackList[0]
 
-    // 情况 A：已提交但反馈【无法出工（不去）】，立即报警
+    // 情况 A：已提交但反馈【无法出工（不去）】，立即短信通知客户经理
     if (feedback && feedback.will_attend === false) {
       await closeReminderByKey(prisma, `auto:escort_pre_day_unack:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`)
       await createEscortRejectReminder(prisma, row, {
@@ -1329,23 +1382,23 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
       `, row.source_order_no, ymd, row.pzr, tomorrowYmd, row.pzr_detail_id)
 
       if (!smsLog || smsLog.length === 0) {
-        // 未发送短信或发送失败（发送失败已在 11:00 报警过），绝不报未反馈假提醒
+        // 未发送短信或发送失败时，不发送未反馈短信。
         continue
       }
 
-      const dedupeKey = `auto:escort_pre_day_unack:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`
-      const content = `订单号: ${row.source_order_no}\n陪诊明细: ${row.pzr_detail_id}\n陪诊人员: ${row.pzr}\n服务日期: ${tomorrowYmd}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 陪诊人员没有第一次反馈信息，请关注！`
-
-      await createReminderIfAbsent(prisma, {
-        orderNo: row.source_order_no,
-        employeeId: row.assigned_employee_id,
-        type: 'escort',
-        content,
-        dedupeKey,
-        logger,
-        extra: { serviceDate: tomorrowYmd, pzr: row.pzr, pzrDetailId: row.pzr_detail_id }
-      })
+      if (row.assigned_employee_id) {
+        await createReminderIfAbsent(prisma, {
+          orderNo: row.source_order_no,
+          employeeId: row.assigned_employee_id,
+          type: 'escort',
+          content: `订单号: ${row.source_order_no}\n陪诊人员: ${row.pzr}\n服务日期: ${tomorrowYmd}\n提醒内容: 陪诊人员前一天确认短信后仍未反馈，请及时处理！`,
+          dedupeKey: `auto:escort_pre_day_unack:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`,
+          logger,
+          extra: { serviceDate: tomorrowYmd, pzr: row.pzr, pzrDetailId: row.pzr_detail_id }
+        })
+      }
     }
+  }
   }
 
   // 2. 场景 2.3：当天防迟到出工（07:00 发短信，07:20 检查未反馈或异常反馈）
@@ -1353,14 +1406,10 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
   const sameDayOrders = await queryInPages(prisma, `
     SELECT 
       o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id,
-      op.service_type,
-      p."ZJ" AS pzr_detail_id, NULLIF(TRIM(p."PZR"), '') AS pzr,
-      ${FORMAL_ESCORT_DATE_YMD} AS service_date
+      op.service_type
     FROM orders o
     JOIN b_order_operations op ON op.order_id = o.id
-    ${FORMAL_ESCORT_JOINS}
-    WHERE o.assigned_employee_id IS NOT NULL
-      AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
+    WHERE (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
       AND op.service_type IN ('全流程', '全程门诊', '单次门诊', '电话问诊', 'MDT服务', '检查加急', '住院')
       AND EXISTS (
         SELECT 1 FROM b_order_service_steps cstep
@@ -1368,12 +1417,16 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
           AND cstep.step_code IN ('escort', 'check_companion', 'hospital_companion', 'revisit_escort')
           AND cstep.step_status IN ('pending', 'in_progress')
       )
-      AND ${FORMAL_ESCORT_DATE_YMD} = $1
-      AND NULLIF(TRIM(p."PZR"), '') IS NOT NULL
-    ORDER BY o.created_at ASC, o.id ASC, p."ZJ" ASC
-  `, ymd)
+    ORDER BY o.created_at ASC, o.id ASC
+  `)
 
-  for (const row of sameDayOrders) {
+  for (const baseRow of sameDayOrders) {
+    const remoteOrder = await findRemoteReminderOrder(baseRow.source_order_no, baseRow.huanyu_order_no)
+    if (!remoteOrder) continue
+    const remoteDetails = await listRemoteEscortReminderDetails(remoteOrder.orderNo)
+    for (const detail of remoteDetails) {
+      if (!detail.pzrId || normalizeYmdValue(detail.serviceDate) !== ymd) continue
+      const row = { ...baseRow, pzr_detail_id: detail.detailId, pzr: detail.pzrId, service_date: detail.serviceDate }
     const feedbackList = await prisma.$queryRawUnsafe<any[]>(`
       SELECT will_attend, remark, created_at 
       FROM "fact_hy_pzfk" 
@@ -1387,7 +1440,7 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
 
     const feedback = feedbackList[0]
 
-    // 情况 A：当天反馈【无法出工（不去）】，立即报警
+    // 情况 A：当天反馈【无法出工（不去）】，立即短信通知客户经理
     if (feedback && feedback.will_attend === false) {
       await closeReminderByKey(prisma, `auto:escort_same_day_unack:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`)
       await createEscortRejectReminder(prisma, row, {
@@ -1422,19 +1475,19 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
         continue
       }
 
-      const dedupeKey = `auto:escort_same_day_unack:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`
-      const content = `订单号: ${row.source_order_no}\n陪诊明细: ${row.pzr_detail_id}\n陪诊人员: ${row.pzr}\n服务日期: ${ymd}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 陪诊人员没有第一次反馈信息，请关注！`
-
-      await createReminderIfAbsent(prisma, {
+      await notifyManagerEscortException(prisma, {
         orderNo: row.source_order_no,
         employeeId: row.assigned_employee_id,
-        type: 'escort',
-        content,
-        dedupeKey,
+        pzr: row.pzr,
+        pzrDetailId: row.pzr_detail_id,
+        serviceDate: ymd,
+        sendYmd: ymd,
+        batchType: 'mgr_same_unack',
+        alertType: '陪诊人员未反馈',
         logger,
-        extra: { serviceDate: ymd, triggerTime: time, pzr: row.pzr, pzrDetailId: row.pzr_detail_id }
       })
     }
+  }
   }
 }
 
@@ -1446,15 +1499,13 @@ export async function scanHospitalCareReminders(prisma: PrismaClient, logger?: L
 
   const careOrders = await queryInPages(prisma, `
     SELECT 
-      o.id AS order_id, o.source_order_no, o.created_at AS order_created_at, o.assigned_employee_id, o.status AS order_status,
+      o.id AS order_id, o.source_order_no, o.huanyu_order_no, o.created_at AS order_created_at, o.assigned_employee_id, o.status AS order_status,
       op.service_type,
-      h."BBQ_FW" AS care_start_time, h."DATE_FW" AS care_start_date,
-      h."BBQ_QDFW" AS care_end_time, h."DATE_QDFW" AS care_end_date,
-      s.id AS care_step_id, s.occurrence_no, s.activated_at AS care_activated_at
+      s.id AS care_step_id, s.occurrence_no, s.started_at AS care_requested_at,
+      s.planned_at AS care_end_date, s.evidence_json AS care_evidence
     FROM orders o
     JOIN b_order_operations op ON op.order_id = o.id
-    JOIN b_order_service_steps s ON s.operation_id = op.id AND s.step_code = 'hospital_care' AND s.step_status IN ('pending', 'in_progress')
-    LEFT JOIN "HY_FACT_DDCX_NEW" h ON (h."BDQD_DDBH" = o.source_order_no OR (o.huanyu_order_no IS NOT NULL AND h."DDBH" = o.huanyu_order_no))
+    JOIN b_order_service_steps s ON s.operation_id = op.id AND s.step_code = 'hospital_care' AND s.step_status = 'in_progress' AND s.started_at IS NOT NULL
     WHERE op.service_type = '住院护工协助'
       AND o.assigned_employee_id IS NOT NULL
       AND (o.status IS NULL OR (o.status NOT LIKE '%取消%' AND o.status != '已完成'))
@@ -1467,14 +1518,15 @@ export async function scanHospitalCareReminders(prisma: PrismaClient, logger?: L
     if (seenCareOrders.has(row.source_order_no)) continue
     seenCareOrders.add(row.source_order_no)
 
-    const hasStartTime = Boolean(
-      (row.care_start_time && String(row.care_start_time).trim()) ||
-      (row.care_start_date && String(row.care_start_date).trim())
-    )
+    const evidence = (row.care_evidence && typeof row.care_evidence === 'object' ? row.care_evidence : {}) as Record<string, unknown>
+    const admittedAt = evidence.admittedAt ? new Date(String(evidence.admittedAt)) : null
+    if (!admittedAt || Number.isNaN(admittedAt.getTime())) continue
+    const hasStartTime = Boolean(evidence.careWorkerStartedAt)
 
     // 3.1 尚未确定护工开始时间：每 2 天上午 09:00 提醒
     if (!hasStartTime) {
-      const baseTime = row.care_activated_at || row.order_created_at
+      const requestedAt = row.care_requested_at ? new Date(row.care_requested_at) : null
+      const baseTime = requestedAt && requestedAt > admittedAt ? requestedAt : admittedAt
       if (baseTime) {
         const cycleIdentity = `${row.care_step_id}:${row.occurrence_no ?? 0}:${new Date(baseTime).toISOString()}`
         const dedupeKey = `auto:care_start_unassigned:${row.source_order_no}`
@@ -1496,10 +1548,12 @@ export async function scanHospitalCareReminders(prisma: PrismaClient, logger?: L
           })
         }
       }
+    } else {
+      await closeReminderByKey(prisma, `auto:care_start_unassigned:${row.source_order_no}`)
     }
 
     // 3.2 护工结束前 2 个工作日提醒（扣除节假日）
-    const endTimeRaw = row.care_end_time || row.care_end_date
+    const endTimeRaw = row.care_end_date
     const serviceYmd = normalizeYmdValue(endTimeRaw)
     if (serviceYmd) {
         const [year, month, day] = serviceYmd.split('-').map(Number)
@@ -1509,7 +1563,7 @@ export async function scanHospitalCareReminders(prisma: PrismaClient, logger?: L
         await closeReminderKeysExcept(prisma, `auto:care_end_notify:${row.source_order_no}:`, dedupeKey, 'superseded')
 
         if (hours >= 9 && ymd === targetRemindYmd && ymd <= serviceYmd) {
-          const content = `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 客户出院时间到了，请关注客户后续行程！`
+          const content = `订单号: ${row.source_order_no}\n申请时间: ${formatDateDisplay(row.order_created_at)}\n提醒内容: 护工服务结束日期临近，请确认客户后续安排！`
 
           await createReminderIfAbsent(prisma, {
             orderNo: row.source_order_no,

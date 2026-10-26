@@ -292,6 +292,20 @@ export type WorkflowEventInput = {
   evidence?: unknown
   note?: string | null
   occurrenceNo?: number
+  /** 业务事实发生时间；缺失时使用事件写入时间。 */
+  occurredAt?: Date | string | null
+  plannedAt?: Date | string | null
+}
+
+function businessOccurredAt(input: WorkflowEventInput): Date {
+  const value = input.occurredAt ? new Date(input.occurredAt) : new Date()
+  return Number.isNaN(value.getTime()) ? new Date() : value
+}
+
+function businessPlannedAt(input: WorkflowEventInput): Date | null {
+  if (!input.plannedAt) return null
+  const value = new Date(input.plannedAt)
+  return Number.isNaN(value.getTime()) ? null : value
 }
 
 async function nextOccurrence(db: DbClient, operationId: bigint, code: string): Promise<number> {
@@ -321,6 +335,7 @@ async function setStepStatus(
   status: WorkflowStepStatus,
   input: WorkflowEventInput
 ): Promise<void> {
+  const occurredAt = businessOccurredAt(input)
   await db.$executeRaw`
     UPDATE b_order_service_steps
     SET step_status = ${status},
@@ -330,8 +345,8 @@ async function setStepStatus(
         evidence_json = ${JSON.stringify(input.evidence ?? [])}::jsonb,
         note = COALESCE(${input.note ?? null}, note),
         activated_at = CASE WHEN ${status} = 'in_progress' THEN now() ELSE activated_at END,
-        started_at = CASE WHEN ${status} = 'in_progress' THEN now() ELSE started_at END,
-        completed_at = CASE WHEN ${status} = 'completed' THEN now() ELSE completed_at END,
+        started_at = CASE WHEN ${status} = 'in_progress' THEN ${occurredAt} ELSE started_at END,
+        completed_at = CASE WHEN ${status} = 'completed' THEN ${occurredAt} ELSE completed_at END,
         updated_at = now()
     WHERE operation_id = ${operationId} AND step_code = ${code} AND occurrence_no = ${occurrenceNo}
   `
@@ -464,6 +479,18 @@ export async function applyOrderWorkflowEvent(
           throw new Error(`服务类型“${serviceType}”不支持服务包“check_service”`)
         }
         break
+      case 'hospital_followup_started':
+        {
+          const existing = await tx.$queryRaw<Array<{ id: bigint }>>`
+            SELECT id FROM b_order_service_steps WHERE operation_id = ${operation.id} AND step_code = 'hospital_booking' AND occurrence_no = ${input.occurrenceNo ?? 1} LIMIT 1
+          `
+          if (existing.length > 0) {
+            await setStepStatus(tx, operation.id, 'hospital_booking', input.occurrenceNo ?? 1, 'in_progress', input)
+            break
+          }
+        }
+        packageCode = 'hospital_service'
+        break
       case 'hospital_confirmed':
         packageCode = 'hospital_service'
         break
@@ -495,6 +522,45 @@ export async function applyOrderWorkflowEvent(
         occurrence = input.occurrenceNo ?? 1
         await setStepStatus(tx, operation.id, 'hospital_companion', occurrence, 'completed', input)
         await refreshPackageStatus(tx, operation.id, packageCode, occurrence)
+        break
+      case 'hospital_admitted':
+        await tx.$executeRaw`
+          UPDATE b_order_service_steps
+             SET evidence_json = jsonb_set(CASE WHEN jsonb_typeof(evidence_json) = 'object' THEN evidence_json ELSE '{}'::jsonb END, '{admittedAt}', to_jsonb(${businessOccurredAt(input)}::timestamptz), true),
+                 updated_at = now()
+           WHERE operation_id = ${operation.id} AND step_code = 'hospital_care' AND occurrence_no = ${input.occurrenceNo ?? 1};
+        `
+        break
+      case 'hospital_care_requested':
+        await tx.$executeRaw`
+          UPDATE b_order_service_steps
+             SET step_status = 'in_progress', source_type = ${input.source}, source_ref = ${input.sourceRef ?? null},
+                 ai_confidence = ${input.confidence ?? null},
+                 evidence_json = jsonb_set(CASE WHEN jsonb_typeof(evidence_json) = 'object' THEN evidence_json ELSE '{}'::jsonb END, '{careRequestedAt}', to_jsonb(${businessOccurredAt(input)}::timestamptz), true),
+                 note = COALESCE(${input.note ?? null}, note), activated_at = now(), started_at = ${businessOccurredAt(input)}, updated_at = now()
+           WHERE operation_id = ${operation.id} AND step_code = 'hospital_care' AND occurrence_no = ${input.occurrenceNo ?? 1};
+        `
+        break
+      case 'care_worker_started':
+        await tx.$executeRaw`
+          UPDATE b_order_service_steps
+             SET evidence_json = jsonb_set(CASE WHEN jsonb_typeof(evidence_json) = 'object' THEN evidence_json ELSE '{}'::jsonb END, '{careWorkerStartedAt}', to_jsonb(${businessOccurredAt(input)}::timestamptz), true),
+                 note = COALESCE(${input.note ?? null}, note), updated_at = now()
+           WHERE operation_id = ${operation.id} AND step_code = 'hospital_care' AND occurrence_no = ${input.occurrenceNo ?? 1};
+        `
+        break
+      case 'care_worker_end_confirmed':
+        {
+          const endAt = businessPlannedAt(input)
+          if (!endAt) throw new Error('护工结束日期事件必须提供 plannedAt')
+          await tx.$executeRaw`
+            UPDATE b_order_service_steps SET planned_at = ${endAt}, updated_at = now()
+            WHERE operation_id = ${operation.id} AND step_code = 'hospital_care' AND occurrence_no = ${input.occurrenceNo ?? 1};
+          `
+        }
+        break
+      case 'hospital_care_completed':
+        await setStepStatus(tx, operation.id, 'hospital_care', input.occurrenceNo ?? 1, 'completed', input)
         break
       case 'revisit_completed':
         packageCode = 'revisit_service'
@@ -559,10 +625,13 @@ export async function applyOrderWorkflowEvent(
       default:
         throw new Error(`不支持的业务流程事件: ${input.code}`)
     }
-    if (packageCode && ['hospital_confirmed', 'revisit_confirmed'].includes(input.code)) {
+    if (packageCode && ['hospital_confirmed', 'hospital_followup_started', 'revisit_confirmed'].includes(input.code)) {
       const definition = await flexiblePackageFor(tx, serviceType, packageCode)
       if (!definition) throw new Error(`服务类型“${serviceType}”不支持服务包“${packageCode}”`)
-      await appendPackage(tx, operation.id, definition, input)
+      const appendedOccurrence = await appendPackage(tx, operation.id, definition, input)
+      if (input.code === 'hospital_followup_started') {
+        await setStepStatus(tx, operation.id, 'hospital_booking', appendedOccurrence, 'in_progress', input)
+      }
     }
     await tx.$executeRaw`
       UPDATE b_order_workflow_events SET applied_at = now() WHERE id = ${inserted[0].id}

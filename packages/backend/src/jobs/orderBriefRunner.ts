@@ -374,7 +374,7 @@ export async function analyzeOrderFields(
       try {
         await applyOrderWorkflowEvent(prisma, orderId, {
           code: event.code, source: 'ai', sourceRef: `qwen:${event.code}:${fingerprint}`, confidence: 0.85,
-          evidence: [{ text: event.evidence, model: extraction.model || 'qwen-plus' }]
+          evidence: [{ text: event.evidence, model: extraction.model || 'qwen-plus' }], occurredAt: event.occurredAt, plannedAt: event.plannedAt
         })
       } catch (error) {
         console.warn(`[order-ai-field] orderId=${orderId} runId=${runId} 服务步骤 ${event.code} 写入失败: ${describeError(error)}`)
@@ -591,7 +591,7 @@ export async function refreshOrderBrief(
           source: 'ai',
           sourceRef: `qwen:${event.code}:${fingerprint}`,
           confidence: 0.85,
-          evidence: [{ text: event.evidence, model: extraction.model ?? 'qwen-plus' }]
+          evidence: [{ text: event.evidence, model: extraction.model ?? 'qwen-plus' }], occurredAt: event.occurredAt, plannedAt: event.plannedAt
         })
       } catch (eventErr) {
         console.warn(`[order-ai] 订单 ${orderId} 自动应用事件 ${event.code} 异常:`, (eventErr as Error).message)

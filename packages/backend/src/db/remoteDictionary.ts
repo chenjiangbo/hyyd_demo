@@ -27,6 +27,29 @@ export interface HuanyuEscortOption extends HuanyuChannelOption {
   area: string
 }
 
+/** 提醒任务使用的远程寰宇订单、陪诊人和客户经理信息。 */
+export interface RemoteReminderOrder {
+  orderNo: string
+  sourceOrderNo: string
+  customerName: string
+  hospitalName: string
+  managerName: string
+  managerPhone: string
+  status: string
+  serviceDate: string
+  careStartTime: string
+  careStartDate: string
+  careEndTime: string
+  careEndDate: string
+}
+
+export interface RemoteEscortReminderDetail {
+  detailId: string
+  pzrId: string
+  serviceDate: string
+  phone: string
+}
+
 let dictionaryPool: Pool | null = null
 
 function readOnlyPool(): Pool {
@@ -69,6 +92,50 @@ function readOnlyPool(): Pool {
 
 export function getRemoteDictionaryPool(): Pool {
   return readOnlyPool()
+}
+
+/**
+ * 提醒不依赖本地寰宇镜像表。订单主信息、客户经理电话直接来自远程库。
+ */
+export async function findRemoteReminderOrder(sourceOrderNo: string, huanyuOrderNo?: string | null): Promise<RemoteReminderOrder | null> {
+  const source = searchTerm(sourceOrderNo)
+  const huanyu = searchTerm(huanyuOrderNo)
+  if (!source && !huanyu) return null
+  const [rows] = await readOnlyPool().execute<RowDataPacket[]>(`
+    SELECT h.DDBH AS orderNo, h.BDQD_DDBH AS sourceOrderNo, h.JZR_XM AS customerName, h.H_NAME AS hospitalName,
+           h.KHJL AS managerName, u.TEL_ AS managerPhone, h.DD_state AS status,
+           h.BBQ_FW AS serviceDate, h.BBQ_FW AS careStartTime, h.DATE_FW AS careStartDate,
+           h.BBQ_QDFW AS careEndTime, h.DATE_QDFW AS careEndDate
+      FROM HY_FACT_DDCX_NEW h
+      LEFT JOIN abi53_eacl_user u ON TRIM(u.CAPTION_) = TRIM(h.KHJL)
+     WHERE h.DDBH = ? OR h.BDQD_DDBH = ? OR (? != '' AND h.DDBH = ?)
+     ORDER BY CASE WHEN h.DDBH = ? THEN 0 ELSE 1 END, h.xtsj_ DESC
+     LIMIT 1`, [huanyu || source, source, huanyu, huanyu, huanyu || source])
+  const row = rows[0]
+  if (!row) return null
+  return {
+    orderNo: String(row.orderNo ?? '').trim(), sourceOrderNo: String(row.sourceOrderNo ?? '').trim(),
+    customerName: String(row.customerName ?? '').trim(), hospitalName: String(row.hospitalName ?? '').trim(), managerName: String(row.managerName ?? '').trim(),
+    managerPhone: String(row.managerPhone ?? '').trim(), status: String(row.status ?? '').trim(),
+    serviceDate: String(row.serviceDate ?? '').trim(), careStartTime: String(row.careStartTime ?? '').trim(), careStartDate: String(row.careStartDate ?? '').trim(),
+    careEndTime: String(row.careEndTime ?? '').trim(), careEndDate: String(row.careEndDate ?? '').trim()
+  }
+}
+
+/** 通过远程陪诊明细 PZR → f_hy_pzr.ID 读取陪诊手机号。 */
+export async function listRemoteEscortReminderDetails(orderNo: string): Promise<RemoteEscortReminderDetail[]> {
+  const no = searchTerm(orderNo)
+  if (!no) return []
+  const [rows] = await readOnlyPool().execute<RowDataPacket[]>(`
+    SELECT p.ZJ AS detailId, p.PZR AS pzrId, p.BBQ_FW AS serviceDate, e.SJ AS phone
+      FROM fact_hy_pzrxx p
+      LEFT JOIN f_hy_pzr e ON CAST(e.ID AS CHAR) = TRIM(CAST(p.PZR AS CHAR))
+     WHERE p.DDBH = ?
+     ORDER BY p.xtsj DESC, p.ZJ DESC`, [no])
+  return rows.map((row) => ({
+    detailId: String(row.detailId ?? '').trim(), pzrId: String(row.pzrId ?? '').trim(),
+    serviceDate: String(row.serviceDate ?? '').trim(), phone: String(row.phone ?? '').trim()
+  }))
 }
 
 function searchTerm(value: unknown): string {

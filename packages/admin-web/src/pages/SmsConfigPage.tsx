@@ -10,7 +10,6 @@ import { Card, PageHeader, LoadingBlock, ErrorBlock } from '../components/ui'
 export default function SmsConfigPage(): React.JSX.Element {
   const [config, setConfig] = useState<SmsConfig | null>(null)
   const [isConfigured, setIsConfigured] = useState<boolean>(false)
-  const [templatesConfigured, setTemplatesConfigured] = useState<boolean>(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<Error | null>(null)
 
@@ -22,6 +21,7 @@ export default function SmsConfigPage(): React.JSX.Element {
   const [signName, setSignName] = useState('寰宇医道')
   const [templatePreDay, setTemplatePreDay] = useState('')
   const [templateSameDay, setTemplateSameDay] = useState('')
+  const [templateManagerAlert, setTemplateManagerAlert] = useState('')
 
   // 保存状态
   const [saving, setSaving] = useState(false)
@@ -30,7 +30,7 @@ export default function SmsConfigPage(): React.JSX.Element {
   // 测试发信工具
   const [testPhone, setTestPhone] = useState('')
   const [testOrderNo, setTestOrderNo] = useState('TEST2026092201')
-  const [testBatchType, setTestBatchType] = useState<'pre_day' | 'same_day'>('pre_day')
+  const [testBatchType, setTestBatchType] = useState<'pre_day' | 'same_day' | 'manager_alert'>('pre_day')
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<TestSmsResult | null>(null)
   const [testError, setTestError] = useState<string | null>(null)
@@ -46,13 +46,13 @@ export default function SmsConfigPage(): React.JSX.Element {
       const res = await adminApi.smsConfig()
       setConfig(res.config)
       setIsConfigured(res.isConfigured)
-      setTemplatesConfigured(res.templatesConfigured)
       setEnabled(res.config.enabled)
       setAccessKeyId(res.config.accessKeyId || '')
       setAccessKeySecret(res.config.accessKeySecret || '')
       setSignName(res.config.signName || '寰宇医道')
       setTemplatePreDay(res.config.templatePreDay || '')
       setTemplateSameDay(res.config.templateSameDay || '')
+      setTemplateManagerAlert(res.config.templateManagerAlert || '')
     } catch (err) {
       setError(err instanceof Error ? err : new Error(String(err)))
     } finally {
@@ -78,10 +78,6 @@ export default function SmsConfigPage(): React.JSX.Element {
   }, [])
 
   async function handleSave(): Promise<void> {
-    if (enabled && (!templatePreDay.trim() || !templateSameDay.trim())) {
-      setSaveMsg({ type: 'error', text: '启用短信前必须填写前一天和当天的实际模板代码' })
-      return
-    }
     setSaving(true)
     setSaveMsg(null)
     try {
@@ -91,11 +87,11 @@ export default function SmsConfigPage(): React.JSX.Element {
         accessKeySecret: accessKeySecret.trim(),
         signName: signName.trim() || '寰宇医道',
         templatePreDay: templatePreDay.trim(),
-        templateSameDay: templateSameDay.trim()
+        templateSameDay: templateSameDay.trim(),
+        templateManagerAlert: templateManagerAlert.trim()
       })
       setConfig(res.data.config)
       setIsConfigured(res.data.isConfigured)
-      setTemplatesConfigured(res.data.templatesConfigured)
       setSaveMsg({ type: 'ok', text: res.message || '短信模板配置已保存并立即生效' })
       setTimeout(() => setSaveMsg(null), 4000)
     } catch (err: any) {
@@ -106,8 +102,13 @@ export default function SmsConfigPage(): React.JSX.Element {
   }
 
   async function handleSendTest(): Promise<void> {
-    if (!templatesConfigured) {
-      setTestError('请先填写并保存实际短信模板代码')
+    const selectedTemplate = testBatchType === 'pre_day'
+      ? templatePreDay
+      : testBatchType === 'same_day'
+        ? templateSameDay
+        : templateManagerAlert
+    if (!selectedTemplate.trim()) {
+      setTestError('请先填写并保存所选短信模板代码')
       return
     }
     const phone = testPhone.trim()
@@ -205,9 +206,7 @@ export default function SmsConfigPage(): React.JSX.Element {
               未配置 AccessKey（请填写并保存）
             </span>
           )}
-          <span className={templatesConfigured ? 'text-emerald-700' : 'text-amber-700'}>
-            {templatesConfigured ? '两个短信模板已配置' : '短信模板未配置完整'}
-          </span>
+          <span className="text-fg-muted">模板留空即关闭对应短信</span>
         </div>
       </div>
 
@@ -329,7 +328,7 @@ export default function SmsConfigPage(): React.JSX.Element {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div className="space-y-1">
-                    <label className="text-[11px] text-fg-muted font-medium">阿里云模板代码 (TemplateCode) <span className="text-danger">*</span></label>
+                    <label className="text-[11px] text-fg-muted font-medium">阿里云模板代码 (TemplateCode)</label>
                     <input
                       type="text"
                       placeholder="请输入审核通过的实际模板代码"
@@ -351,7 +350,7 @@ export default function SmsConfigPage(): React.JSX.Element {
 
                 <div className="text-[11px] text-fg-muted flex items-center gap-1.5">
                   <span>⏱ 检查未反馈门禁：</span>
-                  <span>仅在短信发送成功时，13:00 扫描未收到陪诊初次反馈才触发未反馈提醒；短信发送失败则 11:00 立即告警。</span>
+                    <span>仅在短信发送成功时，13:00 扫描未收到陪诊初次反馈；异常保留为系统提醒。</span>
                 </div>
               </div>
 
@@ -369,7 +368,7 @@ export default function SmsConfigPage(): React.JSX.Element {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div className="space-y-1">
-                    <label className="text-[11px] text-fg-muted font-medium">阿里云模板代码 (TemplateCode) <span className="text-danger">*</span></label>
+                    <label className="text-[11px] text-fg-muted font-medium">阿里云模板代码 (TemplateCode)</label>
                     <input
                       type="text"
                       placeholder="请输入审核通过的实际模板代码"
@@ -391,9 +390,42 @@ export default function SmsConfigPage(): React.JSX.Element {
 
                 <div className="text-[11px] text-fg-muted flex items-center gap-1.5">
                   <span>⏱ 检查未反馈门禁：</span>
-                  <span>仅在短信发送成功时，07:20 扫描未收到反馈才触发未反馈提醒；短信发送失败则 07:00 立即告警。</span>
+                    <span>仅在短信发送成功时，07:20 扫描未收到反馈才短信通知客户经理。</span>
                 </div>
               </div>
+
+                <div className="p-3.5 rounded-lg border border-line bg-surface-2 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300">
+                        客户经理异常提醒
+                      </span>
+                      <span className="text-xs font-medium text-fg-default">仅当天 07:00 批次发送失败、无法出工或 07:20 未反馈时发送</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[11px] text-fg-muted font-medium">阿里云模板代码 (TemplateCode)</label>
+                      <input
+                        type="text"
+                        placeholder="留空则不发送客户经理异常短信"
+                        value={templateManagerAlert}
+                        onChange={(e) => setTemplateManagerAlert(e.target.value)}
+                        className="w-full bg-surface-3 border border-line rounded px-2.5 py-1.5 text-xs text-fg-default font-mono focus:outline-none focus:border-accent"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[11px] text-fg-muted font-medium">绑定模板参数</label>
+                      <input
+                        type="text"
+                        readOnly
+                        value="${orderNo} ${customerName} ${serviceDate} ${escortName} ${alertType}"
+                        className="w-full bg-surface-3/50 border border-line rounded px-2.5 py-1.5 text-xs text-fg-muted font-mono cursor-not-allowed"
+                      />
+                    </div>
+                  </div>
+                </div>
             </div>
           </Card>
         </div>
@@ -445,6 +477,7 @@ export default function SmsConfigPage(): React.JSX.Element {
                 >
                   <option value="pre_day">前一日通知 ({config?.templatePreDay || '未配置'})</option>
                   <option value="same_day">当日通知 ({config?.templateSameDay || '未配置'})</option>
+                  <option value="manager_alert">客户经理异常提醒 ({config?.templateManagerAlert || '未配置'})</option>
                 </select>
               </div>
 
@@ -501,7 +534,7 @@ export default function SmsConfigPage(): React.JSX.Element {
                 <b className="text-fg-default">服务矩阵隔离</b>：仅限包含陪诊的服务订单，住院护工协助、挂号协助、接送等服务绝不发短信，杜绝陪诊误报。
               </li>
               <li>
-                <b className="text-fg-default">失败即时报警</b>：若模板未配置、陪诊人员无手机号或短信发送失败，调度器在 11:00 或 07:00 向客户经理报警，便于人工电话介入。
+                <b className="text-fg-default">异常即时通知</b>：仅当天 07:00 批次的无有效手机号、发送失败、无法出工或 07:20 未反馈会短信通知客户经理；前一天 11:00 批次异常保留为系统提醒。任一模板留空即静默关闭对应短信。
               </li>
               <li>
                 <b className="text-fg-default">未反馈前置门禁</b>：只有短信发送成功，系统才会在 13:00 / 07:20 检测未反馈；短信没发成绝不误报“未反馈”。
@@ -562,9 +595,13 @@ export default function SmsConfigPage(): React.JSX.Element {
                         <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 font-sans">
                           前一日通知
                         </span>
-                      ) : (
+                      ) : row.batch_type === 'same_day' ? (
                         <span className="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 font-sans">
                           当日通知
+                        </span>
+                      ) : (
+                        <span className="px-1.5 py-0.5 rounded bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300 font-sans">
+                          客户经理异常提醒
                         </span>
                       )}
                     </td>

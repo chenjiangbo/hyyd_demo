@@ -32,7 +32,13 @@ export const WORKFLOW_EVENT_CODES = [
   'check_booking_completed',
   'check_companion_completed',
   'hospital_confirmed',
+  'hospital_followup_started',
   'hospital_booking_completed',
+  'hospital_admitted',
+  'hospital_care_requested',
+  'care_worker_started',
+  'care_worker_end_confirmed',
+  'hospital_care_completed',
   'hospital_companion_completed',
   'revisit_confirmed',
   'revisit_completed',
@@ -43,6 +49,8 @@ export type WorkflowEventCode = (typeof WORKFLOW_EVENT_CODES)[number]
 export interface WorkflowAnalysisEvent {
   code: WorkflowEventCode
   evidence: string
+  occurredAt?: string
+  plannedAt?: string
 }
 
 // 回填关键信息字段（占位，业务通用集；真实字段以后按 ABI 回填接口对齐）
@@ -166,7 +174,7 @@ function buildSchema(): string {
     nextActions: ['下一步待办'],
     risks: ['风险/需关注，无则空数组'],
     keyInfo: Object.fromEntries(BRIEF_KEY_INFO_FIELDS.map((k) => [k, '值或null'])),
-    workflowEvents: [{ code: WORKFLOW_EVENT_CODES.join(' | '), evidence: '对应事实的简短原文依据；没有已确认事实则 []' }]
+    workflowEvents: [{ code: WORKFLOW_EVENT_CODES.join(' | '), occurredAt: '事实发生时间，原文无明确时间时留空', plannedAt: '仅护工结束日期填写 YYYY-MM-DD，其他留空', evidence: '对应事实的简短原文依据；没有已确认事实则 []' }]
   })
 }
 
@@ -206,7 +214,7 @@ export async function buildOrderBrief(
     `- keyInfo 只是从沟通中明确提到的信息摘录，键固定如下，没有的填 null，绝不编造：${BRIEF_KEY_INFO_FIELDS.join(' / ')}。`,
     '- 增量更新：保留上一版里已确认的信息，只在有新证据时修正或补充；不要无依据地清空已知字段。',
     `- workflowEvents 只列出沟通中已经完成或已明确确认的业务事实，code 只能是：${WORKFLOW_EVENT_CODES.join(' / ')}。`,
-    '- 不要因为“计划、意向、可能、待确认”输出事件；没有可靠事实就返回 []。evidence 要写支持该事件的简短原文事实（尽量带日期或具体事项），不可编造。',
+    '- 不要因为“计划、意向、可能、待确认”输出事件；没有可靠事实就返回 []。evidence 要写支持该事件的简短原文事实（尽量带日期或具体事项），不可编造。occurredAt 只填写事实明确发生时间；截图未显示时间时留空，后端以图片采集时间作为起点。',
     'JSON 结构如下（键固定）：',
     buildSchema()
   ].join('\n')
@@ -254,7 +262,7 @@ function normalizeBrief(parsed: Record<string, unknown> | null, prev: OrderBrief
       const code = typeof event.code === 'string' ? event.code.trim() : ''
       const evidence = typeof event.evidence === 'string' ? event.evidence.trim() : ''
       return (WORKFLOW_EVENT_CODES as readonly string[]).includes(code) && evidence
-        ? [{ code: code as WorkflowEventCode, evidence }]
+        ? [{ code: code as WorkflowEventCode, evidence, occurredAt: typeof event.occurredAt === 'string' ? event.occurredAt.trim() : undefined, plannedAt: typeof event.plannedAt === 'string' ? event.plannedAt.trim() : undefined }]
         : []
     })
     : []

@@ -807,7 +807,9 @@ export function registerApiRoutes(
         confidence: body.confidence ?? null,
         evidence: body.evidence,
         note: typeof body.note === 'string' ? body.note : null,
-        occurrenceNo: body.occurrenceNo
+        occurrenceNo: body.occurrenceNo,
+        occurredAt: typeof (body as any).occurredAt === 'string' ? (body as any).occurredAt : null,
+        plannedAt: typeof (body as any).plannedAt === 'string' ? (body as any).plannedAt : null
       })
       if (!workflow) return reply.status(404).send({ error: '订单不存在' })
       return reply.send({ data: workflow })
