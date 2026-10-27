@@ -9,6 +9,7 @@ import { MaterialStore } from './material-store'
 import { MaterialSyncWorker } from './material-sync'
 import { setupReminderIPC } from './reminder-window'
 import { PetIntakeService, type PetIntakeResult } from './pet-intake-service'
+import { PetOrderAiService } from './pet-order-ai-service'
 
 loadRootEnv()
 
@@ -35,12 +36,79 @@ let pendingPetMobileStatus: PetMobileStatus | null = null
 let pendingPetMobileReminder: string | null = null
 let petNeedsOpenActive = false
 let pendingPetOrderReminder: string | null = null
+let pendingPetPanel: { id: string; kind: string; [key: string]: unknown } | null = null
+let petPanelSuspended = false
+let petPanelChangedDuringSuspension = false
 let lastPetOrderReminderKey: string | null = null
 const captureSidecar = new CaptureSidecarClient()
 // 现场采集素材的本地落地 + 异步同步：粘贴→落 sqlite/文件→worker 上传后端
 const materialStore = new MaterialStore()
 const materialSync = new MaterialSyncWorker(materialStore)
 const petIntake = new PetIntakeService()
+const petOrderAi = new PetOrderAiService(showPetPanel, updatePetPanel, hidePetPanel, undefined, suspendPetPanel, resumePetPanel, ensurePetPanelVisible)
+
+function validPetPanel(value: unknown): value is { id: string; kind: string; [key: string]: unknown } {
+  if (!value || typeof value !== 'object') return false
+  const panel = value as Record<string, unknown>
+  if (typeof panel.id !== 'string' || panel.id.length === 0 || panel.id.length > 120) return false
+  if (panel.kind === 'speech' || panel.kind === 'progress' || panel.kind === 'error') return typeof panel.text === 'string'
+  if (panel.kind === 'candidate-list') return typeof panel.title === 'string' && Array.isArray(panel.items)
+  if (panel.kind !== 'form' || typeof panel.title !== 'string' || !Array.isArray(panel.fields) || !Array.isArray(panel.actions)) return false
+  return panel.fields.every((field: unknown) => {
+    if (!field || typeof field !== 'object') return false
+    const item = field as Record<string, unknown>
+    return typeof item.id === 'string' && typeof item.label === 'string' &&
+      typeof item.type === 'string' && ['text', 'textarea', 'number', 'date', 'datetime-local', 'select', 'radio', 'checkbox'].includes(item.type) &&
+      (typeof item.value === 'string' || typeof item.value === 'number' || typeof item.value === 'boolean')
+  })
+}
+
+function showPetPanel(panel: unknown): void {
+  if (!validPetPanel(panel)) throw new Error('浮动精灵面板数据非法或缺少 panelId')
+  pendingPetPanel = panel
+  petPanelSuspended = false
+  petPanelChangedDuringSuspension = false
+  petWindow?.webContents.send('pet:panel-show', panel)
+  if (isAuthenticated) showPetWindow()
+}
+
+function updatePetPanel(id: string, panel: unknown): void {
+  if (!validPetPanel(panel) || panel.id !== id || pendingPetPanel?.id !== id) {
+    throw new Error('浮动精灵面板更新的 panelId 不匹配')
+  }
+  pendingPetPanel = panel
+  if (petPanelSuspended) petPanelChangedDuringSuspension = true
+  else petWindow?.webContents.send('pet:panel-show', panel)
+}
+
+function hidePetPanel(id?: string): void {
+  if (!pendingPetPanel || (id && pendingPetPanel.id !== id)) return
+  pendingPetPanel = null
+  petPanelSuspended = false
+  petPanelChangedDuringSuspension = false
+  petWindow?.webContents.send('pet:panel-hide')
+}
+
+function suspendPetPanel(id: string): void {
+  if (pendingPetPanel?.id !== id || petPanelSuspended) return
+  petPanelSuspended = true
+  petPanelChangedDuringSuspension = false
+  petWindow?.webContents.send('pet:panel-visibility', false)
+}
+
+function resumePetPanel(id: string): void {
+  if (pendingPetPanel?.id !== id || !petPanelSuspended) return
+  petPanelSuspended = false
+  if (petPanelChangedDuringSuspension) petWindow?.webContents.send('pet:panel-show', pendingPetPanel)
+  else petWindow?.webContents.send('pet:panel-visibility', true)
+  petPanelChangedDuringSuspension = false
+  ensurePetPanelVisible(id)
+}
+
+function ensurePetPanelVisible(id: string): void {
+  if (!isAuthenticated || petPanelSuspended || pendingPetPanel?.id !== id) return
+  showPetWindow()
+}
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'])
 const PET_IDLE_SIZE = { width: 80, height: 80 }
@@ -162,12 +230,19 @@ async function requestWindowClose(): Promise<void> {
   if (result.response === 1) quitApplication()
 }
 
+function raisePetWindow(): void {
+  if (!petWindow || petWindow.isDestroyed()) return
+  petWindow.setAlwaysOnTop(true, 'screen-saver')
+  petWindow.moveTop()
+}
+
 function showPetWindow(): void {
   if (!petWindow || petWindow.isDestroyed()) {
     createPetWindow()
     return
   }
   petWindow.showInactive()
+  raisePetWindow()
 }
 
 function activateClient(): void {
@@ -230,7 +305,8 @@ function createPetWindow(): void {
     }
   })
 
-  petWindow.setAlwaysOnTop(true, 'floating')
+  raisePetWindow()
+  petWindow.on('show', raisePetWindow)
   petWindow.setMenuBarVisibility(false)
   petWindow.webContents.on('context-menu', (event) => {
     event.preventDefault()
@@ -249,6 +325,10 @@ function createPetWindow(): void {
   petWindow.webContents.on('did-finish-load', () => {
     if (!petWindow || petWindow.isDestroyed()) return
     if (pendingPetMobileStatus) petWindow.webContents.send('pet:mobile-status', pendingPetMobileStatus)
+    if (pendingPetPanel) {
+      petWindow.webContents.send('pet:panel-show', pendingPetPanel)
+      if (petPanelSuspended) petWindow.webContents.send('pet:panel-visibility', false)
+    }
     if (pendingPetMobileReminder) {
       petWindow.webContents.send('pet:mobile-reminder', pendingPetMobileReminder)
       pendingPetMobileReminder = null
@@ -262,7 +342,7 @@ function createPetWindow(): void {
     const display = screen.getPrimaryDisplay()
     const area = display.workArea
     petWindow?.setPosition(area.x + area.width - PET_IDLE_SIZE.width - 24, area.y + 24)
-    petWindow?.showInactive()
+    showPetWindow()
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
@@ -276,36 +356,46 @@ function resizePetWindow(expanded: boolean, bubbleSize?: { width: number; height
   if (!petWindow || petWindow.isDestroyed()) throw new Error('浮动精灵窗口尚未创建')
 
   const bounds = petWindow.getBounds()
-  const display = screen.getDisplayMatching(bounds)
-  const area = display.workArea
   const wasExpanded = bounds.width > PET_IDLE_SIZE.width || bounds.height > PET_IDLE_SIZE.height
   const currentCharacterLeft = wasExpanded ? (petBubbleSide === 'left' ? bounds.width - 68 : 12) : 12
   const currentCharacterTop = wasExpanded ? bounds.height - 75 : 9
   const characterAnchorX = bounds.x + currentCharacterLeft + PET_CHARACTER_SIZE.width / 2
   const characterAnchorY = bounds.y + currentCharacterTop + PET_CHARACTER_SIZE.height / 2
+  // Match the monitor to the mascot's anchor point. An expanded window may
+  // overlap multiple monitors, making getDisplayMatching(bounds) choose the
+  // wrong work area and clamp the panel off the visible screen.
+  const display = screen.getDisplayNearestPoint({ x: Math.round(characterAnchorX), y: Math.round(characterAnchorY) })
+  const area = display.workArea
   const target = expanded
     ? (() => {
         const measuredWidth = bubbleSize?.width ?? PET_SPEAKING_SIZE.width - 36
         const measuredHeight = bubbleSize?.height ?? 240
         return {
-          width: Math.max(PET_SPEAKING_SIZE.width, Math.ceil(measuredWidth + (petBubbleSide === 'left' ? 36 : 90))),
+          width: Math.max(PET_SPEAKING_SIZE.width, Math.ceil(measuredWidth + 120)),
           height: Math.max(PET_SPEAKING_SIZE.height, Math.ceil(measuredHeight + 60))
         }
       })()
     : PET_IDLE_SIZE
 
+  // Keep the entire expanded panel inside the monitor's work area. The pet is
+  // often parked near the top edge; anchoring it at the bottom can otherwise
+  // place the panel window at a negative Y coordinate.
+  const targetWidth = Math.min(target.width, area.width)
+  const targetHeight = Math.min(target.height, area.height)
+
   if (expanded && !wasExpanded) {
     petBubbleSide = characterAnchorX > area.x + area.width / 2 ? 'left' : 'right'
   }
 
-  const targetCharacterLeft = expanded ? (petBubbleSide === 'left' ? target.width - 68 : 12) : 12
-  const targetCharacterTop = expanded ? target.height - 75 : 9
+  const targetCharacterLeft = expanded ? (petBubbleSide === 'left' ? targetWidth - 68 : 12) : 12
+  const targetCharacterTop = expanded ? targetHeight - 75 : 9
   const x = Math.round(characterAnchorX - targetCharacterLeft - PET_CHARACTER_SIZE.width / 2)
   const y = Math.round(characterAnchorY - targetCharacterTop - PET_CHARACTER_SIZE.height / 2)
-  const clampedX = Math.max(area.x, Math.min(x, area.x + area.width - target.width))
-  const nextBounds = { x: clampedX, y, width: target.width, height: target.height }
+  const clampedX = Math.max(area.x, Math.min(x, area.x + area.width - targetWidth))
+  const clampedY = Math.max(area.y, Math.min(y, area.y + area.height - targetHeight))
+  const nextBounds = { x: clampedX, y: clampedY, width: targetWidth, height: targetHeight }
   petWindow.setBounds(nextBounds, true)
-  writePetDiagnostic('window:resize', { expanded, side: petBubbleSide, before: bounds, anchor: { x: characterAnchorX, y: characterAnchorY }, after: petWindow.getBounds() })
+  writePetDiagnostic('window:resize', { expanded, side: petBubbleSide, before: bounds, anchor: { x: characterAnchorX, y: characterAnchorY }, workArea: area, after: petWindow.getBounds() })
   return { bubbleSide: petBubbleSide }
 }
 
@@ -338,6 +428,14 @@ function createWindow(): void {
       backgroundThrottling: false
     }
   })
+
+  // 开发时显示工作台，便于调试和复用现有客户端页面；正式版继续保持已登录后托盘驻留。
+  if (is.dev) {
+    mainWindow.once('ready-to-show', () => {
+      mainWindow?.show()
+      mainWindow?.focus()
+    })
+  }
 
   // v2 renderer 根据是否存在登录会话决定显示登录窗口还是继续隐藏工作台。
   // 这样已有会话的开机自启只留下托盘和浮动精灵。
@@ -423,6 +521,7 @@ if (!gotLock) {
     ipcMain.on('window:hide', () => mainWindow?.hide())
     ipcMain.on('session:set-authenticated', (_e, value: unknown) => {
       isAuthenticated = value === true
+      if (!isAuthenticated) petOrderAi.setConfig({ backendUrl: '', employeeCode: '' })
     })
     ipcMain.on('window:minimize', () => mainWindow?.minimize())
     ipcMain.on('window:maximize-toggle', () => {
@@ -438,6 +537,25 @@ if (!gotLock) {
       app.quit()
     })
     ipcMain.on('pet:hide', () => petWindow?.hide())
+    ipcMain.handle('pet:panel-show', (_e, panel: unknown) => showPetPanel(panel))
+    ipcMain.handle('pet:panel-current', () => pendingPetPanel)
+    ipcMain.handle('pet:panel-update', (_e, id: string, panel: unknown) => updatePetPanel(id, panel))
+    ipcMain.handle('pet:panel-hide', () => hidePetPanel())
+    ipcMain.handle('pet:order-dictionary', (_e, kind: string, query?: string, parent?: { hospitalId?: string; departmentId?: string; currentId?: string }) =>
+      petOrderAi.dictionary(kind, query, parent))
+    ipcMain.on('pet:panel-action', (_e, event: unknown) => {
+      if (!event || typeof event !== 'object') throw new Error('浮动精灵操作事件非法')
+      const value = event as { panelId?: unknown; actionId?: unknown; fields?: unknown }
+      if (value.panelId !== pendingPetPanel?.id || typeof value.actionId !== 'string') throw new Error('浮动精灵操作事件的 panelId 无效')
+      if (typeof value.panelId === 'string' && value.panelId.startsWith('order-ai:')) {
+        void petOrderAi.handlePanelAction(value.panelId, value.actionId, value.fields && typeof value.fields === 'object'
+          ? value.fields as Record<string, unknown> : {}).catch((error) => {
+          console.error('[pet-order-ai] 面板操作失败', error)
+        })
+      } else {
+        mainWindow?.webContents.send('pet:panel-action', event)
+      }
+    })
     ipcMain.on('pet:debug-log', (_e, payload: unknown) => {
       if (!payload || typeof payload !== 'object') throw new Error('浮动精灵诊断日志非法')
       writePetDiagnostic('renderer:event', payload)
@@ -635,6 +753,7 @@ if (!gotLock) {
       (_e, cfg: { backendUrl: string; employeeCode: string }) => {
         materialSync.setConfig(cfg)
         petIntake.setConfig(cfg)
+        petOrderAi.setConfig(cfg)
         materialSync.kick()
         return { ok: true }
       }
@@ -655,6 +774,7 @@ if (!gotLock) {
     createTray()
     createWindow()
     createPetWindow()
+    petOrderAi.start()
     setupReminderIPC()
     // sidecar 是订单生命周期沟通数据的核心来源；Windows 桌面端默认随应用启动。
     // 如需排障关闭，启动 app 前设环境变量 HYYD_ENABLE_SIDECAR=0。
@@ -677,6 +797,7 @@ if (!gotLock) {
     petWindow?.close()
     captureSidecar.stop()
     materialSync.stop()
+    petOrderAi.stop()
   })
 
   // 注意：故意不监听 window-all-closed，让应用在托盘保持运行

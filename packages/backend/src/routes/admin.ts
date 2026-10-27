@@ -42,6 +42,7 @@ import {
 } from '../services/aliyunSmsService.js'
 import { findHuanyuChannelById, listHuanyuChannels } from '../db/remoteDictionary.js'
 import { registerTaikangFormAdminRoutes } from '../taikangFormRecording.js'
+import { getHyhomeOrderSite, saveHyhomeOrderSite } from '../services/hyhomeOrderSites.js'
 
 const TAIKANG_BUSINESS_CONFIG = {
   green_pass: '泰康绿通',
@@ -272,6 +273,21 @@ export function registerAdminRoutes(
     fastify.get('/api/v1/admin/me', async (_request, reply) => {
       // 能走到这里说明 preHandler 已验证通过
       return reply.send({ data: { role: 'admin' } })
+    })
+
+    fastify.get('/api/v1/admin/hyhome-order-site', async (_request, reply) => {
+      return reply.send({ data: await getHyhomeOrderSite(prisma) })
+    })
+
+    fastify.put<{ Body: { site?: unknown } }>('/api/v1/admin/hyhome-order-site', async (request, reply) => {
+      try {
+        return reply.send({ data: await saveHyhomeOrderSite(prisma, request.body?.site) })
+      } catch (error) {
+        if (error instanceof Error && /站点|资源 ID/.test(error.message)) {
+          return reply.status(400).send({ error: error.message })
+        }
+        throw error
+      }
     })
 
     // 获取 AI 调用时间配置与调度状态

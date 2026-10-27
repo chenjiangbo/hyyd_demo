@@ -1,6 +1,7 @@
 import mysql, { type Pool, type RowDataPacket } from 'mysql2/promise'
 import type { PrismaClient } from '@prisma/client'
 import { getEnv } from './env.js'
+import { formatShanghaiDateTime } from './time/shanghaiTime.js'
 
 let pushPool: Pool | null = null
 
@@ -188,6 +189,87 @@ export async function createHuanyuOrderOnMysql(row: Record<string, unknown>): Pr
 export interface HuanyuMysqlPushOptions {
   /** 仅从 ON DUPLICATE KEY UPDATE 排除；新建远端行时仍按本地快照完整写入。 */
   excludeOrderUpdateColumns?: readonly string[]
+}
+
+export interface PetHuanyuOrderUpdate {
+  orderNo: string
+  orderStatus: string
+  documentNo: string
+  hospitalId: string | null
+  hospitalAddressId: string | null
+  departmentId: string | null
+  doctorId: string | null
+  requestTime: string | null
+  responseTime: string | null
+  serviceStartTime: string | null
+  bookingFeedbackTime: string | null
+  latestTicketTime: string | null
+  escortList: Array<{ escortId: string; serviceDate: string | null; sequence: string }>
+}
+
+export async function huanyuOrderExistsOnMysql(orderNo: string): Promise<boolean> {
+  const connection = await mysqlWriterPool().getConnection()
+  try {
+    const [rows] = await connection.execute<RowDataPacket[]>(
+      'SELECT `DDBH` FROM `HY_FACT_DDCX_NEW` WHERE `DDBH` = ? LIMIT 1', [orderNo.trim()])
+    return rows.length > 0
+  } finally {
+    connection.release()
+  }
+}
+
+/** 浮动精灵专用：直接更新远端寰宇表，不读取或写入本地 PostgreSQL 快照。 */
+export async function updateHuanyuOrderDirectlyOnMysql(input: PetHuanyuOrderUpdate): Promise<{ escortCount: number }> {
+  const orderNo = input.orderNo.trim()
+  if (!orderNo) throw new Error('订单号不能为空')
+  const connection = await mysqlWriterPool().getConnection()
+  try {
+    await connection.beginTransaction()
+    const [existingRows] = await connection.execute<RowDataPacket[]>(
+      'SELECT `DDBH` FROM `HY_FACT_DDCX_NEW` WHERE `DDBH` = ? LIMIT 1 FOR UPDATE', [orderNo])
+    if (!existingRows.length) throw new Error(`远端寰宇订单 ${orderNo} 不存在`)
+
+    await connection.execute(
+        `UPDATE \`HY_FACT_DDCX_NEW\` SET
+        \`DD_state\` = ?, \`JZR_ZJHM\` = COALESCE(?, \`JZR_ZJHM\`),
+        \`H_NAME\` = COALESCE(?, \`H_NAME\`), \`H_ADDRESS\` = COALESCE(?, \`H_ADDRESS\`),
+        \`H_KS\` = COALESCE(?, \`H_KS\`), \`H_YS\` = COALESCE(?, \`H_YS\`),
+        \`BBQ_XQ\` = COALESCE(?, \`BBQ_XQ\`), \`DATE_XQ\` = COALESCE(?, \`DATE_XQ\`),
+        \`BBQ_YD\` = COALESCE(?, \`BBQ_YD\`), \`DATE_YD\` = COALESCE(?, \`DATE_YD\`),
+        \`BBQ_QDFW\` = COALESCE(?, \`BBQ_QDFW\`), \`DATE_QDFW\` = COALESCE(?, \`DATE_QDFW\`),
+        \`BBQ_FK\` = COALESCE(?, \`BBQ_FK\`), \`DATE_FK\` = COALESCE(?, \`DATE_FK\`),
+        \`lastQueuingTime\` = COALESCE(?, \`lastQueuingTime\`),
+        \`PZR\` = COALESCE(?, \`PZR\`), \`xtsj_\` = ?
+       WHERE \`DDBH\` = ?`,
+      [input.orderStatus, input.documentNo || null, input.hospitalId, input.hospitalAddressId,
+        input.departmentId, input.doctorId,
+        input.requestTime, input.requestTime?.slice(0, 8) ?? null,
+        input.responseTime, input.responseTime?.slice(0, 8) ?? null,
+        input.serviceStartTime, input.serviceStartTime?.slice(0, 8) ?? null,
+        input.bookingFeedbackTime, input.bookingFeedbackTime?.slice(0, 8) ?? null,
+        input.latestTicketTime, input.escortList.find((escort) => escort.escortId)?.escortId ?? null,
+        formatShanghaiDateTime(new Date()), orderNo]
+    )
+
+    if (input.escortList.length > 0) await connection.execute('DELETE FROM `fact_hy_pzrxx` WHERE `DDBH` = ?', [orderNo])
+    for (const [index, escort] of input.escortList.entries()) {
+      if (!escort.escortId) continue
+      const sequence = escort.sequence.trim() || String(index + 1)
+      await connection.execute(
+        `INSERT INTO \`fact_hy_pzrxx\` (\`DDBH\`, \`PZR\`, \`BBQ_FW\`, \`ZJ\`, \`xtsj\`)
+         VALUES (?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE \`PZR\` = VALUES(\`PZR\`), \`BBQ_FW\` = VALUES(\`BBQ_FW\`), \`xtsj\` = VALUES(\`xtsj\`)`,
+        [orderNo, escort.escortId, escort.serviceDate, `${orderNo}_${sequence}`, formatShanghaiDateTime(new Date())]
+      )
+    }
+    await connection.commit()
+    return { escortCount: input.escortList.filter((escort) => Boolean(escort.escortId)).length }
+  } catch (error) {
+    await connection.rollback().catch(() => undefined)
+    throw error
+  } finally {
+    connection.release()
+  }
 }
 
 /**

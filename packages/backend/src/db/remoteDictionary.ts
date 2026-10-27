@@ -407,11 +407,11 @@ export async function listHuanyuHospitalAddresses(hospitalId: unknown, rawSearch
       WHERE LEFT(CAST(DZ_ID AS CHAR), 4) = ?
         AND (
           (? != '' AND (CAST(DZ_ID AS CHAR) = ? OR ADDRESS = ?))
-          OR (? = '' OR ADDRESS LIKE CONCAT('%', ?, '%'))
+          OR (? = '' OR CAST(DZ_ID AS CHAR) LIKE CONCAT('%', ?, '%') OR ADDRESS LIKE CONCAT('%', ?, '%'))
         )
       ORDER BY (CASE WHEN ? != '' AND (CAST(DZ_ID AS CHAR) = ? OR ADDRESS = ?) THEN 0 ELSE 1 END), DZ_ID
       LIMIT 200`,
-    [hospital, current, current, current, search, search, current, current, current]
+    [hospital, current, current, current, search, search, search, current, current, current]
   )
   return rows.map((row) => ({ id: String(row.id), name: String(row.name ?? '') }))
 }
@@ -439,11 +439,11 @@ export async function listHuanyuHospitalDepartments(hospitalId: unknown, rawSear
       WHERE CAST(ks.id_yy AS CHAR) = ?
         AND (
           (? != '' AND (CAST(ks.ID AS CHAR) = ? OR ks.NAME = ?))
-          OR (? = '' OR ks.NAME LIKE CONCAT('%', ?, '%'))
+          OR (? = '' OR CAST(ks.ID AS CHAR) LIKE CONCAT('%', ?, '%') OR ks.NAME LIKE CONCAT('%', ?, '%'))
         )
       ORDER BY (CASE WHEN ? != '' AND (CAST(ks.ID AS CHAR) = ? OR ks.NAME = ?) THEN 0 ELSE 1 END), ks.ID
       LIMIT 200`,
-    [hospital, current, current, current, search, search, current, current, current]
+    [hospital, current, current, current, search, search, search, current, current, current]
   )
   return rows.map((row) => ({
     id: String(row.id),

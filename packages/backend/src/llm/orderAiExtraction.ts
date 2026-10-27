@@ -50,6 +50,7 @@ export type OrderAiFieldDefinition = {
 export const ORDER_AI_FIELD_DEFINITIONS: readonly OrderAiFieldDefinition[] = [
 // 只保留“服务执行过程中才产生或需要确认”的字段。泰康已同步的人员、订单、
 // 套餐、初始意向等基础资料不在这里；若沟通明确说变更，才以 change_candidate 返回。
+  { code: 'document_no', label: '就诊人证件号码（仅沟通中明确提供时提取）', requiresConfirmation: true },
   { code: 'hospital', label: '最终确认医院' },
   { code: 'hospital_address', label: '医院地址/院区/候诊地址' },
   { code: 'department', label: '最终确认科室' },
