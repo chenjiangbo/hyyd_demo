@@ -1,11 +1,11 @@
 import * as dotenv from 'dotenv'
-import { PrismaClient } from '@prisma/client'
+import { createShanghaiPrismaClient } from '../db/shanghaiPrisma.js'
 import { syncHuanyuOrderFromTaikang } from '../huanyuOrderSync.js'
 
 dotenv.config({ path: `${process.cwd()}/.env`, override: true })
 dotenv.config({ path: `${process.cwd()}/../../.env`, override: true })
 
-const prisma = new PrismaClient()
+const prisma = createShanghaiPrismaClient()
 
 async function main() {
   const requestedBatchSize = Number(process.env.HUANYU_PRODUCT_BACKFILL_BATCH_SIZE ?? 200)

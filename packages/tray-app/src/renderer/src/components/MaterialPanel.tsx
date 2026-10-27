@@ -365,13 +365,10 @@ function SyncDot({
 function formatTime(ms: number): string {
   const d = new Date(ms)
   const today = new Date()
-  const sameDay =
-    d.getFullYear() === today.getFullYear() &&
-    d.getMonth() === today.getMonth() &&
-    d.getDate() === today.getDate()
-  const hm = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+  const sameDay = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' }) === today.toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
+  const hm = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Shanghai' })
   if (sameDay) return `今天 ${hm}`
-  const md = d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+  const md = d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit', timeZone: 'Asia/Shanghai' })
   return `${md} ${hm}`
 }
 

@@ -181,7 +181,7 @@ export function registerEscortFeedbackRoutes(
         WHERE (ddbh = $1 OR ddbh = $2) AND feedback_type = $3
           AND pzr_id = $4 AND service_date = $5
           AND pzr_detail_id = $6
-          AND created_at >= ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date::timestamp AT TIME ZONE 'Asia/Shanghai')
+          AND created_at >= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date::timestamp
         ORDER BY created_at DESC
         LIMIT 1;
       `, sourceOrderNo, huanyuOrderNo, type, pzrId, normalizedServiceDate, dbPzr?.pzr_detail_id || '')
@@ -713,7 +713,7 @@ export function registerEscortFeedbackRoutes(
           if (orderInfo.existingFeedback) {
             const fb = orderInfo.existingFeedback;
             document.getElementById('submittedCard').style.display = 'block';
-            document.getElementById('submittedDesc').innerText = '您已于 ' + new Date(fb.createdAt).toLocaleString() + ' 反馈【' + (fb.willAttend ? '确认出工' : '无法出工') + '】' + (fb.remark ? '：' + fb.remark : '') + '，无需重复提交。';
+            document.getElementById('submittedDesc').innerText = '您已于 ' + new Date(fb.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) + ' 反馈【' + (fb.willAttend ? '确认出工' : '无法出工') + '】' + (fb.remark ? '：' + fb.remark : '') + '，无需重复提交。';
             document.getElementById('formCard').style.display = 'none';
           }
         }

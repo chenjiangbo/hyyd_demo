@@ -18,6 +18,7 @@ import { extractOrderServiceFields, ORDER_AI_FIELD_PROMPT_VERSION } from '../llm
 import { understandImage } from '../llm/imageUnderstandService.js'
 import { applyOrderWorkflowEvent } from '../workflow/serviceWorkflow.js'
 import { findHuanyuOrderNosOnMysqlByChannelOrderNo } from '../huanyuMysqlPush.js'
+import { parseShanghaiDateTime } from '../time/shanghaiTime.js'
 
 async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = []
@@ -426,7 +427,7 @@ export async function analyzeOrderFields(
           ) SELECT
             ${orderId},
             ${event.huanyuOrderNo}, ${event.code}, ${event.evidence}, ${fingerprint},
-            ${event.occurredAt ? new Date(event.occurredAt) : null}, ${event.plannedAt ? new Date(event.plannedAt) : null}, ${runId}
+            ${event.occurredAt ? parseShanghaiDateTime(event.occurredAt) : null}, ${event.plannedAt ? parseShanghaiDateTime(event.plannedAt) : null}, ${runId}
           FROM b_order_huanyu_services WHERE order_id = ${orderId} AND huanyu_order_no = ${event.huanyuOrderNo}
           ON CONFLICT (event_key) DO NOTHING
         `

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { detectConversation } from '../lib/detectConversation'
 import { sampleFrames, dedupMessages, mergeInto } from '../lib/mergeMessages'
+import { parseShanghaiTimestamp } from '../v2/lib/shanghaiTime'
 
 type Channel = 'wxwork' | 'wechat'
 
@@ -73,7 +74,7 @@ export default function CaptureAiView(): React.JSX.Element {
       map.get(key)!.frames.push(f)
     }
     const list = [...map.values()]
-    for (const c of list) c.frames.sort((a, b) => Date.parse(a.capturedAt) - Date.parse(b.capturedAt))
+    for (const c of list) c.frames.sort((a, b) => parseShanghaiTimestamp(a.capturedAt).getTime() - parseShanghaiTimestamp(b.capturedAt).getTime())
     // 按最近活动降序
     list.sort((a, b) => {
       const la = a.frames[a.frames.length - 1]?.capturedAt ?? ''
@@ -174,8 +175,8 @@ export default function CaptureAiView(): React.JSX.Element {
   }, [selectedConv, picked, modelsText, channel, accum])
 
   const fmtTime = (s: string): string => {
-    const d = new Date(s)
-    return Number.isNaN(d.getTime()) ? s : d.toLocaleString('zh-CN')
+    const d = parseShanghaiTimestamp(s)
+    return Number.isNaN(d.getTime()) ? s : d.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
   }
 
   return (
@@ -300,7 +301,7 @@ export default function CaptureAiView(): React.JSX.Element {
                             </label>
                           </div>
                           <div className="text-[10px] font-mono text-center text-slate-500 px-1 py-0.5">
-                            {new Date(f.capturedAt).toLocaleTimeString('zh-CN')}
+                            {parseShanghaiTimestamp(f.capturedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' })}
                           </div>
                         </div>
                       )

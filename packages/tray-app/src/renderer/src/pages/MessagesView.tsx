@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { parseShanghaiTimestamp } from '../v2/lib/shanghaiTime'
 // CaptureConversation / CaptureMessage 是 env.d.ts 里声明的全局类型
 
 const LIST_POLL_MS = 10_000
@@ -287,7 +288,8 @@ function MessageBubble({ message }: { message: CaptureMessage }): React.JSX.Elem
     )
   }
   const isMine = message.senderType === 'self'
-  const time = new Date(message.firstSeenAt).toLocaleTimeString('zh-CN', {
+  const time = parseShanghaiTimestamp(message.firstSeenAt).toLocaleTimeString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
     hour: '2-digit',
     minute: '2-digit'
   })
@@ -329,5 +331,5 @@ function relativeTime(iso: string | null): string {
   if (hour < 24) return `${hour} 小时前`
   const day = Math.floor(hour / 24)
   if (day < 30) return `${day} 天前`
-  return new Date(iso).toLocaleDateString('zh-CN')
+  return new Date(iso).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' })
 }

@@ -120,7 +120,7 @@ export function DesktopReminderPopup() {
   const isUrgent = tag === '系统提醒'
   const timeStr = currentItem.remind_time || currentItem.remindTime
   const formattedTime = timeStr
-    ? new Date(timeStr).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    ? new Date(timeStr).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Shanghai' })
     : ''
 
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
@@ -377,7 +377,7 @@ export function DesktopReminderPopup() {
             const orderNo = extractOrderNo(r)
             const rTime = r.remind_time || r.remindTime
             const rTimeStr = rTime
-              ? new Date(rTime).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+              ? new Date(rTime).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Shanghai' })
               : ''
             const brief = extractBriefContent(r.content)
 

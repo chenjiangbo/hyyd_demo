@@ -403,7 +403,7 @@ function MaterialCell({ o }: { o: Order }): React.JSX.Element {
       {o.imageCount > 0 && <span title="图片">📷{o.imageCount}</span>}
       {o.audioCount > 0 && <span title="录音">🎙{o.audioCount}</span>}
       {o.lastMaterialAt && (
-        <span className="text-fg-subtle text-[10px]" title={new Date(o.lastMaterialAt).toLocaleString('zh-CN')}>
+        <span className="text-fg-subtle text-[10px]" title={new Date(o.lastMaterialAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}>
           · {formatRelative(o.lastMaterialAt)}
         </span>
       )}
@@ -455,7 +455,7 @@ function formatRelative(iso: string): string {
   if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m`
   if (diff < 86_400_000) return `${Math.floor(diff / 3600_000)}h`
   if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d`
-  return new Date(iso).toLocaleDateString('zh-CN')
+  return new Date(iso).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' })
 }
 
 function formatShortDate(s: string | null | undefined): string {
@@ -463,8 +463,8 @@ function formatShortDate(s: string | null | undefined): string {
   const d = new Date(s)
   if (Number.isNaN(d.getTime())) return String(s)
   const today = new Date()
-  const sameYear = d.getFullYear() === today.getFullYear()
+  const sameYear = d.toLocaleDateString('en-US', { year: 'numeric', timeZone: 'Asia/Shanghai' }) === today.toLocaleDateString('en-US', { year: 'numeric', timeZone: 'Asia/Shanghai' })
   return sameYear
-    ? d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
-    : d.toLocaleDateString('zh-CN', { year: '2-digit', month: '2-digit', day: '2-digit' })
+    ? d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit', timeZone: 'Asia/Shanghai' })
+    : d.toLocaleDateString('zh-CN', { year: '2-digit', month: '2-digit', day: '2-digit', timeZone: 'Asia/Shanghai' })
 }

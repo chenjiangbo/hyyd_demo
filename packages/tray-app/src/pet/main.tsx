@@ -236,9 +236,9 @@ export function Pet(): React.JSX.Element {
   }
 
   const mobileStatusTitle = mobileStatus.state === 'online'
-    ? `移动端最近有心跳${mobileStatus.lastSeenAt ? `：${new Date(mobileStatus.lastSeenAt).toLocaleTimeString('zh-CN')}` : ''}`
+    ? `移动端最近有心跳${mobileStatus.lastSeenAt ? `：${new Date(mobileStatus.lastSeenAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' })}` : ''}`
     : mobileStatus.state === 'stale'
-      ? `移动端心跳已过期${mobileStatus.lastSeenAt ? `，最后时间：${new Date(mobileStatus.lastSeenAt).toLocaleTimeString('zh-CN')}` : ''}`
+      ? `移动端心跳已过期${mobileStatus.lastSeenAt ? `，最后时间：${new Date(mobileStatus.lastSeenAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' })}` : ''}`
       : '暂时无法确认移动端状态'
 
   useEffect(() => {

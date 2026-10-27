@@ -5,10 +5,15 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 
 class RecordingScanner {
-    private val timestampFormat = SimpleDateFormat("yyyyMMddHHmmss", Locale.CHINA)
-    private val displayFormat = SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA)
+    private val timestampFormat = SimpleDateFormat("yyyyMMddHHmmss", Locale.CHINA).apply {
+        timeZone = TimeZone.getTimeZone("Asia/Shanghai")
+    }
+    private val displayFormat = SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA).apply {
+        timeZone = TimeZone.getTimeZone("Asia/Shanghai")
+    }
 
     fun scanSince(sinceMillis: Long): RecordingScanResult {
         val root = Environment.getExternalStorageDirectory()

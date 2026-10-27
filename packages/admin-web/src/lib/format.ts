@@ -1,12 +1,24 @@
 // 时间 / 文件大小 / 数字格式化工具。
 
-/** ISO 字符串 → 本地 "MM-DD HH:mm"，null 给占位。 */
+const shanghaiDateTimeFormatter = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Shanghai',
+  year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
+})
+
+function shanghaiParts(date: Date): Record<string, string> {
+  const parts: Record<string, string> = {}
+  for (const part of shanghaiDateTimeFormatter.formatToParts(date)) parts[part.type] = part.value
+  return parts
+}
+
+/** ISO 字符串 → 北京时间 "MM-DD HH:mm"，null 给占位。 */
 export function fmtTime(iso: string | null | undefined): string {
   if (!iso) return '—'
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
-  const pad = (n: number): string => String(n).padStart(2, '0')
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  const parts = shanghaiParts(d)
+  return `${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`
 }
 
 /** ISO 字符串 → 完整 "YYYY-MM-DD HH:mm:ss"。 */
@@ -14,8 +26,8 @@ export function fmtTimeFull(iso: string | null | undefined): string {
   if (!iso) return '—'
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
-  const pad = (n: number): string => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  const parts = shanghaiParts(d)
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`
 }
 
 /** 相对"多久之前"，给 presence 时间线用。 */

@@ -1,4 +1,5 @@
 import { Prisma, type PrismaClient } from '@prisma/client'
+import { formatShanghaiDateTime, parseShanghaiDateTime } from '../time/shanghaiTime.js'
 
 export type WorkflowSource = 'system' | 'form' | 'ai' | 'manual'
 export type WorkflowStepStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'skipped'
@@ -321,13 +322,13 @@ export type WorkflowEventInput = {
 }
 
 function businessOccurredAt(input: WorkflowEventInput): Date {
-  const value = input.occurredAt ? new Date(input.occurredAt) : new Date()
+  const value = input.occurredAt ? parseShanghaiDateTime(input.occurredAt) : new Date()
   return Number.isNaN(value.getTime()) ? new Date() : value
 }
 
 function businessPlannedAt(input: WorkflowEventInput): Date | null {
   if (!input.plannedAt) return null
-  const value = new Date(input.plannedAt)
+  const value = parseShanghaiDateTime(input.plannedAt)
   return Number.isNaN(value.getTime()) ? null : value
 }
 
@@ -556,31 +557,40 @@ export async function applyOrderWorkflowEvent(
         await refreshPackageStatus(tx, operation.id, packageCode, occurrence)
         break
       case 'hospital_admitted':
+        {
+          const occurredAt = businessOccurredAt(input)
         await tx.$executeRaw`
           UPDATE b_order_service_steps
-             SET evidence_json = jsonb_set(CASE WHEN jsonb_typeof(evidence_json) = 'object' THEN evidence_json ELSE '{}'::jsonb END, '{admittedAt}', to_jsonb(${businessOccurredAt(input)}::timestamptz), true),
+             SET evidence_json = jsonb_set(CASE WHEN jsonb_typeof(evidence_json) = 'object' THEN evidence_json ELSE '{}'::jsonb END, '{admittedAt}', to_jsonb(${formatShanghaiDateTime(occurredAt)}), true),
                  updated_at = now()
            WHERE operation_id = ${operation.id} AND step_code = 'hospital_care' AND occurrence_no = ${input.occurrenceNo ?? 1};
         `
         break
+        }
       case 'hospital_care_requested':
+        {
+          const occurredAt = businessOccurredAt(input)
         await tx.$executeRaw`
           UPDATE b_order_service_steps
              SET step_status = 'in_progress', source_type = ${input.source}, source_ref = ${input.sourceRef ?? null},
                  ai_confidence = ${input.confidence ?? null},
-                 evidence_json = jsonb_set(CASE WHEN jsonb_typeof(evidence_json) = 'object' THEN evidence_json ELSE '{}'::jsonb END, '{careRequestedAt}', to_jsonb(${businessOccurredAt(input)}::timestamptz), true),
-                 note = COALESCE(${input.note ?? null}, note), activated_at = now(), started_at = ${businessOccurredAt(input)}, updated_at = now()
+                 evidence_json = jsonb_set(CASE WHEN jsonb_typeof(evidence_json) = 'object' THEN evidence_json ELSE '{}'::jsonb END, '{careRequestedAt}', to_jsonb(${formatShanghaiDateTime(occurredAt)}), true),
+                 note = COALESCE(${input.note ?? null}, note), activated_at = now(), started_at = ${occurredAt}, updated_at = now()
            WHERE operation_id = ${operation.id} AND step_code = 'hospital_care' AND occurrence_no = ${input.occurrenceNo ?? 1};
         `
         break
+        }
       case 'care_worker_started':
+        {
+          const occurredAt = businessOccurredAt(input)
         await tx.$executeRaw`
           UPDATE b_order_service_steps
-             SET evidence_json = jsonb_set(CASE WHEN jsonb_typeof(evidence_json) = 'object' THEN evidence_json ELSE '{}'::jsonb END, '{careWorkerStartedAt}', to_jsonb(${businessOccurredAt(input)}::timestamptz), true),
+             SET evidence_json = jsonb_set(CASE WHEN jsonb_typeof(evidence_json) = 'object' THEN evidence_json ELSE '{}'::jsonb END, '{careWorkerStartedAt}', to_jsonb(${formatShanghaiDateTime(occurredAt)}), true),
                  note = COALESCE(${input.note ?? null}, note), updated_at = now()
            WHERE operation_id = ${operation.id} AND step_code = 'hospital_care' AND occurrence_no = ${input.occurrenceNo ?? 1};
         `
         break
+        }
       case 'care_worker_end_confirmed':
         {
           const endAt = businessPlannedAt(input)

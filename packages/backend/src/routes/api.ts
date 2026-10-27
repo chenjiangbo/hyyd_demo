@@ -53,6 +53,7 @@ import { requestAbiRefund } from '../services/abiRefundService.js'
 import { scheduleOrderIdCardOcr } from '../services/orderIdCardOcr.js'
 import { analyzeRegistrationProof } from '../services/registrationProofService.js'
 import { createHash, randomUUID } from 'node:crypto'
+import { formatShanghaiDateTime, parseShanghaiDateTime, shanghaiDateKey } from '../time/shanghaiTime.js'
 import {
   CreateOrderPayload,
   ClaimOrderPayload, 
@@ -1205,10 +1206,10 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         const year = Number(idMatch[2])
         const month = Number(idMatch[3])
         const day = Number(idMatch[4])
-        const now = new Date()
-        let age = now.getFullYear() - year
-        const m = (now.getMonth() + 1) - month
-        if (m < 0 || (m === 0 && now.getDate() < day)) age--
+        const [todayYear, todayMonth, todayDay] = shanghaiDateKey(new Date()).split('-').map(Number)
+        let age = todayYear - year
+        const m = todayMonth - month
+        if (m < 0 || (m === 0 && todayDay < day)) age--
         return age >= 0 && age <= 150 ? String(age) : ''
       }
       const bdayMatch = /^(\d{4})[-/.]?(\d{1,2})[-/.]?(\d{1,2})/.exec(str)
@@ -1216,10 +1217,10 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         const year = Number(bdayMatch[1])
         const month = Number(bdayMatch[2])
         const day = Number(bdayMatch[3])
-        const now = new Date()
-        let age = now.getFullYear() - year
-        const m = (now.getMonth() + 1) - month
-        if (m < 0 || (m === 0 && now.getDate() < day)) age--
+        const [todayYear, todayMonth, todayDay] = shanghaiDateKey(new Date()).split('-').map(Number)
+        let age = todayYear - year
+        const m = todayMonth - month
+        if (m < 0 || (m === 0 && todayDay < day)) age--
         return age >= 0 && age <= 150 ? String(age) : ''
       }
       return ''
@@ -1351,7 +1352,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       }
     }
     if (!orderNo) {
-      const ymd = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+      const ymd = shanghaiDateKey(new Date()).replace(/-/g, '')
       const rnd = Math.floor(10000000 + Math.random() * 90000000)
       orderNo = `HYYD${ymd}${rnd}`
     }
@@ -1364,7 +1365,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
     const creatorEmployeeId = request.employee.id
     const accountManager = String(body.accountManager || '').trim() || employeeName
     const orderStatus = String(body.orderStatus || '待跟进').trim()
-    const nowStr = new Date().toISOString()
+    const nowStr = formatShanghaiDateTime(new Date())
     const channelOrderNoStr = String(body.channelOrderNo || '').trim()
     const isPureSelfOperated = body.source === 'huanyu' ||
       body.isSelfOperated === true ||
@@ -1815,7 +1816,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
       // 2. 生成全新不重复的寰宇单号
       let newOrderNo = ''
       for (let attempt = 0; attempt < 5; attempt++) {
-        const ymd = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+        const ymd = shanghaiDateKey(new Date()).replace(/-/g, '')
         const rnd = Math.floor(10000000 + Math.random() * 90000000)
         const candidate = `HYYD${ymd}${rnd}`
         const dup = await prisma.$queryRawUnsafe<any[]>(
@@ -1831,7 +1832,7 @@ async function enrichOrderWithHuanyuFact(orderObj: any): Promise<any> {
         return reply.status(500).send({ ok: false, error: '生成新订单号失败，请稍后重试' })
       }
 
-      const nowStr = new Date().toISOString()
+      const nowStr = formatShanghaiDateTime(new Date())
 
       // 3. 克隆主表 HY_FACT_DDCX_NEW
       const sourceOrder = { ...existingRows[0] }
@@ -2446,12 +2447,11 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       if (maximum !== null && Number.isFinite(maximum)) factConditions.push(Prisma.sql`f."DDJE" <= ${maximum}`)
       if (factConditions.length) conditions.push(matchingHuanyuFact(Prisma.sql`(${Prisma.join(factConditions, ' AND ')})`))
       if (startDate) {
-        const start = new Date(startDate)
+        const start = parseShanghaiDateTime(startDate)
         if (Number.isFinite(start.getTime())) conditions.push(Prisma.sql`o."created_at" >= ${start}`)
       }
       if (endDate) {
-        const end = new Date(endDate)
-        end.setHours(23, 59, 59, 999)
+        const end = new Date(parseShanghaiDateTime(endDate.slice(0, 10)).getTime() + 24 * 60 * 60 * 1000 - 1)
         if (Number.isFinite(end.getTime())) conditions.push(Prisma.sql`o."created_at" <= ${end}`)
       }
 
@@ -3195,7 +3195,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
             cand.raw,
             cand.kind,
             screenshotOssKey ?? null,
-            new Date(capturedAt)
+            parseShanghaiDateTime(capturedAt)
           )
           if (matched) {
             finalApplicationNo = matched.applicationNo
@@ -3218,7 +3218,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
 
       const content = contentText.trim()
       if (!content) return reply.status(400).send({ error: 'contentText 不能为空' })
-      const capAt = new Date(capturedAt)
+      const capAt = parseShanghaiDateTime(capturedAt)
       const senderType = 'other'
       const normalized = normalizeMessageContentForDedupe(content)
       const contentHash = hashDedupePart(normalized)
@@ -3488,7 +3488,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
         return reply.status(400).send({ error: 'orderNo 和 huanyuOrderNo 至少填写一个，且 remindTime、content 必填' })
       }
 
-      const parsedRemindTime = new Date(remindTime)
+      const parsedRemindTime = parseShanghaiDateTime(remindTime)
       if (isNaN(parsedRemindTime.getTime())) {
         return reply.status(400).send({ error: 'remindTime 格式非法' })
       }
@@ -3690,7 +3690,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     const employeeId = request.employee.id
     const { channel, conversationName, orderNoCandidate, screenshotOssKey, capturedAt, messages } = request.body
     if (!Array.isArray(messages)) return reply.status(400).send({ error: 'messages 必填且为数组' })
-    const capAt = new Date(capturedAt)
+    const capAt = parseShanghaiDateTime(capturedAt)
 
     // 申请号归属：整帧只算一次
     const applicationMatch = await resolveApplicationForConversation(
@@ -3816,7 +3816,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     const channel = String(body.channel ?? '').trim()
     const conversationName = String(body.conversationName ?? '').trim()
     const mimeType = String(body.mimeType ?? '').trim().toLowerCase()
-    const capturedAt = new Date(body.capturedAt)
+    const capturedAt = parseShanghaiDateTime(body.capturedAt)
     if (!applicationNo || !channel || !conversationName || Number.isNaN(capturedAt.getTime())) {
       return reply.status(400).send({ error: 'applicationNo、channel、conversationName、capturedAt 必填且合法' })
     }
@@ -4248,7 +4248,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
         `自动关联通话至申请号: ${finalApplicationNo ?? '-'} (orderId=${finalOrderId ?? 'multi-or-none'})`
       )
 
-      const startedAtDate = new Date(startedAt)
+      const startedAtDate = parseShanghaiDateTime(startedAt)
       const existingCall = await prisma.call.findFirst({
         where: {
           employeeId,
@@ -4910,7 +4910,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
           .filter(c => !!c.asrText)
           .map(c => c.asrText!),
         messageTexts: messages.map(
-          m => `[${m.capturedAt.toISOString().substring(0, 16)}] ${m.senderName ?? ''}: ${m.contentText}`
+          m => `[${formatShanghaiDateTime(m.capturedAt).substring(0, 16)}] ${m.senderName ?? ''}: ${m.contentText}`
         ),
         detailJson: order.detailJson as Record<string, unknown> | null,
       })

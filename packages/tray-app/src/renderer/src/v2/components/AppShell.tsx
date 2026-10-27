@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { initials } from '../lib/orderMapping'
+import { shanghaiDateTime } from '../lib/shanghaiTime'
 import { getTheme, toggleTheme, type Theme } from '../lib/theme'
 import {
   fetchUnmatchedOrderRefs,
@@ -558,13 +559,7 @@ function ReminderTodoBell(): React.JSX.Element {
                                 if (!timeStr) return ''
                                 const d = new Date(timeStr)
                                 if (isNaN(d.getTime())) return String(timeStr)
-                                const y = d.getFullYear()
-                                const m = String(d.getMonth() + 1).padStart(2, '0')
-                                const day = String(d.getDate()).padStart(2, '0')
-                                const hh = String(d.getHours()).padStart(2, '0')
-                                const mm = String(d.getMinutes()).padStart(2, '0')
-                                const ss = String(d.getSeconds()).padStart(2, '0')
-                                return `${y}-${m}-${day} ${hh}:${mm}:${ss}`
+                                return shanghaiDateTime(d)
                               })()}
                             </span>
                             {isDue && (

@@ -10,10 +10,11 @@
  */
 
 import type { PrismaClient } from '@prisma/client'
-import { formatYmd, subtractWorkdays } from '../lib/chineseWorkdays.js'
+import { formatYmd, parseYmdToShanghaiDate, subtractWorkdays } from '../lib/chineseWorkdays.js'
 import { sendAliyunSms, getSmsConfig, isSmsTemplateEnabled } from '../services/aliyunSmsService.js'
 import { findRemoteReminderOrder, listRemoteEscortReminderDetails } from '../db/remoteDictionary.js'
 import { normalizeReminderDate, shouldAdvancePeriodicReminder } from './orderReminderRules.js'
+import { parseShanghaiDateTime } from '../time/shanghaiTime.js'
 
 export interface LoggerLike {
   info: (msg: string) => void
@@ -103,7 +104,7 @@ function shanghaiNowParts(now = new Date()): { ymd: string; time: string; hours:
 
 function formatDateDisplay(date: Date | string | null | undefined): string {
   if (!date) return ''
-  const d = typeof date === 'string' ? new Date(date) : date
+  const d = parseShanghaiDateTime(date)
   if (isNaN(d.getTime())) return String(date)
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',
@@ -129,7 +130,7 @@ function addShanghaiCalendarDays(ymd: string, days: number): string {
 }
 
 function shanghaiCalendarDayDiff(from: Date | string, toYmd: string): number {
-  const fromYmd = formatYmd(new Date(from))
+  const fromYmd = formatYmd(parseShanghaiDateTime(from))
   const fromParts = fromYmd.split('-').map(Number)
   const toParts = toYmd.split('-').map(Number)
   const fromUtc = Date.UTC(fromParts[0], fromParts[1] - 1, fromParts[2])
@@ -1387,7 +1388,7 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
       WHERE (ddbh = $1 OR ddbh = $2) 
         AND feedback_type = 'pre_day' 
         AND pzr_id = $3 AND service_date = $4 AND pzr_detail_id = $5
-        AND created_at >= ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date::timestamp AT TIME ZONE 'Asia/Shanghai')
+        AND created_at >= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date::timestamp
       ORDER BY created_at DESC 
       LIMIT 1;
     `, row.source_order_no, row.huanyu_order_no || '', row.pzr, tomorrowYmd, row.pzr_detail_id)
@@ -1482,7 +1483,7 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
       WHERE (ddbh = $1 OR ddbh = $2) 
         AND feedback_type = 'same_day' 
         AND pzr_id = $3 AND service_date = $4 AND pzr_detail_id = $5
-        AND created_at >= ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date::timestamp AT TIME ZONE 'Asia/Shanghai')
+        AND created_at >= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date::timestamp
       ORDER BY created_at DESC 
       LIMIT 1;
     `, row.source_order_no, row.huanyu_order_no || '', row.pzr, ymd, row.pzr_detail_id)
@@ -1570,13 +1571,13 @@ export async function scanHospitalCareReminders(prisma: PrismaClient, logger?: L
     seenCareOrders.add(serviceKey)
 
     const evidence = (row.care_evidence && typeof row.care_evidence === 'object' ? row.care_evidence : {}) as Record<string, unknown>
-    const admittedAt = evidence.admittedAt ? new Date(String(evidence.admittedAt)) : null
+    const admittedAt = evidence.admittedAt ? parseShanghaiDateTime(String(evidence.admittedAt)) : null
     if (!admittedAt || Number.isNaN(admittedAt.getTime())) continue
     const hasStartTime = Boolean(evidence.careWorkerStartedAt)
 
     // 3.1 尚未确定护工开始时间：每 2 天上午 09:00 提醒
     if (!hasStartTime) {
-      const requestedAt = row.care_requested_at ? new Date(row.care_requested_at) : null
+      const requestedAt = row.care_requested_at ? parseShanghaiDateTime(row.care_requested_at) : null
       const baseTime = requestedAt && requestedAt > admittedAt ? requestedAt : admittedAt
       if (baseTime) {
         const cycleIdentity = `${row.care_step_id}:${row.occurrence_no ?? 0}:${new Date(baseTime).toISOString()}`
@@ -1608,8 +1609,7 @@ export async function scanHospitalCareReminders(prisma: PrismaClient, logger?: L
     const endTimeRaw = row.care_end_date
     const serviceYmd = normalizeYmdValue(endTimeRaw)
     if (serviceYmd) {
-        const [year, month, day] = serviceYmd.split('-').map(Number)
-        const endDate = new Date(year, month - 1, day)
+        const endDate = parseYmdToShanghaiDate(serviceYmd)
         const { ymd: targetRemindYmd } = subtractWorkdays(endDate, 2)
         const dedupeKey = `auto:care_end_notify:${row.source_order_no}:${serviceYmd}`
         await closeReminderKeysExcept(prisma, `auto:care_end_notify:${row.source_order_no}:`, dedupeKey, 'superseded', row.huanyu_order_no)

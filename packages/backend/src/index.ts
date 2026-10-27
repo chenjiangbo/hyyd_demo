@@ -5,7 +5,6 @@ import fastify from 'fastify'
 import cors from '@fastify/cors'
 import cookie from '@fastify/cookie'
 import websocket from '@fastify/websocket'
-import { PrismaClient } from '@prisma/client'
 import * as Minio from 'minio'
 import * as dotenv from 'dotenv'
 import {
@@ -39,6 +38,7 @@ import { ensureReminderTables } from './db/ensureReminderTables.js'
 import { ensureSysSettingsTable } from './db/ensureSysSettingsTable.js'
 import { ensureTaikangHuanyuChannelMappingTable } from './db/ensureTaikangHuanyuChannelMappingTable.js'
 import { ensureOrderAttributionMismatchTable } from './db/ensureOrderAttributionMismatchTable.js'
+import { assertShanghaiDatabaseTimezone, createShanghaiPrismaClient } from './db/shanghaiPrisma.js'
 import { syncHuanyuOrderFromTaikang } from './huanyuOrderSync.js'
 import { findHuanyuOrderNoOnMysqlByChannelOrderNo, findHuanyuOrderNosOnMysqlByChannelOrderNo } from './huanyuMysqlPush.js'
 import { initializeOrderWorkflow } from './workflow/serviceWorkflow.js'
@@ -68,7 +68,7 @@ const server = fastify({
   bodyLimit: 25 * 1024 * 1024
 })
 
-const prisma = new PrismaClient()
+const prisma = createShanghaiPrismaClient()
 
 type GreenPassHuanyuSyncAction =
   | 'public_skipped'
@@ -300,6 +300,7 @@ async function ensureBuckets() {
 
 async function start() {
   try {
+    await assertShanghaiDatabaseTimezone(prisma)
     // 先确保寰宇订单与 B 端运营表单相关业务表存在，再注册路由和启动服务。
     // 该检查幂等，已有表不会被修改。
     await ensureHuanyuTables(prisma)

@@ -97,7 +97,7 @@ export default function SettingsPage(): React.JSX.Element {
                 <span>已就绪：{fileName} ({appInfo.sizeMb} MB)</span>
               </div>
               <div className="text-xs text-fg-muted">
-                最新上传更新时间：{appInfo.updatedAt ? new Date(appInfo.updatedAt).toLocaleString() : '未知'}
+                最新上传更新时间：{appInfo.updatedAt ? new Date(appInfo.updatedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '未知'}
               </div>
               <div className="text-xs text-fg-muted bg-surface-3 p-2.5 rounded border border-line break-all">
                 <span className="font-semibold text-fg-default">手机下载链接：</span>

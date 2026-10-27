@@ -24,8 +24,11 @@ function mysqlWriterPool(): Pool {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('HUANYU_PUSH_DB_PORT 必须是有效端口')
   pushPool = mysql.createPool({
     host, port, database, user, password,
-    waitForConnections: true, connectionLimit: 3, queueLimit: 0, multipleStatements: false,
+    waitForConnections: true, connectionLimit: 3, queueLimit: 0, multipleStatements: false, timezone: '+08:00',
     ssl: ssl?.toLowerCase() === 'true' ? { rejectUnauthorized: false } : undefined
+  })
+  pushPool.on('connection', (connection) => {
+    void connection.query("SET time_zone = '+08:00'")
   })
   return pushPool
 }

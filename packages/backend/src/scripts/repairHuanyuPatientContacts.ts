@@ -1,5 +1,6 @@
 import * as dotenv from 'dotenv'
-import { Prisma, PrismaClient } from '@prisma/client'
+import { Prisma } from '@prisma/client'
+import { createShanghaiPrismaClient } from '../db/shanghaiPrisma.js'
 import { syncHuanyuOrderFromTaikang } from '../huanyuOrderSync.js'
 
 // 仅用于一次性修复：将泰康详情中的联系人/第二联系人电话按寰宇字段规则重新映射。
@@ -7,7 +8,7 @@ import { syncHuanyuOrderFromTaikang } from '../huanyuOrderSync.js'
 dotenv.config({ path: `${process.cwd()}/.env`, override: true })
 dotenv.config({ path: `${process.cwd()}/../../.env`, override: true })
 
-const prisma = new PrismaClient()
+const prisma = createShanghaiPrismaClient()
 
 async function main() {
   const orders = await prisma.order.findMany({

@@ -1,5 +1,5 @@
 import * as dotenv from 'dotenv'
-import { Prisma, PrismaClient } from '@prisma/client'
+import { Prisma } from '@prisma/client'
 import { resolve } from 'node:path'
 import { writeFile } from 'node:fs/promises'
 import {
@@ -10,6 +10,7 @@ import {
   type HuanyuChannelProductOption
 } from '../db/remoteDictionary.js'
 import { ensureTaikangHuanyuChannelMappingTable } from '../db/ensureTaikangHuanyuChannelMappingTable.js'
+import { createShanghaiPrismaClient } from '../db/shanghaiPrisma.js'
 import {
   findTaikangHuanyuChannelMapping,
   taikangBusinessKeyOf,
@@ -20,7 +21,7 @@ import {
 dotenv.config({ path: resolve(process.cwd(), '.env'), override: false })
 dotenv.config({ path: resolve(process.cwd(), '../../.env'), override: false })
 
-const prisma = new PrismaClient()
+const prisma = createShanghaiPrismaClient()
 const args = new Set(process.argv.slice(2))
 const apply = args.has('--apply')
 const force = args.has('--force')

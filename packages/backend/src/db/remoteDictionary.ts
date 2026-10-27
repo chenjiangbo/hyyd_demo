@@ -85,8 +85,12 @@ function readOnlyPool(): Pool {
     waitForConnections: true,
     connectionLimit: 5,
     queueLimit: 0,
+    timezone: '+08:00',
     multipleStatements: false,
     ssl: env.remoteDictDbSsl?.toLowerCase() === 'true' ? { rejectUnauthorized: false } : undefined
+  })
+  dictionaryPool.on('connection', (connection) => {
+    void connection.query("SET time_zone = '+08:00'")
   })
   return dictionaryPool
 }

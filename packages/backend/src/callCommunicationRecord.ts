@@ -2,6 +2,7 @@ import type { PrismaClient } from '@prisma/client'
 import { ensureBOrderFormInstance } from './bOrderForms.js'
 import { summarizeCallCommunication } from './llm/summaryService.js'
 import { getOrderWorkflow } from './workflow/serviceWorkflow.js'
+import { formatShanghaiDateTime } from './time/shanghaiTime.js'
 
 export type CallForCommunication = {
   id: number
@@ -61,7 +62,7 @@ export async function saveCallAsBOrderCommunication(
   const record = {
     id: -call.id,
     // datetime-local 没有时区信息，保存为北京时间本地格式供沟通记录直接展示。
-    time: new Date(call.startedAt.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 19),
+    time: formatShanghaiDateTime(call.startedAt).replace(' ', 'T'),
     content,
     result,
     sourceCallId: call.id,

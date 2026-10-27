@@ -1,5 +1,6 @@
 import { chat } from './gatewayClient.js'
 import { WORKFLOW_EVENT_CODES, type WorkflowAnalysisEvent } from './orderBriefService.js'
+import { formatShanghaiDateTime, parseShanghaiDateTime } from '../time/shanghaiTime.js'
 
 export const ORDER_AI_FIELD_PROMPT_VERSION = 'order-fields-v6-huanyu-service-segmentation'
 
@@ -237,6 +238,10 @@ function stringValue(value: unknown): string | null {
 
 /** 陪诊服务时间统一为数据库和 datetime-local 共用的秒级格式。 */
 function normalizeEscortServiceDateTime(value: string): string {
+  if (/(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(value.trim())) {
+    const parsed = parseShanghaiDateTime(value)
+    if (!Number.isNaN(parsed.getTime())) return formatShanghaiDateTime(parsed)
+  }
   const match = value.trim().match(/^(\d{4})[-/.]?(\d{1,2})[-/.]?(\d{1,2})(?:[T\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/)
   if (!match) return value.trim()
   const [, year, month, day, hour = '00', minute = '00', second = '00'] = match

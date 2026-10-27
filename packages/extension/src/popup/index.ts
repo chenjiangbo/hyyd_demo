@@ -184,7 +184,7 @@ function formatAnalysisStatus(state: any): string {
   ];
   if (progress.currentService) parts.push(`当前：${progress.currentService}`);
   if (state.error) parts.push(`错误：${state.error}`);
-  if (state.updatedAt) parts.push(`更新：${new Date(state.updatedAt).toLocaleString()}`);
+  if (state.updatedAt) parts.push(`更新：${new Date(state.updatedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
   return parts.join('；');
 }
 
@@ -232,7 +232,7 @@ function formatEditAnalysisStatus(state: any): string {
   const networkEvents = Array.isArray(state.networkEvents) ? state.networkEvents.length : 0;
   const automationEvents = Array.isArray(state.automationEvents) ? state.automationEvents.length : 0;
   const parts = [`编辑页分析：快照 ${snapshots}`, `接口 ${networkEvents}`, `自动动作 ${automationEvents}`];
-  if (state.updatedAt) parts.push(`更新：${new Date(state.updatedAt).toLocaleString()}`);
+  if (state.updatedAt) parts.push(`更新：${new Date(state.updatedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
   return parts.join('；');
 }
 

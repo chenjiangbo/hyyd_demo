@@ -1,15 +1,16 @@
 import * as dotenv from 'dotenv'
-import { Prisma, PrismaClient } from '@prisma/client'
+import { Prisma } from '@prisma/client'
 import { writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { ensureHuanyuTables } from '../db/ensureHuanyuTables.js'
 import { findHuanyuChannelProductById, type HuanyuChannelProductOption } from '../db/remoteDictionary.js'
+import { createShanghaiPrismaClient } from '../db/shanghaiPrisma.js'
 
 // 支持 Linux 服务器从仓库根目录执行，也支持从 packages/backend 目录执行。
 dotenv.config({ path: resolve(process.cwd(), '.env'), override: false })
 dotenv.config({ path: resolve(process.cwd(), '../../.env'), override: false })
 
-const prisma = new PrismaClient()
+const prisma = createShanghaiPrismaClient()
 const args = new Set(process.argv.slice(2))
 const apply = args.has('--apply')
 const force = args.has('--force')

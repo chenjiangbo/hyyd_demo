@@ -55,6 +55,7 @@ import {
   type BOrderFormData,
 } from '../api'
 import { bizChipClass, bizType, sourceStyle } from '../lib/orderMapping'
+import { parseShanghaiDateTimeLocal, shanghaiDate, shanghaiDateParts, shanghaiDateTime } from '../lib/shanghaiTime'
 import { bOrderAiCandidateForLabel, bOrderAiKeysForServiceTab, bOrderAiKeysForSubmit, bOrderAiRules, overlayBOrderAi } from '../lib/bOrderAiFields'
 import { clearOrdersCache, type ApplicationGroup } from './WorkbenchKanban'
 
@@ -3138,7 +3139,8 @@ function HuanyuOrderForm({
 }
 
 function generateHuanyuOrderNo(date = new Date()): string {
-  const ymd = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`
+  const p = shanghaiDateParts(date)
+  const ymd = `${p.year}${p.month}${p.day}`
   const random = Array.from({ length: 8 }, () => Math.floor(Math.random() * 10)).join('')
   return `HYYD${ymd}${random}`
 }
@@ -3232,10 +3234,10 @@ function calculateAgeFromBirthOrId(val: string | null | undefined): string {
     const year = Number(idMatch[2])
     const month = Number(idMatch[3])
     const day = Number(idMatch[4])
-    const now = new Date()
-    let age = now.getFullYear() - year
-    const m = (now.getMonth() + 1) - month
-    if (m < 0 || (m === 0 && now.getDate() < day)) age--
+    const today = shanghaiDateParts(new Date())
+    let age = Number(today.year) - year
+    const m = Number(today.month) - month
+    if (m < 0 || (m === 0 && Number(today.day) < day)) age--
     return age >= 0 && age <= 150 ? String(age) : ''
   }
   const bdayMatch = /^(\d{4})[-/.]?(\d{1,2})[-/.]?(\d{1,2})/.exec(str)
@@ -3243,10 +3245,10 @@ function calculateAgeFromBirthOrId(val: string | null | undefined): string {
     const year = Number(bdayMatch[1])
     const month = Number(bdayMatch[2])
     const day = Number(bdayMatch[3])
-    const now = new Date()
-    let age = now.getFullYear() - year
-    const m = (now.getMonth() + 1) - month
-    if (m < 0 || (m === 0 && now.getDate() < day)) age--
+    const today = shanghaiDateParts(new Date())
+    let age = Number(today.year) - year
+    const m = Number(today.month) - month
+    if (m < 0 || (m === 0 && Number(today.day) < day)) age--
     return age >= 0 && age <= 150 ? String(age) : ''
   }
   return ''
@@ -3468,6 +3470,12 @@ function toHuanyuDateTimeLocal(value: unknown): string {
   const trimmed = String(value).trim()
   if (!trimmed) return ''
 
+  // 带 Z/偏移量的是实际时刻，先转为北京时间；不带时区的是业务录入的北京时间。
+  if (/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[T\s].*(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(trimmed)) {
+    const instant = new Date(trimmed)
+    if (!Number.isNaN(instant.getTime())) return shanghaiDateTime(instant).replace(' ', 'T')
+  }
+
   // 1. 纯8位数字日期 20260914
   if (/^\d{8}$/.test(trimmed)) {
     const y = trimmed.slice(0, 4)
@@ -3524,13 +3532,7 @@ function toHuanyuDateTimeLocal(value: unknown): string {
   // 6. Date 构造器解析兜底
   const parsed = new Date(trimmed)
   if (!isNaN(parsed.getTime())) {
-    const y = parsed.getFullYear()
-    const m = String(parsed.getMonth() + 1).padStart(2, '0')
-    const d = String(parsed.getDate()).padStart(2, '0')
-    const hh = String(parsed.getHours()).padStart(2, '0')
-    const mm = String(parsed.getMinutes()).padStart(2, '0')
-    const ss = String(parsed.getSeconds()).padStart(2, '0')
-    return `${y}-${m}-${d}T${hh}:${mm}:${ss}`
+    return shanghaiDateTime(parsed).replace(' ', 'T')
   }
 
   return ''
@@ -4996,7 +4998,7 @@ function CheckCompanionInformationPanel(): React.JSX.Element {
       endedAt: endedAt ? undefined : '请选择检查陪同结束时间',
       content: content.trim() ? undefined : '请填写陪同内容描述'
     }
-    if (startedAt && endedAt && new Date(endedAt).getTime() <= new Date(startedAt).getTime()) {
+    if (startedAt && endedAt && parseShanghaiDateTimeLocal(endedAt).getTime() <= parseShanghaiDateTimeLocal(startedAt).getTime()) {
       nextErrors.endedAt = '结束时间必须晚于开始时间'
     }
     setErrors(nextErrors)
@@ -5013,7 +5015,7 @@ function CheckCompanionInformationPanel(): React.JSX.Element {
   }
 
   function durationInHours(record: CheckCompanionRecord): string {
-    const duration = (new Date(record.endedAt).getTime() - new Date(record.startedAt).getTime()) / (60 * 60 * 1000)
+    const duration = (parseShanghaiDateTimeLocal(record.endedAt).getTime() - parseShanghaiDateTimeLocal(record.startedAt).getTime()) / (60 * 60 * 1000)
     return Number.isInteger(duration) ? String(duration) : duration.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')
   }
 
@@ -5348,11 +5350,19 @@ function ClaimInformationView({ order }: { order: Order }): React.JSX.Element {
 
 function formatClaimedTime(value: string | null): string {
   if (!value) return '—'
+  if (/(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(value)) {
+    const instant = new Date(value)
+    if (!Number.isNaN(instant.getTime())) return shanghaiDateTime(instant)
+  }
   return value.replace('T', ' ').replace(/\.\d+(Z|[+-]\d\d:\d\d)?$/, '').replace(/Z$/, '')
 }
 
 function toDateTimeLocal(value: string | null): string {
   if (!value) return ''
+  if (/(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(value)) {
+    const instant = new Date(value)
+    if (!Number.isNaN(instant.getTime())) return shanghaiDateTime(instant).slice(0, 16).replace(' ', 'T')
+  }
   const matched = value.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/)
   return matched ? `${matched[1]}T${matched[2]}` : ''
 }
@@ -7964,8 +7974,8 @@ function CareImageSection({ title, subtitle }: { title: string; subtitle?: strin
 
 function careServiceDays(records: CareServiceRecord[]): string | null {
   const hours = records.reduce((total, record) => {
-    const start = new Date(record.startTime).getTime()
-    const end = new Date(record.endTime).getTime()
+    const start = parseShanghaiDateTimeLocal(record.startTime).getTime()
+    const end = parseShanghaiDateTimeLocal(record.endTime).getTime()
     return Number.isFinite(start) && Number.isFinite(end) && end > start ? total + (end - start) / 3_600_000 : total
   }, 0)
   return hours > 0 ? (hours / 24).toFixed(2).replace(/\.00$/, '') : null
@@ -8516,7 +8526,7 @@ function formatDateTime(value: string | null): string {
   if (!value || value === '—') return '—'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('zh-CN')
+  return shanghaiDateTime(date)
 }
 
 function formatShortDateTime(value: string | null): string {
@@ -8524,9 +8534,10 @@ function formatShortDateTime(value: string | null): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   const now = new Date()
-  const time = date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
-  if (date.toDateString() === now.toDateString()) return `Today, ${time}`
-  return `${date.getMonth() + 1}-${date.getDate()} ${time}`
+  const parts = shanghaiDateParts(date)
+  const time = `${parts.hour}:${parts.minute}`
+  if (shanghaiDate(date) === shanghaiDate(now)) return `Today, ${time}`
+  return `${Number(parts.month)}-${Number(parts.day)} ${time}`
 }
 
 function sortMessages(messages: OrderMessage[]): OrderMessage[] {

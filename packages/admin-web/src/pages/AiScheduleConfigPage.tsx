@@ -196,7 +196,7 @@ export default function AiScheduleConfigPage(): React.JSX.Element {
                   {data.lastRunSlot || '暂无记录'}
                 </div>
                 <div className="mt-1 text-xs text-fg-muted">
-                  {data.lastRunAt ? new Date(data.lastRunAt).toLocaleTimeString() : '系统启动后尚无批次'}
+                  {data.lastRunAt ? new Date(data.lastRunAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '系统启动后尚无批次'}
                 </div>
               </div>
 

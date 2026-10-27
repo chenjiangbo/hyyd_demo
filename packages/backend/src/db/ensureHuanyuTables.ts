@@ -292,7 +292,7 @@ const CREATE_STATEMENTS = [
       "will_attend" BOOLEAN NOT NULL DEFAULT TRUE,
       "screenshot_url" TEXT,
       "remark" VARCHAR(500),
-      "created_at" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      "created_at" TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
     );
   `,
   `ALTER TABLE "fact_hy_pzfk" ADD COLUMN IF NOT EXISTS "service_date" VARCHAR(20);`,
@@ -321,7 +321,7 @@ const CREATE_STATEMENTS = [
       "error_code" VARCHAR(100),
       "error_message" TEXT,
       "send_ymd" VARCHAR(20) NOT NULL,
-      "created_at" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      "created_at" TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
     );
   `,
   `
@@ -337,9 +337,9 @@ const CREATE_STATEMENTS = [
       "pzr_detail_id" VARCHAR(100) NOT NULL DEFAULT '',
       "pzr_id" VARCHAR(100),
       "service_date" VARCHAR(20),
-      "claimed_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+      "claimed_at" TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
       "status" VARCHAR(20) NOT NULL DEFAULT 'sending',
-      "completed_at" TIMESTAMP WITH TIME ZONE,
+      "completed_at" TIMESTAMP WITHOUT TIME ZONE,
       "error_message" TEXT,
       PRIMARY KEY ("order_no", "huanyu_order_no", "batch_type", "send_ymd", "pzr_detail_id")
     );
@@ -356,7 +356,7 @@ const CREATE_STATEMENTS = [
   `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "status" VARCHAR(20) NOT NULL DEFAULT 'sending';`,
   `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "pzr_id" VARCHAR(100);`,
   `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "service_date" VARCHAR(20);`,
-  `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "completed_at" TIMESTAMP WITH TIME ZONE;`,
+  `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "completed_at" TIMESTAMP WITHOUT TIME ZONE;`,
   `ALTER TABLE "fact_hy_pz_sms_send_claims" ADD COLUMN IF NOT EXISTS "error_message" TEXT;`,
   // 19. 泰康绿通订单远程查重/远程建单决策日志。公共池跳过、个人池查远程的依据可追溯。
   `
@@ -370,7 +370,7 @@ const CREATE_STATEMENTS = [
       "action" VARCHAR(40) NOT NULL,
       "huanyu_order_no" VARCHAR(100),
       "error_message" TEXT,
-      "created_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      "created_at" TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW()
     );
   `,
   `
@@ -381,7 +381,7 @@ const CREATE_STATEMENTS = [
   `
     CREATE TABLE IF NOT EXISTS "order_huanyu_sync_claims" (
       "order_id" INTEGER PRIMARY KEY REFERENCES "orders"("id") ON DELETE CASCADE,
-      "claimed_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      "claimed_at" TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW()
     );
   `
 ]

@@ -1,12 +1,13 @@
 import * as dotenv from 'dotenv'
-import { Prisma, PrismaClient } from '@prisma/client'
+import { Prisma } from '@prisma/client'
+import { createShanghaiPrismaClient } from '../db/shanghaiPrisma.js'
 import { syncHuanyuOrderFromTaikang } from '../huanyuOrderSync.js'
 
 // 兼容从仓库根目录直接执行，以及由 packages/backend 的 npm script 执行两种方式。
 dotenv.config({ path: `${process.cwd()}/.env`, override: true })
 dotenv.config({ path: `${process.cwd()}/../../.env`, override: true })
 
-const prisma = new PrismaClient()
+const prisma = createShanghaiPrismaClient()
 
 async function main() {
   const requestedBatchSize = Number(process.env.HUANYU_PATIENT_BACKFILL_BATCH_SIZE ?? 100)

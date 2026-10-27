@@ -103,7 +103,7 @@ export default function TaikangHuanyuChannelMappingPage(): React.JSX.Element {
                   <td className="px-2 py-3 font-medium">{mapping.businessName}<div className="mt-1 text-xs font-normal text-fg-subtle">{mapping.businessKey}</div></td>
                   <td className="px-2 py-3"><select value={value.huanyuChannelId} onChange={(event) => setDraft((current) => ({ ...current, [mapping.businessKey]: { ...value, huanyuChannelId: event.target.value } }))} className="w-80 rounded border border-line bg-transparent px-2 py-1.5 outline-none focus:border-accent"><option value="">请选择 B端渠道</option>{mergedChannels.map((channel) => <option key={channel.id} value={channel.id}>{channel.id} · {channel.name}</option>)}</select></td>
                   <td className="px-2 py-3"><label className="inline-flex items-center gap-2"><input type="checkbox" checked={value.enabled} onChange={(event) => setDraft((current) => ({ ...current, [mapping.businessKey]: { ...value, enabled: event.target.checked } }))} /><span>{value.enabled ? '启用' : '停用'}</span></label></td>
-                  <td className="px-2 py-3 text-xs text-fg-muted">{new Date(mapping.updatedAt).toLocaleString('zh-CN', { hour12: false })}</td>
+                  <td className="px-2 py-3 text-xs text-fg-muted">{new Date(mapping.updatedAt).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })}</td>
                   <td className="px-2 py-3"><button disabled={savingKey === mapping.businessKey} onClick={() => void save(mapping)} className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60">{savingKey === mapping.businessKey ? '保存中…' : '保存'}</button></td>
                 </tr>
               })}</tbody>

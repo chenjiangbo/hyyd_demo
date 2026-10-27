@@ -16,8 +16,8 @@ export async function ensureTaikangHuanyuChannelMappingTable(prisma: PrismaClien
       huanyu_channel_id VARCHAR(40),
       huanyu_channel_name VARCHAR(200),
       enabled BOOLEAN NOT NULL DEFAULT true,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
+      updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now()
     );
   `)
 

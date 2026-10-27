@@ -132,6 +132,7 @@ function CallCard({
   onClick: () => void
 }): React.JSX.Element {
   const time = new Date(call.startedAt).toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
@@ -303,7 +304,7 @@ function CallDetailPanel({
     }
   }
 
-  const startedAt = new Date(call.startedAt).toLocaleString('zh-CN')
+  const startedAt = new Date(call.startedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
 
   return (
     <div className="p-6 space-y-4 max-w-4xl mx-auto">

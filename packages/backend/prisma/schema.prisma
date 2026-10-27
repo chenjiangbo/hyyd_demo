@@ -35,9 +35,9 @@ model TaikangFormSession {
   routeKind         String             @map("route_kind")
   sourceOrderNo     String?            @map("source_order_no")
   serviceName       String?            @map("service_name")
-  startedAt         DateTime           @map("started_at")
-  lastEventAt       DateTime           @map("last_event_at")
-  endedAt           DateTime?          @map("ended_at")
+  startedAt         DateTime           @db.Timestamp(3) @map("started_at")
+  lastEventAt       DateTime           @db.Timestamp(3) @map("last_event_at")
+  endedAt           DateTime?          @db.Timestamp(3) @map("ended_at")
   eventCount        Int                @default(0) @map("event_count")
   events            TaikangFormEvent[]
 
@@ -52,11 +52,11 @@ model TaikangFormEvent {
   sessionId   String             @db.Uuid @map("session_id")
   session     TaikangFormSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   sequence    Int
-  occurredAt  DateTime           @map("occurred_at")
+  occurredAt  DateTime           @db.Timestamp(3) @map("occurred_at")
   kind        String
   payload     Json
   payloadHash String             @map("payload_hash")
-  receivedAt  DateTime           @default(now()) @map("received_at")
+  receivedAt  DateTime           @default(now()) @db.Timestamp(3) @map("received_at")
 
   @@unique([sessionId, sequence])
   @@index([sessionId, occurredAt])
@@ -78,14 +78,14 @@ model Order {
   assignedEmployee        Employee?                @relation(fields: [assignedEmployeeId], references: [id])
   rawJson                 Json?                    @map("raw_json")
   detailJson              Json?                    @map("detail_json")
-  detailFetchedAt         DateTime?                @map("detail_fetched_at")
+  detailFetchedAt         DateTime?                @db.Timestamp(3) @map("detail_fetched_at")
   detailFingerprint       String?                  @map("detail_fingerprint") // 插件算的状态指纹，用于增量基线
   orderState              String?                  @map("order_state") // 泰康订单状态码原值，用于检测状态变化
   huanyuOrderNo           String?                  @unique @map("huanyu_order_no") // 对应 HY_FACT_DDCX_NEW.DDBH；创建后不再改变
   // AI 滚动简报（综合微信/企微消息 + 通话/录音转写，一次调用产出 摘要/阶段/待办/风险/回填关键信息）
   // 见 docs/设计_订单AI滚动简报.md。aiBriefJson 存整份简报；brief* 是增量水位。
   aiBriefJson             Json?                    @map("ai_brief_json")
-  briefUpdatedAt          DateTime?                @map("brief_updated_at")
+  briefUpdatedAt          DateTime?                @db.Timestamp(3) @map("brief_updated_at")
   briefLastMsgId          Int?                     @map("brief_last_msg_id") // 上次处理到的最大 Message.id
   briefLastCallId         Int?                     @map("brief_last_call_id") // 上次处理到的最大 Call.id
   briefLastMaterialId     Int?                     @map("brief_last_material_id") // 上次处理到的最大 Material.id（手工补录）
@@ -94,9 +94,9 @@ model Order {
   fieldAiLastMsgId        Int?                     @map("field_ai_last_msg_id")
   fieldAiLastCallId       Int?                     @map("field_ai_last_call_id")
   fieldAiLastMaterialId   Int?                     @map("field_ai_last_material_id")
-  createdAt               DateTime                 @default(now()) @map("created_at")
-  poolEnteredAt           DateTime?                @map("pool_entered_at") // 仅泰康订单填写；自营订单留空
-  updatedAt               DateTime                 @updatedAt @map("updated_at")
+  createdAt               DateTime                 @default(now()) @db.Timestamp(3) @map("created_at")
+  poolEnteredAt           DateTime?                @db.Timestamp(3) @map("pool_entered_at") // 仅泰康订单填写；自营订单留空
+  updatedAt               DateTime                 @updatedAt @db.Timestamp(3) @map("updated_at")
   messages                Message[]
   calls                   Call[]
   aiSummaries             AiSummary[]
@@ -119,7 +119,7 @@ model OrderAttributionMismatch {
   observedTaikangAccount String    @map("observed_taikang_account")
   observedTaikangUserId  Int       @map("observed_taikang_user_id")
   batchId                String    @map("batch_id")
-  observedAt             DateTime  @default(now()) @map("observed_at")
+  observedAt             DateTime  @default(now()) @db.Timestamp(3) @map("observed_at")
 
   @@unique([batchId, sourceOrderNo])
   @@index([observedAt(sort: Desc)])
@@ -130,11 +130,11 @@ model ApplicationBrief {
   id              Int       @id @default(autoincrement())
   applicationNo   String    @unique @map("application_no")
   briefJson       Json?     @map("brief_json")
-  briefUpdatedAt  DateTime? @map("brief_updated_at")
+  briefUpdatedAt  DateTime? @db.Timestamp(3) @map("brief_updated_at")
   briefLastMsgId  Int?      @map("brief_last_msg_id")
   briefLastCallId Int?      @map("brief_last_call_id")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  createdAt       DateTime  @default(now()) @db.Timestamp(3) @map("created_at")
+  updatedAt       DateTime  @updatedAt @db.Timestamp(3) @map("updated_at")
 
   @@map("application_briefs")
 }
@@ -147,7 +147,7 @@ model OrderStatusHistory {
   order          Order    @relation(fields: [orderId], references: [id])
   orderState     String?  @map("order_state") // 状态码，如 "2002" / "8"
   orderStateName String?  @map("order_state_name") // 状态名，如 "待处理" / "待分配医学陪诊"
-  recordedAt     DateTime @default(now()) @map("recorded_at")
+  recordedAt     DateTime @default(now()) @db.Timestamp(3) @map("recorded_at")
 
   @@index([orderId])
   @@map("order_status_history")
@@ -165,7 +165,7 @@ model OrderAttachment {
   minioKey    String   @map("minio_key")
   byteSize    Int      @map("byte_size")
   rawJson     Json?    @map("raw_json")
-  createdAt   DateTime @default(now()) @map("created_at")
+  createdAt   DateTime @default(now()) @db.Timestamp(3) @map("created_at")
 
   @@unique([orderId, fileId])
   @@index([orderId])
@@ -176,7 +176,7 @@ model OrderAttachment {
 model OrderIdCardOcrAttempt {
   orderId     Int      @id @map("order_id")
   order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  attemptedAt DateTime @default(now()) @map("attempted_at") @db.Timestamptz(6)
+  attemptedAt DateTime @default(now()) @map("attempted_at") @db.Timestamp(6)
   result      String   @default("pending") @db.VarChar(24)
 
   @@map("order_id_card_ocr_attempts")
@@ -202,8 +202,8 @@ model Material {
   // 图片素材的 AI 识图缓存（qwen-vl 分类 + OCR，识一次复用）。供订单 AI 简报使用。
   aiImageKind        String?   @map("ai_image_kind") // 聊天截图 / 单据 / 短信 / 其他
   aiImageText        String?   @map("ai_image_text") // 从图中提取的文字/关键信息
-  aiImageProcessedAt DateTime? @map("ai_image_processed_at")
-  createdAt          DateTime  @default(now()) @map("created_at")
+  aiImageProcessedAt DateTime? @db.Timestamp(3) @map("ai_image_processed_at")
+  createdAt          DateTime  @default(now()) @db.Timestamp(3) @map("created_at")
 
   @@unique([orderId, clientUuid])
   @@index([orderId])
@@ -220,20 +220,20 @@ model Message {
   senderName       String?  @map("sender_name")
   contentText      String   @map("content_text")
   screenshotOssKey String?  @map("screenshot_oss_key")
-  capturedAt       DateTime @map("captured_at")
+  capturedAt       DateTime @db.Timestamp(3) @map("captured_at")
   employeeId       Int      @map("employee_id")
   employee         Employee @relation(fields: [employeeId], references: [id])
 
   // 跨帧去重 + 时间链还原（sidecar 出结构化、tray 逐帧转发、后端做跨帧处理）：
   senderType  String    @default("other") @map("sender_type") // self | other | system
   kind        String?   @map("kind") // system 细分：time | notice | other
-  chatTime    DateTime? @map("chat_time") // 时间锚点折算的真实聊天时间；算不出为 null（透明保留"是否估算"）
-  sortTime    DateTime? @map("sort_time") // 排序键 = chatTime ?? capturedAt；时间线统一按它排
+  chatTime    DateTime? @db.Timestamp(3) @map("chat_time") // 时间锚点折算的真实聊天时间；算不出为 null（透明保留"是否估算"）
+  sortTime    DateTime? @db.Timestamp(3) @map("sort_time") // 排序键 = chatTime ?? capturedAt；时间线统一按它排
   contentHash String?   @map("content_hash") // 归一内容哈希
   dedupeKey   String?   @unique @map("dedupe_key") // 员工+会话名+说话人+内容哈希 → 跨帧去重
   seenCount   Int       @default(1) @map("seen_count") // 同一条消息被截到的次数
-  firstSeenAt DateTime? @map("first_seen_at") // 首次截到
-  lastSeenAt  DateTime? @map("last_seen_at") // 最近截到
+  firstSeenAt DateTime? @db.Timestamp(3) @map("first_seen_at") // 首次截到
+  lastSeenAt  DateTime? @db.Timestamp(3) @map("last_seen_at") // 最近截到
 
   @@index([orderId, sortTime])
   @@index([employeeId, applicationNo, sortTime])
@@ -256,14 +256,14 @@ model UnmatchedOrderRef {
   bestDist              Int?     @map("best_dist") // 最近编辑距离（none 时是超阈值的最小值，便于排查）
   candidateOrderIds     Json?    @map("candidate_order_ids") // ambiguous 时并列的订单 id 列表
   screenshotOssKey      String?  @map("screenshot_oss_key")
-  capturedAt            DateTime @map("captured_at")
+  capturedAt            DateTime @db.Timestamp(3) @map("captured_at")
   seenCount             Int      @default(1) @map("seen_count") // 同一候选重复出现次数
   status                String   @default("pending") // 'pending' | 'confirmed' | 'rejected'
   resolvedOrderId       Int?     @map("resolved_order_id") // 确认时选择的订单（兼容/审计）
   resolvedApplicationNo String?  @map("resolved_application_no") // 确认后绑定的申领号
   note                  String?
-  createdAt             DateTime @default(now()) @map("created_at")
-  updatedAt             DateTime @updatedAt @map("updated_at")
+  createdAt             DateTime @default(now()) @db.Timestamp(3) @map("created_at")
+  updatedAt             DateTime @updatedAt @db.Timestamp(3) @map("updated_at")
 
   @@unique([employeeId, candidate], name: "employee_candidate")
   @@map("unmatched_order_refs")
@@ -281,14 +281,14 @@ model Call {
   direction       String // 'in' | 'out'
   callStatus      String    @default("answered") @map("call_status") // 'answered' | 'missed' | 'rejected' | 'outgoing_unanswered'
   durationSec     Int       @map("duration_sec")
-  startedAt       DateTime  @map("started_at")
+  startedAt       DateTime  @db.Timestamp(3) @map("started_at")
   recordingOssKey String?   @map("recording_oss_key")
   asrText         String?   @map("asr_text")
   asrStatus       String    @default("no_recording") @map("asr_status") // 'no_recording' | 'pending' | 'processing' | 'done' | 'failed' | 'requires_manual'
   // Fun-ASR (DashScope) 任务追踪
   dashscopeTaskId String?   @map("dashscope_task_id")
   asrResultJson   Json?     @map("asr_result_json")
-  asrFinishedAt   DateTime? @map("asr_finished_at")
+  asrFinishedAt   DateTime? @db.Timestamp(3) @map("asr_finished_at")
 
   @@index([employeeId, applicationNo, startedAt])
   @@map("calls")
@@ -300,8 +300,8 @@ model Command {
   action      String // 'claim' | 'fill_form'
   payloadJson Json      @map("payload_json")
   status      String    @default("pending") // 'pending' | 'done' | 'failed' | 'requires_manual'
-  createdAt   DateTime  @default(now()) @map("created_at")
-  executedAt  DateTime? @map("executed_at")
+  createdAt   DateTime  @default(now()) @db.Timestamp(3) @map("created_at")
+  executedAt  DateTime? @db.Timestamp(3) @map("executed_at")
 
   @@map("commands")
 }
@@ -314,7 +314,7 @@ model AiSummary {
   type      String // 'call' | 'message' | 'full'
   content   String
   model     String
-  createdAt DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @db.Timestamp(3) @map("created_at")
 
   @@index([callId])
   @@map("ai_summaries")

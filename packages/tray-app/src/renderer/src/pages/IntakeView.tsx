@@ -157,7 +157,7 @@ function OrderTable({ title, orders, showClaim, onClaim, claimingId }: TableProp
                 </Td>
                 <Td>{o.source}</Td>
                 <Td className="text-slate-500">
-                  {new Date(o.createdAt).toLocaleString('zh-CN')}
+                  {new Date(o.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
                 </Td>
                 {showClaim && (
                   <Td>

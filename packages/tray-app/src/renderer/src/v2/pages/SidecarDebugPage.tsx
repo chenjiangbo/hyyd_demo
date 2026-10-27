@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { parseShanghaiTimestamp } from '../lib/shanghaiTime'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -412,7 +413,7 @@ export default function SidecarDebugPage(): React.JSX.Element {
       setStatus(st)
       setFrames(fr)
       setLogs(dl)
-      setLoadedAt(new Date().toLocaleTimeString())
+      setLoadedAt(new Date().toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' }))
     } catch { /* ignore transient IPC errors */ }
   }, [api])
 
@@ -642,7 +643,7 @@ function SessionRow({
 }): React.JSX.Element {
   const rc = RESULT_CFG[s.result]
   const time = new Date(s.ts).toLocaleTimeString('zh-CN', {
-    hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Shanghai',
   })
 
   return (
@@ -719,7 +720,7 @@ function SessionDetail({
   const ocrCompact = compactCJK(rawOcr)
   const messages = s.dbgFrame?.messages ?? []
 
-  const time = new Date(s.ts).toLocaleString('zh-CN', { hour12: false })
+  const time = new Date(s.ts).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })
   const isStopped = s.result === 'dedup_skip' || s.result === 'typing_skip'
 
   return (
@@ -1127,8 +1128,8 @@ function OcrView({
       {/* Left: frame list */}
       <div className="w-56 shrink-0 border-r border-border-subtle overflow-y-auto bg-white">
         {frames.map((f, i) => {
-          const t = new Date(f.capturedAt).toLocaleTimeString('zh-CN', {
-            hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit',
+          const t = parseShanghaiTimestamp(f.capturedAt).toLocaleTimeString('zh-CN', {
+            hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Shanghai',
           })
           return (
             <button

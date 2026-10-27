@@ -8,6 +8,7 @@ import {
 } from './db/remoteDictionary.js'
 import { findTaikangHuanyuChannelMapping, taikangBusinessKeyOf } from './taikangHuanyuChannelMapping.js'
 import { createHuanyuOrderOnMysql } from './huanyuMysqlPush.js'
+import { formatShanghaiDateTime } from './time/shanghaiTime.js'
 
 /** 订单同步所需的最小字段，既可用于实时抓单，也可用于历史回填。 */
 export interface HuanyuSourceOrder {
@@ -271,7 +272,7 @@ export async function syncHuanyuOrderFromTaikang(
       BBQ_XQ: text(field(raw, 'intendDateAmorpm'), 20),
       DATE_XQ: text(field(raw, 'intendDate'), 20),
       YYQDLX: '1',
-      xtsj_: order.createdAt.toISOString(),
+      xtsj_: formatShanghaiDateTime(order.createdAt),
       expectedProvince: text(field(raw, 'intendProvince'), 50),
       expectedCity: text(field(raw, 'intendCity'), 50),
       expectedHospital: text(field(raw, 'intendHos', 'hospital'), 255),
@@ -315,7 +316,7 @@ export async function syncHuanyuOrderFromTaikang(
       ${text(patientName, 50)}, ${huanyuDocumentType(field(raw, 'cardType'))}, ${text(field(raw, 'cardId'), 50)}, ${text(field(raw, 'sex'), 20)}, ${ageFromBirthday(birthday)}, ${text(patientPhone, 18)},
       ${text(field(raw, 'ecpName'), 50)}, ${text(field(raw, 'patEcpRelationship', 'relationship'), 50)}, ${text(familyPhone, 18)}, ${text(field(raw, 'suspectDisease'), 100)}, ${text(field(raw, 'comments', 'comment'), 2000)},
       ${text(field(raw, 'hospital', 'intendHos', 'visitingHospital'), 100)}, ${text(field(raw, 'visitingHospitalDetailAddress'), 500)}, ${text(field(raw, 'dept', 'intendDept'), 50)}, ${text(field(raw, 'doctor', 'intendDoc'), 50)}, ${text(field(raw, 'comments', 'comment'), 2000)},
-      ${text(field(raw, 'intendDateAmorpm'), 20)}, ${text(field(raw, 'intendDate'), 20)}, ${'1'}, ${order.createdAt.toISOString()},
+      ${text(field(raw, 'intendDateAmorpm'), 20)}, ${text(field(raw, 'intendDate'), 20)}, ${'1'}, ${formatShanghaiDateTime(order.createdAt)},
       ${text(field(raw, 'intendProvince'), 50)}, ${text(field(raw, 'intendCity'), 50)}, ${text(field(raw, 'intendHos', 'hospital'), 255)}, ${text(field(raw, 'intendDept', 'dept'), 255)}
     ) ON CONFLICT ("DDBH") DO UPDATE
       SET "BDQD_DDBH" = EXCLUDED."BDQD_DDBH",

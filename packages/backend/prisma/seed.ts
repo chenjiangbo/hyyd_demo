@@ -1,6 +1,6 @@
-import { PrismaClient } from '@prisma/client'
+import { createShanghaiPrismaClient } from '../src/db/shanghaiPrisma.js'
 
-const prisma = new PrismaClient()
+const prisma = createShanghaiPrismaClient()
 
 async function main() {
   console.log('开始清除旧数据...')

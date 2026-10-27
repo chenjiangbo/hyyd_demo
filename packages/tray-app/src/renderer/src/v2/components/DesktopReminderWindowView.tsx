@@ -243,7 +243,7 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
   const isUrgent = currentTag === '系统提醒'
   const timeStr = currentReminder.remind_time || currentReminder.remindTime
   const currentFormattedTime = timeStr
-    ? new Date(timeStr).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    ? new Date(timeStr).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Shanghai' })
     : ''
 
   const renderFormattedContent = (rawContent: string) => {
@@ -388,7 +388,7 @@ export default function DesktopReminderWindowView(): React.JSX.Element {
               const orderNo = extractOrderNo(r)
               const rTime = r.remind_time || r.remindTime
               const rTimeStr = rTime
-                ? new Date(rTime).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+                ? new Date(rTime).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Shanghai' })
                 : ''
               const brief = extractBriefContent(r.content)
 

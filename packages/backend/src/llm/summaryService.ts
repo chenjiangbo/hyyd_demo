@@ -9,6 +9,7 @@
  */
 
 import { chat } from './gatewayClient.js'
+import { formatShanghaiDateTime, parseShanghaiDateTime } from '../time/shanghaiTime.js'
 
 // ── 类型定义 ─────────────────────────────────────────────────────────────────
 
@@ -106,7 +107,11 @@ export async function summarizeCallCommunication(input: CallSummaryInput): Promi
 
 export async function summarizeMessages(input: MessageSummaryInput): Promise<SummaryResult> {
   const msgLines = input.messages
-    .map(m => `[${m.capturedAt.substring(0, 16)}] ${m.senderName ?? '未知'}: ${m.contentText}`)
+    .map(m => {
+      const capturedAt = parseShanghaiDateTime(m.capturedAt)
+      const time = Number.isNaN(capturedAt.getTime()) ? m.capturedAt : formatShanghaiDateTime(capturedAt).slice(0, 16)
+      return `[${time}] ${m.senderName ?? '未知'}: ${m.contentText}`
+    })
     .join('\n')
 
   const result = await chat(

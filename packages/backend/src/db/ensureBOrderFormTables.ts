@@ -19,7 +19,7 @@ const CREATE_STATEMENTS = [
       id BIGSERIAL PRIMARY KEY,
       order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
       huanyu_order_no VARCHAR(64) NOT NULL UNIQUE,
-      discovered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      discovered_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
       source VARCHAR(24) NOT NULL DEFAULT 'remote_lookup',
       workflow_enabled BOOLEAN NOT NULL DEFAULT false,
       CONSTRAINT b_order_huanyu_services_order_no_key UNIQUE (order_id, huanyu_order_no)
@@ -45,11 +45,11 @@ const CREATE_STATEMENTS = [
       status VARCHAR(20) NOT NULL DEFAULT 'draft'
         CHECK (status IN ('draft', 'active', 'retired')),
       schema_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-      effective_from TIMESTAMPTZ,
-      effective_to TIMESTAMPTZ,
+      effective_from TIMESTAMP WITHOUT TIME ZONE,
+      effective_to TIMESTAMP WITHOUT TIME ZONE,
       created_by_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
+      updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
       CONSTRAINT b_order_form_templates_code_version_key UNIQUE (code, version)
     );
   `,
@@ -72,8 +72,8 @@ const CREATE_STATEMENTS = [
       is_repeatable BOOLEAN NOT NULL DEFAULT false,
       status VARCHAR(20) NOT NULL DEFAULT 'active'
         CHECK (status IN ('active', 'hidden', 'retired')),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
+      updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
       CONSTRAINT b_order_form_tabs_template_code_key UNIQUE (template_id, code)
     );
   `,
@@ -107,8 +107,8 @@ const CREATE_STATEMENTS = [
       sync_mapping_json JSONB NOT NULL DEFAULT '{}'::jsonb,
       status VARCHAR(20) NOT NULL DEFAULT 'active'
         CHECK (status IN ('active', 'hidden', 'retired')),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
+      updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
       CONSTRAINT b_order_form_fields_tab_code_key UNIQUE (tab_id, code)
     );
   `,
@@ -130,9 +130,9 @@ const CREATE_STATEMENTS = [
       effective_status VARCHAR(40) NOT NULL DEFAULT '待跟进',
       assigned_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
       extra_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-      status_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      status_updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
+      updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
       CONSTRAINT b_order_operations_order_key UNIQUE (order_id),
       CONSTRAINT b_order_operations_manual_status_reason_check
         CHECK (manual_status IS NULL OR manual_status_reason IS NOT NULL)
@@ -170,13 +170,13 @@ const CREATE_STATEMENTS = [
       step_status VARCHAR(30) NOT NULL DEFAULT 'pending'
         CHECK (step_status IN ('pending', 'in_progress', 'completed', 'cancelled', 'skipped')),
       is_required BOOLEAN NOT NULL DEFAULT true,
-      planned_at TIMESTAMPTZ,
-      started_at TIMESTAMPTZ,
-      completed_at TIMESTAMPTZ,
+      planned_at TIMESTAMP WITHOUT TIME ZONE,
+      started_at TIMESTAMP WITHOUT TIME ZONE,
+      completed_at TIMESTAMP WITHOUT TIME ZONE,
       owner_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
       note TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
+      updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
       CONSTRAINT b_order_service_steps_operation_code_occurrence_key
         UNIQUE (operation_id, step_code, occurrence_no)
     );
@@ -200,7 +200,7 @@ const CREATE_STATEMENTS = [
       ADD COLUMN IF NOT EXISTS source_ref VARCHAR(160),
       ADD COLUMN IF NOT EXISTS ai_confidence NUMERIC(5,4),
       ADD COLUMN IF NOT EXISTS evidence_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-      ADD COLUMN IF NOT EXISTS activated_at TIMESTAMPTZ;
+      ADD COLUMN IF NOT EXISTS activated_at TIMESTAMP WITHOUT TIME ZONE;
   `,
   `
     CREATE INDEX IF NOT EXISTS b_order_service_steps_parent_idx
@@ -218,8 +218,8 @@ const CREATE_STATEMENTS = [
       confidence NUMERIC(5,4),
       payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
       evidence_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-      applied_at TIMESTAMPTZ,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      applied_at TIMESTAMP WITHOUT TIME ZONE,
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
       CONSTRAINT b_order_workflow_events_operation_key UNIQUE (operation_id, event_key)
     );
   `,
@@ -239,8 +239,8 @@ const CREATE_STATEMENTS = [
       description TEXT,
       status VARCHAR(20) NOT NULL DEFAULT 'draft'
         CHECK (status IN ('draft', 'active', 'retired')),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
+      updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
       CONSTRAINT b_order_workflow_templates_code_version_key UNIQUE (code, version),
       CONSTRAINT b_order_workflow_templates_service_version_key UNIQUE (service_type, version)
     );
@@ -267,8 +267,8 @@ const CREATE_STATEMENTS = [
       config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
       status VARCHAR(20) NOT NULL DEFAULT 'active'
         CHECK (status IN ('active', 'hidden', 'retired')),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
+      updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
       CONSTRAINT b_order_workflow_step_configs_template_code_key UNIQUE (template_id, code)
     );
   `,
@@ -292,11 +292,11 @@ const CREATE_STATEMENTS = [
       template_snapshot_json JSONB NOT NULL DEFAULT '{}'::jsonb,
       started_by_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
       submitted_by_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
-      submitted_at TIMESTAMPTZ,
+      submitted_at TIMESTAMP WITHOUT TIME ZONE,
       locked_by_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
-      locked_at TIMESTAMPTZ,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      locked_at TIMESTAMP WITHOUT TIME ZONE,
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
+      updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
       CONSTRAINT b_order_form_instances_operation_template_instance_key
         UNIQUE (operation_id, template_id, instance_no)
     );
@@ -323,8 +323,8 @@ const CREATE_STATEMENTS = [
       status VARCHAR(20) NOT NULL DEFAULT 'draft'
         CHECK (status IN ('draft', 'completed', 'not_applicable')),
       last_edited_by_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
+      updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
       CONSTRAINT b_order_form_tab_data_instance_tab_code_key UNIQUE (form_instance_id, tab_code)
     );
   `,
@@ -345,8 +345,8 @@ const CREATE_STATEMENTS = [
       row_data_json JSONB NOT NULL DEFAULT '{}'::jsonb,
       created_by_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
       updated_by_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
+      updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
       CONSTRAINT b_order_form_rows_tab_group_row_no_key UNIQUE (tab_data_id, row_group_code, row_no)
     );
   `,
@@ -368,7 +368,7 @@ const CREATE_STATEMENTS = [
       order_attachment_id INTEGER REFERENCES order_attachments(id) ON DELETE CASCADE,
       material_id INTEGER REFERENCES materials(id) ON DELETE CASCADE,
       created_by_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
       CONSTRAINT b_order_form_file_links_one_file_check
         CHECK (num_nonnulls(order_attachment_id, material_id) = 1)
     );
@@ -390,7 +390,7 @@ const CREATE_STATEMENTS = [
       changed_fields_json JSONB NOT NULL DEFAULT '[]'::jsonb,
       reason TEXT,
       operated_by_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
       CONSTRAINT b_order_form_revisions_instance_revision_key UNIQUE (form_instance_id, revision_no)
     );
   `,
@@ -415,8 +415,8 @@ const CREATE_STATEMENTS = [
       source_material_max_id INTEGER,
       raw_result_json JSONB NOT NULL DEFAULT '{}'::jsonb,
       error_message TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      completed_at TIMESTAMPTZ
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
+      completed_at TIMESTAMP WITHOUT TIME ZONE
     );
   `,
   `
@@ -439,8 +439,8 @@ const CREATE_STATEMENTS = [
       evidence_json JSONB NOT NULL DEFAULT '[]'::jsonb,
       status VARCHAR(20) NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'adopted', 'dismissed', 'superseded')),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      adopted_at TIMESTAMPTZ,
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
+      adopted_at TIMESTAMP WITHOUT TIME ZONE,
       adopted_by_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL
     );
   `,
@@ -459,10 +459,10 @@ const CREATE_STATEMENTS = [
       event_code VARCHAR(100) NOT NULL,
       evidence TEXT NOT NULL,
       event_key VARCHAR(180) NOT NULL UNIQUE,
-      occurred_at TIMESTAMPTZ,
-      planned_at TIMESTAMPTZ,
+      occurred_at TIMESTAMP WITHOUT TIME ZONE,
+      planned_at TIMESTAMP WITHOUT TIME ZONE,
       source_run_id BIGINT REFERENCES b_order_ai_analysis_runs(id) ON DELETE CASCADE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now()
     );
   `,
 
@@ -475,7 +475,7 @@ const CREATE_STATEMENTS = [
       status VARCHAR(20) NOT NULL CHECK (status IN ('succeeded', 'failed')),
       message TEXT,
       pushed_by_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now()
     );
   `,
   `

@@ -63,10 +63,10 @@ export default function StatusBar({ backendOk, presence }: Props): React.JSX.Ele
     tokenOk === undefined || tokenOk === null
       ? '泰康保活: 待首次检测'
       : tokenOk
-        ? `泰康保活: 正常${presence?.tokenLastCheckAt ? ` (${new Date(presence.tokenLastCheckAt).toLocaleTimeString('zh-CN')})` : ''}`
+        ? `泰康保活: 正常${presence?.tokenLastCheckAt ? ` (${new Date(presence.tokenLastCheckAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' })})` : ''}`
         : `泰康保活: 失效，请重新登录${presence?.tokenReason ? ` (${presence.tokenReason})` : ''}`
   const mobileLastSeen = presence?.mobileLastSeenAt
-    ? new Date(presence.mobileLastSeenAt).toLocaleTimeString('zh-CN')
+    ? new Date(presence.mobileLastSeenAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' })
     : '无'
   const mobileDot =
     presence?.mobileState === 'active'

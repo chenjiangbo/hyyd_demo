@@ -516,7 +516,7 @@ export default function SmsConfigPage(): React.JSX.Element {
                 >
                   <div className="flex items-center justify-between font-semibold mb-1">
                     <span>{testResult.success ? '✓ 阿里云接口调用成功' : '✗ 阿里云接口调用失败'}</span>
-                    <span className="font-mono text-[10px] opacity-75">{new Date().toLocaleTimeString()}</span>
+                    <span className="font-mono text-[10px] opacity-75">{new Date().toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' })}</span>
                   </div>
                   <pre className="font-mono text-[11px] overflow-x-auto p-2 rounded bg-black/10 dark:bg-black/30 whitespace-pre-wrap break-all mt-1">
                     {JSON.stringify(testResult, null, 2)}
@@ -587,7 +587,7 @@ export default function SmsConfigPage(): React.JSX.Element {
                 {logs.map((row) => (
                   <tr key={row.id} className="hover:bg-surface-2/40">
                     <td className="py-2.5 px-3 text-fg-muted whitespace-nowrap">
-                      {row.created_at ? new Date(row.created_at).toLocaleString('zh-CN', { hour12: false }) : '-'}
+                      {row.created_at ? new Date(row.created_at).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }) : '-'}
                     </td>
                     <td className="py-2.5 px-3 text-accent font-medium">{row.order_no}</td>
                     <td className="py-2.5 px-3">

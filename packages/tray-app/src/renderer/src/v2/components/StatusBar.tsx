@@ -62,7 +62,7 @@ export default function StatusBar({ session }: { session: Session }): React.JSX.
 
   // 移动端 App（心跳 / 近期通话上传）
   const mobileLastSeen = presence?.mobileLastSeenAt
-    ? new Date(presence.mobileLastSeenAt).toLocaleTimeString('zh-CN')
+    ? new Date(presence.mobileLastSeenAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' })
     : '无'
   const mobileTitle = `最后联系: ${mobileLastSeen} · 来源: ${presence?.mobileHeartbeatSource ?? '无'} · Android 后台不保证持续心跳，红色表示需要打开 App 触发补传`
   const mobile: { dot: Dot; text: string; title?: string } = !backendOk

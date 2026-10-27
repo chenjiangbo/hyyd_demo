@@ -1,5 +1,5 @@
 import * as dotenv from 'dotenv'
-import { PrismaClient } from '@prisma/client'
+import { createShanghaiPrismaClient } from '../db/shanghaiPrisma.js'
 import { resolve } from 'node:path'
 import { syncHuanyuOrderFromTaikang } from '../huanyuOrderSync.js'
 import { ensureHuanyuTables } from '../db/ensureHuanyuTables.js'
@@ -8,7 +8,7 @@ import { ensureHuanyuTables } from '../db/ensureHuanyuTables.js'
 dotenv.config({ path: resolve(process.cwd(), '.env'), override: false })
 dotenv.config({ path: resolve(process.cwd(), '../../.env'), override: false })
 
-const prisma = new PrismaClient()
+const prisma = createShanghaiPrismaClient()
 
 async function main() {
   await ensureHuanyuTables(prisma)

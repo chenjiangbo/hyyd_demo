@@ -11,7 +11,7 @@ export async function ensureOrderAttributionMismatchTable(prisma: PrismaClient):
       observed_taikang_account TEXT NOT NULL,
       observed_taikang_user_id INTEGER NOT NULL,
       batch_id TEXT NOT NULL,
-      observed_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+      observed_at TIMESTAMP(3) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `)
   await prisma.$executeRawUnsafe(`

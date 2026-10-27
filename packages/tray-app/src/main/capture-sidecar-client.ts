@@ -10,6 +10,7 @@ import {
   type ReconstructInput
 } from './capture-ai-reconstruct'
 import { CaptureStore } from './capture-store'
+import { normalizeShanghaiTimestamp, parseShanghaiTimestamp } from './shanghai-time'
 import type { CaptureFrameEvent, CaptureSidecarStatus } from './capture-types'
 
 export interface CaptureShot {
@@ -463,12 +464,13 @@ export class CaptureSidecarClient {
     if (this.status.enabled) this.status.mode = 'ready'
   }
 
-  private localSlot(iso: string): string {
-    const date = new Date(iso)
-    if (Number.isNaN(date.getTime())) throw new Error(`采集时间非法: ${iso}`)
-    const pad = (value: number): string => String(value).padStart(2, '0')
-    const slotMinute = Math.floor(date.getMinutes() / 20) * 20
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(slotMinute)}`
+  private localSlot(value: string | Date): string {
+    const date = parseShanghaiTimestamp(value)
+    if (Number.isNaN(date.getTime())) throw new Error(`采集时间非法: ${value}`)
+    const [ymd, hms] = normalizeShanghaiTimestamp(date).split(' ')
+    const [hour, minute] = hms.split(':')
+    const slotMinute = String(Math.floor(Number(minute) / 20) * 20).padStart(2, '0')
+    return `${ymd}T${hour}:${slotMinute}`
   }
 
   private setDiagnosticCandidate(frame: CaptureFrameEvent): boolean {
@@ -492,7 +494,7 @@ export class CaptureSidecarClient {
 
   private async uploadDueDiagnosticImages(): Promise<void> {
     if (!this.backendConfig || this.diagnosticCandidates.size === 0) return
-    const currentSlot = this.localSlot(new Date().toISOString())
+    const currentSlot = this.localSlot(new Date())
     const due = [...this.diagnosticCandidates.entries()].filter(([, candidate]) => candidate.slot < currentSlot)
     for (const [key, candidate] of due) {
       this.diagnosticCandidates.delete(key)
@@ -708,12 +710,7 @@ function createRequestId(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
-// 把毫秒时间戳格式化为本地时间 'YYYY-MM-DD HH:mm:ss'
+// 把毫秒时间戳格式化为北京时间 'YYYY-MM-DD HH:mm:ss.SSS'
 function formatLocal(ms: number): string {
-  const d = new Date(ms)
-  const p = (n: number): string => String(n).padStart(2, '0')
-  return (
-    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
-    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-  )
+  return normalizeShanghaiTimestamp(new Date(ms))
 }

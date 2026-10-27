@@ -5,6 +5,8 @@
  * 登录工号存在 localStorage，键名与采集版（v1）隔开，互不干扰。
  */
 
+import { shanghaiDateParts } from './lib/shanghaiTime'
+
 const LS_EMPLOYEE = 'hyyd.v2.employeeCode'
 const LS_DISPLAYNAME = 'hyyd.v2.displayName'
 const LS_BACKEND_URL = 'huanyu.backendUrl'
@@ -1025,11 +1027,8 @@ export function formatDisplayDate(val?: string | null): string {
 }
 
 export function getToday8(): string {
-  const d = new Date()
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const date = String(d.getDate()).padStart(2, '0')
-  return `${y}${m}${date}`
+  const p = shanghaiDateParts(new Date())
+  return `${p.year}${p.month}${p.day}`
 }
 
 // ─── 科室管理字典 (f_hy_kswh + f_hy_xfks) ───────────────────

@@ -20,6 +20,7 @@ import {
   type OrderBrief
 } from '../api'
 import { bizType, sourceStyle, stageIndexOf, LIFECYCLE_STAGES } from '../lib/orderMapping'
+import { shanghaiDateParts } from '../lib/shanghaiTime'
 import OrderReminderModal from '../components/OrderReminderModal'
 
 type LifecycleStageKey = 'claimed' | 'communication' | 'delivery' | 'settlement' | 'ending'
@@ -360,6 +361,7 @@ function formatDateTime(value: string | null | undefined): string {
   const d = new Date(value)
   if (Number.isNaN(d.getTime())) return value
   return d.toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
@@ -1671,7 +1673,7 @@ function DataEntryPanel({
                     {m.textContent || '（图片）'}
                   </p>
                 )}
-                <span className="text-[11px] text-text-muted/70">{new Date(m.createdAt).toLocaleString('zh-CN')}</span>
+                <span className="text-[11px] text-text-muted/70">{new Date(m.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</span>
               </div>
               <button
                 onClick={() => remove(m.id)}
@@ -1891,6 +1893,6 @@ function BriefKv({ k, v }: { k: string; v: string | null }): React.JSX.Element {
 function fmtBriefTime(iso: string): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return ''
-  const p = (n: number): string => String(n).padStart(2, '0')
-  return `更新于 ${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  const p = shanghaiDateParts(d)
+  return `更新于 ${p.month}-${p.day} ${p.hour}:${p.minute}`
 }

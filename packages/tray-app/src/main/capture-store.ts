@@ -5,6 +5,7 @@ import { dirname, join } from 'path'
 import { app } from 'electron'
 import type { CaptureLayoutResult } from './capture-layout-service'
 import type { CaptureFrameEvent, CaptureStructuredMessage } from './capture-types'
+import { normalizeShanghaiTimestamp } from './shanghai-time'
 
 export interface InsertFrameResult {
   frameId: number
@@ -229,6 +230,7 @@ export class CaptureStore {
     // （旧实现用整图字节哈希 image_hash，时钟跳一分钟/光标闪一下就变，基本判不出同屏。）
     const chatTextHash = hashChatMessages(structuredMessages)
     const duplicate = this.isDuplicateFrame(frame, chatTextHash)
+    const normalizedFrame = { ...frame, capturedAt: normalizeShanghaiTimestamp(frame.capturedAt) }
     const row = this.db
       .prepare(
         `
@@ -252,7 +254,7 @@ export class CaptureStore {
         channel: frame.channel,
         processName: frame.processName,
         windowTitle: (frame.title ?? frame.windowTitle ?? null),
-        capturedAt: frame.capturedAt,
+        capturedAt: normalizedFrame.capturedAt,
         windowLeft: frame.window.left,
         windowTop: frame.window.top,
         windowWidth: frame.window.width,
@@ -268,7 +270,7 @@ export class CaptureStore {
         ocrText: frame.ocr.text,
         ocrBlocksJson: JSON.stringify(frame.ocr.blocks),
         frameStatus: duplicate ? 'skipped_duplicate' : frame.ocr.status === 'success' ? 'captured' : 'ocr_failed',
-        createdAt: new Date().toISOString()
+        createdAt: normalizeShanghaiTimestamp(new Date())
     })
 
     const conversationName = (frame.title ?? frame.windowTitle ?? null)
@@ -284,11 +286,11 @@ export class CaptureStore {
       return { frameId, duplicate, threadId: null, messageBlockId: null, conversationName, orderNo, newMessages: [] }
     }
 
-    const threadId = this.upsertConversationThread(frame)
+    const threadId = this.upsertConversationThread(normalizedFrame)
     const newMessages: NewMessageBlock[] = []
     let messageBlockId: number | null = null
     for (const message of messages) {
-      const res = this.insertMessageBlock(frame, frameId, threadId, message)
+      const res = this.insertMessageBlock(normalizedFrame, frameId, threadId, message)
       if (!res) continue
       if (!messageBlockId) messageBlockId = res.id
       if (res.inserted) {
@@ -339,7 +341,7 @@ export class CaptureStore {
         titleRectJson: JSON.stringify(layout.regions.title),
         chatRectJson: JSON.stringify(layout.regions.chat),
         inputRectJson: JSON.stringify(layout.regions.input),
-        createdAt: new Date().toISOString()
+        createdAt: normalizeShanghaiTimestamp(new Date())
       })
     return Number(row.lastInsertRowid)
   }
@@ -376,7 +378,7 @@ export class CaptureStore {
     const phone = extractPhone(title)
     const threadKey = orderNo ? `order:${orderNo}` : phone ? `phone:${phone}` : `title:${hashText(title)}`
     const conversationKind = frame.conversationKind ?? null
-    const now = new Date().toISOString()
+    const now = normalizeShanghaiTimestamp(new Date())
 
     this.db
       .prepare(
@@ -439,7 +441,7 @@ export class CaptureStore {
     const normalizedContent = normalizeContentForHash(content)
     const contentHash = hashText(normalizedContent)
     const dedupeKey = `${threadId}:${message.senderType}:${contentHash}`
-    const now = new Date().toISOString()
+    const now = normalizeShanghaiTimestamp(new Date())
 
     // 去重只看"会话+说话人+内容"，不再卡 2 分钟时间窗：同一会话里已经存过这条一模一样的，
     // 就算重复（合并、不重复上报）。代价是客户隔很久又发一句一字不差的话会被合并掉——可接受。
@@ -641,6 +643,34 @@ export class CaptureStore {
       CREATE INDEX IF NOT EXISTS idx_message_blocks_channel_time ON message_blocks(channel, first_seen_at);
       CREATE INDEX IF NOT EXISTS idx_message_blocks_thread_time ON message_blocks(thread_id, first_seen_at);
     `)
+    this.normalizeTimestampStorage()
+  }
+
+  private normalizeTimestampStorage(): void {
+    this.db.exec('CREATE TABLE IF NOT EXISTS capture_store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+    const version = this.db.prepare("SELECT value FROM capture_store_meta WHERE key = 'timestamp_timezone'").get() as { value: string } | undefined
+    if (version?.value === 'shanghai-naive-v1') return
+
+    const columns: Array<[string, string]> = [
+      ['capture_frames', 'captured_at'], ['capture_frames', 'created_at'],
+      ['layout_versions', 'created_at'],
+      ['conversation_threads', 'first_seen_at'], ['conversation_threads', 'last_seen_at'],
+      ['conversation_threads', 'created_at'], ['conversation_threads', 'updated_at'],
+      ['message_blocks', 'first_seen_at'], ['message_blocks', 'last_seen_at'],
+      ['message_blocks', 'created_at'], ['message_blocks', 'updated_at']
+    ]
+    const migrate = this.db.transaction(() => {
+      for (const [table, column] of columns) {
+        const rows = this.db.prepare(`SELECT rowid, ${column} AS value FROM ${table} WHERE ${column} IS NOT NULL`).all() as Array<{ rowid: number; value: string }>
+        const update = this.db.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`)
+        for (const row of rows) {
+          const normalized = normalizeShanghaiTimestamp(row.value)
+          if (normalized !== row.value) update.run(normalized, row.rowid)
+        }
+      }
+      this.db.prepare("INSERT INTO capture_store_meta (key, value) VALUES ('timestamp_timezone', 'shanghai-naive-v1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run()
+    })
+    migrate()
   }
 
   private ensureColumn(table: string, column: string, definition: string): void {

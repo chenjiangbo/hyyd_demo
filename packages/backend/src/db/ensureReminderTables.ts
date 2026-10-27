@@ -11,11 +11,11 @@ const CREATE_STATEMENTS = [
     employee_id INTEGER NOT NULL,
     type VARCHAR(32) NOT NULL DEFAULT 'manual',
     content TEXT NOT NULL DEFAULT '',
-    remind_time TIMESTAMPTZ(3) NOT NULL,
+    remind_time TIMESTAMP(3) WITHOUT TIME ZONE NOT NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'pending',
     extra_data JSONB,
-    created_at TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP(3) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP(3) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
   );`,
   `CREATE INDEX IF NOT EXISTS idx_order_reminders_emp_status_time 
    ON order_reminders (employee_id, status, remind_time);`,
@@ -30,7 +30,7 @@ const CREATE_STATEMENTS = [
     employee_id INTEGER NOT NULL,
     reminder_id INTEGER NOT NULL,
     generation INTEGER NOT NULL,
-    dismissed_at TIMESTAMPTZ(3) NOT NULL DEFAULT NOW(),
+    dismissed_at TIMESTAMP(3) WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
     PRIMARY KEY (employee_id, reminder_id, generation)
   );`,
   `CREATE INDEX IF NOT EXISTS idx_order_reminder_popup_dismissals_reminder

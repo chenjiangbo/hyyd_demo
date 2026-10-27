@@ -2,6 +2,7 @@
  * 订单业务映射：工作台状态仅以寰宇订单详情的订单状态为准。
  */
 import type { Order } from '../api'
+import { shanghaiDateParts, shanghaiDateTime } from './shanghaiTime'
 
 export type LaneKey = 'todo' | 'doing' | 'await_backfill' | 'done'
 
@@ -175,7 +176,8 @@ export function monthDay(iso: string | null): string {
   if (!iso) return '—'
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
-  return `${d.getMonth() + 1}月${d.getDate()}日`
+  const parts = shanghaiDateParts(d)
+  return `${Number(parts.month)}月${Number(parts.day)}日`
 }
 
 /** 相对时间：刚刚 / X分钟前 / X小时前 / X天前 / 日期 */
@@ -191,14 +193,13 @@ export function relativeTime(iso: string | null): string {
   if (h < 24) return `${h}小时前`
   const d = Math.floor(h / 24)
   if (d < 30) return `${d}天前`
-  return new Date(iso).toLocaleDateString('zh-CN')
+  return new Date(iso).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' })
 }
 
-/** 完整本地时间：YYYY-MM-DD HH:mm:ss */
+/** 完整北京时间：YYYY-MM-DD HH:mm:ss */
 export function formatDateTime(iso: string | null): string {
   if (!iso) return '—'
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  return shanghaiDateTime(d)
 }

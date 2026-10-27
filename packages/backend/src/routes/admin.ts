@@ -21,6 +21,7 @@ import os from 'node:os'
 import { activeConnections, mobileSeenMap, presenceMap, trayRestSeenMap } from './api.js'
 import { getEnv } from '../env.js'
 import { getRecordingPlaybackInfo } from '../audioTranscode.js'
+import { parseShanghaiDateTime, shanghaiDateKey, startOfShanghaiDay } from '../time/shanghaiTime.js'
 import {
   ORDER_AI_FIELD_DEFINITIONS,
   ORDER_AI_FIELD_PROMPT_VERSION,
@@ -78,7 +79,7 @@ function iso(d: Date | null | undefined): string | null {
 function parseAdminDateParam(value: unknown, label: string): Date | null {
   if (typeof value !== 'string' || !value.trim()) return null
   const text = value.trim()
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(text) ? new Date(`${text}T00:00:00.000+08:00`) : new Date(text)
+  const date = parseShanghaiDateTime(text)
   if (Number.isNaN(date.getTime())) {
     throw new Error(`${label} 非法`)
   }
@@ -89,12 +90,11 @@ function parseAdminEndDateParam(value: unknown, label: string): Date | null {
   if (typeof value !== 'string' || !value.trim()) return null
   const text = value.trim()
   if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
-    const date = new Date(`${text}T00:00:00.000+08:00`)
+    const date = parseShanghaiDateTime(text)
     if (Number.isNaN(date.getTime())) throw new Error(`${label} 非法`)
-    date.setDate(date.getDate() + 1)
-    return date
+    return new Date(date.getTime() + 24 * 60 * 60 * 1000)
   }
-  const date = new Date(text)
+  const date = parseShanghaiDateTime(text)
   if (Number.isNaN(date.getTime())) throw new Error(`${label} 非法`)
   return date
 }
@@ -136,11 +136,9 @@ function bucketStat(
   })
 }
 
-// 今天 0 点（服务器本地时区）。统计"今日"口径用。
+// 今天北京时间 0 点。统计"今日"口径用。
 function startOfToday(): Date {
-  const d = new Date()
-  d.setHours(0, 0, 0, 0)
-  return d
+  return startOfShanghaiDay()
 }
 
 // presence 是否新鲜（30s 内有 ext WS 心跳算在线）
@@ -963,9 +961,7 @@ export function registerAdminRoutes(
     fastify.get('/api/v1/admin/dashboard/timeseries', async (request, reply) => {
       try {
         const days = Math.min(Math.max(parseInt((request.query as any)?.days ?? '7', 10) || 7, 1), 30)
-        const since = new Date()
-        since.setHours(0, 0, 0, 0)
-        since.setDate(since.getDate() - (days - 1))
+        const since = startOfShanghaiDay(new Date(Date.now() - (days - 1) * 24 * 60 * 60 * 1000))
 
         const [materials, orders] = await Promise.all([
           prisma.material.findMany({
@@ -982,13 +978,11 @@ export function registerAdminRoutes(
         const buckets: Record<string, { date: string; text: number; image: number; orders: number }> = {}
         const dayKeys: string[] = []
         for (let i = 0; i < days; i++) {
-          const d = new Date(since)
-          d.setDate(since.getDate() + i)
-          const key = d.toISOString().slice(0, 10)
+          const key = shanghaiDateKey(new Date(since.getTime() + i * 24 * 60 * 60 * 1000))
           dayKeys.push(key)
           buckets[key] = { date: key, text: 0, image: 0, orders: 0 }
         }
-        const keyOf = (d: Date): string => d.toISOString().slice(0, 10)
+        const keyOf = shanghaiDateKey
 
         for (const m of materials) {
           const b = buckets[keyOf(m.createdAt)]

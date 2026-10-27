@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { detectConversation, convKindLabel, TITLE_MAX_Y } from '../lib/detectConversation'
+import { parseShanghaiTimestamp } from '../v2/lib/shanghaiTime'
 
 type Channel = 'wechat' | 'wxwork'
 
@@ -114,7 +115,7 @@ export default function CaptureDebugView(): React.JSX.Element {
               <div className="flex items-center justify-between text-xs">
                 <span className="text-slate-700">#{f.id}</span>
                 <span className="text-slate-400">
-                  {new Date(f.capturedAt).toLocaleTimeString('zh-CN')}
+                  {parseShanghaiTimestamp(f.capturedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' })}
                 </span>
               </div>
               <div className="text-[11px] text-slate-500 mt-0.5">

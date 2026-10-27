@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { fetchClaimableOrders, claimOrder, createOrder, type Order, type CreateOrderInput } from '../api'
 import { bizType, bizChipClass, sourceStyle, sourceLabelByCode, SOURCE_OPTIONS, monthDay } from '../lib/orderMapping'
+import { shanghaiDateParts } from '../lib/shanghaiTime'
 
 /**
  * 待申领台：全局"候选"状态订单池，任何员工可申领。
@@ -451,8 +452,8 @@ function formatTaikangTime(value: string | null): string {
   if (!value) return '—'
   const d = new Date(value)
   if (Number.isNaN(d.getTime())) return value
-  const p = (n: number): string => String(n).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  const p = shanghaiDateParts(d)
+  return `${p.month}-${p.day} ${p.hour}:${p.minute}`
 }
 
 function CopyRow({ label, value }: { label: string; value: string | null }): React.JSX.Element {

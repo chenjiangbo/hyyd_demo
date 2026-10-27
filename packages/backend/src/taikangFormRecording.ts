@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { Prisma, PrismaClient } from '@prisma/client'
 import type { FastifyInstance } from 'fastify'
 import type * as Minio from 'minio'
+import { parseShanghaiDateTime } from './time/shanghaiTime.js'
 
 const ROUTE_KINDS = new Set(['green-order', 'register-order', 'expert-add', 'hospital-add'])
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -26,7 +27,7 @@ type SessionInput = {
 
 function parseDate(value: unknown): Date | null {
   if (typeof value !== 'string') return null
-  const date = new Date(value)
+  const date = parseShanghaiDateTime(value)
   return Number.isNaN(date.getTime()) ? null : date
 }
 

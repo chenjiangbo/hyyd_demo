@@ -7,6 +7,7 @@ import {
   type OrderReminder,
   type Order
 } from '../api'
+import { parseShanghaiDateTimeLocal, shanghaiDateTime, shanghaiDateTimeLocal } from '../lib/shanghaiTime'
 
 interface OrderReminderModalProps {
   order: Order
@@ -23,19 +24,12 @@ export function OrderReminderModal({ order, orderNo, huanyuOrderNo, onClose, onU
   const [error, setError] = useState<string | null>(null)
 
   function formatDateTimeLocal(d: Date): string {
-    const year = d.getFullYear()
-    const month = String(d.getMonth() + 1).padStart(2, '0')
-    const day = String(d.getDate()).padStart(2, '0')
-    const hours = String(d.getHours()).padStart(2, '0')
-    const mins = String(d.getMinutes()).padStart(2, '0')
-    return `${year}-${month}-${day}T${hours}:${mins}`
+    return shanghaiDateTimeLocal(d)
   }
 
   // 表单状态
   const [remindTime, setRemindTime] = useState(() => {
-    const now = new Date()
-    now.setMinutes(now.getMinutes() + 15)
-    return formatDateTimeLocal(now)
+    return formatDateTimeLocal(new Date(Date.now() + 15 * 60_000))
   })
   const [content, setContent] = useState('')
 
@@ -60,15 +54,14 @@ export function OrderReminderModal({ order, orderNo, huanyuOrderNo, onClose, onU
 
   function formatStandardDateTime(val?: string | Date | null): string {
     if (!val) return ''
-    const d = typeof val === 'string' ? new Date(val) : val
+    const d = typeof val === 'string'
+      ? (() => {
+          const shanghaiLocal = parseShanghaiDateTimeLocal(val)
+          return Number.isNaN(shanghaiLocal.getTime()) ? new Date(val) : shanghaiLocal
+        })()
+      : val
     if (isNaN(d.getTime())) return String(val)
-    const year = d.getFullYear()
-    const month = String(d.getMonth() + 1).padStart(2, '0')
-    const day = String(d.getDate()).padStart(2, '0')
-    const hours = String(d.getHours()).padStart(2, '0')
-    const mins = String(d.getMinutes()).padStart(2, '0')
-    const secs = String(d.getSeconds()).padStart(2, '0')
-    return `${year}-${month}-${day} ${hours}:${mins}:${secs}`
+    return shanghaiDateTime(d)
   }
 
   async function handleAdd(e: React.FormEvent) {
@@ -94,7 +87,7 @@ export function OrderReminderModal({ order, orderNo, huanyuOrderNo, onClose, onU
       await createOrderReminder({
         orderNo,
         huanyuOrderNo,
-        remindTime: new Date(remindTime).toISOString(),
+        remindTime: parseShanghaiDateTimeLocal(remindTime).toISOString(),
         content: finalContent,
         type: 'manual',
         extraData: { applyTime: formattedApplyTime, rawContent: content.trim() }
@@ -134,9 +127,7 @@ export function OrderReminderModal({ order, orderNo, huanyuOrderNo, onClose, onU
 
   // 快捷时间填充
   function setQuickTime(minutes: number) {
-    const d = new Date()
-    d.setMinutes(d.getMinutes() + minutes)
-    setRemindTime(formatDateTimeLocal(d))
+    setRemindTime(formatDateTimeLocal(new Date(Date.now() + minutes * 60_000)))
   }
 
   return (

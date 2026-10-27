@@ -35,6 +35,7 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
@@ -1373,7 +1374,9 @@ class MainActivity : Activity() {
 
     private fun formatTs(value: Long): String {
         if (value <= 0L) return "无"
-        return SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA).format(Date(value))
+        return SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA).apply {
+            timeZone = TimeZone.getTimeZone("Asia/Shanghai")
+        }.format(Date(value))
     }
 
     private fun isSyncing(prefs: AppPrefs): Boolean {
