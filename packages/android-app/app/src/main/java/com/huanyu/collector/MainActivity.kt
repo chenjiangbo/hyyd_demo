@@ -48,6 +48,7 @@ class MainActivity : Activity() {
     private lateinit var employeeCodeInput: EditText
     private var currentTab = Tab.OVERVIEW
     private var lastForegroundHeartbeatAt = 0L
+    private var autoStartOnResume = true
 
     private val handler = Handler(Looper.getMainLooper())
     private val refreshTicker = object : Runnable {
@@ -74,6 +75,10 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (autoStartOnResume) {
+            autoStartOnResume = false
+            startCollectionWhenReady()
+        }
         sendForegroundHeartbeatIfNeeded(force = true)
         handler.post(refreshTicker)
         refreshStatus()
@@ -82,6 +87,11 @@ class MainActivity : Activity() {
     override fun onPause() {
         handler.removeCallbacks(refreshTicker)
         super.onPause()
+    }
+
+    override fun onStop() {
+        autoStartOnResume = true
+        super.onStop()
     }
 
     private fun buildUi() {
@@ -393,7 +403,7 @@ class MainActivity : Activity() {
         }
         box.addView(backendInput, inputParams())
         box.addView(employeeCodeInput, inputParams())
-        box.addView(actionButton("保存配置", Kind.PRIMARY) { saveConfig(showToast = true) })
+        box.addView(actionButton("保存配置", Kind.PRIMARY) { saveConfig(showToast = true, autoStart = true) })
         box.addView(outlineButton("立即发送心跳") {
             if (saveConfig(showToast = false)) {
                 Thread {
@@ -1096,8 +1106,23 @@ class MainActivity : Activity() {
         if (missing.isNotEmpty()) requestPermissions(missing, 100)
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != 100) return
+        if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+            startCollectionWhenReady()
+        } else {
+            Toast.makeText(this, "需要允许通话记录、电话状态和音频读取权限，才能自动采集上传。", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun openAllFilesAccessSettings() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        autoStartOnResume = true
         val uri = Uri.parse("package:$packageName")
         val appIntent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, uri)
         try {
@@ -1164,18 +1189,46 @@ class MainActivity : Activity() {
         ).show()
     }
 
-    private fun startCollectorService() {
-        if (currentTab == Tab.SETTINGS && !saveConfig(showToast = false)) return
-        try {
-            AppPrefs(this).validateConfig()
-        } catch (e: Exception) {
-            Toast.makeText(this, e.message ?: "配置无效", Toast.LENGTH_LONG).show()
-            currentTab = Tab.SETTINGS
-            refreshStatus()
-            return
-        }
+    private fun startCollectionWhenReady() {
         val prefs = AppPrefs(this)
         try {
+            prefs.validateConfig()
+        } catch (e: Exception) {
+            currentTab = Tab.SETTINGS
+            refreshStatus()
+            Toast.makeText(this, "请先填写并保存后端地址和员工 ID。", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val requiredPermissions = arrayOf(
+            Manifest.permission.READ_CALL_LOG,
+            Manifest.permission.READ_PHONE_STATE,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                Manifest.permission.READ_MEDIA_AUDIO
+            } else {
+                Manifest.permission.READ_EXTERNAL_STORAGE
+            }
+        )
+        if (requiredPermissions.any { !granted(it) }) {
+            requestRuntimePermissions()
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+            currentTab = Tab.SETTINGS
+            refreshStatus()
+            Toast.makeText(this, "请先在设置中允许寰宇采集访问全部文件，再打开 App 自动开始上传。", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        if (!isCollectorRunning()) startCollectorService(showToast = false)
+        else if (!prefs.collectionEnabled) startCollectorService(showToast = false)
+    }
+
+    private fun startCollectorService(showToast: Boolean = true) {
+        if (currentTab == Tab.SETTINGS && !saveConfig(showToast = false)) return
+        val prefs = AppPrefs(this)
+        try {
+            prefs.validateConfig()
             prefs.collectionEnabled = true
             CollectorWorkScheduler.ensureScheduled(this)
             val intent = Intent(this, CollectorService::class.java)
@@ -1211,7 +1264,7 @@ class MainActivity : Activity() {
             refreshStatus()
             return
         }
-        Toast.makeText(this, "采集服务已启动，正在扫描同步...", Toast.LENGTH_SHORT).show()
+        if (showToast) Toast.makeText(this, "采集已启动，正在扫描同步...", Toast.LENGTH_SHORT).show()
         refreshStatus()
     }
 
@@ -1227,7 +1280,7 @@ class MainActivity : Activity() {
         refreshStatus()
     }
 
-    private fun saveConfig(showToast: Boolean = false): Boolean {
+    private fun saveConfig(showToast: Boolean = false, autoStart: Boolean = false): Boolean {
         val prefs = AppPrefs(this)
         if (::backendInput.isInitialized) prefs.backendUrl = backendInput.text.toString()
         if (::employeeCodeInput.isInitialized) prefs.employeeCode = employeeCodeInput.text.toString()
@@ -1235,6 +1288,10 @@ class MainActivity : Activity() {
             prefs.validateConfig()
             if (showToast) Toast.makeText(this, "配置已保存", Toast.LENGTH_SHORT).show()
             refreshStatus()
+            if (autoStart) {
+                autoStartOnResume = false
+                startCollectionWhenReady()
+            }
             true
         } catch (e: Exception) {
             Toast.makeText(this, e.message ?: "配置无效", Toast.LENGTH_LONG).show()
