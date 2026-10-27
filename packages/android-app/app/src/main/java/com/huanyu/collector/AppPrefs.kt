@@ -4,6 +4,7 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.abs
+import java.util.UUID
 
 class AppPrefs(context: Context) {
     private val prefs = context.getSharedPreferences("huanyu_collector", Context.MODE_PRIVATE)
@@ -19,6 +20,29 @@ class AppPrefs(context: Context) {
     var collectionEnabled: Boolean
         get() = prefs.getBoolean("collection_enabled", false)
         set(value) = prefs.edit().putBoolean("collection_enabled", value).apply()
+
+    val installationId: String
+        get() = synchronized(prefs) {
+            prefs.getString("installation_id", null) ?: UUID.randomUUID().toString().also {
+                check(prefs.edit().putString("installation_id", it).commit()) { "无法保存设备安装标识" }
+            }
+        }
+
+    var appVisibility: String
+        get() = prefs.getString("app_visibility", "background").orEmpty()
+        set(value) = prefs.edit().putString("app_visibility", value).apply()
+
+    var backgroundSince: Long
+        get() = prefs.getLong("background_since", 0L)
+        set(value) = prefs.edit().putLong("background_since", value).apply()
+
+    var collectorServiceRunning: Boolean
+        get() = prefs.getBoolean("collector_service_running", false)
+        set(value) = prefs.edit().putBoolean("collector_service_running", value).apply()
+
+    var syncRunning: Boolean
+        get() = prefs.getBoolean("sync_running", false)
+        set(value) = prefs.edit().putBoolean("sync_running", value).apply()
 
     var lastBackgroundWorkStartedAt: Long
         get() = prefs.getLong("last_background_work_started_at", 0L)

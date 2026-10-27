@@ -3,6 +3,9 @@ package com.huanyu.collector
 import android.content.Context
 import androidx.work.Worker
 import androidx.work.WorkerParameters
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 
 class CollectorWorker(
     appContext: Context,
@@ -15,9 +18,22 @@ class CollectorWorker(
         prefs.lastBackgroundWorkStartedAt = System.currentTimeMillis()
         prefs.lastBackgroundWorkStatus = "运行中"
         val runner = CollectorRunner(applicationContext)
+        var heartbeatScheduler: ScheduledExecutorService? = null
         return try {
             prefs.validateConfig()
+            prefs.syncRunning = true
+            prefs.lastSyncStartedAt = System.currentTimeMillis()
+            prefs.updateSyncProgress("后台任务同步中", total = 0, processed = 0, uploaded = 0, failed = 0, current = "")
             val heartbeatOk = runner.sendHeartbeat("work_manager")
+            heartbeatScheduler = Executors.newSingleThreadScheduledExecutor { task ->
+                Thread(task, "mobile-status-heartbeat").apply { isDaemon = true }
+            }
+            heartbeatScheduler.scheduleAtFixedRate(
+                { runner.sendHeartbeat("work_manager") },
+                20,
+                20,
+                TimeUnit.SECONDS
+            )
             prefs.lastSyncStartedAt = System.currentTimeMillis()
             runner.syncOnce()
             prefs.lastSyncFinishedAt = System.currentTimeMillis()
@@ -30,6 +46,10 @@ class CollectorWorker(
             prefs.lastBackgroundWorkFinishedAt = System.currentTimeMillis()
             prefs.lastBackgroundWorkStatus = "失败: $message"
             Result.retry()
+        } finally {
+            heartbeatScheduler?.shutdownNow()
+            prefs.syncRunning = false
+            runner.sendHeartbeat("work_manager")
         }
     }
 }

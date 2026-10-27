@@ -430,8 +430,8 @@ class MainActivity : Activity() {
         content.addView(outlineButton("通知设置") { openNotificationSettings() })
         content.addView(outlineButton("申请忽略电池优化") { requestIgnoreBatteryOptimizations() })
         content.addView(outlineButton("应用详情 / 后台运行") { openAppDetailsSettings() })
-        content.addView(outlineButton("华为应用启动管理") { openHuaweiStartupManager() })
-        content.addView(emptyCard("系统里还需要开启电话自动录音；华为应用启动管理中关闭自动管理，并允许自启动、关联启动和后台活动。"))
+        content.addView(outlineButton("系统启动管理") { openHuaweiStartupManager() })
+        content.addView(emptyCard("华为/荣耀手机可在“应用启动管理”中关闭自动管理，并允许自启动、关联启动和后台活动。"))
     }
 
     private fun refreshStatus() {
@@ -1148,8 +1148,19 @@ class MainActivity : Activity() {
         try {
             startActivity(intent)
         } catch (_: ActivityNotFoundException) {
-            Toast.makeText(this, "当前手机没有华为应用启动管理页面", Toast.LENGTH_LONG).show()
+            showStartupManagerUnavailable()
+        } catch (e: RuntimeException) {
+            Log.e(TAG, "打开系统启动管理失败", e)
+            showStartupManagerUnavailable()
         }
+    }
+
+    private fun showStartupManagerUnavailable() {
+        Toast.makeText(
+            this,
+            "无法直接打开此手机的启动管理。请在系统设置中搜索“应用启动管理”，为寰宇采集开启后台活动。",
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     private fun startCollectorService() {
@@ -1204,9 +1215,13 @@ class MainActivity : Activity() {
     }
 
     private fun stopCollectorService() {
-        AppPrefs(this).collectionEnabled = false
+        AppPrefs(this).apply {
+            collectionEnabled = false
+            collectorServiceRunning = false
+        }
         CollectorWorkScheduler.cancel(this)
         stopService(Intent(this, CollectorService::class.java))
+        Thread { sendHeartbeat("停止采集") }.start()
         Toast.makeText(this, "采集服务已停止", Toast.LENGTH_SHORT).show()
         refreshStatus()
     }
@@ -1274,23 +1289,7 @@ class MainActivity : Activity() {
     }
 
     private fun sendHeartbeat(source: String) {
-        val prefs = AppPrefs(this)
-        val target = "${prefs.backendUrl}/api/v1/me/mobile-heartbeat"
-        prefs.lastHeartbeatStartedAt = System.currentTimeMillis()
-        prefs.lastHeartbeatTarget = "$target · 员工 ${prefs.employeeCode.ifBlank { "未配置" }} · $source"
-        prefs.lastHeartbeatStatus = "发送中"
-        prefs.lastHeartbeatResponse = ""
-        try {
-            prefs.validateConfig()
-            val response = BackendClient(prefs.backendUrl, prefs.employeeCode).heartbeat(source)
-            prefs.lastHeartbeatFinishedAt = System.currentTimeMillis()
-            prefs.lastHeartbeatStatus = "成功"
-            prefs.lastHeartbeatResponse = response
-        } catch (e: Exception) {
-            prefs.lastHeartbeatFinishedAt = System.currentTimeMillis()
-            prefs.lastHeartbeatStatus = "失败"
-            prefs.lastHeartbeatResponse = e.message ?: e.javaClass.simpleName
-        }
+        CollectorRunner(this).sendHeartbeat(source)
     }
 
     private fun directionIconRes(item: JSONObject): Int {

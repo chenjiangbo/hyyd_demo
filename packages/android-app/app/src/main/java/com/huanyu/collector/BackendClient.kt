@@ -25,10 +25,10 @@ class BackendClient(
         return text
     }
 
-    fun heartbeat(source: String): String {
+    fun heartbeat(source: String, status: JSONObject): String {
         return postJson(
             "/api/v1/me/mobile-heartbeat",
-            JSONObject().put("source", source)
+            JSONObject(status.toString()).put("source", source)
         ).toString()
     }
 
@@ -117,8 +117,11 @@ class BackendClient(
         }
     }
 
-    fun confirmRecordingUploaded(callId: Int): String {
-        return postJson("/api/v1/recordings/$callId/complete", JSONObject()).toString()
+    fun confirmRecordingUploaded(callId: Int, installationId: String): String {
+        return postJson(
+            "/api/v1/recordings/$callId/complete",
+            JSONObject().put("installationId", installationId)
+        ).toString()
     }
 
     private fun postJson(path: String, body: JSONObject): JSONObject {

@@ -13,6 +13,7 @@
 
     <application
         android:allowBackup="false"
+        android:name=".CollectorApplication"
         android:label="寰宇采集"
         android:requestLegacyExternalStorage="true"
         android:usesCleartextTraffic="true"

@@ -22,13 +22,14 @@ class CollectorService : Service() {
     override fun onCreate() {
         super.onCreate()
         runner = CollectorRunner(this)
-        Log.i(TAG, "CollectorService onCreate")
-        AppPrefs(this).serviceStartedAt = System.currentTimeMillis()
+        AppPrefs(this).apply {
+            serviceStartedAt = System.currentTimeMillis()
+            collectorServiceRunning = true
+        }
         startForeground(1001, buildNotification("寰宇业务采集运行中"))
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.i(TAG, "CollectorService onStartCommand startId=$startId")
         if (loop == null || loop?.isDone == true) {
             running = true
             loop = executor.submit { runLoop() }
@@ -42,6 +43,7 @@ class CollectorService : Service() {
 
     override fun onDestroy() {
         running = false
+        AppPrefs(this).collectorServiceRunning = false
         loop?.cancel(true)
         heartbeatLoop?.cancel(true)
         executor.shutdownNow()

@@ -15,7 +15,23 @@ class CollectorRunner(context: Context) {
         prefs.lastHeartbeatResponse = ""
         return try {
             prefs.validateConfig()
-            val response = BackendClient(prefs.backendUrl, prefs.employeeCode).heartbeat(source)
+            val status = org.json.JSONObject()
+                .put("installationId", prefs.installationId)
+                .put("appVersion", BuildConfig.VERSION_NAME)
+                .put("appVisibility", prefs.appVisibility)
+                .put("serviceRunning", prefs.collectorServiceRunning)
+                .put("serviceStartedAtMs", prefs.serviceStartedAt.takeIf { it > 0L } ?: org.json.JSONObject.NULL)
+                .put("backgroundSinceMs", prefs.backgroundSince.takeIf { it > 0L } ?: org.json.JSONObject.NULL)
+                .put("syncRunning", prefs.syncRunning)
+                .put("syncStartedAtMs", prefs.lastSyncStartedAt.takeIf { prefs.syncRunning && it > 0L } ?: org.json.JSONObject.NULL)
+                .put("syncStage", if (prefs.syncRunning) prefs.lastSyncProgressStage else "idle")
+                .put("recordingsTotal", prefs.lastRecordingProgressTotal)
+                .put("recordingsProcessed", prefs.lastRecordingProgressProcessed)
+                .put("recordingsUploaded", prefs.lastRecordingProgressUploaded)
+                .put("recordingsFailed", prefs.lastRecordingProgressFailed)
+                .put("currentRecordingName", if (prefs.syncRunning) prefs.lastRecordingProgressCurrent else "")
+                .put("lastError", prefs.lastSyncError)
+            val response = BackendClient(prefs.backendUrl, prefs.employeeCode).heartbeat(source, status)
             prefs.lastHeartbeatFinishedAt = System.currentTimeMillis()
             prefs.lastHeartbeatStatus = "成功"
             prefs.lastHeartbeatResponse = response
@@ -33,8 +49,22 @@ class CollectorRunner(context: Context) {
     }
 
     fun syncOnce() = synchronized(SYNC_LOCK) {
-        Log.i(TAG, "开始同步通话记录和录音")
         val prefs = AppPrefs(appContext)
+        prefs.syncRunning = true
+        prefs.lastSyncStartedAt = System.currentTimeMillis()
+        try {
+            performSync(prefs)
+        } finally {
+            prefs.syncRunning = false
+            prefs.updateSyncProgress(
+                if (prefs.lastSyncError.isBlank()) "空闲" else "同步失败",
+                current = ""
+            )
+        }
+    }
+
+    private fun performSync(prefs: AppPrefs) {
+        Log.i(TAG, "开始同步通话记录和录音")
         val runStartedAt = System.currentTimeMillis()
         prefs.lastRunStartedAt = runStartedAt
         prefs.lastSyncStartedAt = runStartedAt
@@ -210,7 +240,7 @@ class CollectorRunner(context: Context) {
                     failed = recordingFailureCount,
                     current = recording.file.name
                 )
-                backend.confirmRecordingUploaded(call.id)
+                backend.confirmRecordingUploaded(call.id, prefs.installationId)
                 prefs.markRecordingUploaded(path)
                 prefs.rememberRecordingListItem(recording, "已上传", call.id)
                 recordingProcessedCount += 1
