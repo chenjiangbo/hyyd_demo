@@ -42,7 +42,6 @@ class CollectorRunner(context: Context) {
             prefs.lastHeartbeatFinishedAt = System.currentTimeMillis()
             prefs.lastHeartbeatStatus = "失败"
             prefs.lastHeartbeatResponse = message
-            prefs.lastSyncError = "移动端心跳失败: $message"
             Log.e(TAG, "移动端心跳失败 source=$source", e)
             false
         }
@@ -52,14 +51,37 @@ class CollectorRunner(context: Context) {
         val prefs = AppPrefs(appContext)
         prefs.syncRunning = true
         prefs.lastSyncStartedAt = System.currentTimeMillis()
+        prefs.lastRunStartedAt = prefs.lastSyncStartedAt
+        prefs.lastRunFinishedAt = 0L
+        prefs.runResult = "同步中"
+        prefs.callResult = "待处理"
+        prefs.recordingResult = "待处理"
+        prefs.runError = ""
+        prefs.lastSyncError = ""
+        prefs.lastCallScanCount = 0
+        prefs.lastCallUploadCount = 0
+        prefs.lastRunCallsUploaded = 0
+        prefs.lastRunRecordingsTotal = 0
+        prefs.lastRunRecordingsUploaded = 0
+        prefs.lastRunRecordingsFailed = 0
+        prefs.lastRecordingMissCount = 0
+        prefs.unparsedRecordingCount = 0
+        prefs.recordingScanIssue = ""
         try {
             performSync(prefs)
+        } catch (e: Exception) {
+            val message = e.message ?: e.javaClass.simpleName
+            prefs.runResult = "同步失败"
+            prefs.runError = message
+            prefs.lastSyncError = message
+            if (prefs.callResult == "处理中") prefs.callResult = "失败"
+            if (prefs.recordingResult == "处理中") prefs.recordingResult = "失败"
+            prefs.lastRunFinishedAt = System.currentTimeMillis()
+            prefs.lastSyncFinishedAt = prefs.lastRunFinishedAt
+            throw e
         } finally {
             prefs.syncRunning = false
-            prefs.updateSyncProgress(
-                if (prefs.lastSyncError.isBlank()) "空闲" else "同步失败",
-                current = ""
-            )
+            prefs.updateSyncProgress(prefs.runResult, current = "")
         }
     }
 
@@ -83,17 +105,20 @@ class CollectorRunner(context: Context) {
         prefs.lastBackendHealthAt = System.currentTimeMillis()
 
         prefs.updateSyncProgress("处理待上传通话 ${prefs.pendingCallCount()} 条")
+        prefs.callResult = "处理中"
         for (call in prefs.pendingCalls()) {
             try {
                 val match = backend.matchCallPhone(call.phone)
                 if (!match.matched) {
                     prefs.removePendingCall(call)
+                    prefs.rememberLocalCallListItem(call, "非订单电话，已忽略")
                     continue
                 }
                 val remote = backend.postCall(call, match.orderId)
                 prefs.removePendingCall(call)
                 prefs.rememberCall(remote)
                 prefs.rememberCallListItem(remote, uploaded = true)
+                prefs.lastCallUploadCount += 1
             } catch (e: Exception) {
                 prefs.rememberLocalCallListItem(call, "上传失败")
                 throw IllegalStateException("待上传通话同步失败: ${e.message}", e)
@@ -103,7 +128,6 @@ class CollectorRunner(context: Context) {
         prefs.updateSyncProgress("扫描系统通话记录")
         val calls = CallLogScanner(appContext).scanSince(prefs.lastCallLogTs)
         prefs.lastCallScanCount = calls.size
-        prefs.lastCallUploadCount = 0
         var maxSyncedTs = prefs.lastCallLogTs
         prefs.updateSyncProgress("处理通话记录 ${calls.size} 条")
         for (call in calls) {
@@ -111,7 +135,7 @@ class CollectorRunner(context: Context) {
             try {
                 val match = backend.matchCallPhone(call.phone)
                 if (!match.matched) {
-                    prefs.lastCallLogTs = maxSyncedTs
+                    prefs.rememberLocalCallListItem(call, "非订单电话，已忽略")
                     continue
                 }
                 val remote = backend.postCall(call, match.orderId)
@@ -120,16 +144,21 @@ class CollectorRunner(context: Context) {
                 prefs.lastCallUploadCount += 1
                 val person = remote.contactName?.takeIf { it.isNotBlank() } ?: remote.phone
                 prefs.lastSyncedCallText = "id=${remote.id} ${person} ${remote.callStatus} ${remote.durationSec}s"
-                prefs.lastCallLogTs = maxSyncedTs
             } catch (e: Exception) {
                 prefs.addPendingCall(call)
                 prefs.rememberLocalCallListItem(call, "待上传")
-                prefs.lastCallLogTs = maxSyncedTs
                 Log.e(TAG, "通话上传失败，已加入待上传队列", e)
             }
         }
 
+        // 整批处理后再推进游标，避免中断时漏掉相同时间戳的通话。
+        prefs.lastCallLogTs = maxSyncedTs
+        prefs.lastRunCallsScanned = calls.size
+        prefs.lastRunCallsUploaded = prefs.lastCallUploadCount
+        prefs.callResult = if (prefs.pendingCallCount() == 0) "已完成" else "待上传"
+
         prefs.updateSyncProgress("扫描录音目录", total = 0, processed = 0, uploaded = 0, failed = 0, current = "")
+        prefs.recordingResult = "处理中"
         val recordingScan = RecordingScanner().scanSince(prefs.recordingScanFloorTs)
         val recordings = recordingScan.recordings
         prefs.lastRecordingScanCount = recordings.size
@@ -137,6 +166,8 @@ class CollectorRunner(context: Context) {
         prefs.lastRecordingRawFileCount = recordingScan.rawAudioCount
         prefs.lastRecordingScanSummary = recordingScan.summary
         prefs.lastRecordingUnparsedSamples = recordingScan.unparsedSamples
+        prefs.unparsedRecordingCount = recordingScan.unparsedCount
+        prefs.recordingScanIssue = recordingScan.issue
         prefs.lastRecordingUploadCount = 0
         prefs.lastRecordingMissCount = 0
         var recordingFailureCount = 0
@@ -184,7 +215,7 @@ class CollectorRunner(context: Context) {
             }
             if (call == null) {
                 prefs.lastRecordingMissCount += 1
-                prefs.rememberRecordingListItem(recording, "未匹配")
+                prefs.rememberRecordingListItem(recording, "待关联通话")
                 recordingProcessedCount += 1
                 prefs.updateSyncProgress(
                     "处理录音",
@@ -245,6 +276,7 @@ class CollectorRunner(context: Context) {
                 prefs.rememberRecordingListItem(recording, "已上传", call.id)
                 recordingProcessedCount += 1
                 recordingUploadedCount += 1
+                prefs.lastRunRecordingsUploaded = recordingUploadedCount
                 prefs.lastRecordingUploadCount += 1
                 prefs.lastUploadedRecordingText = "callId=${call.id} ${recording.file.name}"
                 prefs.updateSyncProgress(
@@ -258,6 +290,7 @@ class CollectorRunner(context: Context) {
             } catch (e: Exception) {
                 val message = e.message ?: e.javaClass.simpleName
                 recordingFailureCount += 1
+                prefs.lastRunRecordingsFailed = recordingFailureCount
                 recordingProcessedCount += 1
                 lastRecordingFailure = "callId=${call.id} ${recording.file.name}: $message"
                 prefs.rememberRecordingListItem(recording, "上传失败: $message", call.id)
@@ -282,6 +315,9 @@ class CollectorRunner(context: Context) {
         prefs.lastRunRecordingsTotal = pendingRecordings.size
         prefs.lastRunRecordingsUploaded = recordingUploadedCount
         prefs.lastRunRecordingsFailed = recordingFailureCount
+        prefs.recordingResult = if (recordingFailureCount > 0 || prefs.lastRecordingMissCount > 0 ||
+            prefs.unparsedRecordingCount > 0 || prefs.recordingScanIssue.isNotBlank()) "待处理" else "已完成"
+        prefs.runResult = if (prefs.callResult == "已完成" && prefs.recordingResult == "已完成") "同步完成" else "部分完成"
         prefs.lastRunFinishedAt = finishedAt
         prefs.lastSyncFinishedAt = finishedAt
         prefs.updateSyncProgress(

@@ -278,7 +278,7 @@ class MainActivity : Activity() {
         content.addView(pageHeader("最近通话", "显示已扫描到的通话记录和上传结果"))
         val arr = prefs.recentCalls()
         if (arr.length() == 0) {
-            content.addView(emptyCard("还没有同步到通话记录。启动采集后拨打或接听一次电话，最多 10 秒后这里会出现记录。"))
+            content.addView(emptyCard("暂无通话记录。启动采集后可在这里查看处理结果。"))
             return
         }
         for (i in 0 until arr.length()) {
@@ -314,8 +314,10 @@ class MainActivity : Activity() {
             "总音频" to "${prefs.lastRecordingTotalFileCount}",
             "游标后" to "${prefs.lastRecordingRawFileCount}",
             "可解析" to "${prefs.lastRecordingScanCount}",
-            "未匹配" to "${prefs.lastRecordingMissCount}"
+            "待关联" to "${prefs.lastRecordingMissCount}"
         )))
+        if (prefs.unparsedRecordingCount > 0) content.addView(logCard("未识别文件（${prefs.unparsedRecordingCount} 个，最多显示 5 个）", prefs.lastRecordingUnparsedSamples))
+        if (prefs.recordingScanIssue.isNotBlank()) content.addView(logCard("扫描问题", prefs.recordingScanIssue))
 
         val arr = prefs.recentRecordings()
         if (arr.length() == 0) {
@@ -327,7 +329,7 @@ class MainActivity : Activity() {
             val status = item.optString("status")
             val kind = when {
                 status.contains("上传失败") -> Kind.ERROR
-                status.contains("未匹配") || status.contains("忽略") || status.contains("未识别") -> Kind.WARNING
+                status.contains("待关联") || status.contains("未匹配") || status.contains("忽略") || status.contains("未识别") -> Kind.WARNING
                 status.contains("已上传") || status.contains("已存在") -> Kind.SUCCESS
                 else -> Kind.NEUTRAL
             }
@@ -367,7 +369,9 @@ class MainActivity : Activity() {
                 "总音频文件" to "${prefs.lastRecordingTotalFileCount}",
                 "游标后音频" to "${prefs.lastRecordingRawFileCount}",
                 "可解析录音" to "${prefs.lastRecordingScanCount}",
-                "未匹配录音" to "${prefs.lastRecordingMissCount}",
+                "待关联录音" to "${prefs.lastRecordingMissCount}",
+                "未识别文件" to "${prefs.unparsedRecordingCount}",
+                "扫描问题" to prefs.recordingScanIssue.ifBlank { "无" },
                 "最近上传" to prefs.lastUploadedRecordingText
             )
         ))
@@ -455,7 +459,8 @@ class MainActivity : Activity() {
             when {
                 !prefs.collectionEnabled -> COLOR_NEUTRAL
                 hasError -> COLOR_ERROR
-                syncing || pending > 0 -> COLOR_WARNING
+                syncing || pending > 0 || prefs.runResult == "部分完成" -> COLOR_WARNING
+                prefs.runResult == "同步失败" || prefs.runResult == "已中断" -> COLOR_ERROR
                 else -> COLOR_SUCCESS
             }
         )
@@ -466,7 +471,7 @@ class MainActivity : Activity() {
         }
         val summaryText = when {
             syncing -> "正在同步中"
-            prefs.lastRunFinishedAt > 0L && prefs.lastRunRecordingsFailed == 0 && pending == 0 -> "所有录音已同步"
+            prefs.runResult != "未开始" -> prefs.runResult
             else -> syncStatusText(prefs)
         }
         statusLine.text = "$serviceText · $summaryText · 待上传 $pending · ${prefs.employeeCode.ifBlank { "未配置员工 ID" }}"
@@ -559,7 +564,6 @@ class MainActivity : Activity() {
         val total = prefs.lastRecordingProgressTotal
         val processed = prefs.lastRecordingProgressProcessed
         val uploaded = prefs.lastRecordingProgressUploaded
-        val failed = prefs.lastRecordingProgressFailed
         val currentFile = prefs.lastRecordingProgressCurrent
 
         val badgeText: String
@@ -580,35 +584,22 @@ class MainActivity : Activity() {
                 progressPercent = 0
                 descText = "正在扫描系统通话记录与录音目录，请稍候..."
             }
-        } else if (prefs.lastRunFinishedAt > 0L) {
-            if (pendingCalls > 0) {
-                badgeText = "待采集"
-                badgeKind = Kind.PRIMARY
-                showProgress = false
-                progressPercent = 0
-                descText = "检测到有 $pendingCalls 通新通话待同步，点击上方「启动采集」即可开始同步。"
-            } else if (prefs.lastRunRecordingsFailed > 0) {
-                badgeText = "部分失败"
-                badgeKind = Kind.ERROR
-                showProgress = true
-                progressPercent = if (prefs.lastRunRecordingsTotal > 0) {
-                    (prefs.lastRunRecordingsUploaded * 100 / prefs.lastRunRecordingsTotal).coerceIn(0, 100)
-                } else 0
-                descText = "⚠ 本次存在 ${prefs.lastRunRecordingsFailed} 条录音上传失败，点击上方「启动采集」可重试。"
-            } else if (prefs.lastRunRecordingsTotal > 0 || prefs.lastRunCallsUploaded > 0) {
-                badgeText = "采集完成"
-                badgeKind = Kind.SUCCESS
-                showProgress = true
-                progressPercent = 100
-                val recDetail = if (prefs.lastRunRecordingsUploaded > 0) "共成功上传 ${prefs.lastRunRecordingsUploaded} 条录音" else "通话记录已同步"
-                descText = "✅ 本次采集完成：$recDetail，所有录音已全部同步完毕。"
-            } else {
-                badgeText = "数据最新"
-                badgeKind = Kind.SUCCESS
-                showProgress = true
-                progressPercent = 100
-                descText = "✅ 本次检查完成：暂无待采集的新通话与录音，所有数据已是最新。"
+        } else if (prefs.runResult != "未开始") {
+            badgeText = prefs.runResult
+            badgeKind = when (prefs.runResult) {
+                "同步完成" -> Kind.SUCCESS
+                "部分完成" -> Kind.WARNING
+                else -> Kind.ERROR
             }
+            showProgress = false
+            progressPercent = 0
+            val issue = if (prefs.recordingScanIssue.isNotBlank()) "\n扫描问题：${prefs.recordingScanIssue}" else ""
+            val error = if (prefs.runError.isNotBlank()) "\n原因：${prefs.runError}" else ""
+            val finish = if (prefs.lastRunFinishedAt > 0) "\n本轮结束：${formatTs(prefs.lastRunFinishedAt)}" else ""
+            descText = "通话记录：${prefs.callResult} · 已上传 ${prefs.lastCallUploadCount} 条 · 待上传 $pendingCalls 条\n" +
+                "通话录音：${prefs.recordingResult} · 已上传 ${prefs.lastRunRecordingsUploaded} 条 · 待关联 ${prefs.lastRecordingMissCount} 条 · 失败 ${prefs.lastRunRecordingsFailed} 条\n" +
+                "未识别文件：${prefs.unparsedRecordingCount} 个$issue$error$finish" +
+                if (prefs.runResult == "同步完成") "\n本轮扫描范围内可识别且匹配订单的记录和录音已处理；未扫描到的文件不包含在内。上传完成不代表转写完成。" else "\n请查看录音或同步详情，处理后可点击启动采集重试。"
         } else {
             badgeText = "就绪"
             badgeKind = Kind.NEUTRAL
@@ -626,6 +617,15 @@ class MainActivity : Activity() {
             setTextColor(COLOR_ON_SURFACE_VARIANT)
             setPadding(0, dp(10), 0, dp(4))
         })
+
+        if (syncing) {
+            box.addView(TextView(this).apply {
+                text = "通话记录：${prefs.callResult} · 已上传 ${prefs.lastCallUploadCount} 条 · 待上传 $pendingCalls 条\n录音：${prefs.recordingResult}"
+                textSize = 13f
+                setTextColor(COLOR_ON_SURFACE_VARIANT)
+                setPadding(0, dp(4), 0, dp(8))
+            })
+        }
 
         if (showProgress) {
             box.addView(horizontalProgress(progressPercent))
@@ -1231,32 +1231,22 @@ class MainActivity : Activity() {
             prefs.validateConfig()
             prefs.collectionEnabled = true
             CollectorWorkScheduler.ensureScheduled(this)
+            val alreadyRunning = isCollectorRunning()
             val intent = Intent(this, CollectorService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(intent)
             } else {
                 startService(intent)
             }
-            Thread {
-                try {
-                    CollectorRunner(this).syncOnce()
-                } catch (e: Exception) {
-                    Log.w(TAG, "启动后首次同步失败", e)
-                }
-                runOnUiThread {
-                    refreshStatus()
-                    val p = AppPrefs(this@MainActivity)
-                    if (p.lastRunRecordingsFailed == 0) {
-                        if (p.lastRunRecordingsUploaded > 0) {
-                            Toast.makeText(this@MainActivity, "本次采集完成，共成功上传 ${p.lastRunRecordingsUploaded} 条录音", Toast.LENGTH_SHORT).show()
-                        } else {
-                            Toast.makeText(this@MainActivity, "本次检查完成，暂无新通话与录音", Toast.LENGTH_SHORT).show()
-                        }
-                    } else {
-                        Toast.makeText(this@MainActivity, "本次同步存在 ${p.lastRunRecordingsFailed} 条失败，请重试", Toast.LENGTH_SHORT).show()
+            if (alreadyRunning) {
+                Thread {
+                    try {
+                        CollectorRunner(this).syncOnce()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "手动同步失败", e)
                     }
-                }
-            }.start()
+                }.start()
+            }
         } catch (e: Exception) {
             prefs.collectionEnabled = false
             CollectorWorkScheduler.cancel(this)
@@ -1437,8 +1427,7 @@ class MainActivity : Activity() {
     }
 
     private fun isSyncing(prefs: AppPrefs): Boolean {
-        return prefs.lastSyncStartedAt > prefs.lastSyncFinishedAt &&
-            System.currentTimeMillis() - prefs.lastSyncStartedAt < 30_000
+        return prefs.syncRunning
     }
 
     @Suppress("DEPRECATION")

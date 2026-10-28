@@ -21,9 +21,6 @@ class CollectorWorker(
         var heartbeatScheduler: ScheduledExecutorService? = null
         return try {
             prefs.validateConfig()
-            prefs.syncRunning = true
-            prefs.lastSyncStartedAt = System.currentTimeMillis()
-            prefs.updateSyncProgress("后台任务同步中", total = 0, processed = 0, uploaded = 0, failed = 0, current = "")
             val heartbeatOk = runner.sendHeartbeat("work_manager")
             heartbeatScheduler = Executors.newSingleThreadScheduledExecutor { task ->
                 Thread(task, "mobile-status-heartbeat").apply { isDaemon = true }
@@ -34,9 +31,7 @@ class CollectorWorker(
                 20,
                 TimeUnit.SECONDS
             )
-            prefs.lastSyncStartedAt = System.currentTimeMillis()
             runner.syncOnce()
-            prefs.lastSyncFinishedAt = System.currentTimeMillis()
             prefs.lastBackgroundWorkFinishedAt = System.currentTimeMillis()
             prefs.lastBackgroundWorkStatus = if (heartbeatOk) "成功" else "心跳失败，等待重试"
             if (heartbeatOk) Result.success() else Result.retry()
@@ -48,7 +43,6 @@ class CollectorWorker(
             Result.retry()
         } finally {
             heartbeatScheduler?.shutdownNow()
-            prefs.syncRunning = false
             runner.sendHeartbeat("work_manager")
         }
     }

@@ -39,14 +39,22 @@ class RecordingScanner {
         val extensions = setOf("m4a", "mp3", "aac", "wav", "amr")
         val summaries = mutableListOf<String>()
         val samples = mutableListOf<String>()
+        val issues = mutableListOf<String>()
+        var unparsedCount = 0
         val totalAudioKeys = linkedSetOf<String>()
         val recentAudioFiles = linkedMapOf<String, File>()
 
-        dirs
-            .filter { it.exists() && it.isDirectory }
+        val existingDirs = dirs.filter { it.exists() && it.isDirectory }
+        if (existingDirs.isEmpty()) issues.add("未找到预设录音目录，请检查录音设置和文件权限")
+        existingDirs
             .forEach { dir ->
                 try {
+                    if (!dir.canRead() || dir.listFiles() == null) {
+                        issues.add("录音目录无法读取: ${dir.absolutePath}")
+                        return@forEach
+                    }
                     val allFiles = dir.walkTopDown()
+                        .onFail { file, error -> issues.add("无法读取 ${file.absolutePath}: ${error.message}") }
                         .filter { it.isFile }
                         .toList()
                     val allAudioFiles = allFiles.filter { it.extension.lowercase(Locale.ROOT) in extensions }
@@ -55,6 +63,7 @@ class RecordingScanner {
                     dirRecentAudioFiles.forEach { recentAudioFiles.putIfAbsent(fileIdentity(it), it) }
                     summaries.add(directorySummary(dir, allAudioFiles, dirRecentAudioFiles, sinceMillis))
                 } catch (e: Exception) {
+                    issues.add("录音目录读取失败: ${dir.absolutePath}")
                     summaries.add("${dir.absolutePath}: 读取失败 ${e.javaClass.simpleName}: ${e.message.orEmpty()}")
                 }
             }
@@ -62,6 +71,7 @@ class RecordingScanner {
         val recordings = recentAudioFiles.values
             .mapNotNull { file ->
                 parseRecording(file) ?: run {
+                    unparsedCount += 1
                     if (samples.size < 5) samples.add(file.name)
                     null
                 }
@@ -77,7 +87,9 @@ class RecordingScanner {
             rawAudioCount = recentAudioFiles.size,
             parsedCount = recordings.size,
             summary = summaries.take(12).joinToString("\n"),
-            unparsedSamples = samples.joinToString("\n")
+            unparsedSamples = samples.joinToString("\n"),
+            unparsedCount = unparsedCount,
+            issue = issues.distinct().joinToString("\n")
         )
     }
 
@@ -125,7 +137,9 @@ data class RecordingScanResult(
     val rawAudioCount: Int,
     val parsedCount: Int,
     val summary: String,
-    val unparsedSamples: String
+    val unparsedSamples: String,
+    val unparsedCount: Int,
+    val issue: String
 )
 
 data class LocalRecording(

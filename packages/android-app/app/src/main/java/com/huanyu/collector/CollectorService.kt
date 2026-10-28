@@ -61,11 +61,8 @@ class CollectorService : Service() {
     private fun runLoop() {
         while (running) {
             val prefs = AppPrefs(this)
-            prefs.lastSyncStartedAt = System.currentTimeMillis()
-            prefs.lastSyncError = ""
             try {
                 runner.syncOnce()
-                prefs.lastSyncFinishedAt = System.currentTimeMillis()
             } catch (e: Exception) {
                 Log.e(TAG, "同步失败", e)
                 prefs.lastSyncError = e.message ?: e.javaClass.simpleName
