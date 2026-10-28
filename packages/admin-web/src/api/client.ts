@@ -26,8 +26,6 @@ import type {
   UnmatchedRefItem,
   CaptureDiagnosticImageItem,
   SystemReminderConfig,
-  AiScheduleConfig,
-  UpdateAiSchedulePayload,
   SmsConfig,
   SmsConfigResponse,
   UpdateSmsConfigPayload,
@@ -35,12 +33,15 @@ import type {
   TestSmsResult,
   SmsLogItem,
   TaikangFormSession,
-  TaikangFormEventPage
+  TaikangFormEventPage,
+  NativeChatCollectionConfig,
+  NativeChatDiscoveredSession,
+  NativeChatAccount,
+  NativeChatConversationSummary,
+  NativeChatAdminMessagePage
 } from './types'
 
 export type {
-  AiScheduleConfig,
-  UpdateAiSchedulePayload,
   SmsConfig,
   SmsConfigResponse,
   UpdateSmsConfigPayload,
@@ -88,10 +89,11 @@ export interface WorkflowTemplateConfig {
 
 export interface OrderAiConfig {
   schedule: {
+    communicationSilenceMinutes: number
+    callTrigger: string
+    communicationTrigger: string
+    materialSilenceMinutes: number
     timeZone: string
-    times: string[]
-    setting: string
-    condition: string
     scope: string
   }
   prompt: {
@@ -109,6 +111,47 @@ export interface OrderAiConfig {
   readRules: string[]
   storage: Array<{ table: string; purpose: string; fields: string }>
   huanyuPush: { action: string; target: string; notices: string[] }
+}
+
+export interface OrderAiBusinessStage {
+  code: string
+  name: string
+  meaning: string
+  goal: string
+  completionCriteria: string
+  focusFields: string[]
+  forbiddenConclusions: string
+}
+
+export interface OrderAiBusinessType {
+  serviceType: string
+  businessMeaning: string
+  includedServices: string[]
+  excludedServices: string[]
+  completionCriteria: string
+  cancellationCriteria: string
+  selectedFields: string[]
+  stages: OrderAiBusinessStage[]
+}
+
+export interface OrderAiBusinessConfig {
+  version: number
+  updatedAt: string | null
+  common: {
+    businessBackground: string
+    evidenceRules: string
+    timeRules: string
+    sourcePriority: string
+    forbiddenInference: string
+  }
+  orderTypes: OrderAiBusinessType[]
+}
+
+export interface OrderAiBusinessConfigResponse {
+  config: OrderAiBusinessConfig
+  initialized: boolean
+  serviceTypes: Array<{ value: string; label: string; stages: Array<{ code: string; name: string }> }>
+  fields: Array<{ code: string; label: string; serviceTypes: string[]; requiresConfirmation: boolean }>
 }
 
 export interface HuanyuChannelOption {
@@ -196,15 +239,34 @@ export const adminApi = {
     })
   },
 
-  // ───── AI 调用时间配置 ─────
-  aiScheduleConfig() {
-    return request<AiScheduleConfig>('/api/v1/admin/ai-schedule-config')
+  // ───── 微信/企微会话采集范围 ─────
+  nativeChatCollectionConfig() {
+    return request<NativeChatCollectionConfig>('/api/v1/admin/native-chat-collection-config')
   },
-  saveAiScheduleConfig(data: UpdateAiSchedulePayload) {
-    return request<{ data: AiScheduleConfig; message: string }>('/api/v1/admin/ai-schedule-config', {
-      method: 'PUT',
-      body: JSON.stringify(data)
-    })
+  nativeChatSessions() {
+    return request<NativeChatDiscoveredSession[]>('/api/v1/admin/native-chat-sessions')
+  },
+  nativeChatAccounts(channel: 'wechat' | 'wxwork') {
+    return request<NativeChatAccount[]>(`/api/v1/admin/native-chat-accounts${qs({ channel })}`)
+  },
+  nativeChatConversations(params: { cursor?: string; channel?: string; search?: string; employeeId?: number; accountId?: string }) {
+    return request<{ items: NativeChatConversationSummary[]; nextCursor: string | null }>(
+      `/api/v1/admin/native-chat-conversations${qs(params)}`
+    )
+  },
+  nativeChatMessages(conversationId: number, before?: string) {
+    return request<NativeChatAdminMessagePage>(
+      `/api/v1/admin/native-chat-conversations/${conversationId}/messages${qs({ before })}`
+    )
+  },
+  nativeChatAttachmentUrl(attachmentId: number) {
+    return request<{ url: string }>(`/api/v1/admin/native-chat-attachments/${attachmentId}/url`)
+  },
+  saveNativeChatCollectionConfig(data: Pick<NativeChatCollectionConfig, 'rules'>) {
+    return request<NativeChatCollectionConfig>(
+      '/api/v1/admin/native-chat-collection-config',
+      { method: 'PUT', body: JSON.stringify(data) }
+    )
   },
 
   // ───── 短信模板与密钥配置 ─────
@@ -230,6 +292,14 @@ export const adminApi = {
   // ───── 订单 AI 分析配置说明 ─────
   orderAiConfig() {
     return request<OrderAiConfig>('/api/v1/admin/order-ai-config')
+  },
+  orderAiBusinessConfig() {
+    return request<OrderAiBusinessConfigResponse>('/api/v1/admin/order-ai-business-config')
+  },
+  saveOrderAiBusinessConfig(config: OrderAiBusinessConfig) {
+    return request<{ config: OrderAiBusinessConfig; message: string }>('/api/v1/admin/order-ai-business-config', {
+      method: 'PUT', body: JSON.stringify(config)
+    })
   },
 
   // ───── 泰康业务—寰宇渠道映射 ─────

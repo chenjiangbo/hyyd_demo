@@ -19,6 +19,7 @@ import {
   deleteExtPresenceInstance
 } from './routes/api.js'
 import { startOrderAiSchedule } from './jobs/orderAiSchedule.js'
+import { startNativeChatImageAnalysisWorker } from './services/nativeChatImageAnalysis.js'
 import { startOrderReminderSchedule } from './jobs/orderReminderSchedule.js'
 import { loadChineseWorkdayCalendar, startChineseWorkdayCalendarSync } from './jobs/chineseWorkdayCalendarSync.js'
 import { registerAdminRoutes, ADMIN_COOKIE, verifyAdminToken } from './routes/admin.js'
@@ -1025,8 +1026,9 @@ async function start() {
     await server.listen({ port, host })
     server.log.info(`寰宇医道后端服务启动成功，运行在: http://${host}:${port}`)
 
-    // 订单 AI 只在上海时区的配置时点批量分析；不再按消息静默、消息条数或转写完成自动触发。
+    // 电话 ASR 完成后即时触发；微信/企微按申领号静默 5 分钟后触发。
     startOrderAiSchedule(prisma, minioClient)
+    startNativeChatImageAnalysisWorker(prisma, minioClient)
 
     // 每年 12 月 1 日至 31 日检查下一年节假日安排，发布后同步并停止当年检查。
     await startChineseWorkdayCalendarSync(prisma, {

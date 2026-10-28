@@ -16,11 +16,20 @@ files:
 asarUnpack:
   - node_modules/better-sqlite3/**
 extraResources:
+  - from: ../native-chat-collectors
+    to: native-chat-collectors
+    filter:
+      - 'protocol.md'
+      - 'wechat/LICENSE'
+      - 'wechat/hyyd-wechat-collector.exe'
+      - 'wxwork/LICENSE'
+      - 'wxwork/hyyd-wxwork-collector.exe'
   - from: resources/capture-sidecar
     to: capture-sidecar
     filter:
       - '**/*'
 afterPack: build/after-pack-icon.cjs
+beforePack: build/verify-native-collectors.cjs
 win:
   executableName: tray-app
   icon: resources/icon.ico

@@ -30,10 +30,6 @@ import {
   ORDER_AI_PROMPT_RULES
 } from '../llm/orderAiExtraction.js'
 import {
-  getScheduleStatus,
-  reloadScheduleConfig
-} from '../jobs/orderAiSchedule.js'
-import {
   getSmsConfig,
   isSmsTemplateEnabled,
   saveSmsConfig,
@@ -41,13 +37,87 @@ import {
   type AliyunSmsConfig
 } from '../services/aliyunSmsService.js'
 import { findHuanyuChannelById, listHuanyuChannels } from '../db/remoteDictionary.js'
+import { DEFAULT_WORKFLOW_TEMPLATES } from '../workflow/defaultWorkflowConfig.js'
 import { registerTaikangFormAdminRoutes } from '../taikangFormRecording.js'
+import { registerNativeChatCollectionAdminRoutes } from './nativeChatCollectionAdmin.js'
 
 const TAIKANG_BUSINESS_CONFIG = {
   green_pass: '泰康绿通',
   register_assist: '泰康挂号协助'
 } as const
 type TaikangBusinessKey = keyof typeof TAIKANG_BUSINESS_CONFIG
+
+const ORDER_AI_BUSINESS_CONFIG_KEY = 'order_ai_business_config'
+
+type OrderAiBusinessConfigStage = {
+  code: string
+  name: string
+  meaning: string
+  goal: string
+  completionCriteria: string
+  focusFields: string[]
+  forbiddenConclusions: string
+}
+
+type OrderAiBusinessConfigType = {
+  serviceType: string
+  businessMeaning: string
+  includedServices: string[]
+  excludedServices: string[]
+  completionCriteria: string
+  cancellationCriteria: string
+  selectedFields: string[]
+  stages: OrderAiBusinessConfigStage[]
+}
+
+type OrderAiBusinessConfig = {
+  version: number
+  updatedAt: string | null
+  common: {
+    businessBackground: string
+    evidenceRules: string
+    timeRules: string
+    sourcePriority: string
+    forbiddenInference: string
+  }
+  orderTypes: OrderAiBusinessConfigType[]
+}
+
+function defaultOrderAiBusinessConfig(): OrderAiBusinessConfig {
+  return {
+    version: 1,
+    updatedAt: null,
+    common: {
+      businessBackground: '',
+      evidenceRules: '',
+      timeRules: '',
+      sourcePriority: '',
+      forbiddenInference: ''
+    },
+    orderTypes: DEFAULT_WORKFLOW_TEMPLATES.map((template) => ({
+      serviceType: template.serviceType,
+      businessMeaning: '',
+      includedServices: [],
+      excludedServices: [],
+      completionCriteria: '',
+      cancellationCriteria: '',
+      selectedFields: ORDER_AI_FIELD_DEFINITIONS
+        .filter((field) => !field.services || field.services.includes(template.serviceType))
+        .map((field) => field.code),
+      stages: template.steps
+        .filter((step) => step.code !== 'end')
+        .map((step) => ({
+          code: step.code,
+          name: step.name,
+          meaning: '',
+          goal: '',
+          completionCriteria: '',
+          focusFields: [],
+          forbiddenConclusions: ''
+        }))
+    }))
+  }
+}
 
 function isTaikangBusinessKey(value: unknown): value is TaikangBusinessKey {
   return typeof value === 'string' && value in TAIKANG_BUSINESS_CONFIG
@@ -159,6 +229,7 @@ function trayInfo(employeeId: number): { online: boolean; lastSeenAt: string | n
 
 const MOBILE_ACTIVE_WINDOW_MS = 2 * 60_000
 const MOBILE_BACKGROUND_WINDOW_MS = 30 * 60_000
+const MOBILE_RUNTIME_FRESH_MS = 90_000
 function mobileInfo(employeeId: number): {
   online: boolean
   state: 'active' | 'background' | 'needs_open'
@@ -274,65 +345,21 @@ export function registerAdminRoutes(
       return reply.send({ data: { role: 'admin' } })
     })
 
-    // 获取 AI 调用时间配置与调度状态
+    registerTaikangFormAdminRoutes(fastify, prisma, minioClient, getEnv().minioBucketScreenshots)
+    registerNativeChatCollectionAdminRoutes(fastify, prisma, minioClient, minioPublicClient)
+
+    const orderAiTriggerPolicy = {
+      communicationSilenceMinutes: 5,
+      callTrigger: 'ASR 转写文本成功保存后立即触发',
+      communicationTrigger: '微信/企微按申领号合并，最后一条新沟通静默 5 分钟后触发；每 30 秒检查一次',
+      materialSilenceMinutes: 3,
+      timeZone: 'Asia/Shanghai'
+    }
     fastify.get('/api/v1/admin/ai-schedule-config', async (_request, reply) => {
-      const status = getScheduleStatus()
-      return reply.send({ data: status })
+      return reply.send({ data: orderAiTriggerPolicy })
     })
-
-    // 更新 AI 调用时间配置
-    fastify.put<{
-      Body: {
-        enabled?: boolean
-        startTime?: string
-        endTime?: string
-        intervalMinutes?: number
-      }
-    }>('/api/v1/admin/ai-schedule-config', async (request, reply) => {
-      const body = request.body || {}
-      const enabled = body.enabled !== false
-      const startTime = String(body.startTime || '').trim()
-      const endTime = String(body.endTime || '').trim()
-      const intervalMinutes = Number(body.intervalMinutes)
-
-      // 参数格式校验
-      const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/
-      if (!timeRegex.test(startTime)) {
-        return reply.status(400).send({ error: '开始时间格式不合法，应为 HH:mm（如 09:00）' })
-      }
-      if (!timeRegex.test(endTime)) {
-        return reply.status(400).send({ error: '结束时间格式不合法，应为 HH:mm（如 21:00）' })
-      }
-      if (startTime > endTime) {
-        return reply.status(400).send({ error: '开始时间不能晚于结束时间' })
-      }
-      if (isNaN(intervalMinutes) || intervalMinutes < 5 || intervalMinutes > 720) {
-        return reply.status(400).send({ error: '调用间隔必须在 5 分钟到 720 分钟之间' })
-      }
-
-      const newConfig = {
-        enabled,
-        startTime,
-        endTime,
-        intervalMinutes
-      }
-
-      // 保存到 sys_settings
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO sys_settings (key, value, updated_at)
-         VALUES ('order_ai_schedule', $1::jsonb, NOW())
-         ON CONFLICT (key) DO UPDATE
-         SET value = EXCLUDED.value, updated_at = NOW();`,
-        JSON.stringify(newConfig)
-      )
-
-      // 触发调度器内存热刷新
-      await reloadScheduleConfig(prisma)
-
-      return reply.send({
-        data: getScheduleStatus(),
-        message: 'AI 调用时间配置已成功保存并立即生效'
-      })
+    fastify.put('/api/v1/admin/ai-schedule-config', async (_request, reply) => {
+      return reply.status(410).send({ error: 'AI 分析已改为按沟通内容自动触发，不能再配置定时时点' })
     })
 
     // 获取短信模板与密钥配置
@@ -346,8 +373,6 @@ export function registerAdminRoutes(
         }
       })
     })
-
-    registerTaikangFormAdminRoutes(fastify, prisma, minioClient, getEnv().minioBucketScreenshots)
 
     // 保存短信模板与密钥配置（热加载，无须重启）
     fastify.put<{
@@ -520,15 +545,15 @@ export function registerAdminRoutes(
 
     // 订单 AI 分析配置说明：内容直接由实际提取器导出，避免后台说明与运行规则不一致。
     fastify.get('/api/v1/admin/order-ai-config', async (_request, reply) => {
-      const scheduleStatus = getScheduleStatus()
       return reply.send({
         data: {
           schedule: {
-            timeZone: scheduleStatus.timeZone,
-            times: scheduleStatus.slots,
-            setting: 'order_ai_schedule（在管理后台「AI调用时间配置」中可视化调节）',
-            condition: '仅在时点到达且订单自上次分析后存在新的沟通内容，或页面手动触发时调用；不会因静默、消息条数或转写完成即时自动调用。',
-            scope: '沟通记录按申请号聚合；AI 对申请下候选 B 端订单和寰宇服务单分段归属，结果以寰宇订单号隔离保存。页面手动调用入口保留。'
+            communicationSilenceMinutes: 5,
+            callTrigger: 'ASR 转写文本成功保存后立即触发',
+            communicationTrigger: '微信/企微按申领号合并，最后一条新沟通静默 5 分钟后触发；每 30 秒检查一次',
+            materialSilenceMinutes: 3,
+            timeZone: 'Asia/Shanghai',
+            scope: '沟通记录按申领号汇集；AI 对该申领号下有新内容的订单逐单分析，结果归属到对应订单。'
           },
           prompt: {
             version: ORDER_AI_FIELD_PROMPT_VERSION,
@@ -587,6 +612,123 @@ export function registerAdminRoutes(
           }
         }
       })
+    })
+
+    // AI 业务知识配置：由业务人员维护，保存到 sys_settings，供后续提示词组装与配置文件导出使用。
+    fastify.get('/api/v1/admin/order-ai-business-config', async (_request, reply) => {
+      const rows = await prisma.$queryRaw<Array<{ value: unknown; updated_at: Date }>>`
+        SELECT value, updated_at FROM sys_settings WHERE key = ${ORDER_AI_BUSINESS_CONFIG_KEY}
+      `
+      const saved = rows[0]
+      const config = saved?.value && typeof saved.value === 'object'
+        ? { ...(saved.value as OrderAiBusinessConfig), updatedAt: saved.updated_at.toISOString() }
+        : defaultOrderAiBusinessConfig()
+      return reply.send({
+        data: {
+          config,
+          initialized: Boolean(saved),
+          serviceTypes: DEFAULT_WORKFLOW_TEMPLATES.map((template) => ({
+            value: template.serviceType,
+            label: template.serviceType,
+            stages: template.steps.filter((step) => step.code !== 'end').map((step) => ({ code: step.code, name: step.name }))
+          })),
+          fields: ORDER_AI_FIELD_DEFINITIONS.map((field) => ({
+            code: field.code,
+            label: field.label,
+            serviceTypes: field.services ?? DEFAULT_WORKFLOW_TEMPLATES.map((template) => template.serviceType),
+            requiresConfirmation: field.requiresConfirmation === true
+          }))
+        }
+      })
+    })
+
+    fastify.put<{ Body: unknown }>('/api/v1/admin/order-ai-business-config', async (request, reply) => {
+      const body = request.body as Partial<OrderAiBusinessConfig> | null
+      if (!body || typeof body !== 'object' || !body.common || !Array.isArray(body.orderTypes)) {
+        return reply.status(400).send({ error: '配置格式不完整，请重新加载页面后填写' })
+      }
+      const templateByType = new Map(DEFAULT_WORKFLOW_TEMPLATES.map((template) => [template.serviceType, template]))
+      const fieldByCode = new Map(ORDER_AI_FIELD_DEFINITIONS.map((field) => [field.code, field]))
+      const text = (value: unknown): string => typeof value === 'string' ? value.trim() : ''
+      const common = {
+        businessBackground: text(body.common.businessBackground),
+        evidenceRules: text(body.common.evidenceRules),
+        timeRules: text(body.common.timeRules),
+        sourcePriority: text(body.common.sourcePriority),
+        forbiddenInference: text(body.common.forbiddenInference)
+      }
+      if (body.orderTypes.length !== templateByType.size) {
+        return reply.status(400).send({ error: '必须完整保存所有订单类型配置，不能遗漏订单类型' })
+      }
+      const seenTypes = new Set<string>()
+      const orderTypes: OrderAiBusinessConfigType[] = []
+      for (const raw of body.orderTypes) {
+        if (!raw || typeof raw !== 'object') return reply.status(400).send({ error: '订单类型配置格式错误' })
+        const item = raw as Partial<OrderAiBusinessConfigType>
+        const serviceType = text(item.serviceType)
+        const template = templateByType.get(serviceType)
+        if (!template || seenTypes.has(serviceType)) return reply.status(400).send({ error: `订单类型无效或重复：${serviceType || '未填写'}` })
+        seenTypes.add(serviceType)
+        if (!Array.isArray(item.selectedFields) || item.selectedFields.length === 0) {
+          return reply.status(400).send({ error: `“${serviceType}”至少选择一个要提取的字段` })
+        }
+        const selectedFields = item.selectedFields.map(text)
+        for (const code of selectedFields) {
+          const field = fieldByCode.get(code)
+          if (!field || (field.services && !field.services.includes(serviceType))) {
+            return reply.status(400).send({ error: `“${serviceType}”不能使用字段：${code}` })
+          }
+        }
+        const validStageCodes = new Set(template.steps.filter((step) => step.code !== 'end').map((step) => step.code))
+        if (!Array.isArray(item.stages) || item.stages.length !== validStageCodes.size) {
+          return reply.status(400).send({ error: `“${serviceType}”的阶段配置不完整，请重新加载页面` })
+        }
+        const stages: OrderAiBusinessConfigStage[] = []
+        const seenStages = new Set<string>()
+        for (const rawStage of item.stages) {
+          if (!rawStage || typeof rawStage !== 'object') return reply.status(400).send({ error: `“${serviceType}”阶段配置格式错误` })
+          const stage = rawStage as Partial<OrderAiBusinessConfigStage>
+          const code = text(stage.code)
+          if (!validStageCodes.has(code) || seenStages.has(code)) return reply.status(400).send({ error: `“${serviceType}”阶段无效或重复：${code || '未填写'}` })
+          seenStages.add(code)
+          const focusFields = Array.isArray(stage.focusFields) ? stage.focusFields.map(text).filter(Boolean) : []
+          for (const fieldCode of focusFields) {
+            if (!selectedFields.includes(fieldCode)) return reply.status(400).send({ error: `阶段“${text(stage.name)}”的重点字段未包含在订单字段中：${fieldCode}` })
+          }
+          stages.push({
+            code,
+            name: text(stage.name),
+            meaning: text(stage.meaning),
+            goal: text(stage.goal),
+            completionCriteria: text(stage.completionCriteria),
+            focusFields,
+            forbiddenConclusions: text(stage.forbiddenConclusions)
+          })
+        }
+        orderTypes.push({
+          serviceType,
+          businessMeaning: text(item.businessMeaning),
+          includedServices: Array.isArray(item.includedServices) ? item.includedServices.map(text).filter(Boolean) : [],
+          excludedServices: Array.isArray(item.excludedServices) ? item.excludedServices.map(text).filter(Boolean) : [],
+          completionCriteria: text(item.completionCriteria),
+          cancellationCriteria: text(item.cancellationCriteria),
+          selectedFields: [...new Set(selectedFields)],
+          stages
+        })
+      }
+      if (seenTypes.size !== templateByType.size) return reply.status(400).send({ error: '订单类型配置不完整，请重新加载页面' })
+      const config: OrderAiBusinessConfig = {
+        version: Number.isInteger(body.version) && Number(body.version) > 0 ? Number(body.version) : 1,
+        updatedAt: new Date().toISOString(),
+        common,
+        orderTypes
+      }
+      await prisma.$executeRaw`
+        INSERT INTO sys_settings (key, value, updated_at)
+        VALUES (${ORDER_AI_BUSINESS_CONFIG_KEY}, ${JSON.stringify(config)}::jsonb, NOW())
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+      `
+      return reply.send({ data: { config, message: 'AI 业务配置已保存' } })
     })
 
     // 系统提醒规则与说明：集中汇总定时任务、业务触发条件、客户端通知与防重机制。
@@ -1843,15 +1985,6 @@ export function registerAdminRoutes(
           }))
         )
 
-        // AI 滚动简报：整份简报 JSON + 水位时间。前端可直接展示摘要/阶段/待办/风险。
-        const brief = {
-          json: order.aiBriefJson ?? null,
-          updatedAt: iso(order.briefUpdatedAt),
-          lastMsgId: order.briefLastMsgId,
-          lastCallId: order.briefLastCallId,
-          lastMaterialId: order.briefLastMaterialId
-        }
-
         // 订单状态变更历史（按时间正序，构成流转时间线）
         const statusHistory = order.statusHistory.map((h) => ({
           id: h.id,
@@ -1879,7 +2012,6 @@ export function registerAdminRoutes(
               employee: order.assignedEmployee
             },
             recommendations: rec,
-            brief,
             messages,
             attachments,
             materials,
@@ -2095,13 +2227,13 @@ export function registerAdminRoutes(
       }
     })
 
-    // ───── 7.2 采集质量 + 简报健康 ─────
-    // 去重命中、时间链还原失败率、识图成功率，以及 AI 简报 已生成/滞后/缺失。
+    // ───── 7.2 采集质量 ─────
+    // 去重命中、时间链还原失败率、识图成功率。
     fastify.get('/api/v1/admin/dashboard/capture-quality', async (_request, reply) => {
       try {
         const today = startOfToday()
 
-        const [msgAgg, chatTimeMissing, imageToday, imageProcessed, msgMaxByOrder] =
+        const [msgAgg, chatTimeMissing, imageToday, imageProcessed] =
           await Promise.all([
             // 今日消息：总条数 + seenCount 之和（差值=被跨帧去重掉的重复截取）
             prisma.message.aggregate({
@@ -2116,46 +2248,12 @@ export function registerAdminRoutes(
             prisma.material.count({ where: { createdAt: { gte: today }, type: 'image' } }),
             prisma.material.count({
               where: { createdAt: { gte: today }, type: 'image', aiImageProcessedAt: { not: null } }
-            }),
-            // 有消息的订单 → 取每单最大 Message.id，用于和简报水位比对是否滞后
-            prisma.message.groupBy({
-              by: ['orderId'],
-              where: { orderId: { not: null } },
-              _max: { id: true }
             })
           ])
 
         const msgTotal = msgAgg._count._all
         const seenSum = msgAgg._sum.seenCount ?? 0
         const dedupHit = Math.max(0, seenSum - msgTotal) // 重复截到、被去重合并的次数
-
-        // 简报健康：以 briefUpdatedAt 是否存在判定"已生成"，briefLastMsgId 落后于最大消息 id 判定"滞后"
-        const orderIds = msgMaxByOrder
-          .map((r) => r.orderId)
-          .filter((x): x is number => typeof x === 'number')
-        const briefOrders = orderIds.length
-          ? await prisma.order.findMany({
-              where: { id: { in: orderIds } },
-              select: { id: true, briefUpdatedAt: true, briefLastMsgId: true }
-            })
-          : []
-        const briefMap = new Map(briefOrders.map((o) => [o.id, o]))
-
-        let briefGenerated = 0
-        let briefStale = 0
-        let briefMissing = 0
-        for (const row of msgMaxByOrder) {
-          const oid = row.orderId
-          if (oid == null) continue
-          const o = briefMap.get(oid)
-          const maxId = row._max.id ?? 0
-          if (!o || o.briefUpdatedAt == null) {
-            briefMissing++
-          } else {
-            briefGenerated++
-            if ((o.briefLastMsgId ?? 0) < maxId) briefStale++
-          }
-        }
 
         return reply.send({
           data: {
@@ -2168,12 +2266,6 @@ export function registerAdminRoutes(
                 processed: imageProcessed,
                 successRate: imageToday ? Math.round((imageProcessed / imageToday) * 100) : null
               }
-            },
-            brief: {
-              ordersWithMessages: msgMaxByOrder.length,
-              generated: briefGenerated,
-              stale: briefStale,
-              missing: briefMissing
             }
           }
         })
@@ -2194,7 +2286,7 @@ export function registerAdminRoutes(
           employees,
           msgToday, msgHour, lastMsg,
           matToday, matHour, lastMat,
-          callToday, callHour, lastCall
+          callToday, callHour, lastCall, lastRecordingUploaded, mobileClients
         ] = await Promise.all([
           prisma.employee.findMany({ select: { id: true, name: true }, orderBy: { id: 'asc' } }),
           prisma.message.groupBy({ by: ['employeeId'], where: { capturedAt: { gte: today } }, _count: { _all: true } }),
@@ -2205,7 +2297,12 @@ export function registerAdminRoutes(
           prisma.material.groupBy({ by: ['employeeId'], _max: { createdAt: true } }),
           prisma.call.groupBy({ by: ['employeeId'], where: { startedAt: { gte: today } }, _count: { _all: true } }),
           prisma.call.groupBy({ by: ['employeeId'], where: { startedAt: { gte: hourAgo } }, _count: { _all: true } }),
-          prisma.call.groupBy({ by: ['employeeId'], _max: { startedAt: true } })
+          prisma.call.groupBy({ by: ['employeeId'], _max: { startedAt: true } }),
+          prisma.call.groupBy({ by: ['employeeId'], _max: { recordingUploadedAt: true } }),
+          prisma.mobileClientState.findMany({
+            orderBy: [{ employeeId: 'asc' }, { lastHeartbeatAt: 'desc' }],
+            include: { events: { orderBy: { occurredAt: 'desc' }, take: 3 } }
+          })
         ])
 
         const cnt = (rows: Array<{ employeeId: number; _count: { _all: number } }>): Map<number, number> =>
@@ -2225,12 +2322,48 @@ export function registerAdminRoutes(
         const lastMsgM = maxAt(lastMsg, 'capturedAt')
         const lastMatM = maxAt(lastMat, 'createdAt')
         const lastCallM = maxAt(lastCall, 'startedAt')
+        const lastRecordingUploadedM = maxAt(lastRecordingUploaded, 'recordingUploadedAt')
+        const latestMobileByEmployee = new Map<number, typeof mobileClients[number]>()
+        for (const client of mobileClients) {
+          if (!latestMobileByEmployee.has(client.employeeId)) latestMobileByEmployee.set(client.employeeId, client)
+        }
 
         const rows = employees.map((e) => {
           const info = presenceMap.get(e.id)
           const extOnline = info ? presenceIsFresh(info.lastSeenAt) : false
           const tray = trayInfo(e.id)
           const mobile = mobileInfo(e.id)
+          const mobileClient = latestMobileByEmployee.get(e.id)
+          const now = Date.now()
+          const mobileFresh = mobileClient !== undefined && now - mobileClient.lastHeartbeatAt.getTime() <= MOBILE_RUNTIME_FRESH_MS
+          const mobileExecuting = mobileClient !== undefined && (mobileClient.serviceRunning || mobileClient.syncRunning)
+          const mobileRuntimeStartedAt = mobileClient
+            ? mobileClient.syncRunning && !mobileClient.serviceRunning
+              ? mobileClient.syncStartedAt
+              : mobileClient.appVisibility === 'background'
+                ? mobileClient.backgroundSince
+                : mobileClient.serviceStartedAt
+            : null
+          const mobileRuntimeStatus = !mobileClient
+            ? mobile.lastSeenAt ? (mobile.online ? 'legacy' : 'unseen') : 'unseen'
+            : !mobileFresh
+              ? 'stale'
+              : !mobileExecuting
+                ? 'stopped'
+                : mobileClient.appVisibility === 'foreground'
+                  ? 'running_foreground'
+                  : mobileClient.appVisibility === 'background'
+                    ? 'running_background'
+                    : 'unknown'
+          const recentMobileEvents = mobileClient?.events.map((event) => ({
+            id: String(event.id),
+            type: event.eventType,
+            occurredAt: event.occurredAt.toISOString(),
+            details: event.details
+          })) ?? []
+          const mobileRuntimeOnline = mobileRuntimeStatus === 'running_foreground'
+            || mobileRuntimeStatus === 'running_background'
+            || (mobileRuntimeStatus === 'legacy' && mobile.online)
           // 最近一次采集 = 消息/素材/通话 最大时间
           let lastCaptureAt: Date | null = null
           for (const d of [lastMsgM.get(e.id), lastMatM.get(e.id), lastCallM.get(e.id)]) {
@@ -2239,7 +2372,7 @@ export function registerAdminRoutes(
           return {
             employeeId: e.id,
             name: e.name,
-            online: extOnline || tray.online || mobile.online,
+            online: extOnline || tray.online || mobileRuntimeOnline,
             extOnline,
             trayOnline: tray.online,
             trayLastSeenAt: tray.lastSeenAt,
@@ -2247,6 +2380,31 @@ export function registerAdminRoutes(
             mobileState: mobile.state,
             mobileLastSeenAt: mobile.lastSeenAt,
             mobileHeartbeatSource: mobile.source,
+            mobileRuntime: {
+              status: mobileRuntimeStatus,
+              telemetryVersion: mobileClient ? 'current' : mobile.lastSeenAt ? 'legacy' : 'none',
+              appVersion: mobileClient?.appVersion ?? null,
+              appVisibility: mobileClient?.appVisibility ?? null,
+              serviceRunning: mobileClient?.serviceRunning ?? false,
+              serviceStartedAt: mobileClient?.serviceStartedAt?.toISOString() ?? null,
+              backgroundSince: mobileClient?.backgroundSince?.toISOString() ?? null,
+              syncStartedAt: mobileClient?.syncStartedAt?.toISOString() ?? null,
+              lastHeartbeatAt: mobileClient?.lastHeartbeatAt.toISOString() ?? mobile.lastSeenAt,
+              heartbeatSource: mobileClient?.heartbeatSource ?? mobile.source,
+              runningSeconds: mobileFresh && mobileExecuting && mobileRuntimeStartedAt
+                ? Math.max(0, Math.floor((now - mobileRuntimeStartedAt.getTime()) / 1000))
+                : null,
+              syncRunning: mobileClient?.syncRunning ?? false,
+              syncStage: mobileClient?.syncStage ?? null,
+              recordingsTotal: mobileClient?.recordingsTotal ?? 0,
+              recordingsProcessed: mobileClient?.recordingsProcessed ?? 0,
+              recordingsUploaded: mobileClient?.recordingsUploaded ?? 0,
+              recordingsFailed: mobileClient?.recordingsFailed ?? 0,
+              currentRecordingName: mobileClient?.currentRecordingName ?? null,
+              lastError: mobileClient?.lastError ?? null,
+              lastRecordingUploadedAt: iso(lastRecordingUploadedM.get(e.id) ?? null),
+              recentEvents: recentMobileEvents
+            },
             lastSeenAt: info ? new Date(info.lastSeenAt).toISOString() : tray.lastSeenAt,
             tokenOk: info?.tokenOk ?? null,
             lastCaptureAt: iso(lastCaptureAt),

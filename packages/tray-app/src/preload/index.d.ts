@@ -1,4 +1,5 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
+import type { NativeChatPendingImageMatch } from '@huanyu/shared-types'
 
 export interface CaptureConversation {
   id: number
@@ -145,6 +146,8 @@ declare global {
       getPathForFile: (file: File) => string
       petDropFiles: (paths: string[]) => Promise<{ state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[] }>
       petSelectOrder: (orderId: number) => Promise<{ state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[] }>
+      resolveNativeImageMatch: (payload: { attachmentId: number; applicationNo: string; orderId: number | null }) => Promise<{ state: 'done'; message: string }>
+      onPetImageMatch: (cb: (match: NativeChatPendingImageMatch) => void) => () => void
       onPetStatus: (cb: (status: { state: 'done' | 'unknown' | 'candidates' | 'warning'; message: string; candidates?: unknown[] }) => void) => () => void
       getWindowPreferences: () => Promise<{ closeBehavior: 'ask' | 'minimize' | 'quit' }>
       setWindowPreferences: (prefs: { closeBehavior: 'ask' | 'minimize' | 'quit' }) => Promise<{ closeBehavior: 'ask' | 'minimize' | 'quit' }>

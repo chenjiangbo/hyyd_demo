@@ -1,0 +1,303 @@
+use archive_domain::{
+    LifecycleState, MESSAGE_SCHEMA_VERSION, MediaIntegrity, MediaRefV1, MessageDirection,
+    MessageType, MessageV1,
+};
+use chrono::{DateTime, TimeZone, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use thiserror::Error;
+use uuid::Uuid;
+
+pub const PARSER_VERSION: &str = "windows-message-parser/0.0.3";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RawMessageRow {
+    pub source_instance_id: String,
+    pub source_message_id: String,
+    pub conversation_id: String,
+    pub sender_id: Option<String>,
+    pub sent_at_unix_ms: i64,
+    pub outgoing: Option<bool>,
+    pub raw_type: String,
+    pub payload: Value,
+    pub recalled: bool,
+}
+
+#[derive(Debug, Error)]
+pub enum ParseError {
+    #[error("timestamp is outside the supported range")]
+    InvalidTimestamp,
+    #[error("message source identifier is empty")]
+    MissingSourceId,
+}
+
+pub fn normalize(row: RawMessageRow, batch_id: Uuid) -> Result<MessageV1, ParseError> {
+    if row.source_instance_id.trim().is_empty() || row.source_message_id.trim().is_empty() {
+        return Err(ParseError::MissingSourceId);
+    }
+
+    let sent_at = timestamp(row.sent_at_unix_ms)?;
+    let message_type = classify(&row.raw_type, &row.payload);
+    let direction = match row.outgoing {
+        Some(true) => MessageDirection::Outgoing,
+        Some(false) => MessageDirection::Incoming,
+        None if message_type == MessageType::System => MessageDirection::System,
+        None => MessageDirection::Unknown,
+    };
+
+    let body_text = extract_text(message_type.clone(), &row.payload);
+    let quoted_message_id = row
+        .payload
+        .get("quote_id")
+        .or_else(|| row.payload.get("reply_to"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let media = extract_media(&row.payload, &message_type);
+
+    Ok(MessageV1 {
+        schema_version: MESSAGE_SCHEMA_VERSION.into(),
+        source_kind: "windows_local".into(),
+        stable_message_id: stable_id(&row.source_instance_id, &row.source_message_id),
+        source_instance_id: row.source_instance_id,
+        source_message_id: row.source_message_id,
+        conversation_id: row.conversation_id,
+        sender_id: row.sender_id,
+        sent_at,
+        direction,
+        message_type,
+        body_text,
+        quoted_message_id,
+        lifecycle: if row.recalled {
+            LifecycleState::Recalled
+        } else {
+            LifecycleState::Active
+        },
+        media,
+        raw_type: row.raw_type,
+        raw_payload: row.payload,
+        parser_version: PARSER_VERSION.into(),
+        collection_batch_id: batch_id,
+    })
+}
+
+fn timestamp(unix_ms: i64) -> Result<DateTime<Utc>, ParseError> {
+    Utc.timestamp_millis_opt(unix_ms)
+        .single()
+        .ok_or(ParseError::InvalidTimestamp)
+}
+
+fn stable_id(source: &str, source_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"message.v1\0");
+    hasher.update(source.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(source_id.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+fn classify(raw_type: &str, payload: &Value) -> MessageType {
+    let normalized = raw_type.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "0" | "1" | "2" | "text" => MessageType::Text,
+        // WeCom 5.0.13 external-contact conversations use 101 for images.
+        "3" | "14" | "29" | "101" | "image" | "img" => MessageType::Image,
+        "34" | "voice" | "audio" => MessageType::Audio,
+        "43" | "video" => MessageType::Video,
+        // WeCom 5.0.13 external-contact conversations use 102 for files.
+        "15" | "16" | "20" | "102" | "49:file" | "file" | "attachment" => MessageType::File,
+        "13" | "49:link" | "link" | "url" => MessageType::Link,
+        "49:quote" | "reply" | "quote" => MessageType::Reply,
+        "38" | "40" | "501" | "503" | "671" | "10000" | "1001" | "1002" | "1004" | "1006"
+        | "1017" | "1018" | "1022" | "1051" | "1052" | "1055" | "1073" | "system" | "event" => {
+            MessageType::System
+        }
+        "49" => match payload.get("kind").and_then(Value::as_str) {
+            Some("file") => MessageType::File,
+            Some("link") => MessageType::Link,
+            Some("quote") | Some("reply") => MessageType::Reply,
+            _ => MessageType::Unsupported,
+        },
+        _ => MessageType::Unsupported,
+    }
+}
+
+fn extract_text(message_type: MessageType, payload: &Value) -> Option<String> {
+    let keys: &[&str] = match message_type {
+        MessageType::Text | MessageType::Reply | MessageType::System | MessageType::Unsupported => {
+            &["text", "content", "title", "description"]
+        }
+        MessageType::Audio => &[
+            "transcription",
+            "transcript",
+            "voice_text",
+            "recognition",
+            "text",
+            "content",
+        ],
+        MessageType::Link => &["title", "description", "url"],
+        MessageType::File => &["name", "filename"],
+        _ => &[],
+    };
+
+    keys.iter()
+        .filter_map(|key| payload.get(*key).and_then(Value::as_str))
+        .filter_map(clean_readable_text)
+        .next()
+}
+
+fn clean_readable_text(value: &str) -> Option<String> {
+    let cleaned = value
+        .chars()
+        .filter(|character| {
+            matches!(character, '\n' | '\r' | '\t')
+                || (!character.is_control() && *character != '\u{fffd}')
+        })
+        .collect::<String>();
+    let cleaned = cleaned.trim();
+    (!cleaned.is_empty()).then(|| cleaned.to_owned())
+}
+
+fn extract_media(payload: &Value, message_type: &MessageType) -> Vec<MediaRefV1> {
+    if !matches!(
+        message_type,
+        MessageType::Image | MessageType::File | MessageType::Audio | MessageType::Video
+    ) {
+        return vec![];
+    }
+    let Some(locator) = payload
+        .get("media_path")
+        .or_else(|| payload.get("file_path"))
+        .or_else(|| payload.get("local_path"))
+        .or_else(|| payload.get("path"))
+        .and_then(Value::as_str)
+    else {
+        return vec![];
+    };
+
+    vec![MediaRefV1 {
+        content_hash: None,
+        original_name: payload
+            .get("name")
+            .or_else(|| payload.get("filename"))
+            .or_else(|| payload.get("file_name"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        mime_type: payload
+            .get("mime")
+            .or_else(|| payload.get("mime_type"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        size_bytes: payload.get("size").and_then(Value::as_u64),
+        source_locator: locator.to_owned(),
+        integrity: MediaIntegrity::Missing,
+        missing_reason: Some("not_resolved".into()),
+    }]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn row(raw_type: &str, payload: Value) -> RawMessageRow {
+        RawMessageRow {
+            source_instance_id: "fixture".into(),
+            source_message_id: "42".into(),
+            conversation_id: "conversation".into(),
+            sender_id: Some("participant".into()),
+            sent_at_unix_ms: 1_700_000_000_000,
+            outgoing: Some(false),
+            raw_type: raw_type.into(),
+            payload,
+            recalled: false,
+        }
+    }
+
+    #[test]
+    fn raw_type_four_is_not_assumed_to_be_an_image() {
+        // 本机归档的 raw type 4 样本是合并聊天记录卡片；旧逻辑把它误报为图片。
+        let payload = json!({
+            "name": "0",
+            "media_path": "[unreadable]0[unreadable]",
+            "text": "历史消息卡片预览"
+        });
+        let message = normalize(row("4", payload.clone()), Uuid::nil()).unwrap();
+        assert_eq!(message.message_type, MessageType::Unsupported);
+        assert!(message.media.is_empty());
+        assert_eq!(message.raw_payload, payload);
+    }
+
+    #[test]
+    fn parses_text_without_losing_raw_payload() {
+        let payload = json!({"text": "你好", "extra": {"opaque": true}});
+        let message = normalize(row("text", payload.clone()), Uuid::nil()).unwrap();
+        assert_eq!(message.message_type, MessageType::Text);
+        assert_eq!(message.body_text.as_deref(), Some("你好"));
+        assert_eq!(message.raw_payload, payload);
+    }
+
+    #[test]
+    fn keeps_unknown_type_as_unsupported() {
+        let payload = json!({"opaque": [1, 2, 3]});
+        let message = normalize(row("future-type", payload.clone()), Uuid::nil()).unwrap();
+        assert_eq!(message.message_type, MessageType::Unsupported);
+        assert_eq!(message.raw_payload, payload);
+    }
+
+    #[test]
+    fn removes_binary_control_bytes_from_readable_text() {
+        let message = normalize(
+            row(
+                "text",
+                json!({"text": "\u{001e}\u{0008}\0\u{0012}\u{001a}\n\u{0018}"}),
+            ),
+            Uuid::nil(),
+        )
+        .unwrap();
+        assert_eq!(message.body_text, None);
+
+        let message = normalize(
+            row("text", json!({"text": "\u{0012}你好\n世界\u{0000}"})),
+            Uuid::nil(),
+        )
+        .unwrap();
+        assert_eq!(message.body_text.as_deref(), Some("你好\n世界"));
+    }
+
+    #[test]
+    fn reads_common_local_media_path_aliases_only_for_media_messages() {
+        let image = normalize(
+            row(
+                "image",
+                json!({"local_path":"Image/2026/photo.png", "file_name":"photo.png", "mime_type":"image/png"}),
+            ),
+            Uuid::nil(),
+        )
+        .unwrap();
+        assert_eq!(image.media.len(), 1);
+        assert_eq!(image.media[0].source_locator, "Image/2026/photo.png");
+        assert_eq!(image.media[0].original_name.as_deref(), Some("photo.png"));
+
+        let text = normalize(
+            row(
+                "text",
+                json!({"text":"普通消息", "local_path":"C:/private/profile"}),
+            ),
+            Uuid::nil(),
+        )
+        .unwrap();
+        assert!(text.media.is_empty());
+    }
+
+    #[test]
+    fn keeps_audio_transcription_when_present() {
+        let message = normalize(
+            row("audio", json!({"transcription": "这是语音转文字"})),
+            Uuid::nil(),
+        )
+        .unwrap();
+        assert_eq!(message.message_type, MessageType::Audio);
+        assert_eq!(message.body_text.as_deref(), Some("这是语音转文字"));
+    }
+}

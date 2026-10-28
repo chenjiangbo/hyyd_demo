@@ -1,0 +1,5 @@
+wechat/.runtime-build/
+wechat/hyyd-wechat-collector.exe
+wechat/**/__pycache__/
+wxwork/hyyd-wxwork-collector.exe
+wxwork/vendor/upstream/target/

@@ -144,6 +144,9 @@ importers:
       '@fontsource/noto-sans-sc':
         specifier: ^5.2.9
         version: 5.2.9
+      '@huanyu/shared-types':
+        specifier: workspace:^
+        version: link:../shared-types
       better-sqlite3:
         specifier: ^12.10.0
         version: 12.10.0

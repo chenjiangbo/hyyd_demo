@@ -1,0 +1,524 @@
+pub mod enterprise_crypto;
+pub mod secrets;
+mod snapshot;
+
+#[cfg(windows)]
+pub mod desktop;
+#[cfg(windows)]
+pub mod dialog;
+#[cfg(windows)]
+pub mod dpapi;
+#[cfg(windows)]
+pub mod probe;
+#[cfg(windows)]
+mod registry;
+#[cfg(windows)]
+pub mod roots;
+pub mod updater;
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+
+use archive_domain::{
+    DomainError, SnapshotReceipt, SourceAdapter, SourceCandidate, SourceCapability, SourceDatabase,
+};
+use sha2::{Digest, Sha256};
+use walkdir::WalkDir;
+
+pub use snapshot::{SnapshotOptions, create_consistent_snapshot};
+
+pub const ADAPTER_ID: &str = "windows-local-v1";
+const DATABASE_NAMES: &[(&str, &str)] = &[
+    ("message.db", "message"),
+    ("session.db", "session"),
+    ("user.db", "user"),
+];
+
+#[derive(Debug, Default)]
+pub struct WindowsSourceAdapter;
+
+impl SourceAdapter for WindowsSourceAdapter {
+    fn adapter_id(&self) -> &'static str {
+        ADAPTER_ID
+    }
+
+    fn discover(
+        &self,
+        selected_root: Option<PathBuf>,
+    ) -> Result<Vec<SourceCandidate>, DomainError> {
+        let roots = match selected_root {
+            Some(root) => vec![root],
+            None => default_roots(),
+        };
+        Ok(discover_roots(&roots))
+    }
+
+    fn snapshot(
+        &self,
+        candidate: &SourceCandidate,
+        work_root: PathBuf,
+    ) -> Result<SnapshotReceipt, DomainError> {
+        create_consistent_snapshot(candidate, &work_root, SnapshotOptions::default())
+    }
+}
+
+/// Discover candidates below all trusted roots using one global ordering.
+///
+/// Roots may overlap when a user-selected directory is also covered by an
+/// automatic root, so candidates are de-duplicated by their stable source ID.
+pub fn discover_roots(roots: &[PathBuf]) -> Vec<SourceCandidate> {
+    #[cfg(windows)]
+    let roots = roots
+        .iter()
+        .filter_map(|root| roots::resolve_source_root(root))
+        .collect::<BTreeSet<_>>();
+    let mut unique: BTreeMap<String, SourceCandidate> = BTreeMap::new();
+    for candidate in roots
+        .iter()
+        .filter(|root| root.is_dir())
+        .flat_map(|root| discover_under(root))
+    {
+        // A narrower root may omit sibling media. Keep all authorized media
+        // roots when the same database is discovered through another root.
+        if let Some(existing) = unique.get_mut(&candidate.source_id) {
+            existing.media_roots.extend(candidate.media_roots);
+            existing.media_roots.sort();
+            existing.media_roots.dedup();
+        } else {
+            unique.insert(candidate.source_id.clone(), candidate);
+        }
+    }
+    let mut candidates = unique.into_values().collect::<Vec<_>>();
+    candidates.sort_by_cached_key(|candidate| {
+        (
+            is_backup_source(candidate),
+            std::cmp::Reverse(message_database_size(candidate)),
+            candidate.source_id.clone(),
+        )
+    });
+    candidates
+}
+
+fn discover_under(root: &Path) -> Vec<SourceCandidate> {
+    let mut grouped: BTreeMap<PathBuf, Vec<SourceDatabase>> = BTreeMap::new();
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+    {
+        let Some(file_name) = entry.file_name().to_str() else {
+            continue;
+        };
+        let Some((_, kind)) = DATABASE_NAMES
+            .iter()
+            .find(|(expected, _)| file_name.eq_ignore_ascii_case(expected))
+        else {
+            continue;
+        };
+        let path = entry.into_path();
+        let parent = path.parent().unwrap_or(root).to_path_buf();
+        let header = inspect_header(&path).ok();
+        grouped.entry(parent).or_default().push(SourceDatabase {
+            kind: (*kind).into(),
+            wal_path: sidecar(&path, "-wal"),
+            shm_path: sidecar(&path, "-shm"),
+            encrypted: !header.as_ref().is_some_and(|value| value.plain_sqlite),
+            page_size_hint: header.and_then(|value| value.page_size),
+            path,
+        });
+    }
+
+    grouped
+        .into_iter()
+        .filter(|(_, databases)| databases.iter().any(|database| database.kind == "message"))
+        .map(|(data_root, mut databases)| {
+            databases.sort_by(|left, right| left.kind.cmp(&right.kind));
+            let source_id = path_fingerprint(&data_root);
+            let display_path = data_root
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| format!("…\\{name}"))
+                .unwrap_or_else(|| "已选择的数据目录".into());
+            let media_roots = discover_media_roots(&data_root, root);
+            let capability = if databases.len() >= 3 {
+                SourceCapability::ProbeRequired
+            } else {
+                SourceCapability::Unsupported
+            };
+            SourceCandidate {
+                source_id,
+                display_path,
+                root_path: data_root,
+                databases,
+                media_roots,
+                client_version: None,
+                capability,
+            }
+        })
+        .collect()
+}
+
+fn discover_media_roots(data_root: &Path, discovery_root: &Path) -> Vec<PathBuf> {
+    const MEDIA_DIRECTORIES: &[&str] = &[
+        "FileStorage",
+        "MsgAttach",
+        "File",
+        "Files",
+        "Image",
+        "Images",
+        "Emotion",
+        "Video",
+        "Voice",
+        "Media",
+        "Cache/Image",
+        "Cache/File",
+        "Cache/Video",
+        "Cache/Voice",
+    ];
+    let mut roots = BTreeSet::new();
+    let mut bases = data_root
+        .ancestors()
+        .take_while(|path| path.starts_with(discovery_root))
+        .collect::<Vec<_>>();
+    // In current WeCom installs, message.db is under <account>\Data while
+    // downloaded attachments live in sibling folders such as <account>\Cache.
+    // The headless collector is started with Data as its explicit source root,
+    // so include only that account's parent for media discovery. Message DB
+    // discovery remains scoped to the explicit Data root.
+    if data_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("Data"))
+    {
+        if let Some(account_root) = data_root.parent() {
+            bases.push(account_root);
+        }
+    }
+    for base in bases {
+        for name in MEDIA_DIRECTORIES {
+            let candidate = base.join(name);
+            if candidate.is_dir() {
+                roots.insert(candidate);
+            }
+        }
+    }
+    if roots.is_empty() {
+        let account_root = data_root
+            .strip_prefix(discovery_root)
+            .ok()
+            .and_then(|relative| relative.components().next())
+            .map(|component| discovery_root.join(component.as_os_str()))
+            .filter(|path| path.is_dir())
+            .unwrap_or_else(|| data_root.to_path_buf());
+        roots.insert(account_root);
+    }
+    roots.into_iter().collect()
+}
+
+fn message_database_size(candidate: &SourceCandidate) -> u64 {
+    candidate
+        .databases
+        .iter()
+        .find(|database| database.kind == "message")
+        .and_then(|database| database.path.metadata().ok())
+        .map_or(0, |metadata| metadata.len())
+}
+
+fn is_backup_source(candidate: &SourceCandidate) -> bool {
+    // WeCom keeps historical databases below account/Backup/<timestamp>/Data.
+    // Retain these as fallback sources, but don't let a larger backup outrank
+    // current account data during automatic collection.
+    let named = |path: &Path, expected: &str| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case(expected))
+    };
+    named(&candidate.root_path, "Data")
+        && candidate
+            .root_path
+            .ancestors()
+            .nth(2)
+            .is_some_and(|path| named(path, "Backup"))
+}
+
+#[derive(Debug)]
+struct HeaderInfo {
+    plain_sqlite: bool,
+    page_size: Option<u32>,
+}
+
+fn inspect_header(path: &Path) -> std::io::Result<HeaderInfo> {
+    let mut file = File::open(path)?;
+    let mut header = [0_u8; 100];
+    file.read_exact(&mut header)?;
+    let plain_sqlite = &header[..16] == b"SQLite format 3\0";
+    let page_size = if plain_sqlite {
+        let encoded = u16::from_be_bytes([header[16], header[17]]);
+        Some(if encoded == 1 {
+            65_536
+        } else {
+            u32::from(encoded)
+        })
+    } else {
+        let candidates = [512_u32, 1024, 2048, 4096, 8192, 16_384, 32_768, 65_536];
+        let encoded = u16::from_be_bytes([header[16], header[17]]);
+        let value = if encoded == 1 {
+            65_536
+        } else {
+            u32::from(encoded)
+        };
+        candidates.contains(&value).then_some(value)
+    };
+    Ok(HeaderInfo {
+        plain_sqlite,
+        page_size,
+    })
+}
+
+fn sidecar(database: &Path, suffix: &str) -> Option<PathBuf> {
+    let name = database.file_name()?.to_str()?;
+    let path = database.with_file_name(format!("{name}{suffix}"));
+    path.is_file().then_some(path)
+}
+
+fn path_fingerprint(path: &Path) -> String {
+    let normalized = path
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    let digest = Sha256::digest(normalized.as_bytes());
+    format!("src-{}", &hex::encode(digest)[..20])
+}
+
+/// The automatic locations used when the user has not selected a directory.
+pub fn default_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    #[cfg(windows)]
+    if let Some(configured) = registry::configured_data_root() {
+        roots.push(configured);
+    }
+    if let Some(app_data) = std::env::var_os("APPDATA") {
+        roots.push(PathBuf::from(app_data).join("Tencent").join("WXWork"));
+    }
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        roots.push(PathBuf::from(profile).join("Documents").join("WXWork"));
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn write_account_databases(root: &Path, message_bytes: usize) {
+        fs::create_dir_all(root).unwrap();
+        for (name, size) in [
+            ("message.db", message_bytes),
+            ("session.db", 48),
+            ("user.db", 48),
+        ] {
+            let mut bytes = vec![0_u8; size];
+            bytes[..16].copy_from_slice(b"SQLite format 3\0");
+            bytes[16..18].copy_from_slice(&4096_u16.to_be_bytes());
+            fs::write(root.join(name), bytes).unwrap();
+        }
+    }
+
+    #[test]
+    fn discover_roots_orders_candidates_globally_and_deduplicates_overlap() {
+        let directory = tempdir().unwrap();
+        let small = directory.path().join("small").join("WXWork").join("1");
+        let large = directory.path().join("large").join("WXWork").join("2");
+        write_account_databases(&small, 64);
+        write_account_databases(&large, 4_096);
+
+        let candidates = discover_roots(&[
+            directory.path().join("small").join("WXWork"),
+            directory.path().join("large").join("WXWork"),
+            directory.path().join("large").join("WXWork"),
+        ]);
+
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].root_path, large);
+        assert_eq!(candidates[1].root_path, small);
+    }
+
+    #[test]
+    fn current_account_data_precedes_larger_backups_without_removing_backups() {
+        let directory = tempdir().unwrap();
+        let account = directory.path().join("WXWork").join("fixture-account");
+        let current = account.join("Data");
+        let backup = account
+            .join("bAcKuP")
+            .join("fixture-timestamp")
+            .join("Data");
+        write_account_databases(&current, 100);
+        write_account_databases(&backup, 4096);
+        let candidates = discover_roots(std::slice::from_ref(&account));
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].root_path, current);
+        assert_eq!(candidates[1].root_path, backup);
+        let explicit_backup = discover_roots(std::slice::from_ref(&backup));
+        assert_eq!(explicit_backup.len(), 1);
+        assert_eq!(explicit_backup[0].root_path, backup);
+    }
+
+    #[test]
+    fn overlapping_roots_keep_sibling_media_when_a_database_directory_is_selected() {
+        let directory = tempdir().unwrap();
+        let account = directory.path().join("WXWork").join("fixture-account");
+        let data = account.join("Data");
+        let media = account.join("FileStorage");
+        write_account_databases(&data, 100);
+        fs::create_dir_all(&media).unwrap();
+        for roots in [
+            vec![data.clone(), account.clone()],
+            vec![account.clone(), data.clone()],
+        ] {
+            let candidates = discover_roots(&roots);
+            assert_eq!(candidates.len(), 1);
+            assert!(candidates[0].media_roots.contains(&media));
+        }
+    }
+
+    #[test]
+    fn discovers_split_database_layout() {
+        let directory = tempdir().unwrap();
+        let data = directory.path().join("account").join("Data");
+        fs::create_dir_all(&data).unwrap();
+        for name in ["message.db", "session.db", "user.db"] {
+            let mut bytes = vec![0_u8; 100];
+            bytes[..16].copy_from_slice(b"SQLite format 3\0");
+            bytes[16..18].copy_from_slice(&4096_u16.to_be_bytes());
+            fs::write(data.join(name), bytes).unwrap();
+        }
+        fs::write(data.join("message.db-wal"), b"fixture").unwrap();
+
+        let candidates = WindowsSourceAdapter
+            .discover(Some(directory.path().to_path_buf()))
+            .unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].databases.len(), 3);
+        assert!(
+            candidates[0]
+                .databases
+                .iter()
+                .any(|database| database.wal_path.is_some())
+        );
+    }
+
+    #[test]
+    fn discovers_media_directories_next_to_the_database_directory() {
+        let directory = tempdir().unwrap();
+        let account = directory.path().join("account");
+        let data = account.join("Data");
+        fs::create_dir_all(&data).unwrap();
+        fs::create_dir_all(account.join("FileStorage").join("MsgAttach")).unwrap();
+        fs::create_dir_all(account.join("Image")).unwrap();
+        fs::create_dir_all(account.join("Emotion")).unwrap();
+        fs::create_dir_all(account.join("Cache").join("Image")).unwrap();
+        fs::create_dir_all(
+            directory
+                .path()
+                .join("other-account")
+                .join("Cache")
+                .join("Image"),
+        )
+        .unwrap();
+        for name in ["message.db", "session.db", "user.db"] {
+            let mut bytes = vec![0_u8; 100];
+            bytes[..16].copy_from_slice(b"SQLite format 3\0");
+            bytes[16..18].copy_from_slice(&4096_u16.to_be_bytes());
+            fs::write(data.join(name), bytes).unwrap();
+        }
+
+        let candidates = WindowsSourceAdapter
+            .discover(Some(directory.path().to_path_buf()))
+            .unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert!(
+            candidates[0]
+                .media_roots
+                .contains(&account.join("FileStorage"))
+        );
+        assert!(candidates[0].media_roots.contains(&account.join("Image")));
+        assert!(candidates[0].media_roots.contains(&account.join("Emotion")));
+        assert!(
+            candidates[0]
+                .media_roots
+                .contains(&account.join("Cache").join("Image"))
+        );
+        assert!(
+            !candidates[0]
+                .media_roots
+                .iter()
+                .any(|root| root.starts_with(directory.path().join("other-account")))
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_authorized_account_root_for_new_media_layouts() {
+        let directory = tempdir().unwrap();
+        let account = directory.path().join("account");
+        let data = account.join("Data").join("Databases");
+        fs::create_dir_all(&data).unwrap();
+        fs::create_dir_all(account.join("NewStorageLayout").join("Attachments")).unwrap();
+        for name in ["message.db", "session.db", "user.db"] {
+            let mut bytes = vec![0_u8; 100];
+            bytes[..16].copy_from_slice(b"SQLite format 3\0");
+            bytes[16..18].copy_from_slice(&4096_u16.to_be_bytes());
+            fs::write(data.join(name), bytes).unwrap();
+        }
+
+        let candidates = WindowsSourceAdapter
+            .discover(Some(directory.path().to_path_buf()))
+            .unwrap();
+        assert_eq!(candidates[0].media_roots, vec![account]);
+    }
+
+    #[test]
+    #[ignore = "requires the user's explicit authorization to inspect local WXWork directory structure"]
+    fn authorized_real_source_discovers_nonempty_media_roots_without_reading_content() {
+        let candidate = WindowsSourceAdapter
+            .discover(None)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("authorized WXWork source was not discovered");
+        assert!(
+            !candidate.media_roots.is_empty(),
+            "authorized source exposed no recognized media directories"
+        );
+        let mut cache_roots_checked = 0;
+        if let Some(account) = candidate.root_path.parent() {
+            for name in ["Cache/Image", "Emotion"] {
+                let cache = account.join(name);
+                if cache.is_dir() {
+                    assert!(
+                        candidate.media_roots.contains(&cache),
+                        "existing account cache directory was not discovered"
+                    );
+                    cache_roots_checked += 1;
+                }
+            }
+        }
+        eprintln!(
+            "authorized source cache discovery verified: {cache_roots_checked} existing image cache layouts"
+        );
+        let file_count = candidate
+            .media_roots
+            .iter()
+            .flat_map(|root| WalkDir::new(root).follow_links(false).into_iter())
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .count();
+        assert!(file_count > 0, "recognized media directories were empty");
+    }
+}

@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import type { NativeChatPendingImageMatch } from '@huanyu/shared-types'
 
 interface CaptureSidecarStatus {
   enabled: boolean
@@ -151,6 +152,7 @@ interface MaterialSyncCounts {
   pendingDelete: number
 }
 
+declare global {
 interface Window {
   api?: {
     showWindow: () => void
@@ -172,7 +174,9 @@ interface Window {
     getPathForFile: (file: File) => string
     petDropFiles: (paths: string[]) => Promise<{ state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[] }>
     petSelectOrder: (orderId: number) => Promise<{ state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[] }>
-    onPetStatus: (cb: (status: { state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[] }) => void) => () => void
+    resolveNativeImageMatch: (payload: { attachmentId: number; applicationNo: string; orderId: number | null }) => Promise<{ state: 'done'; message: string }>
+    onPetImageMatch: (cb: (match: NativeChatPendingImageMatch) => void) => () => void
+    onPetStatus: (cb: (status: { state: 'done' | 'unknown' | 'candidates' | 'warning'; message: string; candidates?: unknown[] }) => void) => () => void
     getWindowPreferences: () => Promise<{ closeBehavior: 'ask' | 'minimize' | 'quit' }>
     setWindowPreferences: (prefs: { closeBehavior: 'ask' | 'minimize' | 'quit' }) => Promise<{ closeBehavior: 'ask' | 'minimize' | 'quit' }>
     setWindowStage: (stage: 'login' | 'main') => void
@@ -212,4 +216,5 @@ interface Window {
     getCurrentReminder: () => Promise<unknown>
     onReminderData: (cb: (data: unknown) => void) => () => void
   }
+}
 }

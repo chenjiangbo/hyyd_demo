@@ -3,18 +3,21 @@ import { PrismaClient, Prisma } from '@prisma/client'
 import * as Minio from 'minio'
 import { scheduleTranscription } from '../asr/transcribeScheduler.js'
 import { broadcastAdmin } from './adminBus.js'
-import { summarizeCallCommunication, summarizeMessages, summarizeFull } from '../llm/summaryService.js'
 import { getEnv } from '../env.js'
 import { extractOrderCandidate, resolveOrder, type OrderNoEntry } from '../lib/orderNoMatch.js'
 import { parseEscortDispatchTemplate } from '../lib/escortTemplateMatch.js'
 import { parseChatTime } from '../lib/chatTimeParser.js'
+import { getNativeChatCollectionConfig } from '../services/nativeChatCollectionConfig.js'
+import { registerNativeChatIngestRoutes } from './nativeChatIngest.js'
+import { registerNativeChatDiscoveryRoutes } from './nativeChatDiscovery.js'
+import { registerNativeChatAttachmentRoutes } from './nativeChatAttachments.js'
 import { parseTaikangPoolEnteredAt } from '../taikangPoolTime.js'
 import { extractKeyInfo, type KeyInfoMessage, type KeyInfoContext } from '../llm/keyInfoService.js'
 import { structureMessages, type StructInput } from '../lib/messageStructure.js'
-import { analyzeOrderFields, refreshApplicationBrief, refreshOrderBrief } from '../jobs/orderBriefRunner.js'
+import { triggerOrderAiAnalysis } from '../jobs/orderAiSchedule.js'
 import { getRecordingPlaybackInfo } from '../audioTranscode.js'
 import { ensureBOrderFormInstance } from '../bOrderForms.js'
-import { resolveCallBOrderId, saveCallAsBOrderCommunication } from '../callCommunicationRecord.js'
+import { saveCallAsBOrderCommunication } from '../callCommunicationRecord.js'
 import {
   findHuanyuChannelProductById,
   findHuanyuChannelProductsByIds,
@@ -174,6 +177,9 @@ export const trayRestSeenMap = new Map<number, number>()
 export const mobileSeenMap = new Map<number, { lastSeenAt: number; source: string }>()
 const MOBILE_ACTIVE_WINDOW_MS = 2 * 60_000
 const MOBILE_BACKGROUND_WINDOW_MS = 30 * 60_000
+const MOBILE_RUNTIME_FRESH_MS = 90_000
+
+class MobileHeartbeatValidationError extends Error {}
 
 function markMobileSeen(employeeId: number, source: string) {
   mobileSeenMap.set(employeeId, { lastSeenAt: Date.now(), source })
@@ -494,6 +500,10 @@ export function registerApiRoutes(
 
     request.employee = await ensureEmployeeByCode(prisma, employeeCode)
   })
+
+  registerNativeChatIngestRoutes(fastify, prisma)
+  registerNativeChatDiscoveryRoutes(fastify, prisma)
+  registerNativeChatAttachmentRoutes(fastify, prisma, minioClient, minioPublicClient)
 
   // 2. 健康检查接口
   fastify.get('/health', async () => {
@@ -929,34 +939,35 @@ export function registerApiRoutes(
 
     const info = aggregateExtPresence(request.employee.id)
 
-    // 移动端状态：
-    // - 2 分钟内前台/前台服务心跳：在线采集中
-    // - 30 分钟内 WorkManager/其他心跳，或 30 分钟内有通话补传：后台等待中
-    // - 超过窗口：需要员工打开 App 触发补传，而不是按“故障离线”处理
+    // 新版以持久化心跳和服务状态为准；旧版只按其真实上报的心跳判断。
+    // 通话记录代表业务数据，不作为 App 在线证据。
+    const mobileClient = await prisma.mobileClientState.findFirst({
+      where: { employeeId: request.employee.id },
+      orderBy: { lastHeartbeatAt: 'desc' }
+    })
     const mobileSeen = mobileSeenMap.get(request.employee.id)
     const mobileAge = mobileSeen ? Date.now() - mobileSeen.lastSeenAt : Number.POSITIVE_INFINITY
-    const isWorkerHeartbeat = mobileSeen?.source === 'work_manager'
-    let mobileState: 'active' | 'background' | 'needs_open' =
-      mobileAge <= MOBILE_ACTIVE_WINDOW_MS && !isWorkerHeartbeat
+    const legacyWorkerHeartbeat = mobileSeen?.source === 'work_manager'
+    const legacyState: 'active' | 'background' | 'needs_open' =
+      mobileAge <= MOBILE_ACTIVE_WINDOW_MS && !legacyWorkerHeartbeat
         ? 'active'
         : mobileAge <= MOBILE_BACKGROUND_WINDOW_MS
           ? 'background'
           : 'needs_open'
-    let mobileOnlineReason: 'heartbeat' | 'recent_call' | null =
-      mobileState === 'needs_open' ? null : 'heartbeat'
-    if (mobileState === 'needs_open') {
-      const recentCall = await prisma.call.findFirst({
-        where: { employeeId: request.employee.id, startedAt: { gte: new Date(Date.now() - MOBILE_BACKGROUND_WINDOW_MS) } },
-        select: { id: true }
-      })
-      if (recentCall) {
-        mobileState = 'background'
-        mobileOnlineReason = 'recent_call'
-      }
-    }
-    const mobileOnline = mobileState !== 'needs_open'
-    const mobileLastSeenAt = mobileSeen ? new Date(mobileSeen.lastSeenAt).toISOString() : null
-    const mobileHeartbeatSource = mobileSeen?.source ?? null
+    const runtimeFresh = mobileClient !== null && Date.now() - mobileClient.lastHeartbeatAt.getTime() <= MOBILE_RUNTIME_FRESH_MS
+    const mobileOnline = mobileClient
+      ? runtimeFresh && (mobileClient.serviceRunning || mobileClient.syncRunning)
+      : legacyState !== 'needs_open'
+    const mobileState: 'active' | 'background' | 'needs_open' = mobileClient
+      ? mobileOnline
+        ? mobileClient.appVisibility === 'foreground' ? 'active' : 'background'
+        : 'needs_open'
+      : legacyState
+    const mobileOnlineReason: 'heartbeat' | null = mobileOnline ? 'heartbeat' : null
+    const mobileLastSeenAt = mobileClient?.lastHeartbeatAt.toISOString()
+      ?? (mobileSeen ? new Date(mobileSeen.lastSeenAt).toISOString() : null)
+    const mobileHeartbeatSource = mobileClient?.heartbeatSource ?? mobileSeen?.source ?? null
+    const mobileTelemetryVersion = mobileClient ? 'current' : mobileSeen ? 'legacy' : 'none'
 
     if (!info) {
       // 插件从未上报过 presence
@@ -970,6 +981,7 @@ export function registerApiRoutes(
           mobileOnlineReason,
           mobileLastSeenAt,
           mobileHeartbeatSource,
+          mobileTelemetryVersion,
           stale: true,
           lastSeenAt: null
         }
@@ -987,6 +999,7 @@ export function registerApiRoutes(
         mobileOnlineReason,
         mobileLastSeenAt,
         mobileHeartbeatSource,
+        mobileTelemetryVersion,
         stale,
         lastSeenAt: new Date(info.lastSeenAt).toISOString(),
         tokenOk: info.tokenOk ?? null,
@@ -999,11 +1012,164 @@ export function registerApiRoutes(
   })
 
   // 2.6 移动端 App 在线心跳：移动端没有 WS，定时 POST 这里上报在线（建议 20~30s 一次）。
-  fastify.post<{ Body: { source?: string } }>('/api/v1/me/mobile-heartbeat', async (request, reply) => {
+  fastify.post<{ Body: Record<string, unknown> }>('/api/v1/me/mobile-heartbeat', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
     const source = String(request.body?.source ?? 'heartbeat').trim().slice(0, 50) || 'heartbeat'
-    markMobileSeen(request.employee.id, source)
-    return reply.send({ data: { ok: true } })
+    const body = request.body ?? {}
+    if (body.installationId === undefined) {
+      markMobileSeen(request.employee.id, source)
+      return reply.send({ data: { ok: true, persisted: false, telemetry: 'legacy' } })
+    }
+
+    try {
+      const requiredString = (key: string, maxLength: number): string => {
+        const value = body[key]
+        if (typeof value !== 'string' || value.trim().length === 0 || value.length > maxLength) {
+          throw new MobileHeartbeatValidationError(`${key} 格式无效`)
+        }
+        return value.trim()
+      }
+      const requiredBoolean = (key: string): boolean => {
+        if (typeof body[key] !== 'boolean') throw new MobileHeartbeatValidationError(`${key} 格式无效`)
+        return body[key] as boolean
+      }
+      const count = (key: string): number => {
+        const value = body[key]
+        if (!Number.isSafeInteger(value) || (value as number) < 0) throw new MobileHeartbeatValidationError(`${key} 必须是非负整数`)
+        return value as number
+      }
+      const timestamp = (key: string): Date | null => {
+        const value = body[key]
+        if (value === null || value === undefined) return null
+        if (!Number.isSafeInteger(value) || (value as number) <= 0) throw new MobileHeartbeatValidationError(`${key} 格式无效`)
+        const date = new Date(value as number)
+        if (!Number.isFinite(date.getTime())) throw new MobileHeartbeatValidationError(`${key} 格式无效`)
+        return date
+      }
+
+      const installationId = requiredString('installationId', 80)
+      const appVersion = requiredString('appVersion', 40)
+      const appVisibility = requiredString('appVisibility', 20)
+      const serviceRunning = requiredBoolean('serviceRunning')
+      const syncRunning = requiredBoolean('syncRunning')
+      const syncStage = requiredString('syncStage', 120)
+      if (!['foreground', 'background', 'unknown'].includes(appVisibility)) {
+        throw new MobileHeartbeatValidationError('appVisibility 不受支持')
+      }
+      const serviceStartedAt = timestamp('serviceStartedAtMs')
+      const backgroundSince = timestamp('backgroundSinceMs')
+      const syncStartedAt = timestamp('syncStartedAtMs')
+      const recordingsTotal = count('recordingsTotal')
+      const recordingsProcessed = count('recordingsProcessed')
+      const recordingsUploaded = count('recordingsUploaded')
+      const recordingsFailed = count('recordingsFailed')
+      if (serviceRunning && !serviceStartedAt) {
+        throw new MobileHeartbeatValidationError('采集服务运行时必须提供启动时间')
+      }
+      if (syncRunning && !syncStartedAt) {
+        throw new MobileHeartbeatValidationError('同步任务运行时必须提供开始时间')
+      }
+      if (
+        recordingsProcessed > recordingsTotal ||
+        recordingsUploaded > recordingsProcessed ||
+        recordingsFailed > recordingsProcessed ||
+        recordingsUploaded + recordingsFailed > recordingsProcessed
+      ) {
+        throw new MobileHeartbeatValidationError('录音队列进度计数不一致')
+      }
+      if (body.currentRecordingName !== undefined && body.currentRecordingName !== null && typeof body.currentRecordingName !== 'string') {
+        throw new MobileHeartbeatValidationError('currentRecordingName 格式无效')
+      }
+      if (body.lastError !== undefined && body.lastError !== null && typeof body.lastError !== 'string') {
+        throw new MobileHeartbeatValidationError('lastError 格式无效')
+      }
+      const currentRecordingName = typeof body.currentRecordingName === 'string'
+        ? body.currentRecordingName.trim().slice(0, 300) || null
+        : null
+      const lastError = typeof body.lastError === 'string' ? body.lastError.trim().slice(0, 600) || null : null
+
+      const state = await prisma.$transaction(async (tx) => {
+        const where = { employeeId_installationId: { employeeId: request.employee!.id, installationId } }
+        const previous = await tx.mobileClientState.findUnique({ where })
+        const data = {
+          appVersion,
+          appVisibility,
+          serviceRunning,
+          serviceStartedAt,
+          backgroundSince,
+          heartbeatSource: source,
+          lastHeartbeatAt: new Date(),
+          syncRunning,
+          syncStartedAt: syncRunning ? syncStartedAt : null,
+          syncStage: syncRunning ? syncStage : 'idle',
+          recordingsTotal,
+          recordingsProcessed,
+          recordingsUploaded,
+          recordingsFailed,
+          currentRecordingName: syncRunning ? currentRecordingName : null,
+          lastError
+        }
+        const current = await tx.mobileClientState.upsert({
+          where,
+          create: { employeeId: request.employee!.id, installationId, ...data },
+          update: data
+        })
+
+        const events: Array<{ eventType: string; details: Prisma.InputJsonObject }> = []
+        const detail: Prisma.InputJsonObject = {
+          appVisibility,
+          serviceRunning,
+          syncRunning,
+          syncStage: data.syncStage,
+          recordingsTotal,
+          recordingsProcessed,
+          recordingsUploaded,
+          recordingsFailed,
+          currentRecordingName
+        }
+        if (!previous) events.push({ eventType: 'client_seen', details: detail })
+        else {
+          if (Date.now() - previous.lastHeartbeatAt.getTime() > MOBILE_RUNTIME_FRESH_MS) {
+            events.push({ eventType: 'heartbeat_resumed', details: detail })
+          }
+          if (previous.appVisibility !== appVisibility) {
+            events.push({ eventType: appVisibility === 'background' ? 'app_backgrounded' : 'app_foregrounded', details: detail })
+          }
+          if (previous.serviceRunning !== serviceRunning) {
+            events.push({ eventType: serviceRunning ? 'collector_started' : 'collector_stopped', details: detail })
+          }
+          if (
+            previous.syncRunning !== syncRunning ||
+            previous.syncStage !== data.syncStage ||
+            previous.currentRecordingName !== data.currentRecordingName ||
+            previous.recordingsTotal !== recordingsTotal ||
+            previous.recordingsProcessed !== recordingsProcessed ||
+            previous.recordingsUploaded !== recordingsUploaded ||
+            previous.recordingsFailed !== recordingsFailed
+          ) {
+            events.push({ eventType: 'sync_progress', details: detail })
+          }
+          if (lastError && previous.lastError !== lastError) {
+            events.push({ eventType: 'sync_error', details: { ...detail, error: lastError } })
+          }
+        }
+        if (events.length > 0) {
+          await tx.mobileClientEvent.createMany({
+            data: events.map((event) => ({ clientStateId: current.id, ...event }))
+          })
+        }
+        return current
+      })
+      markMobileSeen(request.employee.id, source)
+      return reply.send({ data: { ok: true, persisted: true, clientStateId: state.id, receivedAt: state.lastHeartbeatAt.toISOString() } })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (err instanceof MobileHeartbeatValidationError) {
+        return reply.status(400).send({ error: `移动端状态上报无效: ${message}` })
+      }
+      fastify.log.error({ err, employeeId: request.employee.id }, '移动端状态持久化失败')
+      return reply.status(500).send({ error: '移动端状态保存失败' })
+    }
   })
 
   // 3. 上报/同步订单 POST /api/v1/orders
@@ -2523,7 +2689,6 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
             huanyuOrderNo: true,
             rawJson: true,
             detailJson: true,
-            aiBriefJson: true,
             assignedEmployee: {
               select: { id: true, name: true }
             },
@@ -2786,12 +2951,11 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
           const lastTs = Math.max(lastCallAt, lastMatAt)
           const lastMaterialAt = lastTs > 0 ? new Date(lastTs).toISOString() : null
 
-          const { _count, calls, materials, detailJson, aiBriefJson, assignedEmployee, ...rest } = o
+          const { _count, calls, materials, detailJson, assignedEmployee, ...rest } = o
           void _count
           void calls
           void materials
           void detailJson
-          void aiBriefJson
           void assignedEmployee
 
           return {
@@ -3685,6 +3849,12 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     )
   }
 
+  fastify.get('/api/v1/native-chat/collection-config', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录或缺少工号' })
+    const config = await getNativeChatCollectionConfig(prisma)
+    return reply.send({ data: config })
+  })
+
   fastify.post<{ Body: CaptureFrameBody }>('/api/v1/capture/frame', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录或缺少工号' })
     const employeeId = request.employee.id
@@ -3890,31 +4060,19 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     }
   })
 
-  // 8.45 订单 AI 滚动简报 —— 手动刷新（员工点"刷新简报"按钮）。综合该订单的微信/企微消息 +
-  //      通话/录音转写，一次 LLM 调用产出 摘要/阶段/待办/风险 + 回填关键信息。增量(基于上一版简报)。
-  //      自动触发由扫描器负责：补录素材静默 3 分钟后分析；企微/通话按后台配置的批量时段运行。
-  //      此处是手动兜底，force=true 强制重算。
+  // 已停用：保留旧路由以兼容客户端，但不读取或生成订单 AI 简报。
   fastify.post<{ Params: { id: string } }>('/api/v1/orders/:id/brief/refresh', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-    const id = parseInt(request.params.id, 10)
-    if (!Number.isFinite(id)) return reply.status(400).send({ error: 'id 非法' })
-    try {
-      const result = await refreshOrderBrief(prisma, minioClient, id, { force: true })
-      if (!result) return reply.status(404).send({ error: '订单不存在' })
-      return reply.send({ data: result.brief })
-    } catch (e: any) {
-      fastify.log.error('订单简报刷新失败: ' + e.message)
-      return reply.status(500).send({ error: '订单简报刷新失败: ' + e.message })
-    }
+    return reply.status(410).send({ error: '订单 AI 简报功能已停用' })
   })
 
-  // 字段分析失败后只允许员工显式重跑；后台不会对同一批输入自动重试。
+  // 字段分析手动重跑入口；自动分析失败后会明确记录失败，可由员工在此重跑。
   fastify.post<{ Params: { id: string } }>('/api/v1/orders/:id/ai-fields/reanalyze', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
     const id = parseInt(request.params.id, 10)
     if (!Number.isFinite(id)) return reply.status(400).send({ error: '订单ID非法' })
     try {
-      const result = await analyzeOrderFields(prisma, minioClient, id, { force: true })
+      const result = await triggerOrderAiAnalysis(prisma, minioClient, id, { force: true })
       if (!result) return reply.status(404).send({ error: '订单不存在' })
       if (!result.fieldExtractionSucceeded) return reply.status(502).send({ error: '字段分析失败，请查看后台分析日志' })
       return reply.send({ data: { ok: true, model: result.model ?? null } })
@@ -3924,17 +4082,10 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     }
   })
 
-  // 8.46 读订单 AI 简报（已存的 aiBriefJson，不触发 LLM）。详情页打开时调。
+  // 已停用：旧订单简报不再向客户端提供。
   fastify.get<{ Params: { id: string } }>('/api/v1/orders/:id/brief', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-    const id = parseInt(request.params.id, 10)
-    if (!Number.isFinite(id)) return reply.status(400).send({ error: 'id 非法' })
-    const order = await prisma.order.findUnique({
-      where: { id },
-      select: { aiBriefJson: true, briefUpdatedAt: true }
-    })
-    if (!order) return reply.status(404).send({ error: '订单不存在' })
-    return reply.send({ data: { brief: order.aiBriefJson ?? null, updatedAt: order.briefUpdatedAt } })
+    return reply.send({ data: { brief: null, updatedAt: null } })
   })
 
   // 8.46a 读取本订单最新、尚未采用的 AI 字段候选。正式寰宇字段始终优先，前端仅在
@@ -3973,29 +4124,15 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     })) })
   })
 
-  // 8.47 申请级 AI 沟通总结 —— 综合同一申请号下微信/企微消息 + 通话录音转写。
+  // 已停用：保留旧路由以兼容客户端，但不生成申请级沟通总结。
   fastify.post<{ Params: { applicationNo: string } }>('/api/v1/applications/:applicationNo/brief/refresh', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-    const applicationNo = decodeURIComponent(request.params.applicationNo || '').trim()
-    if (!applicationNo) return reply.status(400).send({ error: 'applicationNo 必填' })
-    try {
-      const result = await refreshApplicationBrief(prisma, applicationNo, { force: true })
-      return reply.send({ data: result.brief })
-    } catch (e: any) {
-      fastify.log.error('申请级沟通总结刷新失败: ' + e.message)
-      return reply.status(500).send({ error: '申请级沟通总结刷新失败: ' + e.message })
-    }
+    return reply.status(410).send({ error: '申请级沟通总结功能已停用' })
   })
 
   fastify.get<{ Params: { applicationNo: string } }>('/api/v1/applications/:applicationNo/brief', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-    const applicationNo = decodeURIComponent(request.params.applicationNo || '').trim()
-    if (!applicationNo) return reply.status(400).send({ error: 'applicationNo 必填' })
-    const brief = await prisma.applicationBrief.findUnique({
-      where: { applicationNo },
-      select: { briefJson: true, briefUpdatedAt: true }
-    })
-    return reply.send({ data: { brief: brief?.briefJson ?? null, updatedAt: brief?.briefUpdatedAt ?? null } })
+    return reply.send({ data: { brief: null, updatedAt: null } })
   })
 
   // 8.5 通话列表 GET /api/v1/calls （当前员工，按时间倒序）
@@ -4410,7 +4547,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
 
   // 10.1 确认录音已直传完成 POST /api/v1/recordings/:callId/complete
   // 客户端 PUT MinIO 成功后调用；后端确认对象存在后再触发 ASR。
-  fastify.post<{ Params: { callId: string } }>('/api/v1/recordings/:callId/complete', async (request, reply) => {
+  fastify.post<{ Params: { callId: string }; Body: { installationId?: string } }>('/api/v1/recordings/:callId/complete', async (request, reply) => {
     const callId = parseInt(request.params.callId, 10)
     try {
       const call = await prisma.call.findUnique({ where: { id: callId } })
@@ -4423,14 +4560,35 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
         return reply.status(409).send({ error: '录音对象尚未在 MinIO 就绪，请稍后重试' })
       }
 
-      const updatedCall = await prisma.call.update({
-        where: { id: callId },
-        data: {
-          asrStatus: call.asrStatus === 'done' ? 'done' : 'pending',
-          asrText: call.asrStatus === 'done' ? call.asrText : null,
-          dashscopeTaskId: call.asrStatus === 'done' ? call.dashscopeTaskId : null,
-          asrFinishedAt: call.asrStatus === 'done' ? call.asrFinishedAt : null
+      const uploadConfirmedAt = call.recordingUploadedAt ?? new Date()
+      const installationId = request.body?.installationId?.trim()
+      const updatedCall = await prisma.$transaction(async (tx) => {
+        const updated = await tx.call.update({
+          where: { id: callId },
+          data: {
+            recordingUploadedAt: uploadConfirmedAt,
+            asrStatus: call.asrStatus === 'done' ? 'done' : 'pending',
+            asrText: call.asrStatus === 'done' ? call.asrText : null,
+            dashscopeTaskId: call.asrStatus === 'done' ? call.dashscopeTaskId : null,
+            asrFinishedAt: call.asrStatus === 'done' ? call.asrFinishedAt : null
+          }
+        })
+        if (!call.recordingUploadedAt && installationId) {
+          const client = await tx.mobileClientState.findUnique({
+            where: { employeeId_installationId: { employeeId: call.employeeId, installationId } },
+            select: { id: true }
+          })
+          if (client) {
+            await tx.mobileClientEvent.create({
+              data: {
+                clientStateId: client.id,
+                eventType: 'recording_upload_confirmed',
+                details: { callId, objectKey: call.recordingOssKey, confirmedAt: uploadConfirmedAt.toISOString() }
+              }
+            })
+          }
         }
+        return updated
       })
 
       if (updatedCall.asrStatus !== 'done') void scheduleTranscription(callId)
@@ -4805,126 +4963,24 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
   // ── AI 摘要路由 ────────────────────────────────────────────────────────────
 
   // 11b. 通话摘要 POST /api/v1/calls/:id/summarize
-  // 对单条通话的 ASR 文字做摘要，结果存入 ai_summaries 表
+  // 已停用：保留路由兼容旧客户端，不触发模型调用。
   fastify.post<{ Params: { id: string } }>('/api/v1/calls/:id/summarize', async (request, reply) => {
-    const callId = parseInt(request.params.id, 10)
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-
-    try {
-      const call = await prisma.call.findUnique({ where: { id: callId } })
-      if (!call) return reply.status(404).send({ error: '通话记录不存在' })
-      if (!call.asrText) return reply.status(400).send({ error: '该通话尚无 ASR 文字，无法摘要' })
-      const orderId = await resolveCallBOrderId(prisma, call)
-      if (!orderId) return reply.status(409).send({ error: '该通话未能唯一匹配到订单，无法生成订单沟通记录' })
-
-      const { content, model } = await summarizeCallCommunication({
-        transcript: call.asrText,
-        direction: call.direction as 'inbound' | 'outbound',
-        durationSec: call.durationSec ?? undefined,
-      })
-
-      const summary = await prisma.aiSummary.create({
-        data: {
-          orderId,
-          callId: call.id,
-          type: 'call',
-          content,
-          model,
-        },
-      })
-
-      await saveCallAsBOrderCommunication(prisma, call, { summary: content }).catch((error) => {
-        fastify.log.warn({ err: error, callId: call.id }, '通话 AI 摘要写入 B 端沟通记录失败')
-      })
-
-      fastify.log.info(`通话 ${callId} 摘要已生成，summaryId=${summary.id}`)
-      return reply.send({ data: summary })
-    } catch (err: any) {
-      fastify.log.error('通话摘要生成失败:', err)
-      return reply.status(500).send({ error: '通话摘要生成失败: ' + err.message })
-    }
+    return reply.status(410).send({ error: '电话沟通小结功能已停用' })
   })
 
   // 11c. 微信消息摘要 POST /api/v1/orders/:id/messages/summarize
   // 对订单下的全部微信消息做摘要
   fastify.post<{ Params: { id: string } }>('/api/v1/orders/:id/messages/summarize', async (request, reply) => {
-    const orderId = parseInt(request.params.id, 10)
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-
-    try {
-      const order = await prisma.order.findUnique({ where: { id: orderId } })
-      if (!order) return reply.status(404).send({ error: '订单不存在' })
-
-      const messages = await prisma.message.findMany({
-        where: { orderId },
-        orderBy: [{ sortTime: { sort: 'asc', nulls: 'last' } }, { capturedAt: 'asc' }],
-      })
-      if (!messages.length) return reply.status(400).send({ error: '该订单暂无微信消息' })
-
-      const { content, model } = await summarizeMessages({
-        conversationName: order.customerName,
-        messages: messages.map(m => ({
-          senderName: m.senderName,
-          contentText: m.contentText,
-          capturedAt: m.capturedAt.toISOString(),
-        })),
-      })
-
-      const summary = await prisma.aiSummary.create({
-        data: { orderId, type: 'message', content, model },
-      })
-
-      fastify.log.info(`订单 ${orderId} 消息摘要已生成，summaryId=${summary.id}`)
-      return reply.send({ data: summary })
-    } catch (err: any) {
-      fastify.log.error('消息摘要生成失败:', err)
-      return reply.status(500).send({ error: '消息摘要生成失败: ' + err.message })
-    }
+    return reply.status(410).send({ error: '微信消息摘要功能已停用' })
   })
 
   // 11d. 全单摘要 POST /api/v1/orders/:id/summarize
   // 综合通话、消息、订单详情，生成整体跟进摘要
   fastify.post<{ Params: { id: string } }>('/api/v1/orders/:id/summarize', async (request, reply) => {
-    const orderId = parseInt(request.params.id, 10)
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-
-    try {
-      const order = await prisma.order.findUnique({ where: { id: orderId } })
-      if (!order) return reply.status(404).send({ error: '订单不存在' })
-
-      const [calls, messages] = await Promise.all([
-        prisma.call.findMany({ where: { orderId }, orderBy: { startedAt: 'asc' } }),
-        prisma.message.findMany({ where: { orderId }, orderBy: [{ sortTime: { sort: 'asc', nulls: 'last' } }, { capturedAt: 'asc' }] }),
-      ])
-
-      const { content, model } = await summarizeFull({
-        order: {
-          customerName: order.customerName,
-          hospital: order.hospital,
-          dept: order.dept,
-          doctor: order.doctor,
-          status: order.status,
-          sourceOrderNo: order.sourceOrderNo,
-        },
-        callTranscripts: calls
-          .filter(c => !!c.asrText)
-          .map(c => c.asrText!),
-        messageTexts: messages.map(
-          m => `[${formatShanghaiDateTime(m.capturedAt).substring(0, 16)}] ${m.senderName ?? ''}: ${m.contentText}`
-        ),
-        detailJson: order.detailJson as Record<string, unknown> | null,
-      })
-
-      const summary = await prisma.aiSummary.create({
-        data: { orderId, type: 'full', content, model },
-      })
-
-      fastify.log.info(`订单 ${orderId} 全单摘要已生成，summaryId=${summary.id}`)
-      return reply.send({ data: summary })
-    } catch (err: any) {
-      fastify.log.error('全单摘要生成失败:', err)
-      return reply.status(500).send({ error: '全单摘要生成失败: ' + err.message })
-    }
+    return reply.status(410).send({ error: '全单跟进摘要功能已停用' })
   })
 
   // ════════════════════════════════════════════════════════════

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-exit-workspace"
+description = "Enables the exit_workspace command without any pre-configured scope."
+commands.allow = ["exit_workspace"]
+
+[[permission]]
+identifier = "deny-exit-workspace"
+description = "Denies the exit_workspace command without any pre-configured scope."
+commands.deny = ["exit_workspace"]

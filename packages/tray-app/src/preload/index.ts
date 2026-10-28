@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import type { NativeChatPendingImageMatch } from '@huanyu/shared-types'
 
 // 暴露给渲染进程的最小 API
 const api = {
@@ -34,6 +35,12 @@ const api = {
   getPathForFile: (file: File): string => webUtils.getPathForFile(file),
   petDropFiles: (paths: string[]) => ipcRenderer.invoke('pet:drop-files', paths),
   petSelectOrder: (orderId: number) => ipcRenderer.invoke('pet:select-order', orderId),
+  resolveNativeImageMatch: (payload: { attachmentId: number; applicationNo: string; orderId: number | null }) => ipcRenderer.invoke('pet:resolve-native-image-match', payload),
+  onPetImageMatch: (cb: (match: NativeChatPendingImageMatch) => void): (() => void) => {
+    const listener = (_e: unknown, match: NativeChatPendingImageMatch): void => cb(match)
+    ipcRenderer.on('pet:image-match', listener)
+    return () => ipcRenderer.removeListener('pet:image-match', listener)
+  },
   onPetStatus: (cb: (status: { state: 'done' | 'unknown' | 'candidates' | 'warning'; message: string; candidates?: unknown[] }) => void): (() => void) => {
     const listener = (_e: unknown, status: { state: 'done' | 'unknown' | 'candidates' | 'warning'; message: string; candidates?: unknown[] }): void => cb(status)
     ipcRenderer.on('pet:status', listener)

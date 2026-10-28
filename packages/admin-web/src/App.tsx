@@ -22,8 +22,11 @@ import SmsConfigPage from './pages/SmsConfigPage'
 import OrderAiConfigPage from './pages/OrderAiConfigPage'
 import SystemRemindersPage from './pages/SystemRemindersPage'
 import TaikangHuanyuChannelMappingPage from './pages/TaikangHuanyuChannelMappingPage'
+import OrderAiBusinessConfigPage from './pages/OrderAiBusinessConfigPage'
 import TaikangFormSessionsPage from './pages/TaikangFormSessionsPage'
 import TaikangFormSessionPage from './pages/TaikangFormSessionPage'
+import NativeChatCollectionConfigPage from './pages/NativeChatCollectionConfigPage'
+import NativeChatRecordsPage from './pages/NativeChatRecordsPage'
 
 export default function App(): React.JSX.Element {
   const { status } = useAuth()
@@ -53,15 +56,18 @@ export default function App(): React.JSX.Element {
         <Route path="calls" element={<CallsPage />} />
         <Route path="capture-health" element={<CaptureHealthPage />} />
         <Route path="capture-diagnostic-images" element={<CaptureDiagnosticImagesPage />} />
-        <Route path="unmatched-refs" element={<UnmatchedRefsPage />} />
         <Route path="taikang-form-sessions" element={<TaikangFormSessionsPage />} />
         <Route path="taikang-form-sessions/:id" element={<TaikangFormSessionPage />} />
+        <Route path="native-chat-collection" element={<NativeChatCollectionConfigPage />} />
+        <Route path="native-chat-records" element={<NativeChatRecordsPage />} />
+        <Route path="unmatched-refs" element={<UnmatchedRefsPage />} />
         <Route path="health" element={<HealthPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="workflow-config" element={<WorkflowConfigPage />} />
         <Route path="ai-schedule-config" element={<AiScheduleConfigPage />} />
         <Route path="sms-config" element={<SmsConfigPage />} />
         <Route path="order-ai-config" element={<OrderAiConfigPage />} />
+        <Route path="order-ai-business-config" element={<OrderAiBusinessConfigPage />} />
         <Route path="taikang-huanyu-channel-mappings" element={<TaikangHuanyuChannelMappingPage />} />
         <Route path="system-reminders" element={<SystemRemindersPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />

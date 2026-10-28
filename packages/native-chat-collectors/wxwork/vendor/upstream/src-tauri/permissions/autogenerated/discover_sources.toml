@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-discover-sources"
+description = "Enables the discover_sources command without any pre-configured scope."
+commands.allow = ["discover_sources"]
+
+[[permission]]
+identifier = "deny-discover-sources"
+description = "Denies the discover_sources command without any pre-configured scope."
+commands.deny = ["discover_sources"]

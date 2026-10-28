@@ -1,0 +1,308 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use libsqlite3_sys as _;
+use tauri::Manager;
+
+fn workspace_capability(page_url: &tauri::Url) -> tauri::ipc::CapabilityBuilder {
+    // Authorize only the server started by this process, including its exact
+    // port. Do not grant desktop commands to arbitrary LAN or remote pages.
+    // URLPattern treats IPv6 colons as parameter syntax unless escaped.
+    let host = page_url
+        .host_str()
+        .expect("workspace URL must have a host")
+        .replace(':', "\\:");
+    let port = page_url
+        .port()
+        .map(|port| format!(":{port}"))
+        .unwrap_or_default();
+    let pattern = format!("{}://{host}{port}/*", page_url.scheme());
+    tauri::ipc::CapabilityBuilder::new("workspace-runtime")
+        .local(false)
+        .window("main")
+        .remote(pattern)
+        .permission("allow-exit-workspace")
+        .permission("allow-check-for-update")
+        .permission("allow-install-update")
+}
+
+#[tauri::command]
+async fn check_for_update() -> Result<Option<wecom_archive_desktop::UpdateInfo>, String> {
+    tauri::async_runtime::spawn_blocking(wecom_archive_desktop::check_for_update)
+        .await
+        .map_err(|_| "检查更新任务失败。")?
+}
+
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle, version: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || wecom_archive_desktop::install_update(&version))
+        .await
+        .map_err(|_| "升级任务失败。")??;
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        app.exit(0);
+    });
+    Ok(())
+}
+
+fn main() {
+    let arguments = std::env::args().collect::<Vec<_>>();
+    if arguments.get(1).is_some_and(|a| a == "--apply-update") {
+        let result = arguments
+            .get(2)
+            .ok_or_else(|| "升级授权缺失。".to_owned())
+            .and_then(|token| wecom_archive_desktop::run_update_helper(token));
+        if let Err(message) = result {
+            exit_with_error(&message);
+        }
+        return;
+    }
+    if std::env::args().any(|argument| argument == "--key-probe") {
+        std::process::exit(wecom_archive_desktop::run_key_probe());
+    }
+    if is_collector() {
+        #[cfg(windows)]
+        let _instance_guard = match collector_instance::acquire() {
+            Ok(Some(guard)) => guard,
+            Ok(None) => {
+                collector_instance::show_already_running();
+                return;
+            }
+            Err(_) => exit_with_error("无法确认采集端是否已启动。"),
+        };
+        wecom_archive_desktop::run();
+        return;
+    }
+
+    let server = Arc::new(
+        wecom_archive_server::start_desktop_server_with_local_collector(
+            wecom_archive_desktop::collect_local_export_with_progress,
+        )
+        .unwrap_or_else(|message| exit_with_error(&message)),
+    );
+    let page_url = tauri::Url::parse(server.page_url())
+        .unwrap_or_else(|_| exit_with_error("工作台页面地址无效。"));
+    let setup_server = Arc::clone(&server);
+    let exit_server = Arc::clone(&server);
+
+    tauri::Builder::default()
+        .setup(move |app| {
+            app.add_capability(workspace_capability(&page_url))?;
+            tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::External(page_url.clone()),
+            )
+            .title("企业微信记录归档")
+            .inner_size(1480.0, 900.0)
+            .min_inner_size(1120.0, 700.0)
+            .resizable(true)
+            .center()
+            .build()?;
+
+            let app_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                while setup_server.is_running() {
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+                app_handle.exit(0);
+            });
+            wecom_archive_desktop::acknowledge_startup();
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            exit_workspace,
+            check_for_update,
+            install_update,
+        ])
+        .build(tauri::generate_context!())
+        .unwrap_or_else(|_| exit_with_error("桌面工作台初始化失败。"))
+        .run(move |_app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                exit_server.shutdown();
+            }
+        });
+}
+
+#[tauri::command]
+fn exit_workspace(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        app.exit(0);
+    });
+}
+
+fn is_collector() -> bool {
+    std::env::current_exe().ok().is_some_and(|executable| {
+        archive_transfer::read_enterprise_collector_config(&executable).is_ok()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tauri::ipc::Origin;
+
+    #[test]
+    fn workspace_commands_only_allow_the_current_origin_and_window() {
+        for address in [
+            "http://127.0.0.1:9812",
+            "http://10.10.1.202:9812",
+            "http://127.0.0.1:9912",
+            "http://[fd12:3456::20]:9912",
+        ] {
+            let page = tauri::Url::parse(&format!("{address}/#token=synthetic")).unwrap();
+            let mut context: tauri::Context<tauri::Wry> = tauri::generate_context!();
+            let authority = context.runtime_authority_mut();
+            authority
+                .add_capability(workspace_capability(&page))
+                .unwrap();
+            let origin = Origin::Remote { url: page.clone() };
+            for command in ["exit_workspace", "check_for_update", "install_update"] {
+                assert!(
+                    authority
+                        .resolve_access(command, "main", "main", &origin)
+                        .is_some()
+                );
+                assert!(
+                    authority
+                        .resolve_access(command, "other", "other", &origin)
+                        .is_none()
+                );
+                for rejected in [
+                    "http://127.0.0.1:9812/",
+                    "http://10.10.1.203:9812/",
+                    "http://10.10.1.202:9913/",
+                    "http://[fd12:3456::21]:9912/",
+                    "http://[fd12:3456::20]:9913/",
+                    "https://example.invalid/",
+                ] {
+                    let rejected_url = tauri::Url::parse(rejected).unwrap();
+                    if rejected_url.origin() == page.origin() {
+                        continue;
+                    }
+                    let rejected = Origin::Remote { url: rejected_url };
+                    assert!(
+                        authority
+                            .resolve_access(command, "main", "main", &rejected)
+                            .is_none()
+                    );
+                }
+            }
+            assert!(
+                authority
+                    .resolve_access("collect_source", "main", "main", &origin)
+                    .is_none()
+            );
+        }
+    }
+}
+
+fn exit_with_error(message: &str) -> ! {
+    show_error(message);
+    std::process::exit(1)
+}
+
+#[cfg(windows)]
+fn show_error(message: &str) {
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+    let text: Vec<u16> = std::ffi::OsStr::new(message)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let title: Vec<u16> = std::ffi::OsStr::new("企业微信记录归档")
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn MessageBoxW(hwnd: *mut c_void, text: *const u16, title: *const u16, kind: u32) -> i32;
+    }
+    unsafe {
+        MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), 0x10);
+    }
+}
+
+#[cfg(windows)]
+mod collector_instance {
+    use std::ffi::{OsStr, c_void};
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateMutexW(
+            attributes: *const c_void,
+            initial_owner: i32,
+            name: *const u16,
+        ) -> *mut c_void;
+        fn GetLastError() -> u32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+
+    pub struct Guard(*mut c_void);
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+
+    pub fn acquire() -> Result<Option<Guard>, ()> {
+        let executable = std::env::current_exe().map_err(|_| ())?;
+        let bytes =
+            archive_transfer::read_enterprise_collector_config(&executable).map_err(|_| ())?;
+        let _: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| ())?;
+        // The machine is the identity boundary: regenerated collectors and
+        // upgraded binaries must still share one mutex on the same computer.
+        let name: Vec<u16> = OsStr::new("Local\\WeComArchiveCollector")
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+        if handle.is_null() {
+            return Err(());
+        }
+        if unsafe { GetLastError() } == 183 {
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Ok(None);
+        }
+        Ok(Some(Guard(handle)))
+    }
+
+    pub fn show_already_running() {
+        super::show_notice("采集端已启动")
+    }
+}
+
+#[cfg(windows)]
+fn show_notice(message: &str) {
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+    let text: Vec<u16> = std::ffi::OsStr::new(message)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let title: Vec<u16> = std::ffi::OsStr::new("企业微信采集端")
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn MessageBoxW(hwnd: *mut c_void, text: *const u16, title: *const u16, kind: u32) -> i32;
+    }
+    unsafe {
+        MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), 0x40);
+    }
+}
+
+#[cfg(not(windows))]
+fn show_error(message: &str) {
+    eprintln!("{message}");
+}

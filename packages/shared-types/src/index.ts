@@ -9,6 +9,149 @@ export type CallStatus = 'answered' | 'missed' | 'rejected' | 'outgoing_unanswer
 export type AsrStatus = 'no_recording' | 'pending' | 'processing' | 'done' | 'failed' | 'requires_manual'
 export type SummaryType = 'call' | 'message' | 'full'
 
+/** Normalized message kinds shared by WeChat and WeCom adapters. */
+export type NativeChatMessageKind =
+  | 'text'
+  | 'image'
+  | 'file'
+  | 'video'
+  | 'audio'
+  | 'voice'
+  | 'link'
+  | 'location'
+  | 'emoji'
+  | 'system'
+  | 'merged'
+  | 'unknown'
+
+export type NativeChatDirection = 'incoming' | 'outgoing' | 'system' | 'unknown'
+
+export type NativeChatAttachmentState =
+  | 'available'
+  | 'not_downloaded'
+  | 'not_found'
+  | 'ambiguous'
+  | 'invalid'
+  | 'unsupported'
+  | 'error'
+
+/** Source-side attachment details used by collectors and downstream message handling. */
+export interface NativeChatAttachmentSourceMetadata extends Record<string, unknown> {
+  rendition?: 'thumbnail' | 'non_thumbnail' | 'missing' | 'unverified'
+  nonThumbnailState?: 'pending' | 'available'
+  originalName?: string | null
+  localName?: string | null
+  resolutionState?: 'size_mismatch' | 'ambiguous'
+  imageAnalysis?: {
+    status: 'pending' | 'processing' | 'retrying' | 'completed' | 'failed'
+    imageType?: string | null
+    typeDescription?: string | null
+    description?: string | null
+    visibleText?: string | null
+    visibleFields?: Array<{ label: string; value: string }>
+    kind?: string | null
+    summary?: string | null
+    model?: string | null
+    promptVersion?: string | null
+    attemptCount?: number
+    registrationMatch?: Record<string, unknown>
+  }
+}
+
+/** Stable conversation identity comes from the source client, not its display name. */
+export interface NativeChatConversation {
+  channel: MessageChannel
+  accountId: string
+  sourceConversationId: string
+  title: string | null
+  kind: 'group' | 'single' | 'service' | 'unknown'
+  /** Optional source-specific values retained for diagnostics and future adapter improvements. */
+  sourceMetadata?: Record<string, unknown> | null
+}
+
+/** A source message normalized without discarding the platform's original type code. */
+export interface NativeChatMessage {
+  channel: MessageChannel
+  accountId: string
+  sourceConversationId: string
+  sourceMessageId: string
+  parentSourceMessageId?: string | null
+  sourceItemIndex?: number | null
+  direction: NativeChatDirection
+  senderId?: string | null
+  senderName?: string | null
+  kind: NativeChatMessageKind
+  /** Original WeChat/WeCom type code, kept as a string because source encodings differ. */
+  sourceTypeCode?: string | null
+  text?: string | null
+  occurredAt: string
+  observedAt: string
+  sourceMetadata?: Record<string, unknown> | null
+  attachments?: NativeChatAttachment[]
+}
+
+export interface NativeChatAttachment {
+  sourceAttachmentId: string
+  kind: 'image' | 'file' | 'video' | 'audio' | 'voice' | 'other'
+  fileName?: string | null
+  mimeType?: string | null
+  byteSize?: number | null
+  state: NativeChatAttachmentState
+  /** Local path is an adapter-to-main-process handoff value, not a backend storage URL. */
+  localPath?: string | null
+  sourceMetadata?: NativeChatAttachmentSourceMetadata | null
+}
+
+export interface NativeChatImageMatchOrder {
+  orderId: number
+  sourceOrderNo: string
+  customerName: string
+  serviceType: string | null
+  hospital: string | null
+  department: string | null
+  doctor: string | null
+  appointmentDate: string | null
+  status: string
+}
+
+export interface NativeChatImageMatchApplication {
+  applicationNo: string
+  programEvidence: string[]
+  orders: NativeChatImageMatchOrder[]
+}
+
+export interface NativeChatPendingImageMatch {
+  attachmentId: number
+  messageId: number
+  fileName: string | null
+  imageUrl: string
+  occurredAt: string
+  channel: string
+  senderName: string | null
+  applicationNo: string | null
+  description: string
+  candidateApplications: NativeChatImageMatchApplication[]
+  applicationDecision: string
+  orderDecision: string
+  reason: string
+}
+
+export type NativeChatConversationMatch = 'source_id' | 'title_exact' | 'title_contains' | 'title_regex'
+
+export interface NativeChatCollectionRule {
+  id: string
+  enabled: boolean
+  channel: MessageChannel | 'both'
+  match: NativeChatConversationMatch
+  value: string
+}
+
+export interface NativeChatCollectionConfig {
+  version: number
+  updatedAt: string | null
+  rules: NativeChatCollectionRule[]
+}
+
 export interface Employee {
   id: number
   name: string

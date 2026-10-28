@@ -9,19 +9,110 @@ export interface DashboardSummary {
   unmatchedPending: number
 }
 
-// 采集质量 + 简报健康（/dashboard/capture-quality）
+export interface NativeChatCollectionRule {
+  id: string
+  enabled: boolean
+  channel: 'wechat' | 'wxwork' | 'both'
+  match: 'source_id' | 'title_exact' | 'title_contains' | 'title_regex'
+  value: string
+}
+
+export interface NativeChatCollectionConfig {
+  version: number
+  updatedAt: string | null
+  rules: NativeChatCollectionRule[]
+}
+
+export interface NativeChatDiscoveredSession {
+  channel: 'wechat' | 'wxwork'
+  accountId: string
+  sourceConversationId: string
+  title: string | null
+  kind: string
+  applicationNo: string | null
+  applicationCandidate: string | null
+  applicationLinkStatus: string
+  employeeId: number
+  employeeName: string
+  lastObservedAt: string
+}
+
+export interface NativeChatConversationSummary {
+  id: number
+  channel: 'wechat' | 'wxwork'
+  accountId: string
+  sourceConversationId: string
+  title: string | null
+  kind: string
+  applicationNo: string | null
+  applicationCandidate: string | null
+  applicationLinkStatus: string
+  employeeId: number
+  employeeName: string
+  firstObservedAt: string
+  lastObservedAt: string
+  messageCount: number
+  attachmentCount: number
+  lastMessageAt: string | null
+}
+
+export interface NativeChatAccount {
+  employeeId: number
+  employeeName: string
+  accountId: string
+}
+
+export interface NativeChatAdminAttachment {
+  id: number
+  kind: string
+  fileName: string | null
+  mimeType: string | null
+  byteSize: string | null
+  state: string
+  sourceMetadata: Record<string, unknown> | null
+  availableInStorage: boolean
+}
+
+export interface NativeChatAdminMessage {
+  id: number
+  sourceMessageId: string
+  parentSourceMessageId: string | null
+  sourceItemIndex: number | null
+  direction: string
+  senderId: string | null
+  senderName: string | null
+  kind: string
+  sourceTypeCode: string | null
+  text: string | null
+  sourceMetadata: Record<string, unknown> | null
+  occurredAt: string
+  observedAt: string
+  attachments: NativeChatAdminAttachment[]
+  children?: NativeChatAdminMessage[]
+}
+
+export interface NativeChatAdminMessagePage {
+  conversation: {
+    id: number
+    channel: string
+    title: string | null
+    applicationNo: string | null
+    applicationCandidate: string | null
+    applicationLinkStatus: string
+    employeeName: string
+  }
+  items: NativeChatAdminMessage[]
+  totalMessages: number
+  nextCursor: string | null
+}
+
+// 采集质量（/dashboard/capture-quality）
 export interface CaptureQuality {
   quality: {
     messagesToday: number
     dedupHit: number // 跨帧去重命中（被合并的重复截取次数）
     chatTimeMissing: number // 今日算不出真实聊天时间的非系统消息条数
     image: { today: number; processed: number; successRate: number | null }
-  }
-  brief: {
-    ordersWithMessages: number
-    generated: number
-    stale: number // 简报水位落后于最新消息
-    missing: number // 有消息但还没生成简报
   }
 }
 
@@ -37,6 +128,29 @@ export interface CaptureHealthRow {
   mobileState: 'active' | 'background' | 'needs_open'
   mobileLastSeenAt: string | null
   mobileHeartbeatSource: string | null
+  mobileRuntime: {
+    status: 'running_foreground' | 'running_background' | 'stopped' | 'stale' | 'unknown' | 'legacy' | 'unseen'
+    telemetryVersion: 'current' | 'legacy' | 'none'
+    appVersion: string | null
+    appVisibility: 'foreground' | 'background' | 'unknown' | null
+    serviceRunning: boolean
+    serviceStartedAt: string | null
+    backgroundSince: string | null
+    syncStartedAt: string | null
+    lastHeartbeatAt: string | null
+    heartbeatSource: string | null
+    runningSeconds: number | null
+    syncRunning: boolean
+    syncStage: string | null
+    recordingsTotal: number
+    recordingsProcessed: number
+    recordingsUploaded: number
+    recordingsFailed: number
+    currentRecordingName: string | null
+    lastError: string | null
+    lastRecordingUploadedAt: string | null
+    recentEvents: Array<{ id: string; type: string; occurredAt: string; details: unknown }>
+  }
   lastSeenAt: string | null
   tokenOk: boolean | null
   lastCaptureAt: string | null
@@ -336,13 +450,6 @@ export interface OrderFull {
     employee: { id: number; name: string; token: string } | null
   }
   recommendations: Record<string, any> | null
-  brief: {
-    json: Record<string, any> | null
-    updatedAt: string | null
-    lastMsgId: number | null
-    lastCallId: number | null
-    lastMaterialId: number | null
-  }
   messages: OrderMessage[]
   statusHistory: Array<{
     id: number
@@ -417,27 +524,6 @@ export interface SystemReminderConfig {
     table: string
     fields: string
   }
-}
-
-export interface AiScheduleConfig {
-  config: {
-    enabled: boolean
-    startTime: string
-    endTime: string
-    intervalMinutes: number
-  }
-  slots: string[]
-  lastRunSlot: string | null
-  lastRunAt: string | null
-  nextRunSlot: string | null
-  timeZone: string
-}
-
-export interface UpdateAiSchedulePayload {
-  enabled: boolean
-  startTime: string
-  endTime: string
-  intervalMinutes: number
 }
 
 export interface SmsConfig {

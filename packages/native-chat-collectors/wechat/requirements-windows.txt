@@ -1,0 +1,5 @@
+cryptography==50.0.2
+cffi==2.1.1
+pycparser==3.12
+zstandard==0.25.0
+pyinstaller==6.11.1

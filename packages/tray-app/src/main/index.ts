@@ -9,6 +9,7 @@ import { MaterialStore } from './material-store'
 import { MaterialSyncWorker } from './material-sync'
 import { setupReminderIPC } from './reminder-window'
 import { PetIntakeService, type PetIntakeResult } from './pet-intake-service'
+import { NativeChatCollectorManager, type NativeChatCollectorHealth, type CollectorHealthState, type NativePendingImageMatch } from './native-chat-collector-manager'
 
 loadRootEnv()
 
@@ -31,12 +32,16 @@ let tray: Tray | null = null
 let isQuitting = false
 let closePromptInFlight = false
 let isAuthenticated = false
+let pendingPetCollectorNotice: { state: 'warning' | 'done'; message: string } | null = null
 let pendingPetMobileStatus: PetMobileStatus | null = null
 let pendingPetMobileReminder: string | null = null
 let petNeedsOpenActive = false
 let pendingPetOrderReminder: string | null = null
+const pendingPetImageMatches = new Map<number, NativePendingImageMatch>()
 let lastPetOrderReminderKey: string | null = null
+let wxworkCollectorNoticeActive: 'directory-missing' | 'not-installed' | null = null
 const captureSidecar = new CaptureSidecarClient()
+const nativeChatCollectors = new NativeChatCollectorManager()
 // 现场采集素材的本地落地 + 异步同步：粘贴→落 sqlite/文件→worker 上传后端
 const materialStore = new MaterialStore()
 const materialSync = new MaterialSyncWorker(materialStore)
@@ -248,6 +253,10 @@ function createPetWindow(): void {
   petWindow.on('closed', () => { petWindow = null })
   petWindow.webContents.on('did-finish-load', () => {
     if (!petWindow || petWindow.isDestroyed()) return
+    if (pendingPetCollectorNotice) {
+      petWindow.webContents.send('pet:status', pendingPetCollectorNotice)
+      pendingPetCollectorNotice = null
+    }
     if (pendingPetMobileStatus) petWindow.webContents.send('pet:mobile-status', pendingPetMobileStatus)
     if (pendingPetMobileReminder) {
       petWindow.webContents.send('pet:mobile-reminder', pendingPetMobileReminder)
@@ -257,6 +266,7 @@ function createPetWindow(): void {
       petWindow.webContents.send('pet:mobile-reminder', pendingPetOrderReminder)
       pendingPetOrderReminder = null
     }
+    for (const match of pendingPetImageMatches.values()) petWindow.webContents.send('pet:image-match', match)
   })
   petWindow.once('ready-to-show', () => {
     const display = screen.getPrimaryDisplay()
@@ -377,10 +387,64 @@ function createTray(): void {
   const trayImage = image.resize({ width: 16, height: 16 })
   tray = new Tray(trayImage)
   tray.setToolTip('寰宇智能助手')
+  nativeChatCollectors.setStatusListener(updateCollectorTrayStatus)
+  nativeChatCollectors.setImageMatchListener((match) => {
+    pendingPetImageMatches.set(match.attachmentId, match)
+    if (petWindow && !petWindow.isDestroyed() && !petWindow.webContents.isLoading()) {
+      petWindow.webContents.send('pet:image-match', match)
+    }
+  })
+  updateCollectorTrayStatus(nativeChatCollectors.getHealth())
+  tray.on('click', activateClient)
+  tray.on('double-click', activateClient)
+}
 
+function collectorStateLabel(state: CollectorHealthState): string {
+  switch (state) {
+    case 'running': return '正常'
+    case 'starting': return '启动中'
+    case 'waiting': return '等待启动'
+    case 'error': return '异常'
+  }
+}
+
+function updateCollectorTrayStatus(status: NativeChatCollectorHealth): void {
+  if (!tray || tray.isDestroyed()) return
+  const directoryMissing = status.wxwork.detail.startsWith('未检测到当前企微的数据目录')
+    || status.wxwork.detail.startsWith('发现多个有效的企微数据目录')
+  const notice = directoryMissing
+    ? { key: 'directory-missing' as const, message: '未检测到当前企微的数据目录。' }
+    : status.wxwork.detail.startsWith('未安装企业微信')
+      ? { key: 'not-installed' as const, message: '当前未安装企业微信，企微消息不会采集。' }
+      : null
+  if (notice && wxworkCollectorNoticeActive !== notice.key) {
+    wxworkCollectorNoticeActive = notice.key
+    pendingPetCollectorNotice = { state: 'warning', message: notice.message }
+    if (petWindow && !petWindow.isDestroyed() && !petWindow.webContents.isLoading()) {
+      petWindow.webContents.send('pet:status', pendingPetCollectorNotice)
+      pendingPetCollectorNotice = null
+    }
+  } else if (status.wxwork.state === 'running' && wxworkCollectorNoticeActive) {
+    wxworkCollectorNoticeActive = null
+    pendingPetCollectorNotice = { state: 'done', message: '已找到企微数据目录，消息采集已启动。' }
+    if (petWindow && !petWindow.isDestroyed() && !petWindow.webContents.isLoading()) {
+      petWindow.webContents.send('pet:status', pendingPetCollectorNotice)
+      pendingPetCollectorNotice = null
+    }
+  }
+  tray.setToolTip(`寰宇医道 · 微信采集${collectorStateLabel(status.wechat.state)} · 企微采集${collectorStateLabel(status.wxwork.state)}`)
   const contextMenu = Menu.buildFromTemplate([
     { label: '显示浮动精灵', click: showPetWindow },
     { label: '切换服务器', click: switchServer },
+    { type: 'separator' },
+    { label: `微信消息采集：${collectorStateLabel(status.wechat.state)}`, enabled: false },
+    { label: `企微消息采集：${collectorStateLabel(status.wxwork.state)}`, enabled: false },
+    { label: '打开消息采集日志', click: () => {
+      void nativeChatCollectors.openLog().catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        dialog.showErrorBox('无法打开消息采集日志', message)
+      })
+    } },
     { type: 'separator' },
     {
       label: '退出',
@@ -392,9 +456,6 @@ function createTray(): void {
   ])
   tray.setContextMenu(contextMenu)
 
-  // 已登录时点击托盘图标显示浮动精灵；未登录时回到登录窗。
-  tray.on('click', activateClient)
-  tray.on('double-click', activateClient)
 }
 
 // 单实例锁：第二次启动只显示浮动精灵，不打开工作台。
@@ -533,6 +594,20 @@ if (!gotLock) {
       petWindow?.webContents.send('pet:status', result)
       return result
     })
+    ipcMain.handle('pet:resolve-native-image-match', async (_e, payload: unknown) => {
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('图片匹配确认内容无效')
+      const value = payload as { attachmentId?: unknown; applicationNo?: unknown; orderId?: unknown }
+      if (typeof value.attachmentId !== 'number' || !Number.isSafeInteger(value.attachmentId)
+        || typeof value.applicationNo !== 'string' || !value.applicationNo.trim()
+        || !(value.orderId === null || value.orderId === undefined || (typeof value.orderId === 'number' && Number.isSafeInteger(value.orderId)))) {
+        throw new Error('图片匹配确认字段无效')
+      }
+      await nativeChatCollectors.resolveImageMatch(value.attachmentId, value.applicationNo, value.orderId == null ? null : value.orderId)
+      pendingPetImageMatches.delete(value.attachmentId)
+      const result = { state: 'done' as const, message: value.orderId == null ? '图片已关联到申领号' : '图片已关联到对应订单' }
+      petWindow?.webContents.send('pet:status', result)
+      return result
+    })
     ipcMain.handle('capture:status', () => captureSidecar.getStatus())
     ipcMain.handle('capture:conversations', (_e, channel?: string) =>
       captureSidecar.listConversations(channel)
@@ -642,7 +717,7 @@ if (!gotLock) {
     ipcMain.handle(
       'capture:set-config',
       (_e, cfg: { backendUrl: string; employeeCode: string }) => {
-        captureSidecar.setConfig(cfg)
+        nativeChatCollectors.setConfig(cfg)
         return { ok: true }
       }
     )
@@ -656,15 +731,8 @@ if (!gotLock) {
     createWindow()
     createPetWindow()
     setupReminderIPC()
-    // sidecar 是订单生命周期沟通数据的核心来源；Windows 桌面端默认随应用启动。
-    // 如需排障关闭，启动 app 前设环境变量 HYYD_ENABLE_SIDECAR=0。
-    if (process.env.HYYD_ENABLE_SIDECAR !== '0') {
-      captureSidecar.start().catch((error) => {
-        console.error('[capture] failed to start sidecar', error)
-      })
-    } else {
-      console.log('[capture] sidecar disabled (HYYD_ENABLE_SIDECAR=0)')
-    }
+
+    // 截图采集保留用于历史排障入口，但不再自动启动；会话消息由本机原生读取子进程采集。
 
     // 素材同步 worker：每 10s 扫一轮 pending/pending_delete
     materialSync.start()
@@ -676,6 +744,7 @@ if (!gotLock) {
     isQuitting = true
     petWindow?.close()
     captureSidecar.stop()
+    nativeChatCollectors.stop()
     materialSync.stop()
   })
 

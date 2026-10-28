@@ -22,6 +22,8 @@ model Employee {
   materials               Material[]
   unmatchedOrderRefs      UnmatchedOrderRef[]
   taikangFormSessions      TaikangFormSession[]
+  nativeChatConversations  NativeChatConversation[]
+  mobileClientStates      MobileClientState[]
 
   @@map("employees")
 }
@@ -87,11 +89,13 @@ model Order {
   aiBriefJson             Json?                    @map("ai_brief_json")
   briefUpdatedAt          DateTime?                @db.Timestamp(3) @map("brief_updated_at")
   briefLastMsgId          Int?                     @map("brief_last_msg_id") // 上次处理到的最大 Message.id
+  briefLastNativeAt       DateTime?                @map("brief_last_native_at")
   briefLastCallId         Int?                     @map("brief_last_call_id") // 上次处理到的最大 Call.id
   briefLastMaterialId     Int?                     @map("brief_last_material_id") // 上次处理到的最大 Material.id（手工补录）
   // 字段/服务步骤分析的独立水位。无论一次分析成功还是失败都会推进，避免同一批素材被后台重复调用。
   // 旧 brief* 水位仍只服务旧版“AI 简报”页面，二者不得混用。
   fieldAiLastMsgId        Int?                     @map("field_ai_last_msg_id")
+  fieldAiLastNativeAt     DateTime?                @map("field_ai_last_native_at")
   fieldAiLastCallId       Int?                     @map("field_ai_last_call_id")
   fieldAiLastMaterialId   Int?                     @map("field_ai_last_material_id")
   createdAt               DateTime                 @default(now()) @db.Timestamp(3) @map("created_at")
@@ -132,6 +136,7 @@ model ApplicationBrief {
   briefJson       Json?     @map("brief_json")
   briefUpdatedAt  DateTime? @db.Timestamp(3) @map("brief_updated_at")
   briefLastMsgId  Int?      @map("brief_last_msg_id")
+  briefLastNativeAt DateTime? @map("brief_last_native_at")
   briefLastCallId Int?      @map("brief_last_call_id")
   createdAt       DateTime  @default(now()) @db.Timestamp(3) @map("created_at")
   updatedAt       DateTime  @updatedAt @db.Timestamp(3) @map("updated_at")
@@ -240,6 +245,83 @@ model Message {
   @@map("messages")
 }
 
+/// Canonical conversation records populated by native WeChat/WeCom adapters.
+/// Screenshot-era Message rows remain separate and are not used as the new ingest contract.
+model NativeChatConversation {
+  id                   Int                  @id @default(autoincrement())
+  employeeId           Int                  @map("employee_id")
+  employee             Employee             @relation(fields: [employeeId], references: [id])
+  channel              String
+  accountId            String               @map("account_id")
+  sourceConversationId String               @map("source_conversation_id")
+  title                String?
+  conversationKind     String               @default("unknown") @map("conversation_kind")
+  businessCategory     String               @default("") @map("business_category")
+  applicationNo        String?              @map("application_no")
+  applicationCandidate String?              @map("application_candidate")
+  applicationLinkStatus String              @default("no_candidate") @map("application_link_status")
+  applicationLinkedAt  DateTime?            @map("application_linked_at")
+  sourceMetadata       Json?                @map("source_metadata")
+  firstObservedAt      DateTime             @default(now()) @map("first_observed_at")
+  lastObservedAt       DateTime             @default(now()) @map("last_observed_at")
+  messages             NativeChatMessage[]
+
+  @@unique([employeeId, channel, accountId, sourceConversationId], map: "native_chat_conversations_source_key")
+  @@index([employeeId, channel, lastObservedAt(sort: Desc)], map: "native_chat_conversations_recent_idx")
+  @@index([applicationNo], map: "native_chat_conversations_application_no_idx")
+  @@map("native_chat_conversations")
+}
+
+/// Platform-neutral message envelope. sourceTypeCode/sourceMetadata preserve source details
+/// while kind and direction provide a stable application-level vocabulary.
+model NativeChatMessage {
+  id                    Int                      @id @default(autoincrement())
+  conversationId        Int                      @map("conversation_id")
+  conversation          NativeChatConversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sourceMessageId       String                   @map("source_message_id")
+  parentSourceMessageId String?                  @map("parent_source_message_id")
+  sourceItemIndex       Int?                     @map("source_item_index")
+  direction             String                   @default("unknown")
+  senderId              String?                  @map("sender_id")
+  senderName            String?                  @map("sender_name")
+  kind                  String
+  sourceTypeCode        String?                  @map("source_type_code")
+  text                  String?
+  occurredAt            DateTime                 @map("occurred_at")
+  observedAt            DateTime                 @map("observed_at")
+  sourceMetadata        Json?                    @map("source_metadata")
+  attachments           NativeChatAttachment[]
+
+  @@unique([conversationId, sourceMessageId], map: "native_chat_messages_source_key")
+  @@index([conversationId, occurredAt, sourceItemIndex], map: "native_chat_messages_timeline_idx")
+  @@index([kind, occurredAt], map: "native_chat_messages_kind_time_idx")
+  @@map("native_chat_messages")
+}
+
+/// Media bytes are tracked independently so unavailable or not-yet-downloaded content
+/// remains an explicit state instead of being represented as a missing message.
+model NativeChatAttachment {
+  id               Int             @id @default(autoincrement())
+  messageId        Int             @map("message_id")
+  message          NativeChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  sourceAttachmentId String        @map("source_attachment_id")
+  kind             String
+  fileName         String?         @map("file_name")
+  mimeType         String?         @map("mime_type")
+  byteSize         BigInt?          @map("byte_size")
+  contentHash      String?         @map("content_hash")
+  state            String
+  storageKey       String?         @map("storage_key")
+  sourceMetadata   Json?           @map("source_metadata")
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+
+  @@index([messageId], map: "native_chat_attachments_message_idx")
+  @@index([contentHash], map: "native_chat_attachments_hash_idx")
+  @@unique([messageId, sourceAttachmentId], map: "native_chat_attachments_source_key")
+  @@map("native_chat_attachments")
+}
+
 /// 待客户确认的订单号引用：截图标题里确实抽到了订单号候选（COD/fwyy…），
 /// 但在该员工订单里模糊匹配不到（none）或并列多单（ambiguous）时，存这里给前端列出、
 /// 让员工/客户确认绑定到哪张订单。UI 由另一端开发，本表只负责"存"。
@@ -283,6 +365,7 @@ model Call {
   durationSec     Int       @map("duration_sec")
   startedAt       DateTime  @db.Timestamp(3) @map("started_at")
   recordingOssKey String?   @map("recording_oss_key")
+  recordingUploadedAt DateTime? @map("recording_uploaded_at")
   asrText         String?   @map("asr_text")
   asrStatus       String    @default("no_recording") @map("asr_status") // 'no_recording' | 'pending' | 'processing' | 'done' | 'failed' | 'requires_manual'
   // Fun-ASR (DashScope) 任务追踪
@@ -291,7 +374,50 @@ model Call {
   asrFinishedAt   DateTime? @db.Timestamp(3) @map("asr_finished_at")
 
   @@index([employeeId, applicationNo, startedAt])
+  @@index([employeeId, recordingUploadedAt(sort: Desc)], map: "calls_employee_recording_uploaded_idx")
   @@map("calls")
+}
+
+/// Latest mobile collector runtime and synchronization state per employee installation.
+model MobileClientState {
+  id                     Int                 @id @default(autoincrement())
+  employeeId             Int                 @map("employee_id")
+  employee               Employee            @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  installationId         String              @map("installation_id")
+  appVersion             String              @map("app_version")
+  appVisibility          String              @default("unknown") @map("app_visibility")
+  serviceRunning         Boolean             @default(false) @map("service_running")
+  serviceStartedAt       DateTime?           @map("service_started_at")
+  backgroundSince        DateTime?           @map("background_since")
+  heartbeatSource        String              @map("heartbeat_source")
+  lastHeartbeatAt        DateTime            @default(now()) @map("last_heartbeat_at")
+  syncRunning            Boolean             @default(false) @map("sync_running")
+  syncStartedAt          DateTime?           @map("sync_started_at")
+  syncStage              String              @default("idle") @map("sync_stage")
+  recordingsTotal        Int                 @default(0) @map("recordings_total")
+  recordingsProcessed    Int                 @default(0) @map("recordings_processed")
+  recordingsUploaded     Int                 @default(0) @map("recordings_uploaded")
+  recordingsFailed       Int                 @default(0) @map("recordings_failed")
+  currentRecordingName   String?             @map("current_recording_name")
+  lastError              String?             @map("last_error")
+  events                 MobileClientEvent[]
+
+  @@unique([employeeId, installationId], map: "mobile_client_states_employee_installation_key")
+  @@index([employeeId, lastHeartbeatAt(sort: Desc)], map: "mobile_client_states_employee_seen_idx")
+  @@map("mobile_client_states")
+}
+
+/// Significant mobile collector transitions; routine heartbeat traffic is not duplicated here.
+model MobileClientEvent {
+  id          BigInt            @id @default(autoincrement())
+  clientStateId Int              @map("client_state_id")
+  clientState MobileClientState  @relation(fields: [clientStateId], references: [id], onDelete: Cascade)
+  eventType   String             @map("event_type")
+  details     Json?
+  occurredAt  DateTime           @default(now()) @map("occurred_at")
+
+  @@index([clientStateId, occurredAt(sort: Desc)], map: "mobile_client_events_state_time_idx")
+  @@map("mobile_client_events")
 }
 
 model Command {
