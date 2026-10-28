@@ -40,6 +40,7 @@ import { findHuanyuChannelById, listHuanyuChannels } from '../db/remoteDictionar
 import { DEFAULT_WORKFLOW_TEMPLATES } from '../workflow/defaultWorkflowConfig.js'
 import { registerTaikangFormAdminRoutes } from '../taikangFormRecording.js'
 import { registerNativeChatCollectionAdminRoutes } from './nativeChatCollectionAdmin.js'
+import { getHyhomeOrderSite, saveHyhomeOrderSite } from '../services/hyhomeOrderSites.js'
 
 const TAIKANG_BUSINESS_CONFIG = {
   green_pass: '泰康绿通',
@@ -348,6 +349,21 @@ export function registerAdminRoutes(
     registerTaikangFormAdminRoutes(fastify, prisma, minioClient, getEnv().minioBucketScreenshots)
     registerNativeChatCollectionAdminRoutes(fastify, prisma, minioClient, minioPublicClient)
 
+    fastify.get('/api/v1/admin/hyhome-order-site', async (_request, reply) => {
+      return reply.send({ data: await getHyhomeOrderSite(prisma) })
+    })
+
+    fastify.put<{ Body: { site?: unknown } }>('/api/v1/admin/hyhome-order-site', async (request, reply) => {
+      try {
+        return reply.send({ data: await saveHyhomeOrderSite(prisma, request.body?.site) })
+      } catch (error) {
+        if (error instanceof Error && /站点|资源 ID/.test(error.message)) {
+          return reply.status(400).send({ error: error.message })
+        }
+        throw error
+      }
+    })
+
     const orderAiTriggerPolicy = {
       communicationSilenceMinutes: 5,
       callTrigger: 'ASR 转写文本成功保存后立即触发',
@@ -355,6 +371,7 @@ export function registerAdminRoutes(
       materialSilenceMinutes: 3,
       timeZone: 'Asia/Shanghai'
     }
+
     fastify.get('/api/v1/admin/ai-schedule-config', async (_request, reply) => {
       return reply.send({ data: orderAiTriggerPolicy })
     })

@@ -84,6 +84,25 @@ class AppPrefs(context: Context) {
         get() = prefs.getLong("last_run_finished_at", 0L)
         set(value) = prefs.edit().putLong("last_run_finished_at", value).apply()
 
+    var runResult: String
+        get() = prefs.getString("run_result_v2", "未开始").orEmpty()
+        set(value) = prefs.edit().putString("run_result_v2", value).apply()
+    var callResult: String
+        get() = prefs.getString("call_result_v2", "未开始").orEmpty()
+        set(value) = prefs.edit().putString("call_result_v2", value).apply()
+    var recordingResult: String
+        get() = prefs.getString("recording_result_v2", "未开始").orEmpty()
+        set(value) = prefs.edit().putString("recording_result_v2", value).apply()
+    var unparsedRecordingCount: Int
+        get() = prefs.getInt("unparsed_recording_count_v2", 0)
+        set(value) = prefs.edit().putInt("unparsed_recording_count_v2", value).apply()
+    var recordingScanIssue: String
+        get() = prefs.getString("recording_scan_issue_v2", "").orEmpty()
+        set(value) = prefs.edit().putString("recording_scan_issue_v2", value.take(600)).apply()
+    var runError: String
+        get() = prefs.getString("run_error_v2", "").orEmpty()
+        set(value) = prefs.edit().putString("run_error_v2", value.take(600)).apply()
+
     var lastRunRecordingsTotal: Int
         get() = prefs.getInt("last_run_recordings_total", 0)
         set(value) = prefs.edit().putInt("last_run_recordings_total", value).apply()
@@ -236,6 +255,7 @@ class AppPrefs(context: Context) {
     fun rememberCallListItem(call: SyncedCall, uploaded: Boolean) {
         val item = JSONObject()
             .put("id", call.id)
+            .put("localKey", "${call.phone}:${call.startedAtMillis}:${call.direction}")
             .put("phone", call.phone)
             .put("contactName", call.contactName ?: JSONObject.NULL)
             .put("direction", call.direction)
@@ -244,7 +264,7 @@ class AppPrefs(context: Context) {
             .put("startedAtMillis", call.startedAtMillis)
             .put("uploaded", uploaded)
             .put("updatedAt", System.currentTimeMillis())
-        prependTrimmedJson("recent_calls", item, 50, "id", call.id)
+        prependTrimmedJson("recent_calls", item, 50, "localKey", "${call.phone}:${call.startedAtMillis}:${call.direction}")
     }
 
     fun rememberLocalCallListItem(call: LocalCall, status: String) {
@@ -265,7 +285,7 @@ class AppPrefs(context: Context) {
 
     fun addPendingCall(call: LocalCall) {
         val item = localCallToJson(call)
-        prependTrimmedJson("pending_calls", item, 300, "localKey", localCallKey(call))
+        prependTrimmedJson("pending_calls", item, Int.MAX_VALUE, "localKey", localCallKey(call))
     }
 
     fun removePendingCall(call: LocalCall) {

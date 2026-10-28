@@ -48,7 +48,8 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     window.api?.setAuthenticated?.(!!session)
     window.api?.setWindowStage?.(session ? 'main' : 'login')
-    if (session) window.api?.hideWindow?.()
+    if (session && import.meta.env.DEV) window.api?.showWindow?.()
+    else if (session) window.api?.hideWindow?.()
     else window.api?.showWindow?.()
   }, [session])
 

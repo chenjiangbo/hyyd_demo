@@ -25,7 +25,7 @@ class CallLogScanner(private val context: Context) {
             "${CallLog.Calls.DATE} > ?",
             arrayOf(sinceMillis.toString()),
             "${CallLog.Calls.DATE} ASC"
-        ) ?: return emptyList()
+        ) ?: throw IllegalStateException("无法读取系统通话记录")
 
         cursor.use {
             val numberIdx = it.getColumnIndexOrThrow(CallLog.Calls.NUMBER)

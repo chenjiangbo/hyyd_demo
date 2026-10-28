@@ -11,6 +11,10 @@ class CollectorApplication : Application(), Application.ActivityLifecycleCallbac
         super.onCreate()
         registerActivityLifecycleCallbacks(this)
         AppPrefs(this).apply {
+            if (syncRunning || runResult == "同步中") {
+                runResult = "已中断"
+                runError = "上次同步被中断，请重新采集"
+            }
             appVisibility = "background"
             collectorServiceRunning = false
             syncRunning = false

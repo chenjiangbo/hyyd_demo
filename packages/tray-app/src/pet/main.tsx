@@ -1,7 +1,7 @@
-import { StrictMode, useEffect, useRef, useState } from 'react'
+import { StrictMode, useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { PetAvatar, type PetVisualState } from './PetAvatar'
-import { PetBubble, type Candidate, type PetPanel } from './PetBubble'
+import { PetBubble, type Candidate, type PetLookupOption, type PetPanel } from './PetBubble'
 import './styles.css'
 
 type PetMode = 'idle' | 'dragover' | 'receiving' | 'working' | 'done' | 'unknown' | 'candidates' | 'warning'
@@ -28,6 +28,9 @@ function droppedPathFromUri(value: string): string | null {
 }
 
 export function Pet(): React.JSX.Element {
+  const [businessPanel, setBusinessPanel] = useState<PetPanel | null>(null)
+  const [businessPanelVisible, setBusinessPanelVisible] = useState(true)
+  const committedLookupSelections = useRef<Record<string, string>>({})
   const [mode, setMode] = useState<PetMode>('idle')
   const [message, setMessage] = useState('把图片拖给我吧')
   const [candidates, setCandidates] = useState<Candidate[]>([])
@@ -168,6 +171,35 @@ export function Pet(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
+    let mounted = true
+    let receivedEvent = false
+    const apply = (value: unknown | null): void => {
+      if (!mounted) return
+      if (!value || typeof value !== 'object' || typeof (value as { kind?: unknown }).kind !== 'string') {
+        committedLookupSelections.current = {}
+        setBusinessPanel(null)
+        setBusinessPanelVisible(false)
+        return
+      }
+      const nextPanel = value as PetPanel
+      if (nextPanel.kind === 'form') {
+        committedLookupSelections.current = Object.fromEntries(['hospital', 'department'].flatMap((fieldId) => {
+          const field = nextPanel.fields.find((item) => item.id === fieldId)
+          return field ? [[fieldId, String(field.value)]] : []
+        }))
+      } else {
+        committedLookupSelections.current = {}
+      }
+      setBusinessPanel(nextPanel)
+      setBusinessPanelVisible(true)
+    }
+    const unsubscribe = window.api.onPetPanel((value) => { receivedEvent = true; apply(value) })
+    const unsubscribeVisibility = window.api.onPetPanelVisibility(setBusinessPanelVisible)
+    void window.api.getPetPanel().then((value) => { if (!receivedEvent) apply(value) })
+    return () => { mounted = false; unsubscribe(); unsubscribeVisibility() }
+  }, [])
+
+  useEffect(() => {
     const unsubscribeStatus = window.api.onPetMobileStatus(setMobileStatus)
     const unsubscribeReminder = window.api.onPetReminder((reminder) => {
       setMode('warning')
@@ -180,9 +212,9 @@ export function Pet(): React.JSX.Element {
   }, [])
 
   // Drag-over stays compact so the drop target does not move under the cursor.
-  const expanded = (mode !== 'idle' && mode !== 'dragover') || speaking
+  const expanded = (businessPanelVisible && businessPanel !== null) || (mode !== 'idle' && mode !== 'dragover') || speaking
 
-  const avatarState: PetVisualState = mode === 'dragover'
+  const avatarState: PetVisualState = businessPanelVisible && businessPanel ? 'speaking' : mode === 'dragover'
     ? 'dragover'
     : mode === 'receiving'
       ? 'receiving'
@@ -196,7 +228,7 @@ export function Pet(): React.JSX.Element {
               ? 'candidates'
               : speaking ? 'speaking' : 'idle'
 
-  const panel: PetPanel | null = mode === 'candidates' && candidates.length > 0
+  const panel: PetPanel | null = (businessPanelVisible ? businessPanel : null) ?? (mode === 'candidates' && candidates.length > 0
     ? { kind: 'candidate-list', title: '请选择这张凭证对应的订单', items: candidates }
     : mode === 'unknown' || mode === 'warning'
       ? { kind: 'error', text: message }
@@ -204,7 +236,93 @@ export function Pet(): React.JSX.Element {
         ? { kind: 'progress', text: message }
         : mode === 'done' || speaking
             ? { kind: 'speech', text: message }
-            : null
+            : null)
+
+  const changeBusinessField = (fieldId: string, value: string, selectedOption?: PetLookupOption): void => {
+    const currentValue = businessPanel?.kind === 'form'
+      ? String(businessPanel.fields.find((field) => field.id === fieldId)?.value ?? '')
+      : ''
+    let resetFields: string[] = []
+    if (selectedOption && (fieldId === 'hospital' || fieldId === 'department')) {
+      const previousSelection = committedLookupSelections.current[fieldId] ?? currentValue
+      const sameSelection = previousSelection === selectedOption.id || previousSelection === selectedOption.name ||
+        currentValue === selectedOption.id || currentValue === selectedOption.name
+      if (!sameSelection) resetFields = fieldId === 'hospital' ? ['hospitalAddress', 'department', 'doctor'] : ['doctor']
+      committedLookupSelections.current[fieldId] = selectedOption.id
+    }
+    setBusinessPanel((current) => {
+      if (current?.kind !== 'form') return current
+      const reset = new Set(resetFields)
+      const currentRequest = current.fields.find((field) => field.id === 'requestTime')?.value
+      const currentResponse = current.fields.find((field) => field.id === 'responseTime')?.value
+      const mirrorResponse = fieldId === 'requestTime' && (!currentResponse || currentResponse === currentRequest)
+      return { ...current, fields: current.fields.map((field) => field.id === fieldId || (mirrorResponse && field.id === 'responseTime')
+        ? { ...field, value } : reset.has(field.id) ? { ...field, value: '' } : field) }
+    })
+  }
+
+  const lookupOrderDictionary = useCallback(async (kind: import('./PetBubble').PetLookupKind, query: string, parent: { hospitalId?: string; departmentId?: string; currentId?: string }): Promise<import('./PetBubble').PetLookupOption[]> => {
+    const records = (value: unknown): Array<{ id: string; name: string; phone?: string }> => Array.isArray(value) ? value.flatMap((item) => {
+      if (!item || typeof item !== 'object') return []
+      const option = item as Record<string, unknown>
+      if (typeof option.id !== 'string' && typeof option.id !== 'number') return []
+      const id = String(option.id)
+      const name = typeof option.name === 'string' ? option.name : id
+      const phone = typeof option.phone === 'string' ? option.phone : undefined
+      return [{ id, name, phone }]
+    }) : []
+    let hospitalId = parent.hospitalId ?? ''
+    if (['address', 'department', 'doctor'].includes(kind) && hospitalId && !/^\d{4}$/.test(hospitalId)) {
+      const matches = records(await window.api.petOrderDictionary('hospital', hospitalId))
+      hospitalId = matches.find((item) => item.name === hospitalId || item.id === hospitalId)?.id ?? hospitalId
+    }
+    let departmentId = parent.departmentId ?? ''
+    if (kind === 'doctor' && departmentId && !/^\d{8}$/.test(departmentId)) {
+      const matches = records(await window.api.petOrderDictionary('department', departmentId, { hospitalId }))
+      departmentId = matches.find((item) => item.name === departmentId || item.id === departmentId)?.id ?? departmentId
+    }
+    return records(await window.api.petOrderDictionary(kind, query, { hospitalId, departmentId, currentId: parent.currentId }))
+  }, [])
+
+  const addBusinessEscortRecord = (): void => {
+    setBusinessPanel((current) => {
+      if (current?.kind !== 'form' || !current.sections) return current
+      const nextIndex = current.sections.reduce((maximum, section) => {
+        const match = section.id.match(/^escort-(\d+)$/)
+        return match ? Math.max(maximum, Number(match[1])) : maximum
+      }, 0) + 1
+      const prefix = `escort-${nextIndex}`
+      return {
+        ...current,
+        fields: [...current.fields,
+          { id: `${prefix}-date`, label: '服务日期/时间', type: 'datetime-local', value: '', placeholder: '请选择服务日期/时间' },
+          { id: `${prefix}-name`, label: '陪诊人', type: 'text', value: '', placeholder: '请输入陪诊人' },
+          { id: `${prefix}-phone`, label: '陪诊电话', type: 'text', value: '', placeholder: '请输入陪诊电话' }
+        ],
+        sections: [...current.sections, { id: prefix, title: `陪诊服务 ${nextIndex}`, fieldIds: [`${prefix}-date`, `${prefix}-name`, `${prefix}-phone`], repeatable: true }]
+      }
+    })
+  }
+
+  const removeBusinessEscortRecord = (sectionId: string): void => {
+    setBusinessPanel((current) => {
+      if (current?.kind !== 'form' || !current.sections) return current
+      const section = current.sections.find((item) => item.id === sectionId && item.repeatable)
+      if (!section) return current
+      if (current.sections.filter((item) => item.repeatable).length <= 1) return current
+      const removed = new Set(section.fieldIds)
+      const sections = current.sections.filter((item) => item.id !== sectionId)
+      return { ...current, sections, fields: current.fields.filter((field) => !removed.has(field.id)) }
+    })
+  }
+
+  const businessAction = (actionId: string): void => {
+    if (!businessPanel || !('id' in businessPanel) || typeof businessPanel.id !== 'string') return
+    const fields = businessPanel.kind === 'form'
+      ? Object.fromEntries(businessPanel.fields.map((field) => [field.id, field.value]))
+      : undefined
+    window.api.sendPetPanelAction({ panelId: businessPanel.id, actionId, fields })
+  }
 
   const selectCandidate = (orderId: number): void => {
     setMode('working')
@@ -291,7 +409,7 @@ export function Pet(): React.JSX.Element {
         <PetAvatar state={avatarState} />
         {mobileStatus.state !== 'unknown' && <span className={`pet-mobile-status pet-mobile-status--${mobileStatus.state}`} title={mobileStatusTitle} aria-label={mobileStatusTitle} />}
       </div>
-      {expanded && panel !== null && <PetBubble panel={panel} onSelectCandidate={selectCandidate} onSizeChange={resizeBubble} />}
+      {expanded && panel !== null && <PetBubble panel={panel} onSelectCandidate={selectCandidate} onFieldChange={changeBusinessField} onLookup={lookupOrderDictionary} onAction={businessAction} onSizeChange={resizeBubble} onAddEscortRecord={addBusinessEscortRecord} onRemoveEscortRecord={removeBusinessEscortRecord} />}
     </main>
   )
 }

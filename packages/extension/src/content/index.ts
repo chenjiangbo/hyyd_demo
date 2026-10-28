@@ -2460,17 +2460,8 @@ function getFormRecorderUser(): ReturnType<typeof getUser> {
   }
   return formRecorderUserPromise;
 }
-function showFormRecorderError(message: string): void {
-  let banner = document.getElementById('hyyd-form-recorder-status');
-  if (!banner) {
-    banner = document.createElement('div');
-    banner.id = 'hyyd-form-recorder-status';
-    banner.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483647;padding:9px 12px;background:#991b1b;color:#fff;border-radius:4px;font:13px sans-serif;max-width:360px;';
-    document.documentElement.appendChild(banner);
-  }
-  banner.textContent = '泰康填报记录未保存，请检查插件连接';
-  banner.title = message;
-}
+// 填报记录功能尚未上线，暂不展示页面提示，避免干扰业务操作。
+document.getElementById('hyyd-form-recorder-status')?.remove();
 
 window.addEventListener('message', (event) => {
   if (event.source !== window || event.origin !== location.origin || event.data?.source !== 'HYYD_FORM_RECORDER_V1') return;
@@ -2495,7 +2486,6 @@ window.addEventListener('message', (event) => {
       if (formRecorderUserPromise === userPromise) formRecorderUserPromise = null;
       const message = error instanceof Error ? error.message : String(error);
       console.error('[寰宇探针][填报记录] 保存失败:', message);
-      showFormRecorderError(message);
     });
 });
 

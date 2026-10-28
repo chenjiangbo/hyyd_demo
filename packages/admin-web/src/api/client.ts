@@ -41,6 +41,8 @@ import type {
   NativeChatAdminMessagePage
 } from './types'
 
+export type HyhomeOrderSite = { origin: string; listResourceId: string; detailResourceId: string }
+
 export type {
   SmsConfig,
   SmsConfigResponse,
@@ -447,6 +449,14 @@ export const adminApi = {
   },
 
   // ───── App 安装包发包与下载 ─────
+  hyhomeOrderSite() {
+    return request<HyhomeOrderSite | null>('/api/v1/admin/hyhome-order-site')
+  },
+  saveHyhomeOrderSite(site: HyhomeOrderSite) {
+    return request<HyhomeOrderSite>('/api/v1/admin/hyhome-order-site', {
+      method: 'PUT', body: JSON.stringify({ site })
+    })
+  },
   appInfo() {
     return request<{
       exists: boolean

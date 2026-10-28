@@ -162,6 +162,14 @@ interface Window {
     requestWindowClose: () => Promise<void>
     quitApp: () => void
     hidePet: () => void
+    showPetPanel: (panel: unknown) => Promise<void>
+    getPetPanel: () => Promise<unknown | null>
+    updatePetPanel: (panelId: string, panel: unknown) => Promise<void>
+    hidePetPanel: () => Promise<void>
+    onPetPanel: (cb: (panel: unknown | null) => void) => () => void
+    onPetPanelVisibility: (cb: (visible: boolean) => void) => () => void
+    sendPetPanelAction: (event: { panelId: string; actionId: string; fields?: Record<string, unknown> }) => void
+    onPetPanelAction: (cb: (event: { panelId: string; actionId: string; fields?: Record<string, unknown> }) => void) => () => void
     petDebugLog: (payload: unknown) => void
     getPetBounds: () => Promise<{ x: number; y: number; width: number; height: number } | null>
     movePet: (x: number, y: number) => void

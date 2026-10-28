@@ -1,5 +1,7 @@
 import { countFormEvents, deleteFormEvent, nextFormEvent, queueFormEvent } from './formRecorderOutbox';
 import { DEFAULT_BACKEND_WS_URL, configuredBackendWsUrl } from '../backendConnection';
+import { handleHyhomePageEvent } from './hyhomeBridge';
+import { syncHyhomeSite } from './hyhomeSites';
 
 console.log('[寰宇探针] Background Service Worker 已启动');
 
@@ -386,6 +388,11 @@ async function forwardCollection(message: any, tabId: number | undefined): Promi
 // ─── Content Script & Popup 消息 ─────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
+    case 'HYHOME_PAGE_EVENT':
+      void handleHyhomePageEvent(message, sender)
+        .then(() => sendResponse({ ok: true }))
+        .catch((error) => sendResponse({ ok: false, error: String(error) }));
+      return true;
     case 'RECORD_TAIKANG_FORM_EVENT':
     case 'RECORD_TAIKANG_FORM_SCREENSHOT': {
       void (async () => {
@@ -591,6 +598,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 chrome.alarms.create('huanyu-keepalive', { periodInMinutes: 0.25 }); // 15 秒
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== 'huanyu-keepalive') return;
+  void syncHyhomeSite();
   // 没连接就尝试连，连着就发个 ping
   if (!ws || ws.readyState === WebSocket.CLOSED) {
     void connectWebSocket();
@@ -603,6 +611,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 // ─── 启动 ─────────────────────────────────────────────────────
+void syncHyhomeSite();
 void loadConfig().then(() => connectWebSocket()).catch((error) => {
   console.error('[寰宇探针] 加载后端配置失败:', error);
 });

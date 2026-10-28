@@ -48,11 +48,14 @@ import { applyOrderWorkflowEvent, getOrderWorkflow, initializeOrderWorkflow, typ
 import {
   pullHuanyuOrderFromMysqlByChannelOrderNo,
   pushHuanyuOrderToMysql,
+  huanyuOrderExistsOnMysql,
+  updateHuanyuOrderDirectlyOnMysql,
   refreshRegistrationAssistFieldsFromMysql,
   REGISTRATION_ASSIST_REMOTE_AUTHORITATIVE_COLUMNS
 } from '../huanyuMysqlPush.js'
 import { previewHuanyuMasterSave, commitHuanyuMasterSave, type MasterSaveCreation, type MasterSaveResolution } from '../services/huanyuMasterSave.js'
 import { requestAbiRefund } from '../services/abiRefundService.js'
+import { getHyhomeOrderSite } from '../services/hyhomeOrderSites.js'
 import { scheduleOrderIdCardOcr } from '../services/orderIdCardOcr.js'
 import { analyzeRegistrationProof } from '../services/registrationProofService.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -616,6 +619,11 @@ export function registerApiRoutes(
         displayName: request.employee.name
       }
     })
+  })
+
+  fastify.get('/api/v1/pet/order-site-config', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    return reply.send({ data: { site: await getHyhomeOrderSite(prisma) } })
   })
 
   // 订单业务轨迹：页面只读取订单实例，首次读取会依据服务类型初始化必选步骤。
@@ -4124,7 +4132,130 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     })) })
   })
 
-  // 已停用：保留旧路由以兼容客户端，但不生成申请级沟通总结。
+  // 浮动精灵按列表中的寰宇订单号取最新 AI 候选；仅展示和编辑，不在这里保存或回填。
+  fastify.get<{ Querystring: { orderNo?: string } }>('/api/v1/pet/order-ai-fields', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const orderNo = String(request.query.orderNo ?? '').trim()
+    if (!/^[A-Za-z0-9-]{6,64}$/.test(orderNo)) return reply.status(400).send({ error: '订单号格式无效' })
+    const rows = await prisma.$queryRaw<Array<{ field_code: string; value_text: string; normalized_value_json: unknown }>>`
+      SELECT DISTINCT ON (field_code) field_code, value_text, normalized_value_json
+      FROM b_order_ai_field_candidates
+      WHERE huanyu_order_no = ${orderNo}
+        AND status = 'pending'
+        AND candidate_type IN ('new_or_confirmed', 'change_candidate')
+        AND field_code IN ('document_no', 'order_status', 'hospital', 'hospital_address', 'department', 'doctor',
+          'request_time', 'response_time', 'service_start_time', 'appointment_success_time', 'latest_ticket_time',
+          'escort_service_date', 'escort_name', 'escort_phone', 'escort_records')
+      ORDER BY field_code, created_at DESC, id DESC
+    `
+    const fields: Record<string, string> = {}
+    let escortRecords: Array<{ serviceDate: string; escortName: string; escortPhone: string }> = []
+    for (const row of rows) {
+      if (row.field_code === 'escort_records') {
+        let normalized = row.normalized_value_json
+        if (typeof normalized === 'string') {
+          try { normalized = JSON.parse(normalized) as unknown } catch { normalized = [] }
+        }
+        if (Array.isArray(normalized)) {
+          escortRecords = normalized.flatMap((item, index) => {
+            if (!item || typeof item !== 'object') return []
+            const record = item as Record<string, unknown>
+            const value = (snake: string, camel: string): string => {
+              const raw = record[snake] ?? record[camel]
+              return typeof raw === 'string' || typeof raw === 'number' ? String(raw) : ''
+            }
+            return [{
+              serviceDate: value('service_date', 'serviceDate'),
+              escortName: value('escort_name', 'escortName'),
+              escortPhone: value('escort_phone', 'escortPhone')
+            }]
+          })
+        }
+        continue
+      }
+      fields[row.field_code] = row.value_text
+    }
+    if (escortRecords.length === 0 && (fields.escort_service_date || fields.escort_name || fields.escort_phone)) {
+      escortRecords = [{ serviceDate: fields.escort_service_date ?? '', escortName: fields.escort_name ?? '', escortPhone: fields.escort_phone ?? '' }]
+    }
+    delete fields.escort_service_date
+    delete fields.escort_name
+    delete fields.escort_phone
+    return reply.send({ data: { orderNo, fields, escortRecords } })
+  })
+
+  // 浮动精灵一键填单：维表检查/确认沿用客户端规则，但订单只直接写远端 MySQL，不落本地快照。
+  fastify.post('/api/v1/pet/huanyu-order-update', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const body = (request.body as any) || {}
+    const orderNo = String(body.orderNo ?? '').trim()
+    const fields: Record<string, unknown> = body.fields && typeof body.fields === 'object' ? body.fields : {}
+    if (!/^[A-Za-z0-9-]{6,64}$/.test(orderNo)) return reply.status(400).send({ ok: false, error: '订单号格式无效' })
+
+    const cleanText = (value: unknown): string => typeof value === 'string' ? value.trim() : ''
+    const escortList: Array<{ escortName: string; phone: string; serviceDate: string; sequence: string }> = Array.isArray(fields.escortList)
+      ? (fields.escortList as unknown[]).map((item: unknown, index: number) => {
+        const record = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+        return {
+          escortName: cleanText(record.escortName),
+          phone: cleanText(record.phone),
+          serviceDate: cleanText(record.serviceDate),
+          sequence: cleanText(record.sequence) || String(index + 1)
+        }
+      }) : []
+    if (escortList.length === 0) return reply.status(400).send({ ok: false, error: '至少保留一条陪诊信息' })
+    const masterInput = {
+      hospital: cleanText(fields.hospital),
+      hospitalAddress: cleanText(fields.hospitalAddress),
+      department: cleanText(fields.department),
+      doctor: cleanText(fields.doctor),
+      escortList
+    }
+    if (!cleanText(fields.orderStatus)) return reply.status(400).send({ ok: false, error: '请选择订单状态' })
+    const confirmedCreations: MasterSaveCreation[] | null = Array.isArray(body.confirmedMasterCreations)
+      ? body.confirmedMasterCreations : null
+    try {
+      if (!await huanyuOrderExistsOnMysql(orderNo)) return reply.status(404).send({ ok: false, error: `远端寰宇订单 ${orderNo} 不存在` })
+      const preview = await previewHuanyuMasterSave(masterInput)
+      if (preview.creations.length && !confirmedCreations) {
+        return reply.send({ ok: false, requiresMasterDataConfirmation: true, creations: preview.creations })
+      }
+      const resolved: MasterSaveResolution = await commitHuanyuMasterSave(masterInput, confirmedCreations ?? [])
+      const storageTime = (value: unknown): string | null => {
+        const raw = cleanText(value)
+        if (!raw) return null
+        if (/^\d{8}\s+\d{2}:\d{2}:\d{2}$/.test(raw)) return raw
+        const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?/)
+        return match ? `${match[1]}${match[2]}${match[3]} ${match[4]}:${match[5]}:${match[6] ?? '00'}` : null
+      }
+      const update = await updateHuanyuOrderDirectlyOnMysql({
+        orderNo,
+        orderStatus: cleanText(fields.orderStatus),
+        documentNo: cleanText(fields.documentNo),
+        hospitalId: resolved.hospital,
+        hospitalAddressId: resolved.hospitalAddress,
+        departmentId: resolved.department,
+        doctorId: resolved.doctor,
+        requestTime: storageTime(fields.requestTime),
+        responseTime: storageTime(fields.responseTime),
+        serviceStartTime: storageTime(fields.serviceStartTime),
+        bookingFeedbackTime: storageTime(fields.bookingFeedbackTime),
+        latestTicketTime: storageTime(fields.latestTicketTime),
+        escortList: escortList.map((item, index) => ({
+          escortId: resolved.escortIds[index] ?? '',
+          serviceDate: storageTime(item.serviceDate),
+          sequence: item.sequence
+        })).filter((item) => Boolean(item.escortId))
+      })
+      return reply.send({ ok: true, orderNo, escortCount: update.escortCount })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '浮动精灵更新失败'
+      const status = message.includes('维表情况已变化') ? 409 : 400
+      return reply.status(status).send({ ok: false, error: message })
+    }
+  })
+
+  // 8.47 申请级 AI 沟通总结 —— 综合同一申请号下微信/企微消息 + 通话录音转写。
   fastify.post<{ Params: { applicationNo: string } }>('/api/v1/applications/:applicationNo/brief/refresh', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
     return reply.status(410).send({ error: '申请级沟通总结功能已停用' })

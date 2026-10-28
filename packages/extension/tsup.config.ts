@@ -8,6 +8,7 @@ export default defineConfig({
     content: 'src/content/index.ts',
     pageProbe: 'src/content/pageProbe.ts',
     formRecorderPage: 'src/content/formRecorderPage.ts',
+    hyhomeDetector: 'src/content/hyhomeDetector.ts',
     popup: 'src/popup/index.ts'
   },
   format: ['iife'],

@@ -11,6 +11,31 @@ const api = {
   requestWindowClose: () => ipcRenderer.invoke('window:request-close'),
   quitApp: () => ipcRenderer.send('app:quit'),
   hidePet: () => ipcRenderer.send('pet:hide'),
+  showPetPanel: (panel: unknown): Promise<void> => ipcRenderer.invoke('pet:panel-show', panel),
+  getPetPanel: (): Promise<unknown | null> => ipcRenderer.invoke('pet:panel-current'),
+  updatePetPanel: (panelId: string, panel: unknown): Promise<void> => ipcRenderer.invoke('pet:panel-update', panelId, panel),
+  hidePetPanel: (): Promise<void> => ipcRenderer.invoke('pet:panel-hide'),
+  onPetPanel: (cb: (panel: unknown | null) => void): (() => void) => {
+    const show = (_e: unknown, panel: unknown): void => cb(panel)
+    const hide = (): void => cb(null)
+    ipcRenderer.on('pet:panel-show', show)
+    ipcRenderer.on('pet:panel-hide', hide)
+    return () => { ipcRenderer.removeListener('pet:panel-show', show); ipcRenderer.removeListener('pet:panel-hide', hide) }
+  },
+  onPetPanelVisibility: (cb: (visible: boolean) => void): (() => void) => {
+    const listener = (_e: unknown, visible: boolean): void => cb(visible)
+    ipcRenderer.on('pet:panel-visibility', listener)
+    return () => ipcRenderer.removeListener('pet:panel-visibility', listener)
+  },
+  sendPetPanelAction: (event: { panelId: string; actionId: string; fields?: Record<string, unknown> }): void =>
+    ipcRenderer.send('pet:panel-action', event),
+  petOrderDictionary: (kind: string, query = '', parent?: { hospitalId?: string; departmentId?: string; currentId?: string }): Promise<unknown> =>
+    ipcRenderer.invoke('pet:order-dictionary', kind, query, parent),
+  onPetPanelAction: (cb: (event: { panelId: string; actionId: string; fields?: Record<string, unknown> }) => void): (() => void) => {
+    const listener = (_e: unknown, event: { panelId: string; actionId: string; fields?: Record<string, unknown> }): void => cb(event)
+    ipcRenderer.on('pet:panel-action', listener)
+    return () => ipcRenderer.removeListener('pet:panel-action', listener)
+  },
   petDebugLog: (payload: unknown): void => ipcRenderer.send('pet:debug-log', payload),
   getPetBounds: (): Promise<{ x: number; y: number; width: number; height: number } | null> =>
     ipcRenderer.invoke('pet:get-bounds'),
