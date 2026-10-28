@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'fs'
 import { extname, join } from 'path'
 import { randomUUID } from 'crypto'
+import type { NativeChatImageMatchApplication, PetDropImageMatch } from '@huanyu/shared-types'
 
 type IntakeConfig = { backendUrl: string; employeeCode: string }
 type Candidate = {
@@ -16,20 +17,11 @@ type Candidate = {
   score: number
 }
 
-type Analysis = {
-  proof: { isRegistrationProof: boolean; confidence: number | null; patientName: string | null; hospital: string | null; department: string | null; appointmentDate: string | null }
-  programCandidates: Candidate[]
-  programMatch: Candidate | null
-  aiSuggestion: { orderId: number; confidence: number; matchedFields: string[]; reason: string } | null
-  aiCandidateCount: number
-}
-
 export type PetIntakeResult =
-  | { state: 'done'; message: string }
-  | { state: 'unknown'; message: string }
-  | { state: 'candidates'; message: string; candidates: Candidate[] }
+  | { state: 'done' | 'unknown'; message: string }
+  | { state: 'candidates'; message: string; candidates?: Candidate[]; imageMatch?: PetDropImageMatch }
 
-type PendingIntake = { path: string; mimeType: string; base64: string; analysis: Analysis; candidates: Candidate[] }
+type PendingIntake = { path: string; mimeType: string; base64: string; imageMatch: PetDropImageMatch }
 
 const EXT_MIME: Record<string, string> = {
   '.png': 'image/png',
@@ -58,57 +50,105 @@ export class PetIntakeService {
 
   async processFile(sourcePath: string): Promise<PetIntakeResult> {
     if (!this.config) throw new Error('请先登录客户端')
+    if (this.pending) {
+      return { state: 'candidates', message: '请先处理浮动精灵当前这张待确认的图片', imageMatch: this.pending.imageMatch }
+    }
     if (!existsSync(sourcePath) || !statSync(sourcePath).isFile()) throw new Error('拖入的文件不存在')
     const ext = extname(sourcePath).toLowerCase()
     const mimeType = EXT_MIME[ext]
-    if (!mimeType) return { state: 'unknown', message: '嗯…这个文件我暂时还不会处理' }
+    if (!mimeType) return { state: 'unknown', message: '嗯…这个文件我暂时还不会处理呢' }
 
     const stagedPath = join(this.inboxDir, `${randomUUID()}${ext}`)
     copyFileSync(sourcePath, stagedPath)
     const base64 = readFileSync(stagedPath).toString('base64')
-    let analysis: Analysis
+    let response: {
+      image: {
+        imageType: string
+        typeDescription: string
+        description: string
+        visibleText: string
+        visibleFields: Array<{ label: string; value: string }>
+      }
+      registrationMatch: {
+        applicationNo: string | null
+        applicationDecision: string
+        orderId: number | null
+        orderDecision: string
+        reason: string
+        candidateApplications: NativeChatImageMatchApplication[]
+      } | null
+    }
     try {
-      analysis = await this.post<Analysis>('/api/v1/registration-proof/analyze', { mimeType, base64 })
+      response = await this.post<typeof response>('/api/v1/registration-proof/intake/analyze', { mimeType, base64 })
     } catch (error) {
-      throw new Error(`挂号凭证识别失败：${(error as Error).message}`)
+      this.removeStaged(stagedPath)
+      throw new Error(`图片识别失败：${(error as Error).message}`)
     }
 
-    if (!analysis.proof.isRegistrationProof) {
-      return this.finishUnknown(stagedPath, '嗯…这好像不是我现在能处理的文件呢')
-    }
-    const candidates = analysis.programCandidates
-    const orderId = analysis.programMatch?.orderId ?? null
-    if (orderId !== null) {
-      await this.uploadMaterial(orderId, mimeType, base64)
+    const image = response.image
+    if (image.imageType !== '挂号凭证') {
       this.removeStaged(stagedPath)
-      return { state: 'done', message: `收到${analysis.proof.patientName ?? ''}的挂号凭证，已经保存到对应订单啦` }
+      const description = [image.typeDescription, image.description, image.visibleText].filter(Boolean).join('；')
+      return {
+        state: 'done',
+        message: `我识别为${image.imageType || '无法判断'}。${description || '暂时没有更多可读内容。'}`
+      }
     }
-    const orderedCandidates = analysis.aiSuggestion
-      ? [
-          ...candidates.filter(candidate => candidate.orderId === analysis.aiSuggestion?.orderId),
-          ...candidates.filter(candidate => candidate.orderId !== analysis.aiSuggestion?.orderId)
-        ]
-      : candidates
-    this.pending = { path: stagedPath, mimeType, base64, analysis, candidates: orderedCandidates }
-    if (orderedCandidates.length === 0) {
-      return { state: 'candidates', message: '我看出像是挂号凭证，但还没有找到对应订单', candidates: [] }
+    if (!response.registrationMatch) {
+      this.removeStaged(stagedPath)
+      throw new Error('图片识别为挂号凭证，但后台没有返回申领号和订单匹配结果')
     }
-    const message = analysis.aiSuggestion
-      ? '我觉得第一个订单最像，请帮我选一下；选中后我会直接保存'
-      : '我找到几个可能的订单，请帮我选一下'
-    return { state: 'candidates', message, candidates: orderedCandidates }
+
+    const match = response.registrationMatch
+    const imageMatch: PetDropImageMatch = {
+      source: 'drop',
+      imageUrl: `data:${mimeType};base64,${base64}`,
+      occurredAt: new Date().toISOString(),
+      channel: '浮动精灵',
+      senderName: null,
+      applicationNo: null,
+      recommendedApplicationNo: match.applicationNo,
+      recommendedOrderId: match.orderId,
+      imageType: image.imageType,
+      typeDescription: image.typeDescription,
+      description: image.description,
+      visibleText: image.visibleText,
+      candidateApplications: match.candidateApplications,
+      applicationDecision: match.applicationDecision,
+      orderDecision: match.orderDecision,
+      reason: match.reason
+    }
+    this.pending = { path: stagedPath, mimeType, base64, imageMatch }
+    return {
+      state: 'candidates',
+      message: match.candidateApplications.length > 0
+        ? '我已识别这张挂号凭证，并给出申领号和订单建议，请核对后选择。'
+        : '我已识别这张挂号凭证，但暂时没有找到申领号候选；图片尚未上传到任何订单。',
+      candidates: [],
+      imageMatch
+    }
   }
 
-  async selectOrder(orderId: number): Promise<PetIntakeResult> {
+  async selectOrder(orderId: number, applicationNo?: string): Promise<PetIntakeResult> {
     const pending = this.pending
     if (!pending) throw new Error('当前没有等待选择订单的图片')
-    if (!pending.candidates.some(candidate => candidate.orderId === orderId)) {
-      throw new Error('选择的订单不在本次识别结果中')
+    const possibleApplications = pending.imageMatch.candidateApplications.filter((candidate) => candidate.orders.some((order) => order.orderId === orderId))
+    const confirmedApplicationNo = applicationNo ?? (possibleApplications.length === 1 ? possibleApplications[0].applicationNo : null)
+    if (!confirmedApplicationNo) throw new Error('请先确认这张图片所属的申领号')
+    const application = pending.imageMatch.candidateApplications.find((candidate) => candidate.applicationNo === confirmedApplicationNo)
+    if (!application || !application.orders.some((candidate) => candidate.orderId === orderId)) {
+      throw new Error('选择的订单不属于本次确认的申领号')
     }
     await this.uploadMaterial(orderId, pending.mimeType, pending.base64)
     this.removeStaged(pending.path)
     this.pending = null
-    return { state: 'done', message: '好啦，图片已经保存到你选择的订单了' }
+    return { state: 'done', message: '好啦，图片已经保存到你确认的订单了' }
+  }
+
+  discardPending(): void {
+    if (!this.pending) return
+    this.removeStaged(this.pending.path)
+    this.pending = null
   }
 
   private async uploadMaterial(orderId: number, mimeType: string, base64: string): Promise<void> {
@@ -118,11 +158,6 @@ export class PetIntakeService {
       mimeType,
       base64
     })
-  }
-
-  private finishUnknown(path: string, message: string): PetIntakeResult {
-    this.removeStaged(path)
-    return { state: 'unknown', message }
   }
 
   private removeStaged(path: string): void {

@@ -3,6 +3,8 @@ dist/
 /build/
 !packages/tray-app/build/
 debug/
+!packages/android-app/app/src/debug/
+!packages/android-app/app/src/debug/**
 dist-artifacts/
 .env
 .env.local

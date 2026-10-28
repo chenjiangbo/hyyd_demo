@@ -6,8 +6,6 @@ import {
   addTextMaterial,
   addImageMaterial,
   deleteMaterial,
-  fetchOrderBrief,
-  refreshOrderBrief,
   fetchCallRecordingUrl,
   fetchCallTranscript,
   retranscribeCall,
@@ -17,14 +15,12 @@ import {
   type OrderCall,
   type OrderMessage,
   type OrderDetailResponse,
-  type OrderBrief
 } from '../api'
 import { bizType, sourceStyle, stageIndexOf, LIFECYCLE_STAGES } from '../lib/orderMapping'
-import { shanghaiDateParts } from '../lib/shanghaiTime'
 import OrderReminderModal from '../components/OrderReminderModal'
 
 type LifecycleStageKey = 'claimed' | 'communication' | 'delivery' | 'settlement' | 'ending'
-type LifecycleEventKind = 'status' | 'manual_note' | 'image' | 'message' | 'call' | 'ai_summary'
+type LifecycleEventKind = 'status' | 'manual_note' | 'image' | 'message' | 'call'
 
 interface LifecycleEvent {
   id: string
@@ -232,7 +228,6 @@ export default function OrderDetailPage({
                   index={i}
                   current={stage}
                   isLast={i === LIFECYCLE_STAGES.length - 1}
-                  orderId={order.id}
                   timestamp={STAGE_KEYS[i] === 'claimed' ? order.claimedAt || order.createdAt || order.updatedAt : null}
                   events={lifecycleEvents.filter((event) => event.stage === STAGE_KEYS[i])}
                   error={STAGE_KEYS[i] === 'communication' ? [materialsError, captureError, callError].filter(Boolean).join('；') || null : null}
@@ -242,7 +237,7 @@ export default function OrderDetailPage({
           </div>
         </section>
 
-        {/* 右：订单详情 / 数据补录 / AI 关键信息 */}
+        {/* 右：订单详情 / 数据补录 */}
         <RightPanel
           order={order}
           detailResp={detailResp}
@@ -348,8 +343,6 @@ function eventIcon(kind: LifecycleEventKind): string {
       return 'forum'
     case 'call':
       return 'call'
-    case 'ai_summary':
-      return 'smart_toy'
     case 'manual_note':
     default:
       return 'sticky_note_2'
@@ -418,7 +411,6 @@ function LifecycleStep({
   index,
   current,
   isLast,
-  orderId,
   timestamp,
   events,
   error
@@ -428,7 +420,6 @@ function LifecycleStep({
   index: number
   current: number
   isLast: boolean
-  orderId: number
   timestamp: string | null
   events: LifecycleEvent[]
   error: string | null
@@ -487,7 +478,7 @@ function LifecycleStep({
         )}
 
         {stageKey === 'communication' ? (
-          <CommunicationPanel events={events} orderId={orderId} />
+          <CommunicationPanel events={events} />
         ) : images.length > 0 && (
           <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
             {images.slice(0, 8).map((event) => (
@@ -520,8 +511,7 @@ function LifecycleStep({
   )
 }
 
-// 标签只有 微信/企微/电话/人工录入（各看各的，默认微信）；标签和消息列表下方固定一张
-// AI 总结卡（非白底），把所有渠道一起总结——不用切标签也能看到全局要点。
+// 按微信、企微、电话和人工录入分类查看沟通记录。
 type CommunicationFilter = 'wechat' | 'wxwork' | 'call' | 'manual'
 
 const COMM_TABS: Array<{ key: CommunicationFilter; label: string; icon: string; iconColor: string }> = [
@@ -531,7 +521,7 @@ const COMM_TABS: Array<{ key: CommunicationFilter; label: string; icon: string; 
   { key: 'manual', label: '人工录入', icon: 'edit_note', iconColor: 'text-[#f59e0b]' }
 ]
 
-function CommunicationPanel({ events, orderId }: { events: LifecycleEvent[]; orderId: number }): React.JSX.Element {
+function CommunicationPanel({ events }: { events: LifecycleEvent[] }): React.JSX.Element {
   const [active, setActive] = useState<CommunicationFilter>('wechat')
   const [preview, setPreview] = useState<LifecycleEvent | null>(null)
   const channelEvents = events.filter((event) => (event.channel ?? 'manual') === active)
@@ -578,9 +568,6 @@ function CommunicationPanel({ events, orderId }: { events: LifecycleEvent[]; ord
         )}
       </div>
 
-      {/* 固定在标签/列表下方：综合所有渠道的 AI 总结（非白底） */}
-      <AiSummaryCard orderId={orderId} events={events} counts={counts} />
-
       {screenshots.length > 0 && (
         <div className="border-t border-border-subtle bg-white px-3 py-2">
           <div className="mb-2 text-[11px] font-medium text-text-muted">截图</div>
@@ -611,103 +598,7 @@ function CommunicationPanel({ events, orderId }: { events: LifecycleEvent[]; ord
   )
 }
 
-// 综合所有渠道的 AI 总结卡（淡紫底，固定在沟通区下方）。
-// 读后端「订单滚动简报」(brief.summary)——和右侧「AI 关键信息」是同一次 LLM 调用的两个展示。
-// 简报由后端自动触发：补录素材静默 3 分钟后分析；企微/通话按后台配置的批量时段运行。
-// 此处只读，不主动触发分析。
-function AiSummaryCard({
-  orderId,
-  events,
-  counts
-}: {
-  orderId: number
-  events: LifecycleEvent[]
-  counts: { wechat: number; wxwork: number; call: number; manual: number }
-}): React.JSX.Element {
-  const [brief, setBrief] = useState<OrderBrief | null>(null)
-  const [updatedAt, setUpdatedAt] = useState<string | null>(null)
-  const [refreshing, setRefreshing] = useState(false)
-
-  useEffect(() => {
-    if (orderId <= 0) return
-    let alive = true
-    fetchOrderBrief(orderId)
-      .then((r) => {
-        if (!alive) return
-        setBrief(r.brief)
-        setUpdatedAt(r.updatedAt)
-      })
-      .catch(() => {/* 简报读取失败不打扰，保持占位 */})
-    return () => {
-      alive = false
-    }
-  }, [orderId])
-
-  const doRefresh = (): void => {
-    if (orderId <= 0 || refreshing) return
-    setRefreshing(true)
-    refreshOrderBrief(orderId)
-      .then((b) => {
-        setBrief(b)
-        setUpdatedAt(new Date().toISOString())
-      })
-      .catch(() => {/* 忽略，保持原状 */})
-      .finally(() => setRefreshing(false))
-  }
-
-  const textEvents = events.filter((event) => event.kind !== 'image')
-
-  return (
-    <div className="border-t border-ai-purple/20 bg-ai-purple/5 px-3 py-3">
-      <div className="flex items-center gap-1.5 text-ai-purple font-semibold text-body-sm">
-        <span className="material-symbols-outlined" style={{ fontSize: '17px' }}>smart_toy</span>
-        AI 沟通总结
-        <span className="ml-2 text-[11px] font-normal text-text-muted">（综合全部渠道）</span>
-        {orderId > 0 && (
-          <button
-            type="button"
-            onClick={doRefresh}
-            disabled={refreshing}
-            className="ml-auto text-[11px] font-normal text-ai-purple hover:underline disabled:opacity-50"
-          >
-            {refreshing ? '生成中…' : '刷新'}
-          </button>
-        )}
-      </div>
-
-      {brief?.summary ? (
-        <>
-          <p className="mt-1.5 text-body-sm text-text-main leading-relaxed whitespace-pre-wrap">{brief.summary}</p>
-          {brief.nextActions.length > 0 && (
-            <div className="mt-2 text-body-sm text-text-main">
-              <span className="text-text-muted">下一步：</span>
-              {brief.nextActions.join('；')}
-            </div>
-          )}
-          {updatedAt && (
-            <div className="mt-1.5 text-[11px] text-text-muted">
-              更新于 {formatDateTime(updatedAt)}{brief.model ? ` · ${brief.model}` : ''} · 详见右侧「AI 关键信息」
-            </div>
-          )}
-        </>
-      ) : (
-        <>
-          <p className="mt-1.5 text-body-sm text-text-muted leading-relaxed">
-            暂无 AI 总结。攒够沟通内容或通话转写完成后会自动生成，也可点右上角「刷新」立即生成。
-          </p>
-          <div className="mt-2 text-body-sm text-text-main">
-            当前共 {textEvents.length} 条沟通：微信 {counts.wechat} · 企微 {counts.wxwork} · 电话 {counts.call} · 人工录入{' '}
-            {counts.manual}
-          </div>
-        </>
-      )}
-    </div>
-  )
-}
-
-// 「AI 总结」标签内容：AI 接入前先占位，下方给一份确定性的"当前沟通概览"（真实条数/时间范围），不骗人。
-// 「总体」标签内容：各沟通渠道一张总结卡，让人不用逐个标签翻消息就能看全。
-// AI 接入前先用确定性概览占位（条数 + 时间范围 + 最近几条要点）；完整 AI 简报在右侧「AI 关键信息」。
+// 沟通分类标签。
 function CommunicationTab({
   label,
   icon,
@@ -979,25 +870,13 @@ function RightPanel({
   materials: Material[]
   onReload: () => Promise<void>
 }): React.JSX.Element {
-  const [tab, setTab] = useState<'detail' | 'entry' | 'ai'>('detail')
+  const [tab, setTab] = useState<'detail' | 'entry'>('detail')
 
   return (
     <aside className="w-[400px] shrink-0 bg-white border-l border-border-subtle flex flex-col z-10 shadow-[-4px_0_12px_rgba(0,0,0,0.03)]">
       <div className="flex border-b border-border-subtle shrink-0">
         <PanelTab label="订单详情" active={tab === 'detail'} onClick={() => setTab('detail')} />
         <PanelTab label="数据补录" active={tab === 'entry'} onClick={() => setTab('entry')} />
-        <button
-          onClick={() => setTab('ai')}
-          className={
-            'flex-1 py-3.5 text-body-md border-b-2 transition-colors flex items-center justify-center gap-1 ' +
-            (tab === 'ai'
-              ? 'text-ai-purple font-bold border-ai-purple bg-surface-container-low'
-              : 'text-text-muted border-transparent hover:bg-surface-container-low')
-          }
-        >
-          <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>smart_toy</span>
-          AI 关键信息
-        </button>
       </div>
 
       {tab === 'detail' ? (
@@ -1009,9 +888,7 @@ function RightPanel({
         />
       ) : tab === 'entry' ? (
         <DataEntryPanel order={order} materials={materials} onReload={onReload} />
-      ) : (
-        <AiPanel order={order} />
-      )}
+      ) : null}
     </aside>
   )
 }
@@ -1700,199 +1577,4 @@ function blobToBase64(blob: Blob): Promise<string> {
     reader.onerror = reject
     reader.readAsDataURL(blob)
   })
-}
-
-// AI 滚动简报：综合微信/企微消息 + 通话/录音转写，由后端 LLM 产出。
-// 打开时读已存简报；可手动"刷新"触发一次 LLM 重算（自动扫描器也会在静默/攒够时刷新）。
-function AiPanel({ order }: { order: Order }): React.JSX.Element {
-  const [brief, setBrief] = useState<OrderBrief | null>(null)
-  const [updatedAt, setUpdatedAt] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [refreshing, setRefreshing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (order.id <= 0) return
-    let alive = true
-    setLoading(true)
-    fetchOrderBrief(order.id)
-      .then((r) => {
-        if (!alive) return
-        setBrief(r.brief)
-        setUpdatedAt(r.updatedAt)
-        setError(null)
-      })
-      .catch((e) => alive && setError(e instanceof Error ? e.message : '加载简报失败'))
-      .finally(() => alive && setLoading(false))
-    return () => {
-      alive = false
-    }
-  }, [order.id])
-
-  const doRefresh = (): void => {
-    if (order.id <= 0 || refreshing) return
-    setRefreshing(true)
-    setError(null)
-    refreshOrderBrief(order.id)
-      .then((b) => {
-        setBrief(b)
-        setUpdatedAt(new Date().toISOString())
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : '刷新简报失败'))
-      .finally(() => setRefreshing(false))
-  }
-
-  if (order.id <= 0) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-body-sm text-text-muted p-6 text-center">
-        模拟订单无 AI 简报
-      </div>
-    )
-  }
-
-  const keyInfoEntries = brief ? Object.entries(brief.keyInfo || {}) : []
-
-  return (
-    <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
-      {/* 头：刷新 + 更新时间 */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5 text-ai-purple font-semibold text-body-md">
-          <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>smart_toy</span>
-          AI 滚动简报
-        </div>
-        <div className="flex items-center gap-2">
-          {updatedAt && (
-            <span className="text-label-caps text-text-muted">{fmtBriefTime(updatedAt)}</span>
-          )}
-          <button
-            onClick={doRefresh}
-            disabled={refreshing}
-            className="inline-flex items-center gap-1 px-2 py-1 rounded text-body-sm border border-border-subtle text-text-main hover:bg-surface-container-low disabled:opacity-50"
-          >
-            <span
-              className={'material-symbols-outlined ' + (refreshing ? 'animate-spin' : '')}
-              style={{ fontSize: '15px' }}
-            >
-              {refreshing ? 'progress_activity' : 'refresh'}
-            </span>
-            {refreshing ? '生成中…' : '刷新'}
-          </button>
-        </div>
-      </div>
-
-      {error && <div className="text-body-sm text-red-600 bg-red-50 rounded px-3 py-2">⚠ {error}</div>}
-
-      {loading && !brief ? (
-        <div className="text-body-sm text-text-muted py-8 text-center">加载中…</div>
-      ) : !brief || (!brief.summary && !brief.stage) ? (
-        <div className="flex flex-col items-center justify-center text-center gap-3 text-text-muted py-10">
-          <span className="material-symbols-outlined text-ai-purple" style={{ fontSize: '36px' }}>smart_toy</span>
-          <p className="text-body-md text-text-main">还没有简报</p>
-          <p className="text-body-sm max-w-xs">
-            积累微信/企微消息或通话后会自动生成；也可现在手动生成一次。
-          </p>
-          <button
-            onClick={doRefresh}
-            disabled={refreshing}
-            className="mt-1 inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-ai-purple text-white text-body-sm font-semibold hover:bg-ai-purple/90 disabled:opacity-50"
-          >
-            <span
-              className={'material-symbols-outlined ' + (refreshing ? 'animate-spin' : '')}
-              style={{ fontSize: '16px' }}
-            >
-              {refreshing ? 'progress_activity' : 'auto_awesome'}
-            </span>
-            {refreshing ? '生成中…' : '生成简报'}
-          </button>
-        </div>
-      ) : (
-        <>
-          {/* 现状 + 阶段 */}
-          <div className="rounded-lg border border-ai-purple/30 bg-ai-purple/5 p-3 space-y-2">
-            <div className="flex items-center gap-2 flex-wrap">
-              {brief.stage && (
-                <span className="text-label-caps px-2 py-0.5 rounded-full bg-ai-purple text-white">{brief.stage}</span>
-              )}
-              {brief.hasOpenIssue && (
-                <span className="text-label-caps px-2 py-0.5 rounded-full bg-red-100 text-red-700">⚠ 有未解决问题</span>
-              )}
-            </div>
-            {brief.summary && <p className="text-body-md text-text-main leading-relaxed">{brief.summary}</p>}
-            {brief.stageEvidence && <p className="text-body-sm text-text-muted">依据：{brief.stageEvidence}</p>}
-          </div>
-
-          {/* 下一步 */}
-          {brief.nextActions.length > 0 && (
-            <BriefList icon="checklist" title="下一步" items={brief.nextActions} tone="primary" />
-          )}
-          {/* 风险 */}
-          {brief.risks.length > 0 && (
-            <BriefList icon="warning" title="风险 / 需关注" items={brief.risks} tone="warn" />
-          )}
-
-          {/* 回填关键信息 */}
-          <div className="rounded-lg border border-border-subtle bg-white">
-            <div className="px-3 py-2 border-b border-border-subtle text-label-caps text-text-muted">
-              关键信息（供回填）
-            </div>
-            <dl className="p-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-body-sm">
-              {keyInfoEntries.map(([k, v]) => (
-                <BriefKv key={k} k={k} v={v} />
-              ))}
-            </dl>
-          </div>
-
-          <p className="text-label-caps text-text-muted/70 text-center pt-1">
-            由 AI 根据采集的消息与通话生成，仅供参考，请核对后使用{brief.model ? ` · ${brief.model}` : ''}
-          </p>
-        </>
-      )}
-    </div>
-  )
-}
-
-function BriefList({
-  icon,
-  title,
-  items,
-  tone
-}: {
-  icon: string
-  title: string
-  items: string[]
-  tone: 'primary' | 'warn'
-}): React.JSX.Element {
-  const color = tone === 'warn' ? 'text-amber-600' : 'text-primary'
-  return (
-    <div className="rounded-lg border border-border-subtle bg-white p-3">
-      <div className={'flex items-center gap-1.5 text-body-sm font-semibold mb-1.5 ' + color}>
-        <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>{icon}</span>
-        {title}
-      </div>
-      <ul className="space-y-1">
-        {items.map((it, i) => (
-          <li key={i} className="text-body-sm text-text-main flex gap-1.5">
-            <span className="text-text-muted">·</span>
-            <span>{it}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  )
-}
-
-function BriefKv({ k, v }: { k: string; v: string | null }): React.JSX.Element {
-  return (
-    <>
-      <dt className="text-text-muted whitespace-nowrap">{k}</dt>
-      <dd className={v ? 'text-text-main' : 'text-text-muted/50'}>{v || '—'}</dd>
-    </>
-  )
-}
-
-function fmtBriefTime(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return ''
-  const p = shanghaiDateParts(d)
-  return `更新于 ${p.month}-${p.day} ${p.hour}:${p.minute}`
 }

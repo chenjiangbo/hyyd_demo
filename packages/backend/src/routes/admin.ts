@@ -41,6 +41,11 @@ import { DEFAULT_WORKFLOW_TEMPLATES } from '../workflow/defaultWorkflowConfig.js
 import { registerTaikangFormAdminRoutes } from '../taikangFormRecording.js'
 import { registerNativeChatCollectionAdminRoutes } from './nativeChatCollectionAdmin.js'
 import { getHyhomeOrderSite, saveHyhomeOrderSite } from '../services/hyhomeOrderSites.js'
+import {
+  getOrderAiAutomationConfig,
+  saveOrderAiAutomationConfig,
+  validateOrderAiAutomationConfig
+} from '../services/orderAiAutomationConfig.js'
 
 const TAIKANG_BUSINESS_CONFIG = {
   green_pass: '泰康绿通',
@@ -364,19 +369,26 @@ export function registerAdminRoutes(
       }
     })
 
-    const orderAiTriggerPolicy = {
-      communicationSilenceMinutes: 5,
-      callTrigger: 'ASR 转写文本成功保存后立即触发',
-      communicationTrigger: '微信/企微按申领号合并，最后一条新沟通静默 5 分钟后触发；每 30 秒检查一次',
-      materialSilenceMinutes: 3,
-      timeZone: 'Asia/Shanghai'
-    }
-
     fastify.get('/api/v1/admin/ai-schedule-config', async (_request, reply) => {
-      return reply.send({ data: orderAiTriggerPolicy })
+      const config = await getOrderAiAutomationConfig(prisma)
+      return reply.send({ data: {
+        ...config,
+        callTrigger: 'ASR 转写文本成功保存后立即触发',
+        communicationTrigger: `微信/企微按申领号合并，最后一条新沟通静默 ${config.communicationSilenceMinutes} 分钟后触发`,
+        materialSilenceMinutes: 3,
+        checkIntervalSeconds: 30,
+        timeZone: 'Asia/Shanghai'
+      } })
     })
-    fastify.put('/api/v1/admin/ai-schedule-config', async (_request, reply) => {
-      return reply.status(410).send({ error: 'AI 分析已改为按沟通内容自动触发，不能再配置定时时点' })
+    fastify.put<{ Body: unknown }>('/api/v1/admin/ai-schedule-config', async (request, reply) => {
+      let input: ReturnType<typeof validateOrderAiAutomationConfig>
+      try {
+        input = validateOrderAiAutomationConfig(request.body)
+      } catch (error) {
+        return reply.status(400).send({ error: error instanceof Error ? error.message : 'AI 自动分析配置无效' })
+      }
+      const config = await saveOrderAiAutomationConfig(prisma, input)
+      return reply.send({ data: { ...config, message: 'AI 自动分析配置已保存' } })
     })
 
     // 获取短信模板与密钥配置
@@ -562,12 +574,13 @@ export function registerAdminRoutes(
 
     // 订单 AI 分析配置说明：内容直接由实际提取器导出，避免后台说明与运行规则不一致。
     fastify.get('/api/v1/admin/order-ai-config', async (_request, reply) => {
+      const automationConfig = await getOrderAiAutomationConfig(prisma)
       return reply.send({
         data: {
           schedule: {
-            communicationSilenceMinutes: 5,
+            communicationSilenceMinutes: automationConfig.communicationSilenceMinutes,
             callTrigger: 'ASR 转写文本成功保存后立即触发',
-            communicationTrigger: '微信/企微按申领号合并，最后一条新沟通静默 5 分钟后触发；每 30 秒检查一次',
+            communicationTrigger: `微信/企微按申领号合并，最后一条新沟通静默 ${automationConfig.communicationSilenceMinutes} 分钟后触发；每 30 秒检查一次`,
             materialSilenceMinutes: 3,
             timeZone: 'Asia/Shanghai',
             scope: '沟通记录按申领号汇集；AI 对该申领号下有新内容的订单逐单分析，结果归属到对应订单。'

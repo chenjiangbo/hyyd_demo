@@ -57,7 +57,9 @@ import { previewHuanyuMasterSave, commitHuanyuMasterSave, type MasterSaveCreatio
 import { requestAbiRefund } from '../services/abiRefundService.js'
 import { getHyhomeOrderSite } from '../services/hyhomeOrderSites.js'
 import { scheduleOrderIdCardOcr } from '../services/orderIdCardOcr.js'
-import { analyzeRegistrationProof } from '../services/registrationProofService.js'
+import { analyzeRegistrationProof, matchNativeRegistrationProofToOrders } from '../services/registrationProofService.js'
+import { understandImage } from '../services/imageUnderstanding.js'
+import { isImageAiEnabled } from '../services/orderAiAutomationConfig.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { formatShanghaiDateTime, parseShanghaiDateTime, shanghaiDateKey } from '../time/shanghaiTime.js'
 import {
@@ -5132,6 +5134,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     Body: { mimeType?: string; base64?: string }
   }>('/api/v1/registration-proof/analyze', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    if (!await isImageAiEnabled(prisma)) return reply.status(409).send({ error: '后台当前未启用图片 AI 分析' })
     const mimeType = typeof request.body?.mimeType === 'string' ? request.body.mimeType.trim() : ''
     const base64 = typeof request.body?.base64 === 'string' ? request.body.base64.trim() : ''
     if (!mimeType || !base64) return reply.status(400).send({ error: '图片需要 mimeType + base64' })
@@ -5144,6 +5147,30 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     } catch (error: any) {
       request.log.error(error, '挂号凭证识别失败')
       return reply.status(502).send({ error: `挂号凭证识别失败: ${error?.message || String(error)}` })
+    }
+  })
+
+  // 浮动精灵拖入的图片：先做通用图片理解；仅挂号凭证才进入申领号、订单匹配阶段。
+  fastify.post<{
+    Body: { mimeType?: string; base64?: string }
+  }>('/api/v1/registration-proof/intake/analyze', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    if (!await isImageAiEnabled(prisma)) return reply.status(409).send({ error: '后台当前未启用图片 AI 分析' })
+    const mimeType = typeof request.body?.mimeType === 'string' ? request.body.mimeType.trim() : ''
+    const base64 = typeof request.body?.base64 === 'string' ? request.body.base64.trim() : ''
+    if (!mimeType || !base64) return reply.status(400).send({ error: '图片需要 mimeType + base64' })
+    if (!/^image\/(png|jpe?g|webp|bmp|gif)$/i.test(mimeType)) {
+      return reply.status(400).send({ error: '当前只支持图片文件' })
+    }
+    try {
+      const image = await understandImage(`data:${mimeType};base64,${base64}`)
+      const registrationMatch = image.imageType === '挂号凭证'
+        ? await matchNativeRegistrationProofToOrders(prisma, `data:${mimeType};base64,${base64}`, image, { applicationNo: null })
+        : null
+      return reply.send({ data: { image, registrationMatch } })
+    } catch (error: any) {
+      request.log.error(error, '浮动精灵图片识别或挂号匹配失败')
+      return reply.status(502).send({ error: `图片识别或挂号匹配失败：${error?.message || String(error)}` })
     }
   })
 

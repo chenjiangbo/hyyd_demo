@@ -23,6 +23,17 @@ export interface NativeChatCollectionConfig {
   rules: NativeChatCollectionRule[]
 }
 
+export interface OrderAiAutomationConfig {
+  imageAiEnabled: boolean
+  communicationSilenceMinutes: number
+  updatedAt: string | null
+  callTrigger: string
+  communicationTrigger: string
+  materialSilenceMinutes: number
+  checkIntervalSeconds: number
+  timeZone: string
+}
+
 export interface NativeChatDiscoveredSession {
   channel: 'wechat' | 'wxwork'
   accountId: string

@@ -1,5 +1,5 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
-import type { NativeChatPendingImageMatch } from '@huanyu/shared-types'
+import type { NativeChatPendingImageMatch, PetDropImageMatch } from '@huanyu/shared-types'
 
 export interface CaptureConversation {
   id: number
@@ -153,11 +153,12 @@ declare global {
       onPetReminder: (cb: (message: string) => void) => () => void
       showPetReminder: (data: { key: string; message: string }) => void
       getPathForFile: (file: File) => string
-      petDropFiles: (paths: string[]) => Promise<{ state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[] }>
-      petSelectOrder: (orderId: number) => Promise<{ state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[] }>
+      petDropFiles: (paths: string[]) => Promise<{ state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[]; imageMatch?: PetDropImageMatch }>
+      petSelectOrder: (orderId: number, applicationNo?: string) => Promise<{ state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[]; imageMatch?: PetDropImageMatch }>
+      petDiscardPendingImage: () => Promise<void>
       resolveNativeImageMatch: (payload: { attachmentId: number; applicationNo: string; orderId: number | null }) => Promise<{ state: 'done'; message: string }>
       onPetImageMatch: (cb: (match: NativeChatPendingImageMatch) => void) => () => void
-      onPetStatus: (cb: (status: { state: 'done' | 'unknown' | 'candidates' | 'warning'; message: string; candidates?: unknown[] }) => void) => () => void
+      onPetStatus: (cb: (status: { state: 'done' | 'unknown' | 'candidates' | 'warning'; message: string; candidates?: unknown[]; imageMatch?: PetDropImageMatch }) => void) => () => void
       getWindowPreferences: () => Promise<{ closeBehavior: 'ask' | 'minimize' | 'quit' }>
       setWindowPreferences: (prefs: { closeBehavior: 'ask' | 'minimize' | 'quit' }) => Promise<{ closeBehavior: 'ask' | 'minimize' | 'quit' }>
       setWindowStage: (stage: 'login' | 'main') => void

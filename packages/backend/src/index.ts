@@ -1028,7 +1028,7 @@ async function start() {
     await server.listen({ port, host })
     server.log.info(`寰宇医道后端服务启动成功，运行在: http://${host}:${port}`)
 
-    // 电话 ASR 完成后即时触发；微信/企微按申领号静默 5 分钟后触发。
+    // 电话 ASR 完成后即时触发；微信/企微按申领号静默后台配置的时长后触发。
     startOrderAiSchedule(prisma, minioClient)
     startNativeChatImageAnalysisWorker(prisma, minioClient)
 

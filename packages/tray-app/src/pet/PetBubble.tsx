@@ -11,6 +11,44 @@ export interface Candidate {
   appointmentDate: string | null
 }
 
+export interface ImageMatchOrder {
+  orderId: number
+  sourceOrderNo: string
+  customerName: string
+  serviceType: string | null
+  hospital: string | null
+  department: string | null
+  doctor: string | null
+  appointmentDate: string | null
+  status: string
+}
+
+export interface ImageMatchApplication {
+  applicationNo: string
+  programEvidence: string[]
+  orders: ImageMatchOrder[]
+}
+
+export interface NativeImageMatch {
+  source?: 'chat' | 'drop'
+  attachmentId?: number
+  imageUrl: string
+  occurredAt: string
+  channel: string
+  senderName: string | null
+  applicationNo: string | null
+  recommendedApplicationNo?: string | null
+  recommendedOrderId?: number | null
+  imageType?: string
+  typeDescription?: string
+  description: string
+  visibleText?: string
+  candidateApplications: ImageMatchApplication[]
+  applicationDecision: string
+  orderDecision: string
+  reason: string
+}
+
 export interface PetAction {
   id: string
   label: string
@@ -47,6 +85,7 @@ export type PetPanel =
   | { kind: 'progress'; text: string; progress?: number }
   | { kind: 'error'; text: string; actions?: PetAction[] }
   | { kind: 'candidate-list'; title: string; items: Candidate[] }
+  | { kind: 'image-match'; match: NativeImageMatch; selectedApplicationNo: string | null }
   | {
       kind: 'form'
       id: string
@@ -70,6 +109,9 @@ interface PetBubbleProps {
   onSelectCandidate?: (orderId: number) => void
   onFieldChange?: PetFieldChange
   onLookup?: (kind: PetLookupKind, query: string, parent: { hospitalId?: string; departmentId?: string; currentId?: string }) => Promise<PetLookupOption[]>
+  onSelectApplication?: (applicationNo: string) => void
+  onResolveImageOrder?: (applicationNo: string, orderId: number | null) => void
+  onDiscardImageMatch?: () => void
   onSizeChange?: (size: { width: number; height: number }) => void
   onAddEscortRecord?: () => void
   onRemoveEscortRecord?: (sectionId: string) => void
@@ -315,7 +357,7 @@ function FormFields({ panel, onFieldChange, onLookup, onAddEscortRecord, onRemov
   </div>
 }
 
-export function PetBubble({ panel, onAction, onSelectCandidate, onFieldChange, onLookup, onSizeChange, onAddEscortRecord, onRemoveEscortRecord }: PetBubbleProps): React.JSX.Element {
+export function PetBubble({ panel, onAction, onSelectCandidate, onSelectApplication, onResolveImageOrder, onDiscardImageMatch, onFieldChange, onLookup, onSizeChange, onAddEscortRecord, onRemoveEscortRecord }: PetBubbleProps): React.JSX.Element {
   const bubbleRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
@@ -346,6 +388,36 @@ export function PetBubble({ panel, onAction, onSelectCandidate, onFieldChange, o
       {panel.kind === 'error' && <><p className="pet-bubble__text">{panel.text}</p><Actions actions={panel.actions ?? []} onAction={onAction} /></>}
       {panel.kind === 'candidate-list' && <><h2 className="pet-bubble__title">{panel.title}</h2><div className="pet-bubble__candidate-list">{panel.items.map((candidate, index) => <button className="pet-bubble__candidate" key={candidate.orderId} type="button" onClick={() => onSelectCandidate?.(candidate.orderId)}><strong>{index === 0 ? '可能的订单 · ' : ''}{candidate.customerName || '未识别患者'}</strong><span>{candidate.hospital || '医院待确认'} · {candidate.department || '科室待确认'}</span><small>{candidate.sourceOrderNo}</small></button>)}</div></>}
       {panel.kind === 'form' && <><div className={`pet-bubble__form-header${panel.title ? '' : ' pet-bubble__form-header--untitled'}`}>{panel.title && <h2 className="pet-bubble__title">{panel.title}</h2>}{panel.description && <p className="pet-bubble__description">{panel.description}</p>}</div><FormFields panel={panel} onFieldChange={onFieldChange} onLookup={onLookup} onAddEscortRecord={onAddEscortRecord} onRemoveEscortRecord={onRemoveEscortRecord} />{panel.submitMessage && <p className={`pet-bubble__submit-message pet-bubble__submit-message--${panel.submitState ?? 'idle'}`}>{panel.submitMessage}</p>}{panel.confirmation && <div className="pet-bubble__master-confirm"><strong>{panel.confirmation.title}</strong><p>以下资料在远端维表中未找到。确认后将创建维表并继续更新订单：</p><ul>{panel.confirmation.creations.map((item, index) => <li key={`${item.type}-${index}`}>{({ hospital: '医院', address: '医院地址', department: '医院科室', doctor: '医生', escort: '陪诊人员' } as Record<string, string>)[item.type] ?? item.type}：{item.name}{item.parent ? `（所属：${item.parent}）` : ''}</li>)}</ul></div>}<Actions actions={panel.actions} onAction={onAction} /></>}
+      {panel.kind === 'image-match' && <>
+        <h2 className="pet-bubble__title">请确认挂号凭证的归属</h2>
+        <img className="pet-bubble__image-preview" src={panel.match.imageUrl} alt="待确认的挂号凭证" />
+        {panel.match.typeDescription && <p className="pet-bubble__description">{panel.match.typeDescription}</p>}
+        <p className="pet-bubble__description">{panel.match.description}</p>
+        {panel.match.visibleText && <details className="pet-bubble__description"><summary>查看图片识别文字</summary><p className="pet-bubble__visible-text">{panel.match.visibleText}</p></details>}
+        {panel.selectedApplicationNo === null ? <>
+          <p className="pet-bubble__description">请选择对应的申领号</p>
+          {panel.match.candidateApplications.length === 0
+            ? <p className="pet-bubble__description">暂时没有找到可核对的申领号候选。{panel.match.source === 'drop' ? '这张图片暂存在浮动精灵中，尚未上传到任何订单。' : '图片仍保留在原聊天消息中，请先核对会话关联或图片内容。'}</p>
+            : <div className="pet-bubble__candidate-list">{panel.match.candidateApplications.map((application) => {
+            const first = application.orders[0]
+            return <button className="pet-bubble__candidate" key={application.applicationNo} type="button" onClick={() => onSelectApplication?.(application.applicationNo)}>
+              <strong>{application.applicationNo === panel.match.recommendedApplicationNo ? 'AI 建议 · ' : ''}{first?.customerName || '客户姓名待确认'}</strong>
+              <span>{first ? [first.serviceType, first.hospital, first.department].filter(Boolean).join(' · ') : '申领号下暂无订单资料'}</span>
+              <small>{application.applicationNo} · 共 {application.orders.length} 张订单</small>
+            </button>
+          })}</div>}
+        </> : <>
+          <p className="pet-bubble__description">申领号：{panel.selectedApplicationNo}。请选择具体订单，确认前不会把图片上传到订单。</p>
+          <div className="pet-bubble__candidate-list">{(panel.match.candidateApplications.find((application) => application.applicationNo === panel.selectedApplicationNo)?.orders ?? []).map((order) => <button className="pet-bubble__candidate" key={order.orderId} type="button" onClick={() => onResolveImageOrder?.(panel.selectedApplicationNo!, order.orderId)}>
+            <strong>{order.orderId === panel.match.recommendedOrderId ? 'AI 建议 · ' : ''}{order.customerName || '客户姓名待确认'} · {order.serviceType || '服务订单'}</strong>
+            <span>{[order.hospital, order.department, order.doctor].filter(Boolean).join(' · ') || '医院和科室待确认'}</span>
+            <small>{order.appointmentDate || order.status || order.sourceOrderNo}</small>
+          </button>)}</div>
+          {panel.match.source !== 'drop' && <Actions actions={[{ id: 'application-only', label: '先只关联申领号', tone: 'secondary' }]} onAction={() => onResolveImageOrder?.(panel.selectedApplicationNo!, null)} />}
+          {panel.match.reason && <p className="pet-bubble__description">AI 判断依据：{panel.match.reason}</p>}
+        </>}
+        {panel.match.source === 'drop' && <button type="button" className="pet-bubble__action pet-bubble__action--secondary" onClick={onDiscardImageMatch}>放弃这张图片</button>}
+      </>}
     </section>
   )
 }

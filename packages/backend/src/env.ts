@@ -35,13 +35,11 @@ export interface AppEnv {
   huanyuPushDbUser?: string
   huanyuPushDbPassword?: string
   huanyuPushDbSsl?: string
-  // ABI 挂号退款：服务启动时必须完整配置，密钥仅保存在后端环境变量中。
-  abiRefundAuthUrl: string
-  abiRefundUrl: string
-  abiRefundAppId: string
-  abiRefundAppSecret: string
-  // 每日订单 AI 分析时点，上海时区，逗号分隔；例如 12:00,18:00。
-  orderAiAnalysisTimes?: string
+  // ABI 挂号退款：仅调用该功能时校验；不阻止其它后端功能启动。
+  abiRefundAuthUrl?: string
+  abiRefundUrl?: string
+  abiRefundAppId?: string
+  abiRefundAppSecret?: string
   // 阿里云短信配置
   aliyunSmsAccessKeyId?: string
   aliyunSmsAccessKeySecret?: string
@@ -108,11 +106,10 @@ export function getEnv(): AppEnv {
     huanyuPushDbUser: optional('HUANYU_PUSH_DB_USER'),
     huanyuPushDbPassword: optional('HUANYU_PUSH_DB_PASSWORD'),
     huanyuPushDbSsl: optional('HUANYU_PUSH_DB_SSL'),
-    abiRefundAuthUrl: required('ABI_REFUND_AUTH_URL'),
-    abiRefundUrl: required('ABI_REFUND_URL'),
-    abiRefundAppId: required('ABI_REFUND_APP_ID'),
-    abiRefundAppSecret: required('ABI_REFUND_APP_SECRET'),
-    orderAiAnalysisTimes: optional('ORDER_AI_ANALYSIS_TIMES'),
+    abiRefundAuthUrl: optional('ABI_REFUND_AUTH_URL'),
+    abiRefundUrl: optional('ABI_REFUND_URL'),
+    abiRefundAppId: optional('ABI_REFUND_APP_ID'),
+    abiRefundAppSecret: optional('ABI_REFUND_APP_SECRET'),
     aliyunSmsAccessKeyId: optional('ALIYUN_SMS_ACCESS_KEY_ID'),
     aliyunSmsAccessKeySecret: optional('ALIYUN_SMS_ACCESS_KEY_SECRET'),
     aliyunSmsSignName: optional('ALIYUN_SMS_SIGN_NAME') || '寰宇医道',

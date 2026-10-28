@@ -684,8 +684,7 @@ export function fetchPresence(): Promise<Presence> {
   return authedGet<Presence>('/api/v1/me/presence')
 }
 
-// ─── AI 滚动简报 ────────────────────────────────────────
-// 综合微信/企微消息 + 通话/录音转写，由后端 LLM 产出。给员工的现状/阶段/待办/风险 + 回填关键信息。
+// ─── AI 简报历史数据结构（旧接口兼容） ───────────────────
 export interface OrderBrief {
   summary: string | null
   stage: string | null
@@ -696,16 +695,6 @@ export interface OrderBrief {
   keyInfo: Record<string, string | null>
   model?: string
   updatedFrom?: { lastMessageId: number; lastCallId: number }
-}
-
-/** 读已存的简报（不触发 LLM） */
-export function fetchOrderBrief(orderId: number): Promise<{ brief: OrderBrief | null; updatedAt: string | null }> {
-  return authedGet<{ brief: OrderBrief | null; updatedAt: string | null }>(`/api/v1/orders/${orderId}/brief`)
-}
-
-/** 手动刷新简报（触发一次 LLM，强制重算） */
-export function refreshOrderBrief(orderId: number): Promise<OrderBrief> {
-  return authedSend<OrderBrief>(`/api/v1/orders/${orderId}/brief/refresh`, 'POST', {})
 }
 
 export function fetchApplicationBrief(applicationNo: string): Promise<{ brief: OrderBrief | null; updatedAt: string | null }> {

@@ -35,6 +35,13 @@ export interface AbiRefundResult {
 
 const ABI_REQUEST_TIMEOUT_MS = 15_000
 
+type AbiRefundConfig = {
+  authUrl: string
+  refundUrl: string
+  appId: string
+  appSecret: string
+}
+
 function textValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
@@ -61,11 +68,28 @@ function endpointUrl(value: string, name: string): URL {
   }
 }
 
-async function obtainAbiAccessCredentials(): Promise<{ accessToken: string; accessSign: string }> {
+function requireAbiRefundConfig(): AbiRefundConfig {
   const env = getEnv()
-  const authUrl = endpointUrl(env.abiRefundAuthUrl, 'ABI_REFUND_AUTH_URL')
-  authUrl.searchParams.set('appid', env.abiRefundAppId)
-  authUrl.searchParams.set('appsecret', env.abiRefundAppSecret)
+  const required: Array<[keyof AbiRefundConfig, string | undefined, string]> = [
+    ['authUrl', env.abiRefundAuthUrl, 'ABI_REFUND_AUTH_URL'],
+    ['refundUrl', env.abiRefundUrl, 'ABI_REFUND_URL'],
+    ['appId', env.abiRefundAppId, 'ABI_REFUND_APP_ID'],
+    ['appSecret', env.abiRefundAppSecret, 'ABI_REFUND_APP_SECRET']
+  ]
+  const missing = required.filter(([, value]) => !value?.trim()).map(([, , name]) => name)
+  if (missing.length) throw new Error(`ABI 退款功能缺少配置：${missing.join('、')}`)
+  return {
+    authUrl: env.abiRefundAuthUrl!,
+    refundUrl: env.abiRefundUrl!,
+    appId: env.abiRefundAppId!,
+    appSecret: env.abiRefundAppSecret!
+  }
+}
+
+async function obtainAbiAccessCredentials(config: AbiRefundConfig): Promise<{ accessToken: string; accessSign: string }> {
+  const authUrl = endpointUrl(config.authUrl, 'ABI_REFUND_AUTH_URL')
+  authUrl.searchParams.set('appid', config.appId)
+  authUrl.searchParams.set('appsecret', config.appSecret)
 
   let response: Response
   try {
@@ -103,9 +127,9 @@ export async function requestAbiRefund(input: AbiRefundInput): Promise<AbiRefund
     throw new Error('ABI 退款请求参数不完整')
   }
 
-  const { accessToken, accessSign } = await obtainAbiAccessCredentials()
-  const env = getEnv()
-  const refundUrl = endpointUrl(env.abiRefundUrl, 'ABI_REFUND_URL')
+  const config = requireAbiRefundConfig()
+  const { accessToken, accessSign } = await obtainAbiAccessCredentials(config)
+  const refundUrl = endpointUrl(config.refundUrl, 'ABI_REFUND_URL')
   // ABI 实际服务端通过 HttpServletRequest#getParameter 取值，不会解析 JSON 请求体。
   // 因此按 application/x-www-form-urlencoded 发送，与服务端实现保持一致。
   const form = new URLSearchParams({

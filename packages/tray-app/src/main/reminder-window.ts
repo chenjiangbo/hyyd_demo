@@ -55,6 +55,16 @@ export function createReminderWindow(): BrowserWindow {
 
   reminderWindow.setAlwaysOnTop(true, 'screen-saver')
 
+  reminderWindow.webContents.on('did-finish-load', () => {
+    console.info('[reminder-window] renderer loaded', { hasData: currentReminderData !== null })
+    if (currentReminderData !== null && reminderWindow && !reminderWindow.isDestroyed()) {
+      reminderWindow.webContents.send('reminder:data', currentReminderData)
+    }
+  })
+  reminderWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    console.error('[reminder-window] renderer load failed', { errorCode, errorDescription, validatedURL })
+  })
+
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     reminderWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/index-v2.html?view=desktop-reminder`)
   } else {
@@ -73,6 +83,7 @@ export function createReminderWindow(): BrowserWindow {
 export function showReminderWindow(data: unknown): void {
   currentReminderData = data
   const win = reminderWindow && !reminderWindow.isDestroyed() ? reminderWindow : createReminderWindow()
+  console.info('[reminder-window] show requested', { visible: win.isVisible(), loading: win.webContents.isLoading() })
 
   // 如果浮窗已经处于显示状态（用户可能正在查看或展开了清单），不要在定时轮询中强行重设尺寸位置！
   if (!win.isVisible()) {
@@ -81,7 +92,9 @@ export function showReminderWindow(data: unknown): void {
     win.showInactive()
   }
 
-  win.webContents.send('reminder:data', data)
+  if (!win.webContents.isLoading()) {
+    win.webContents.send('reminder:data', data)
+  }
 }
 
 export function hideReminderWindow(_dismissCurrent = false): void {

@@ -19,6 +19,7 @@ import { understandImage } from '../llm/imageUnderstandService.js'
 import { applyOrderWorkflowEvent } from '../workflow/serviceWorkflow.js'
 import { findHuanyuOrderNosOnMysqlByChannelOrderNo } from '../huanyuMysqlPush.js'
 import { parseShanghaiDateTime } from '../time/shanghaiTime.js'
+import { loadNativeChatAiBatch } from '../services/nativeChatAiAdapter.js'
 
 async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = []
@@ -309,6 +310,7 @@ export async function analyzeOrderFields(
   const lastMsgId = order.fieldAiLastMsgId ?? 0
   const lastCallId = order.fieldAiLastCallId ?? 0
   const lastMaterialId = order.fieldAiLastMaterialId ?? 0
+  const lastNativeAt = order.fieldAiLastNativeAt
   const applicationNo = applicationNoOf(order.rawJson)
   let newlyDiscoveredHuanyuOrder = false
   try {
@@ -325,25 +327,27 @@ export async function analyzeOrderFields(
     console.warn(`[order-ai-field] orderId=${orderId} 远端寰宇订单发现失败，使用本地已关联单号: ${describeError(error)}`)
   }
   const captureWhere = applicationNo ? { OR: [{ applicationNo }, { orderId }] } : { orderId }
-  const [msgs, calls, mats] = await Promise.all([
+  const [msgs, calls, mats, nativeBatch] = await Promise.all([
     prisma.message.findMany({ where: captureWhere, orderBy: { id: 'asc' } }),
     prisma.call.findMany({ where: captureWhere, orderBy: { id: 'asc' } }),
-    prisma.material.findMany({ where: { orderId }, orderBy: { id: 'asc' } })
+    prisma.material.findMany({ where: { orderId }, orderBy: { id: 'asc' } }),
+    loadNativeChatAiBatch(prisma, applicationNo)
   ])
   const maxMessageId = msgs.at(-1)?.id ?? lastMsgId
   const maxCallId = calls.at(-1)?.id ?? lastCallId
   const maxMaterialId = mats.at(-1)?.id ?? lastMaterialId
   const hasNewContent =
     newlyDiscoveredHuanyuOrder ||
+    (!!nativeBatch.latestChangedAt && (!lastNativeAt || nativeBatch.latestChangedAt > lastNativeAt)) ||
     msgs.some((m) => m.id > lastMsgId && (m.contentText ?? '').trim().length > 0) ||
     calls.some((c) => c.id > lastCallId && ((c.asrText ?? '').trim().length > 0 || (c.durationSec ?? 0) > 0)) ||
     mats.some((m) => m.id > lastMaterialId && (m.type === 'image' || (m.textContent ?? '').trim().length > 0))
 
   if (!hasNewContent && !options.force) {
-    if (maxMessageId > lastMsgId || maxCallId > lastCallId || maxMaterialId > lastMaterialId) {
+    if (maxMessageId > lastMsgId || maxCallId > lastCallId || maxMaterialId > lastMaterialId || nativeBatch.latestChangedAt && (!lastNativeAt || nativeBatch.latestChangedAt > lastNativeAt)) {
       await prisma.order.update({
         where: { id: orderId },
-        data: { fieldAiLastMsgId: maxMessageId, fieldAiLastCallId: maxCallId, fieldAiLastMaterialId: maxMaterialId }
+        data: { fieldAiLastMsgId: maxMessageId, fieldAiLastCallId: maxCallId, fieldAiLastMaterialId: maxMaterialId, fieldAiLastNativeAt: nativeBatch.latestChangedAt ?? lastNativeAt }
       })
     }
     return { skipped: true, reason: 'no_new_content', fieldExtractionSucceeded: false }
@@ -400,6 +404,18 @@ export async function analyzeOrderFields(
         ...msgs.map((m) => ({
           id: m.id, channel: m.channel, senderName: m.senderName, contentText: m.contentText,
           occurredAt: m.sortTime ?? m.chatTime ?? m.capturedAt
+        })),
+        ...nativeBatch.messages.map((message) => ({
+          id: -1_000_000_000 - message.id,
+          sourceRef: message.sourceRef,
+          channel: message.channel,
+          senderName: message.senderName,
+          direction: message.direction,
+          messageKind: message.messageKind,
+          sourceTypeCode: message.sourceTypeCode,
+          sourceItemIndex: message.sourceItemIndex,
+          contentText: message.contentText,
+          occurredAt: message.occurredAt
         })),
         ...mats
           .map((m) => ({
@@ -466,7 +482,7 @@ export async function analyzeOrderFields(
     // 自动任务不重试：本批输入无论成功或失败均消费，新的消息/通话/补录才会触发下一次调用。
     await prisma.order.update({
       where: { id: orderId },
-      data: { fieldAiLastMsgId: maxMessageId, fieldAiLastCallId: maxCallId, fieldAiLastMaterialId: maxMaterialId }
+      data: { fieldAiLastMsgId: maxMessageId, fieldAiLastCallId: maxCallId, fieldAiLastMaterialId: maxMaterialId, fieldAiLastNativeAt: nativeBatch.latestChangedAt ?? lastNativeAt }
     })
   }
 }
@@ -494,6 +510,7 @@ export async function refreshOrderBrief(
   const lastMsgId = order.briefLastMsgId ?? 0
   const lastCallId = order.briefLastCallId ?? 0
   const lastMaterialId = order.briefLastMaterialId ?? 0
+  const lastNativeAt = order.briefLastNativeAt
 
   // 沟通记录以申请号采集，AI 仍以订单为粒度产出：同一申请号下的每张订单都会
   // 带着自己的服务类型和字段白名单分别分析，不能把记录强行归给某一张订单。
@@ -516,6 +533,7 @@ export async function refreshOrderBrief(
     where: { orderId },
     orderBy: { id: 'asc' }
   })
+  const nativeBatch = await loadNativeChatAiBatch(prisma, applicationNo)
 
   const maxMsgId = msgs.length > 0 ? msgs[msgs.length - 1].id : lastMsgId
   const maxCallId = calls.length > 0 ? calls[calls.length - 1].id : lastCallId
@@ -523,6 +541,7 @@ export async function refreshOrderBrief(
 
   // 自上次跑之后有没有"有内容的"新东西（便宜预过滤：纯时间戳/系统提示/空转写不算）
   const hasNewContent =
+    (!!nativeBatch.latestChangedAt && (!lastNativeAt || nativeBatch.latestChangedAt > lastNativeAt)) ||
     msgs.some((m) => m.id > lastMsgId && (m.contentText ?? '').trim().length > 0) ||
     calls.some((c) => c.id > lastCallId && ((c.asrText ?? '').trim().length > 0 || (c.durationSec ?? 0) > 0)) ||
     mats.some((m) => m.id > lastMaterialId && (m.type === 'image' || (m.textContent ?? '').trim().length > 0))
@@ -531,11 +550,11 @@ export async function refreshOrderBrief(
 
   if (!hasNewContent && !opts.force) {
     // 自上次以来没有有营养的新内容 → 不调 LLM，但把记号推进到最新，避免扫描器每轮重复评估同一单
-    const hasNewRows = maxMsgId > lastMsgId || maxCallId > lastCallId || maxMaterialId > lastMaterialId
+    const hasNewRows = maxMsgId > lastMsgId || maxCallId > lastCallId || maxMaterialId > lastMaterialId || (!!nativeBatch.latestChangedAt && (!lastNativeAt || nativeBatch.latestChangedAt > lastNativeAt))
     if (hasNewRows) {
       await prisma.order.update({
         where: { id: orderId },
-        data: { briefLastMsgId: maxMsgId, briefLastCallId: maxCallId, briefLastMaterialId: maxMaterialId }
+        data: { briefLastMsgId: maxMsgId, briefLastCallId: maxCallId, briefLastMaterialId: maxMaterialId, briefLastNativeAt: nativeBatch.latestChangedAt ?? lastNativeAt }
       })
     }
     return { brief: prevBrief, skipped: true, reason: 'no_new_content' }
@@ -552,12 +571,20 @@ export async function refreshOrderBrief(
     status: order.status
   }
 
-  const briefMsgs: BriefMessageInput[] = msgs.map((m) => ({
-    channel: m.channel,
-    senderName: m.senderName,
-    contentText: m.contentText,
-    capturedAt: m.capturedAt
-  }))
+  const briefMsgs: BriefMessageInput[] = [
+    ...msgs.map((m) => ({
+      channel: m.channel,
+      senderName: m.senderName,
+      contentText: m.contentText,
+      capturedAt: m.capturedAt
+    })),
+    ...nativeBatch.messages.map((m) => ({
+      channel: m.channel,
+      senderName: m.senderName,
+      contentText: m.contentText,
+      capturedAt: m.occurredAt
+    }))
+  ]
   const briefCalls: BriefCallInput[] = calls.map((c) => ({
     direction: c.direction,
     callStatus: c.callStatus,
@@ -701,6 +728,7 @@ export async function refreshOrderBrief(
       aiBriefJson: jsonInput(stored),
       briefUpdatedAt: new Date(),
       briefLastMsgId: maxMsgId,
+      briefLastNativeAt: nativeBatch.latestChangedAt ?? lastNativeAt,
       briefLastCallId: maxCallId,
       briefLastMaterialId: maxMaterialId
     }
@@ -720,8 +748,9 @@ export async function refreshApplicationBrief(
   const existing = await prisma.applicationBrief.findUnique({ where: { applicationNo: appNo } })
   const lastMsgId = existing?.briefLastMsgId ?? 0
   const lastCallId = existing?.briefLastCallId ?? 0
+  const lastNativeAt = existing?.briefLastNativeAt ?? null
 
-  const [msgs, calls, orders] = await Promise.all([
+  const [msgs, calls, orders, nativeBatch] = await Promise.all([
     prisma.message.findMany({
       where: { applicationNo: appNo },
       orderBy: { id: 'asc' }
@@ -735,29 +764,33 @@ export async function refreshApplicationBrief(
       FROM orders
       WHERE raw_json->>'crmApplyNo' = ${appNo}
       ORDER BY id ASC
-    `
+    `,
+    loadNativeChatAiBatch(prisma, appNo)
   ])
 
   const maxMsgId = msgs.length > 0 ? msgs[msgs.length - 1].id : lastMsgId
   const maxCallId = calls.length > 0 ? calls[calls.length - 1].id : lastCallId
   const hasNewContent =
+    (!!nativeBatch.latestChangedAt && (!lastNativeAt || nativeBatch.latestChangedAt > lastNativeAt)) ||
     msgs.some((m) => m.id > lastMsgId && (m.contentText ?? '').trim().length > 0) ||
     calls.some((c) => c.id > lastCallId && ((c.asrText ?? '').trim().length > 0 || (c.durationSec ?? 0) > 0))
 
   const prevBrief = (existing?.briefJson as OrderBrief | null) ?? null
   if (!hasNewContent && !opts.force) {
-    if (maxMsgId > lastMsgId || maxCallId > lastCallId) {
+    if (maxMsgId > lastMsgId || maxCallId > lastCallId || (!!nativeBatch.latestChangedAt && (!lastNativeAt || nativeBatch.latestChangedAt > lastNativeAt))) {
       await prisma.applicationBrief.upsert({
         where: { applicationNo: appNo },
         create: {
           applicationNo: appNo,
           briefJson: jsonInput(prevBrief),
           briefLastMsgId: maxMsgId,
-          briefLastCallId: maxCallId
+          briefLastCallId: maxCallId,
+          briefLastNativeAt: nativeBatch.latestChangedAt ?? lastNativeAt
         },
         update: {
           briefLastMsgId: maxMsgId,
-          briefLastCallId: maxCallId
+          briefLastCallId: maxCallId,
+          briefLastNativeAt: nativeBatch.latestChangedAt ?? lastNativeAt
         }
       })
     }
@@ -782,12 +815,20 @@ export async function refreshApplicationBrief(
     status: first?.status ?? null
   }
 
-  const briefMsgs: BriefMessageInput[] = msgs.map((m) => ({
-    channel: m.channel,
-    senderName: m.senderName,
-    contentText: m.contentText,
-    capturedAt: m.capturedAt
-  }))
+  const briefMsgs: BriefMessageInput[] = [
+    ...msgs.map((m) => ({
+      channel: m.channel,
+      senderName: m.senderName,
+      contentText: m.contentText,
+      capturedAt: m.capturedAt
+    })),
+    ...nativeBatch.messages.map((m) => ({
+      channel: m.channel,
+      senderName: m.senderName,
+      contentText: m.contentText,
+      capturedAt: m.occurredAt
+    }))
+  ]
   const briefCalls: BriefCallInput[] = calls.map((c) => ({
     direction: c.direction,
     callStatus: c.callStatus,
@@ -816,13 +857,15 @@ export async function refreshApplicationBrief(
       briefJson: jsonInput(stored),
       briefUpdatedAt: new Date(),
       briefLastMsgId: maxMsgId,
-      briefLastCallId: maxCallId
+      briefLastCallId: maxCallId,
+      briefLastNativeAt: nativeBatch.latestChangedAt ?? lastNativeAt
     },
     update: {
       briefJson: jsonInput(stored),
       briefUpdatedAt: new Date(),
       briefLastMsgId: maxMsgId,
-      briefLastCallId: maxCallId
+      briefLastCallId: maxCallId,
+      briefLastNativeAt: nativeBatch.latestChangedAt ?? lastNativeAt
     }
   })
 

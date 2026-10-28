@@ -31,17 +31,13 @@ export default function OrderAiConfigPage(): React.JSX.Element {
       {error && <ErrorBlock error={error} onRetry={() => void load()} />}
       {config && <div className="space-y-4">
         <Card className="p-5">
-          <SectionTitle>1. 千问调用时间与触发条件</SectionTitle>
-          <div className="flex flex-wrap gap-2">
-            {config.schedule.times.map((time) => <span key={time} className="rounded-full bg-accent-soft px-3 py-1 text-sm font-medium text-accent-strong">{time}</span>)}
-          </div>
+          <SectionTitle>1. 千问调用触发条件</SectionTitle>
           <div className="mt-3 grid gap-2 text-sm text-fg-muted">
-            <p>时区：{config.schedule.timeZone}</p>
-            <p>{config.schedule.condition}</p>
+            <p>电话：{config.schedule.callTrigger}</p>
+            <p>微信、企微：{config.schedule.communicationTrigger}</p>
+            <p>手工补录素材：静默 {config.schedule.materialSilenceMinutes} 分钟后分析。</p>
+            <p>后台检查频率：每 30 秒；时间标准：{config.schedule.timeZone}</p>
             <p>{config.schedule.scope}</p>
-            <p className="rounded bg-surface-2 px-3 py-2 text-fg">
-              如需调整调用时段与频次，请直接前往左侧导航菜单的 <a href="/ai-schedule-config" className="font-semibold text-accent-strong underline">「⏱ AI调用时间配置」</a> 页面进行可视化调整，即改即生效，无需重启服务。
-            </p>
           </div>
         </Card>
 

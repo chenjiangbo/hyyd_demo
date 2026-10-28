@@ -11,21 +11,21 @@ const CREATE_TABLE_SQL = `
   );
 `
 
-const INIT_ORDER_AI_SCHEDULE_SQL = `
-  INSERT INTO sys_settings (key, value, updated_at)
-  VALUES (
-    'order_ai_schedule',
-    '{"enabled": true, "startTime": "09:00", "endTime": "21:00", "intervalMinutes": 30}'::jsonb,
-    NOW()
-  )
-  ON CONFLICT (key) DO NOTHING;
-`
-
 const INIT_ALIYUN_SMS_CONFIG_SQL = `
   INSERT INTO sys_settings (key, value, updated_at)
   VALUES (
     'aliyun_sms_config',
     '{"enabled": false, "accessKeyId": "", "accessKeySecret": "", "signName": "寰宇医道", "templatePreDay": "", "templateSameDay": "", "templateManagerAlert": "", "templatesConfigured": false}'::jsonb,
+    NOW()
+  )
+  ON CONFLICT (key) DO NOTHING;
+`
+
+const INIT_ORDER_AI_AUTOMATION_CONFIG_SQL = `
+  INSERT INTO sys_settings (key, value, updated_at)
+  VALUES (
+    'order_ai_automation_config',
+    '{"imageAiEnabled": false, "communicationSilenceMinutes": 5}'::jsonb,
     NOW()
   )
   ON CONFLICT (key) DO NOTHING;
@@ -37,8 +37,8 @@ export async function ensureSysSettingsTable(
 ): Promise<void> {
   try {
     await prisma.$executeRawUnsafe(CREATE_TABLE_SQL)
-    await prisma.$executeRawUnsafe(INIT_ORDER_AI_SCHEDULE_SQL)
     await prisma.$executeRawUnsafe(INIT_ALIYUN_SMS_CONFIG_SQL)
+    await prisma.$executeRawUnsafe(INIT_ORDER_AI_AUTOMATION_CONFIG_SQL)
     logger?.info('系统设置表 (sys_settings) 结构与默认值校验完成')
   } catch (err) {
     logger?.error('创建/校验 sys_settings 系统设置表失败:', err)

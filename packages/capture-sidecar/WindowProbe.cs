@@ -165,7 +165,9 @@ internal sealed class WindowProbe : IDisposable
                     action = msg == NativeMethods.WM_LBUTTONDOWN ? "down" : "up",
                     point = new { x = pt.X, y = pt.Y },
                     hwndAtPoint = infoAtPoint,
-                    foreground = foregroundInfo
+                    foreground = foregroundInfo,
+                    uiAutomationAtPoint = PreviewUiEvidence(infoAtPoint),
+                    uiAutomationForeground = PreviewUiEvidence(foregroundInfo)
                 });
 
                 if (msg == NativeMethods.WM_LBUTTONUP)
@@ -356,6 +358,7 @@ internal sealed class WindowProbe : IDisposable
             type = "probe-preview-binding-snapshot",
             trigger,
             window = info,
+            uiAutomation = PreviewUiEvidence(info),
             bindingSnapshot,
             lastContext = _lastClickContext,
             lastValidCustomerContext = _lastValidCustomerContext
@@ -395,7 +398,13 @@ internal sealed class WindowProbe : IDisposable
             return;
         }
         info = finalInfo;
-        Emit(new { type = "probe-preview-final", trigger, window = info });
+        Emit(new
+        {
+            type = "probe-preview-final",
+            trigger,
+            window = info,
+            uiAutomation = PreviewUiEvidence(info)
+        });
 
         lock (_capturedPreviewHwnds)
         {
@@ -468,6 +477,7 @@ internal sealed class WindowProbe : IDisposable
             type = "probe-preview-candidate",
             trigger,
             window = info,
+            uiAutomation = PreviewUiEvidence(info),
             screenshotPath = imagePath,
             captureError,
             captureBackend = "screen-copy-after-preview-click",
@@ -619,7 +629,7 @@ internal sealed class WindowProbe : IDisposable
         return path;
     }
 
-    private static bool IsChatMainWindow(WindowInfo info)
+    private bool IsChatMainWindow(WindowInfo info)
     {
         if (info.ProcessName is null || !TargetProcesses.Contains(info.ProcessName)) return false;
         if (!info.Visible || info.Iconic) return false;
@@ -632,11 +642,13 @@ internal sealed class WindowProbe : IDisposable
             return string.Equals(info.ClassName, mainClass, StringComparison.Ordinal);
         }
 
-        return string.Equals(info.Channel, "wechat", StringComparison.OrdinalIgnoreCase) &&
-               string.Equals(info.Title, "微信", StringComparison.Ordinal);
+        // 微信不同版本、窗口状态下系统标题可能为空或不是“微信”。
+        // 会话是否为允许采集的联系人/群由点击前的聊天区标题 OCR +
+        // CaptureCollector.ClassifyTitle 决定，这里只需要确认它是微信主窗口。
+        return string.Equals(info.Channel, "wechat", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsPreviewCandidate(WindowInfo info)
+    private bool IsPreviewCandidate(WindowInfo info)
     {
         if (info.ProcessName is null || !TargetProcesses.Contains(info.ProcessName)) return false;
         if (info.Iconic) return false;
@@ -644,13 +656,26 @@ internal sealed class WindowProbe : IDisposable
         return IsConfirmedPreview(info) || IsPendingPreview(info) || IsWxworkNonMainWindow(info);
     }
 
-    private static bool IsConfirmedPreview(WindowInfo? info)
+    private static object? PreviewUiEvidence(WindowInfo? info)
+    {
+        if (info is null || !string.Equals(info.Channel, "wechat", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        _ = WeChatPreviewInspector.TryInspect(new IntPtr(info.Hwnd), out var evidence);
+        return evidence;
+    }
+
+    private bool IsConfirmedPreview(WindowInfo? info)
     {
         if (info is null || info.ProcessName is null || !TargetProcesses.Contains(info.ProcessName)) return false;
         if (!info.Visible || info.Iconic) return false;
         if (string.Equals(info.Channel, "wechat", StringComparison.OrdinalIgnoreCase))
         {
-            return string.Equals(info.Title, "图片和视频", StringComparison.Ordinal);
+            // The title can be empty or localized. A preview is confirmed only
+            // by the UI Automation window/control tree, never by a size or title heuristic.
+            return WeChatPreviewInspector.TryInspect(new IntPtr(info.Hwnd), out _);
         }
 
         // 企微大图窗口特征还需要采样确认。probe 阶段只把非主窗口作为候选，正式逻辑不能直接照搬。

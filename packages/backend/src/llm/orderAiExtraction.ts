@@ -2,12 +2,17 @@ import { chat } from './gatewayClient.js'
 import { WORKFLOW_EVENT_CODES, type WorkflowAnalysisEvent } from './orderBriefService.js'
 import { formatShanghaiDateTime, parseShanghaiDateTime } from '../time/shanghaiTime.js'
 
-export const ORDER_AI_FIELD_PROMPT_VERSION = 'order-fields-v6-huanyu-service-segmentation'
+export const ORDER_AI_FIELD_PROMPT_VERSION = 'order-fields-v7-native-message-evidence'
 
 export type OrderAiSourceMessage = {
   id: number
+  sourceRef?: string
   channel: string
   senderName: string | null
+  direction?: string
+  messageKind?: string
+  sourceTypeCode?: string | null
+  sourceItemIndex?: number | null
   contentText: string
   occurredAt: Date
 }
@@ -182,14 +187,15 @@ export const ORDER_AI_PROMPT_RULES = [
   '   - 必须有沟通记录或通话录音明确证实本次就医全流程履约已彻底结束（例如：陪诊/门诊已完成且患者已顺利就医返程，服务人员发送了就诊结束总结/回访/感谢确认，或双方明确确认“本次服务已全部完成/结束”）；',
   '   - 严禁将预约成功、仅完成挂号或单次门诊看诊后仍有后续检查/复诊计划的情况误判为“已完成”；',
   '   - 必须 requires_confirmation=true，并引用证明服务彻底结束的具体消息或通话原文作为 evidence。',
-  '【时区基准】：沟通时间线中的所有消息和通话时间均为中国东八区北京时间，提取的时间字段务必保持一致。'
+  '【时区基准】：沟通时间线中的所有消息和通话时间均为中国东八区北京时间，提取的时间字段务必保持一致。',
+  '【原生消息元数据】：微信/企微消息的方向、标准化类型和来源类型码来自采集数据，必须按输入原样作为判断依据；方向为 unknown 时不得推断成客户或专员。'
 ] as const
 
 export const ORDER_AI_PROMPT_INPUTS = [
   '当前 B 端订单及申请号下全部关联 B 端订单、寰宇服务单候选号与服务类型',
   '允许提取字段：申请内候选服务类型对应字段白名单的并集；每个结果必须标明寰宇订单号',
   '当前已保存正式值：仅用于判断变更，模型不得照搬',
-  '申请号下沟通时间线：企微消息、微信消息、已完成转写的通话录音'
+  '申请号下沟通时间线：微信/企微的准确消息发生时间、采集方向、标准化消息类型、原始类型码、合并消息序号、文本与附件元数据，以及已完成转写的通话录音；不向模型提供系统采集时间'
 ] as const
 
 export const ORDER_AI_OUTPUT_DESCRIPTION = {
@@ -208,9 +214,29 @@ function fmt(date: Date): string {
   return `${b.getUTCFullYear()}-${pad(b.getUTCMonth() + 1)}-${pad(b.getUTCDate())} ${pad(b.getUTCHours())}:${pad(b.getUTCMinutes())}`
 }
 
+function directionLabel(value: string): string {
+  switch (value) {
+    case 'incoming': return '客户'
+    case 'outgoing': return '专员'
+    case 'system': return '系统'
+    case 'unknown': return '未知'
+    default: return `未识别(${value})`
+  }
+}
+
 function timeline(messages: OrderAiSourceMessage[], calls: OrderAiSourceCall[]): string {
   const entries = [
-    ...messages.map((m) => ({ at: m.occurredAt, line: `[消息#${m.id} ${fmt(m.occurredAt)} ${m.channel}/${m.senderName || '未知'}] ${m.contentText.replace(/\s+/g, ' ').trim()}` })),
+    ...messages.map((m) => {
+      const metadata = [
+        m.direction ? `方向=${m.direction}（${directionLabel(m.direction)}）` : null,
+        m.messageKind ? `类型=${m.messageKind}` : null,
+        m.sourceTypeCode ? `来源类型码=${m.sourceTypeCode}` : null,
+        m.sourceItemIndex != null ? `合并序号=${m.sourceItemIndex}` : null
+      ].filter((value): value is string => Boolean(value)).join('；')
+      const sender = m.senderName?.trim() ? `发送人=${m.senderName.trim()}` : null
+      const header = [m.channel, metadata, sender].filter(Boolean).join('；')
+      return { at: m.occurredAt, line: `[${m.sourceRef ?? `消息#${m.id}`} ${fmt(m.occurredAt)} ${header}] ${m.contentText.replace(/\s+/g, ' ').trim()}` }
+    }),
     ...calls.filter((c) => (c.asrText ?? '').trim()).map((c) => ({ at: c.startedAt, line: `[通话#${c.id} ${fmt(c.startedAt)} ${c.direction === 'out' ? '去电' : '来电'}] ${(c.asrText ?? '').replace(/\s+/g, ' ').trim()}` }))
   ].filter((item) => item.line.trim())
   entries.sort((a, b) => a.at.getTime() - b.at.getTime())
@@ -444,7 +470,7 @@ export async function extractOrderServiceFields(input: {
     'JSON 格式：',
     JSON.stringify({
       field_candidates: [
-        { huanyu_order_no: '必须是候选列表中的准确单号', field_code: '白名单字段', value: '候选值', normalized_value: '可选标准化值', candidate_type: 'new_or_confirmed | change_candidate | ambiguous', confidence: 0.0, requires_confirmation: false, evidence: [{ source_id: '消息#123 或 通话#456' }] },
+        { huanyu_order_no: '必须是候选列表中的准确单号', field_code: '白名单字段', value: '候选值', normalized_value: '可选标准化值', candidate_type: 'new_or_confirmed | change_candidate | ambiguous', confidence: 0.0, requires_confirmation: false, evidence: [{ source_id: '消息#123、原生消息#123 或 通话#456' }] },
         { field_code: 'recommended_schemes', value: '识别到2条专员推荐方案', normalized_value: [{ province: '北京市', city: '北京市', hospital: '北京协和医院', department: '心内科', doctor: '张医生', evidence_source_id: '通话#456' }, { province: '上海市', city: '上海市', hospital: '瑞金医院', department: '心内科', doctor: '李医生', evidence_source_id: '消息#123' }], candidate_type: 'new_or_confirmed', confidence: 0.9, requires_confirmation: true, evidence: [{ source_id: '通话#456' }] },
         { field_code: 'escort_records', value: '共识别到2次陪诊：1. 2026-09-28 00:00:00 张三(门诊陪诊)；2. 2026-09-29 00:00:00 李四(检查陪诊)', normalized_value: [{ sequence: '1', service_date: '2026-09-28 00:00:00', escort_name: '张三', escort_phone: '13800000001', service_scene: '门诊陪诊' }, { sequence: '2', service_date: '2026-09-29 00:00:00', escort_name: '李四', escort_phone: '13900000002', service_scene: '检查陪诊' }], candidate_type: 'new_or_confirmed', confidence: 0.95, requires_confirmation: false, evidence: [{ source_id: '消息#123' }] }
       ],

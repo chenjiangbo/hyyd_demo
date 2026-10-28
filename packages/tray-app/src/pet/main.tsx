@@ -1,7 +1,7 @@
 import { StrictMode, useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { PetAvatar, type PetVisualState } from './PetAvatar'
-import { PetBubble, type Candidate, type PetLookupOption, type PetPanel } from './PetBubble'
+import { PetBubble, type Candidate, type NativeImageMatch, type PetLookupOption, type PetPanel } from './PetBubble'
 import './styles.css'
 
 type PetMode = 'idle' | 'dragover' | 'receiving' | 'working' | 'done' | 'unknown' | 'candidates' | 'warning'
@@ -34,6 +34,8 @@ export function Pet(): React.JSX.Element {
   const [mode, setMode] = useState<PetMode>('idle')
   const [message, setMessage] = useState('把图片拖给我吧')
   const [candidates, setCandidates] = useState<Candidate[]>([])
+  const [nativeImageMatch, setNativeImageMatch] = useState<NativeImageMatch | null>(null)
+  const [selectedApplicationNo, setSelectedApplicationNo] = useState<string | null>(null)
   const [speaking, setSpeaking] = useState(false)
   const [bubbleSide, setBubbleSide] = useState<'left' | 'right'>('left')
   const [mobileStatus, setMobileStatus] = useState<PetMobileStatus>({ state: 'unknown', lastSeenAt: null })
@@ -70,6 +72,21 @@ export function Pet(): React.JSX.Element {
       setMode(status.state)
       announce(status.message, status.state === 'done' || status.state === 'unknown' || status.state === 'candidates')
       setCandidates((status.candidates ?? []) as Candidate[])
+      if (status.imageMatch) {
+        setNativeImageMatch(status.imageMatch as NativeImageMatch)
+        setSelectedApplicationNo(status.imageMatch.applicationNo ?? null)
+      }
+      if (status.state === 'done' || status.state === 'unknown') {
+        setNativeImageMatch(null)
+        setSelectedApplicationNo(null)
+      }
+    })
+    const unsubscribeImageMatch = window.api.onPetImageMatch((match) => {
+      setNativeImageMatch(match)
+      setSelectedApplicationNo(match.applicationNo)
+      setCandidates([])
+      setMode('candidates')
+      announce('我识别到一张挂号凭证，请确认申领号和订单', true)
     })
     const onDragEnter = (event: DragEvent): void => {
       petDebug('dragenter', { types: Array.from(event.dataTransfer?.types ?? []) })
@@ -139,9 +156,12 @@ export function Pet(): React.JSX.Element {
       try {
         result = await window.api.petDropFiles([paths[0]])
       } catch (error) {
-        petDebug('drop:ipc-error', { message: error instanceof Error ? error.message : String(error) })
+        const message = error instanceof Error ? error.message : String(error)
+        petDebug('drop:ipc-error', { message })
         setMode('unknown')
-        announce('处理文件时出错了，请稍后再试', true)
+        announce(message.includes('未启用图片 AI 分析')
+          ? '后台暂未开启图片识别功能，请联系管理员'
+          : '处理文件时出错了，请稍后再试', true)
         return
       }
       const visualWait = Math.max(0, 900 - (performance.now() - visualStartedAt))
@@ -154,6 +174,10 @@ export function Pet(): React.JSX.Element {
       setMode(result.state)
       announce(result.message, result.state === 'done' || result.state === 'unknown' || result.state === 'candidates')
       setCandidates((result.candidates ?? []) as Candidate[])
+      if (result.imageMatch) {
+        setNativeImageMatch(result.imageMatch as NativeImageMatch)
+        setSelectedApplicationNo(result.imageMatch.applicationNo ?? null)
+      }
     }
     window.addEventListener('dragenter', onDragEnter, true)
     window.addEventListener('dragover', onDragOver, true)
@@ -165,6 +189,7 @@ export function Pet(): React.JSX.Element {
       window.removeEventListener('dragleave', onDragLeave, true)
       window.removeEventListener('drop', onDrop, true)
       unsubscribe()
+      unsubscribeImageMatch()
       if (speakingTimer.current !== null) window.clearTimeout(speakingTimer.current)
       if (receivingTimer.current !== null) window.clearTimeout(receivingTimer.current)
     }
@@ -230,6 +255,8 @@ export function Pet(): React.JSX.Element {
 
   const panel: PetPanel | null = (businessPanelVisible ? businessPanel : null) ?? (mode === 'candidates' && candidates.length > 0
     ? { kind: 'candidate-list', title: '请选择这张凭证对应的订单', items: candidates }
+    : mode === 'candidates' && nativeImageMatch !== null
+      ? { kind: 'image-match', match: nativeImageMatch, selectedApplicationNo }
     : mode === 'unknown' || mode === 'warning'
       ? { kind: 'error', text: message }
       : mode === 'working' || mode === 'receiving'
@@ -337,6 +364,58 @@ export function Pet(): React.JSX.Element {
     })
   }
 
+  const selectImageApplication = (applicationNo: string): void => {
+    setSelectedApplicationNo(applicationNo)
+  }
+
+  const resolveImageOrder = (applicationNo: string, orderId: number | null): void => {
+    const match = nativeImageMatch
+    if (!match) return
+    if (match.source === 'drop') {
+      if (orderId === null) {
+        setSelectedApplicationNo(applicationNo)
+        announce('申领号已选好，请再确认具体订单；图片暂未上传。')
+        return
+      }
+      setMode('working')
+      announce('正在把图片保存到你选定的订单…')
+      void window.api.petSelectOrder(orderId, applicationNo).then((result) => {
+        setNativeImageMatch(null)
+        setSelectedApplicationNo(null)
+        setMode(result.state)
+        announce(result.message, true)
+      }).catch((error: unknown) => {
+        setMode('candidates')
+        announce(error instanceof Error ? error.message : '图片保存失败', true)
+      })
+      return
+    }
+    if (match.attachmentId === undefined) return
+    setMode('working')
+    announce('正在保存匹配结果…')
+    void window.api.resolveNativeImageMatch({ attachmentId: match.attachmentId, applicationNo, orderId }).then((result) => {
+      setNativeImageMatch(null)
+      setSelectedApplicationNo(null)
+      setMode('done')
+      announce(result.message, true)
+    }).catch((error: unknown) => {
+      setMode('unknown')
+      announce(error instanceof Error ? error.message : '保存匹配结果失败', true)
+    })
+  }
+
+  const discardImageMatch = (): void => {
+    void window.api.petDiscardPendingImage().then(() => {
+      setNativeImageMatch(null)
+      setSelectedApplicationNo(null)
+      setMode('idle')
+      announce('这张图片已放弃，可以继续处理其他图片。')
+    }).catch((error: unknown) => {
+      setMode('candidates')
+      announce(error instanceof Error ? error.message : '放弃图片失败', true)
+    })
+  }
+
   useEffect(() => {
     void window.api.setPetExpanded(expanded).then((layout) => {
       setBubbleSide(layout.bubbleSide)
@@ -409,7 +488,19 @@ export function Pet(): React.JSX.Element {
         <PetAvatar state={avatarState} />
         {mobileStatus.state !== 'unknown' && <span className={`pet-mobile-status pet-mobile-status--${mobileStatus.state}`} title={mobileStatusTitle} aria-label={mobileStatusTitle} />}
       </div>
-      {expanded && panel !== null && <PetBubble panel={panel} onSelectCandidate={selectCandidate} onFieldChange={changeBusinessField} onLookup={lookupOrderDictionary} onAction={businessAction} onSizeChange={resizeBubble} onAddEscortRecord={addBusinessEscortRecord} onRemoveEscortRecord={removeBusinessEscortRecord} />}
+      {expanded && panel !== null && <PetBubble
+        panel={panel}
+        onSelectCandidate={selectCandidate}
+        onSelectApplication={selectImageApplication}
+        onResolveImageOrder={resolveImageOrder}
+        onDiscardImageMatch={discardImageMatch}
+        onFieldChange={changeBusinessField}
+        onLookup={lookupOrderDictionary}
+        onAction={businessAction}
+        onSizeChange={resizeBubble}
+        onAddEscortRecord={addBusinessEscortRecord}
+        onRemoveEscortRecord={removeBusinessEscortRecord}
+      />}
     </main>
   )
 }

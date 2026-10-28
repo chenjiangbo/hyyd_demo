@@ -46,6 +46,81 @@ function formatBytes(value: string | null): string {
   return `${(Number(bytes) / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function ImageAnalysisLog({
+  attachment,
+  enabled
+}: {
+  attachment: NativeChatAdminMessage['attachments'][number]
+  enabled: boolean | undefined
+}): React.JSX.Element | null {
+  if (attachment.kind !== 'image') return null
+  const source = asRecord(attachment.sourceMetadata)
+  const analysis = asRecord(source?.imageAnalysis)
+  if (!analysis) {
+    const text = enabled === false
+      ? '图片 AI 当前已关闭，尚未分析'
+      : source?.rendition === 'thumbnail'
+        ? '等待清晰大图后分析'
+        : '等待图片 AI 分析'
+    return <div className="mt-2 rounded border border-line px-3 py-2 text-xs text-fg-muted">图片 AI：{text}</div>
+  }
+
+  const status = typeof analysis.status === 'string' ? analysis.status : 'unknown'
+  const statusLabel = ({
+    pending: '等待分析',
+    processing: '正在分析',
+    retrying: '分析失败，等待重试',
+    failed: '分析失败',
+    completed: '识别完成'
+  } as Record<string, string>)[status] ?? `状态：${status}`
+  const effectiveStatusLabel = enabled === false && (status === 'pending' || status === 'retrying')
+    ? '已暂停（图片 AI 当前关闭）'
+    : statusLabel
+  const imageType = typeof analysis.imageType === 'string' ? analysis.imageType : null
+  const description = typeof analysis.description === 'string' ? analysis.description : null
+  const visibleText = typeof analysis.visibleText === 'string' ? analysis.visibleText : null
+  const error = typeof analysis.error === 'string' ? analysis.error : null
+  const match = asRecord(analysis.registrationMatch)
+  const matchStatus = typeof match?.status === 'string' ? match.status : null
+  const matchStatusLabel = matchStatus ? ({
+    pending: '等待申领号和订单匹配',
+    processing: '正在匹配申领号和订单',
+    retrying: '匹配失败，等待重试',
+    failed: '申领号或订单匹配失败',
+    completed: '匹配分析完成'
+  } as Record<string, string>)[matchStatus] ?? `匹配状态：${matchStatus}` : null
+  const effectiveMatchStatusLabel = enabled === false && (matchStatus === 'pending' || matchStatus === 'retrying')
+    ? '已暂停（图片 AI 当前关闭）'
+    : matchStatusLabel
+  const applicationNo = typeof match?.applicationNo === 'string' ? match.applicationNo : null
+  const orderId = typeof match?.orderId === 'number' ? match.orderId : null
+  const matchReason = typeof match?.reason === 'string' ? match.reason : null
+  const matchError = typeof match?.error === 'string' ? match.error : null
+
+  return (
+    <div className="basis-full mt-2 space-y-1 rounded border border-accent/20 bg-accent-soft/30 px-3 py-2 text-xs">
+      <div className="font-medium text-fg">图片 AI：{effectiveStatusLabel}{imageType ? ` · ${imageType}` : ''}</div>
+      {description && <div className="whitespace-pre-wrap break-words text-fg-muted">{description}</div>}
+      {visibleText && <details className="text-fg-muted"><summary className="cursor-pointer">查看图片识别文字</summary><div className="mt-1 whitespace-pre-wrap break-words">{visibleText}</div></details>}
+      {error && <div className="whitespace-pre-wrap break-words text-danger">识别错误：{error}</div>}
+      {effectiveMatchStatusLabel && <div className="font-medium text-fg">挂号归属：{effectiveMatchStatusLabel}</div>}
+      {applicationNo && <div className="text-fg-muted">申领号：{applicationNo}</div>}
+      {orderId !== null && <div className="text-fg-muted">建议订单 ID：{orderId}</div>}
+      {matchReason && <div className="whitespace-pre-wrap break-words text-fg-muted">匹配说明：{matchReason}</div>}
+      {matchError && <div className="whitespace-pre-wrap break-words text-danger">匹配错误：{matchError}</div>}
+      {!match && imageType === '挂号凭证' && status === 'completed' && (
+        <div className="text-fg-muted">{enabled === false
+          ? '图片已识别为挂号凭证；图片 AI 当前已关闭，尚未分析申领号和订单归属。'
+          : '图片已识别为挂号凭证，尚无订单匹配记录。'}</div>
+      )}
+    </div>
+  )
+}
+
 export default function NativeChatRecordsPage(): React.JSX.Element {
   const [channel, setChannel] = useState<'wechat' | 'wxwork'>('wechat')
   const [accountKey, setAccountKey] = useState('')
@@ -91,7 +166,13 @@ export default function NativeChatRecordsPage(): React.JSX.Element {
     enabled: selectedId !== null,
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) => adminApi.nativeChatMessages(selectedId!, pageParam as string | undefined),
-    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    refetchInterval: selectedId !== null ? 10_000 : false
+  })
+  const aiAutomation = useQuery({
+    queryKey: ['order-ai-automation-config'],
+    queryFn: () => adminApi.orderAiAutomationConfig(),
+    staleTime: 30_000
   })
   const page = messages.data?.pages[0]
   const totalMessages = page?.totalMessages ?? selected?.messageCount ?? 0
@@ -248,7 +329,7 @@ export default function NativeChatRecordsPage(): React.JSX.Element {
                       onLoad={() => void messages.fetchNextPage()}
                     />
                     <div className="space-y-3 py-2">
-                      {messageItems.map((message) => <MessageCard key={message.id} message={message} onOpenAttachment={openAttachment} />)}
+                      {messageItems.map((message) => <MessageCard key={message.id} message={message} onOpenAttachment={openAttachment} imageAiEnabled={aiAutomation.data?.imageAiEnabled} />)}
                     </div>
                   </div>
                 )}
@@ -282,10 +363,12 @@ export default function NativeChatRecordsPage(): React.JSX.Element {
 function MessageCard({
   message,
   onOpenAttachment,
+  imageAiEnabled,
   nested = false
 }: {
   message: NativeChatAdminMessage
   onOpenAttachment: (attachmentId: number, kind: string) => Promise<void>
+  imageAiEnabled: boolean | undefined
   nested?: boolean
 }): React.JSX.Element {
   const merged = message.kind === 'merged'
@@ -320,7 +403,7 @@ function MessageCard({
       {merged && message.children && message.children.length > 0 && (
         <div className="mt-3 space-y-2 border-l-2 border-line pl-3">
           {message.children.map((child) => (
-            <MessageCard key={child.id} message={child} onOpenAttachment={onOpenAttachment} nested />
+            <MessageCard key={child.id} message={child} onOpenAttachment={onOpenAttachment} imageAiEnabled={imageAiEnabled} nested />
           ))}
         </div>
       )}
@@ -357,6 +440,7 @@ function MessageCard({
                   onClick={() => void onOpenAttachment(attachment.id, attachment.kind)}
                 >{attachment.kind === 'image' ? '查看图片' : attachment.kind === 'video' ? '播放视频' : '打开文件'}</button>
               )}
+              <ImageAnalysisLog attachment={attachment} enabled={imageAiEnabled} />
             </div>
           ))}
         </div>

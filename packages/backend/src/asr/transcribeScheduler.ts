@@ -19,6 +19,7 @@ import {
   type TranscriptionDoc
 } from './funAsrClient.js'
 import { getEnv } from '../env.js'
+import { triggerOrderAiForCall } from '../jobs/orderAiSchedule.js'
 
 const OBJECT_READY_TIMEOUT_MS = 60_000
 const OBJECT_READY_INTERVAL_MS = 2_000
@@ -208,6 +209,9 @@ async function pollTask(callId: number, taskId: string): Promise<void> {
         }
       })
       log('info', `callId=${callId} ✅ 转写完成，文本 ${text.length} 字`)
+      void triggerOrderAiForCall(prisma, deps.minioClient, callId).catch((error) => {
+        log('error', `callId=${callId} 转写完成后触发订单字段分析失败: ${error instanceof Error ? error.stack || error.message : String(error)}`)
+      })
       return
     }
 

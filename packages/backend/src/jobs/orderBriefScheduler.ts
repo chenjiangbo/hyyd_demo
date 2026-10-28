@@ -1,20 +1,13 @@
 /**
- * 订单简报自动触发扫描器。
- *
- * 每 TICK 扫一遍：找"自上次跑简报以来有新内容"且满足触发条件的订单 → 调 refreshOrderBrief（全量重算）。
- * 触发条件（任一）：
- *   - 静默：最后一条消息/通话距今 ≥ SILENCE_MIN 分钟（这阵聊完了）。跑完后记号推进到最新，
- *     没有新内容进来就不会再触发，天然不重复。
- *   - 阈值：自上次跑以来新增 ≥ THRESHOLD_COUNT 条**有内容的微信/企微消息**（聊得多，攒够就跑一次）。
- * 注：通话录音转写完成会**立即**触发一次（在 asr/transcribeScheduler 里直接调 refreshOrderBrief），不靠本扫描器。
- * 便宜预过滤（纯时间戳/系统提示/空转写不算数）+ "无营养则只推进记号"在 refreshOrderBrief 内部。
- * 设计见 docs/设计_订单AI滚动简报.md。
+ * 订单 AI 简报的旧扫描实现。
+ * startOrderBriefScheduler 当前被关闭；保留实现代码，但不会启动自动分析。
  */
 import type { PrismaClient } from '@prisma/client'
 import type * as Minio from 'minio'
 import { refreshOrderBrief } from './orderBriefRunner.js'
 
-const TICK_MS = 60_000 // 每分钟扫一遍
+const TICK_MS = 60_000
+const ORDER_BRIEF_SCHEDULER_ENABLED = false
 const SILENCE_MIN = 5 // 静默 N 分钟
 const THRESHOLD_COUNT = 10 // 新增 K 条
 const MAX_PER_TICK = 5 // 每轮最多抽几单，平滑 LLM 负载
@@ -23,7 +16,7 @@ let timer: ReturnType<typeof setInterval> | null = null
 let ticking = false
 
 export function startOrderBriefScheduler(prisma: PrismaClient, minio: Minio.Client): void {
-  if (timer) return
+  if (timer || !ORDER_BRIEF_SCHEDULER_ENABLED) return
   timer = setInterval(() => void tick(prisma, minio), TICK_MS)
   // 启动后延迟一会儿先扫一次（不阻塞启动）
   setTimeout(() => void tick(prisma, minio), 10_000)
@@ -94,8 +87,6 @@ async function tick(prisma: PrismaClient, minio: Minio.Client): Promise<void> {
       a.maxMatId = m._max.id ?? 0
       a.maxMatAt = m._max.createdAt ?? null
     }
-    if (byOrder.size === 0) return
-
     // 取这些订单的水位
     const ids = [...byOrder.keys()]
     const orders = await prisma.order.findMany({
@@ -135,8 +126,36 @@ async function tick(prisma: PrismaClient, minio: Minio.Client): Promise<void> {
       if (newMsgCount >= THRESHOLD_COUNT) candidates.push(o.id)
     }
 
+    const nativeCandidates = await prisma.$queryRaw<Array<{ order_id: number; last_occurred_at: Date; new_message_count: bigint }>>`
+      SELECT o.id AS order_id,
+             MAX(m.occurred_at) AS last_occurred_at,
+             COUNT(*) FILTER (
+               WHERE GREATEST(m.observed_at, COALESCE(attachment_updates.latest_attachment_at, m.observed_at))
+                     > COALESCE(o.brief_last_native_at, 'epoch'::timestamp)
+             )::bigint AS new_message_count
+        FROM orders o
+        JOIN native_chat_conversations c
+          ON c.application_no = o.raw_json->>'crmApplyNo'
+         AND c.application_link_status = 'matched'
+        JOIN native_chat_messages m ON m.conversation_id = c.id
+        LEFT JOIN LATERAL (
+          SELECT MAX(a.updated_at) AS latest_attachment_at
+            FROM native_chat_attachments a
+           WHERE a.message_id = m.id
+        ) attachment_updates ON TRUE
+       WHERE o.raw_json->>'crmApplyNo' IS NOT NULL
+       GROUP BY o.id, o.brief_last_native_at
+      HAVING MAX(GREATEST(m.observed_at, COALESCE(attachment_updates.latest_attachment_at, m.observed_at)))
+             > COALESCE(o.brief_last_native_at, 'epoch'::timestamp)
+    `
+    for (const candidate of nativeCandidates) {
+      const silent = candidate.last_occurred_at.getTime() <= silenceCutoff.getTime()
+      if (silent || Number(candidate.new_message_count) >= THRESHOLD_COUNT) candidates.push(candidate.order_id)
+    }
+
     let done = 0
-    for (const id of candidates) {
+    const uniqueCandidates = [...new Set(candidates)]
+    for (const id of uniqueCandidates) {
       if (done >= MAX_PER_TICK) break
       try {
         const r = await refreshOrderBrief(prisma, minio, id)
@@ -145,7 +164,7 @@ async function tick(prisma: PrismaClient, minio: Minio.Client): Promise<void> {
         console.warn(`[brief-scheduler] 订单 ${id} 简报刷新失败:`, (e as Error).message)
       }
     }
-    if (done > 0) console.log(`[brief-scheduler] 本轮刷新 ${done} 单简报（候选 ${candidates.length}）`)
+    if (done > 0) console.log(`[brief-scheduler] 本轮刷新 ${done} 单简报（候选 ${uniqueCandidates.length}）`)
   } catch (e) {
     console.warn('[brief-scheduler] tick 异常:', (e as Error).message)
   } finally {

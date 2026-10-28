@@ -38,7 +38,8 @@ import type {
   NativeChatDiscoveredSession,
   NativeChatAccount,
   NativeChatConversationSummary,
-  NativeChatAdminMessagePage
+  NativeChatAdminMessagePage,
+  OrderAiAutomationConfig
 } from './types'
 
 export type HyhomeOrderSite = { origin: string; listResourceId: string; detailResourceId: string }
@@ -263,6 +264,14 @@ export const adminApi = {
   },
   nativeChatAttachmentUrl(attachmentId: number) {
     return request<{ url: string }>(`/api/v1/admin/native-chat-attachments/${attachmentId}/url`)
+  },
+  orderAiAutomationConfig() {
+    return request<OrderAiAutomationConfig>('/api/v1/admin/ai-schedule-config')
+  },
+  saveOrderAiAutomationConfig(data: Pick<OrderAiAutomationConfig, 'imageAiEnabled' | 'communicationSilenceMinutes'>) {
+    return request<OrderAiAutomationConfig & { message: string }>('/api/v1/admin/ai-schedule-config', {
+      method: 'PUT', body: JSON.stringify(data)
+    })
   },
   saveNativeChatCollectionConfig(data: Pick<NativeChatCollectionConfig, 'rules'>) {
     return request<NativeChatCollectionConfig>(

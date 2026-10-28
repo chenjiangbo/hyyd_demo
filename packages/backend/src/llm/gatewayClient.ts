@@ -107,7 +107,7 @@ export async function chat(
 }
 
 // ── 多模态（图片理解）─────────────────────────────────────────────────────
-// 用百炼 qwen-vl 模型对图片做"看图 + 提取"。图片以 data URL(base64) 传入
+// 通过视觉模型对图片做"看图 + 提取"。图片以 data URL(base64) 传入
 // （MinIO 在内网，DashScope 抓不到 presigned URL，必须 base64 内联）。
 // 地址、密钥、模型可由 HYYD_VLM_* 单独配置；未配置时沿用 DashScope 地址/密钥。
 export async function visionChat(
@@ -118,7 +118,8 @@ export async function visionChat(
 ): Promise<ChatResult> {
   const apiKey = process.env.HYYD_VLM_API_KEY?.trim() || getDashscopeApiKey()
   const endpoint = openAiChatEndpoint(process.env.HYYD_VLM_BASE_URL?.trim())
-  const model = options.model ?? process.env.HYYD_VLM_MODEL ?? 'qwen-vl-max'
+  // 临时默认值：已部署的采集模块可能早于环境变量配置，未设置时使用 gui-plus。
+  const model = options.model ?? (process.env.HYYD_VLM_MODEL?.trim() || 'gui-plus')
 
   const body: Record<string, unknown> = {
     model,

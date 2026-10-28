@@ -202,33 +202,6 @@ export default function DashboardPage(): React.JSX.Element {
           ) : null}
         </Card>
 
-        <Card className="p-4">
-          <h2 className="text-sm font-medium mb-3">AI 简报健康</h2>
-          {quality.isLoading ? (
-            <LoadingBlock />
-          ) : quality.data ? (
-            <div className="grid grid-cols-3 gap-3 text-center">
-              <QualityStat
-                label="已生成"
-                value={`${quality.data.brief.generated} / ${quality.data.brief.ordersWithMessages}`}
-                tone="ok"
-                hint="有消息的订单中已产出简报的数量"
-              />
-              <QualityStat
-                label="简报滞后"
-                value={quality.data.brief.stale}
-                tone={quality.data.brief.stale > 0 ? 'warn' : 'ok'}
-                hint="有新消息但简报水位未跟上的订单"
-              />
-              <QualityStat
-                label="尚未生成"
-                value={quality.data.brief.missing}
-                tone={quality.data.brief.missing > 0 ? 'warn' : 'ok'}
-                hint="有消息但还没生成过简报的订单"
-              />
-            </div>
-          ) : null}
-        </Card>
       </div>
 
       {/* 告警区 */}

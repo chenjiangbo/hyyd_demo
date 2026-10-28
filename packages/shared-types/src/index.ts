@@ -112,6 +112,7 @@ export interface NativeChatImageMatchOrder {
   doctor: string | null
   appointmentDate: string | null
   status: string
+  programMatchedFields?: string[]
 }
 
 export interface NativeChatImageMatchApplication {
@@ -130,6 +131,25 @@ export interface NativeChatPendingImageMatch {
   senderName: string | null
   applicationNo: string | null
   description: string
+  candidateApplications: NativeChatImageMatchApplication[]
+  applicationDecision: string
+  orderDecision: string
+  reason: string
+}
+
+export interface PetDropImageMatch {
+  source: 'drop'
+  imageUrl: string
+  occurredAt: string
+  channel: '浮动精灵'
+  senderName: null
+  applicationNo: null
+  recommendedApplicationNo: string | null
+  recommendedOrderId: number | null
+  imageType: string
+  typeDescription: string
+  description: string
+  visibleText: string
   candidateApplications: NativeChatImageMatchApplication[]
   applicationDecision: string
   orderDecision: string

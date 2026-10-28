@@ -2,6 +2,7 @@ import type { PrismaClient } from '@prisma/client'
 import type * as Minio from 'minio'
 import { matchNativeRegistrationProofToOrders } from './registrationProofService.js'
 import { understandImage } from './imageUnderstanding.js'
+import { isImageAiEnabled } from './orderAiAutomationConfig.js'
 
 const BUCKET = 'materials'
 const WORKER_INTERVAL_MS = 15_000
@@ -105,6 +106,7 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
   if (activeAttachments.has(id)) return
   activeAttachments.add(id)
   try {
+    if (!await isImageAiEnabled(prisma)) return
     const attachment = await getAttachment(prisma, id)
     if (!attachment || attachment.kind !== 'image' || attachment.state !== 'available' || !attachment.storage_key) return
     const metadata = asRecord(attachment.source_metadata) ?? {}
@@ -116,6 +118,7 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
       const attemptCount = typeof analysis?.attemptCount === 'number' ? analysis.attemptCount : 0
       if (attemptCount >= MAX_ATTEMPTS) return
       const attempt = attemptCount + 1
+      if (!await isImageAiEnabled(prisma)) return
       await writeImageAnalysis(prisma, id, {
         status: 'processing', attemptCount: attempt, promptVersion: PROMPT_VERSION, startedAt: new Date().toISOString()
       }, false)
@@ -147,6 +150,7 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
     }
 
     if (analysis?.imageType !== '挂号凭证') return
+    if (!await isImageAiEnabled(prisma)) return
     const priorMatch = asRecord(analysis.registrationMatch)
     if (priorMatch?.status === 'completed' || priorMatch?.status === 'failed') return
     const matchAttemptCount = typeof priorMatch?.attemptCount === 'number' ? priorMatch.attemptCount : 0
@@ -211,6 +215,7 @@ async function recoverAvailableImages(prisma: PrismaClient, minio: Minio.Client)
   if (workerTicking) return
   workerTicking = true
   try {
+    if (!await isImageAiEnabled(prisma)) return
     const rows = await prisma.$queryRaw<Array<{ id: number }>>`
       SELECT id
         FROM native_chat_attachments

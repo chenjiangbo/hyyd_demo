@@ -1,6 +1,5 @@
 import type { PrismaClient } from '@prisma/client'
 import { ensureBOrderFormInstance } from './bOrderForms.js'
-import { summarizeCallCommunication } from './llm/summaryService.js'
 import { getOrderWorkflow } from './workflow/serviceWorkflow.js'
 import { formatShanghaiDateTime } from './time/shanghaiTime.js'
 
@@ -43,14 +42,7 @@ export async function saveCallAsBOrderCommunication(
   const result = resultForCall(call.callStatus)
   let content = options.summary?.trim() || ''
   if (!content && result === '致电失败') content = '电话未接通'
-  if (!content && call.asrStatus === 'done' && call.asrText?.trim()) {
-    const summarized = await summarizeCallCommunication({
-      transcript: call.asrText,
-      direction: call.direction === 'in' ? 'inbound' : 'outbound',
-      durationSec: call.durationSec
-    })
-    content = summarized.content.trim()
-  }
+  // 电话沟通小结功能已停用；此写入路径不再自动调用模型生成内容。
   if (!content && options.fallback) content = options.fallback.trim()
   if (!content) return false
 
@@ -145,29 +137,8 @@ export async function summarizeCallIntoBOrderCommunication(
   call: CallForCommunication,
   orderId?: number
 ): Promise<boolean> {
-  if (call.asrStatus !== 'done' || !call.asrText?.trim()) return false
-  const resolvedOrderId = orderId ?? await resolveCallBOrderId(prisma, call)
-  if (!resolvedOrderId) return false
-
-  const workflow = await getOrderWorkflow(prisma, resolvedOrderId)
-  if (!workflow) return false
-  const formInstance = await ensureBOrderFormInstance(prisma, workflow)
-  if (!formInstance) return false
-  const tabRows = await prisma.$queryRaw<Array<{ data_json: Record<string, unknown> }>>`
-    SELECT data_json FROM b_order_form_tab_data
-    WHERE form_instance_id = ${formInstance.instanceId} AND tab_code = 'communication' LIMIT 1
-  `
-  const storedRecords = tabRows[0]?.data_json?.['communication.records']
-  const existing = Array.isArray(storedRecords)
-    ? (storedRecords as Array<Record<string, unknown>>).find((item) => Number(item.sourceCallId) === call.id)
-    : undefined
-  // 避免每个调度时点重复调用模型；旧版“暂无转写”占位记录允许在本次调度中补成摘要。
-  if (existing && existing.content !== '电话已接通，暂无通话转写内容') return false
-
-  const { content } = await summarizeCallCommunication({
-    transcript: call.asrText,
-    direction: call.direction === 'in' ? 'inbound' : 'outbound',
-    durationSec: call.durationSec
-  })
-  return saveCallAsBOrderCommunication(prisma, call, { summary: content, orderId: resolvedOrderId })
+  void prisma
+  void call
+  void orderId
+  return false
 }

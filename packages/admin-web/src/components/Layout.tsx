@@ -18,7 +18,7 @@ const NAV_ITEMS: Array<{ to: string; label: string; icon: string; end?: boolean 
   { to: '/taikang-form-sessions', label: '泰康填报记录', icon: '▦' },
   { to: '/unmatched-refs', label: '待确认订单号', icon: '⚠' },
   { to: '/workflow-config', label: '服务步骤配置', icon: '☷' },
-  { to: '/ai-schedule-config', label: 'AI自动分析触发规则', icon: '⏱' },
+  { to: '/ai-schedule-config', label: 'AI自动分析配置', icon: '⏱' },
   { to: '/sms-config', label: '短信模板配置', icon: '💬' },
   { to: '/order-ai-config', label: '订单 AI 分析说明', icon: '✦' },
   { to: '/order-ai-business-config', label: 'AI业务配置', icon: '✎' },

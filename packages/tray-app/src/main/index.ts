@@ -706,11 +706,17 @@ if (!gotLock) {
         return result
       }
     })
-    ipcMain.handle('pet:select-order', async (_e, orderId: unknown): Promise<PetIntakeResult> => {
-      if (typeof orderId !== 'number' || !Number.isInteger(orderId)) throw new Error('订单 ID 非法')
-      const result = await petIntake.selectOrder(orderId)
+    ipcMain.handle('pet:select-order', async (_e, payload: unknown): Promise<PetIntakeResult> => {
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('订单确认内容无效')
+      const value = payload as { orderId?: unknown; applicationNo?: unknown }
+      if (typeof value.orderId !== 'number' || !Number.isSafeInteger(value.orderId)
+        || !(value.applicationNo === undefined || (typeof value.applicationNo === 'string' && value.applicationNo.trim()))) throw new Error('订单确认信息不完整')
+      const result = await petIntake.selectOrder(value.orderId, typeof value.applicationNo === 'string' ? value.applicationNo.trim() : undefined)
       petWindow?.webContents.send('pet:status', result)
       return result
+    })
+    ipcMain.handle('pet:discard-pending-image', (): void => {
+      petIntake.discardPending()
     })
     ipcMain.handle('pet:resolve-native-image-match', async (_e, payload: unknown) => {
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('图片匹配确认内容无效')

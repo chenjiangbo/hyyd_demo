@@ -44,7 +44,7 @@ export default function OrderDetailPage(): React.JSX.Element {
   if (q.error) return <ErrorBlock error={q.error} onRetry={() => void q.refetch()} />
   if (!q.data) return <EmptyBlock />
 
-  const { order, recommendations, attachments, materials, calls, statusHistory, brief, messages } =
+  const { order, recommendations, attachments, materials, calls, statusHistory, messages } =
     q.data
   const rec = recommendations ?? {}
   const displayName = String(rec.patientName || rec.insurName || order.customerName || '—')
@@ -102,8 +102,6 @@ export default function OrderDetailPage(): React.JSX.Element {
 
       {activeTab === 'basic' && (
         <>
-          <BriefCard brief={brief} />
-
           <Card className="p-5 mb-4">
             <h2 className="text-sm font-semibold mb-3">状态变更历史（{statusHistory.length}）</h2>
             {statusHistory.length === 0 ? (
@@ -305,91 +303,6 @@ export default function OrderDetailPage(): React.JSX.Element {
 
       <Lightbox src={lightbox} onClose={() => setLightbox(null)} />
     </div>
-  )
-}
-
-// AI 滚动简报卡片：综合微信/企微消息 + 通话/录音转写 + 素材一次产出。
-function BriefCard({ brief }: { brief: OrderFull['brief'] }): React.JSX.Element {
-  const b = (brief.json ?? null) as {
-    summary?: string | null
-    stage?: string | null
-    stageEvidence?: string | null
-    hasOpenIssue?: boolean
-    nextActions?: string[]
-    risks?: string[]
-    keyInfo?: Record<string, string | null>
-    model?: string
-  } | null
-
-  return (
-    <Card className="p-5 mb-4">
-      <div className="flex items-center gap-2 mb-3">
-        <h2 className="text-sm font-semibold">AI 滚动简报</h2>
-        {brief.updatedAt ? (
-          <span className="text-xs text-fg-subtle">更新于 {fmtTimeFull(brief.updatedAt)}</span>
-        ) : null}
-      </div>
-      {!b || !brief.updatedAt ? (
-        <EmptyBlock label="该订单尚未生成简报（采集到消息/通话后自动产出）" />
-      ) : (
-        <div className="space-y-3 text-sm">
-          {b.stage && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs px-2 py-0.5 rounded-full bg-accent-soft text-accent-strong font-medium">
-                {b.stage}
-              </span>
-              {b.hasOpenIssue && (
-                <span className="text-xs px-2 py-0.5 rounded-full bg-warning/10 text-warning">
-                  有未决事项
-                </span>
-              )}
-              {b.stageEvidence && <span className="text-xs text-fg-subtle">{b.stageEvidence}</span>}
-            </div>
-          )}
-          {b.summary && <p className="text-fg whitespace-pre-wrap leading-relaxed">{b.summary}</p>}
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {b.nextActions && b.nextActions.length > 0 && (
-              <div>
-                <div className="text-xs font-medium text-fg-muted mb-1">待办</div>
-                <ul className="list-disc list-inside space-y-0.5 text-fg-muted">
-                  {b.nextActions.map((t, i) => (
-                    <li key={i}>{t}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {b.risks && b.risks.length > 0 && (
-              <div>
-                <div className="text-xs font-medium text-danger mb-1">风险</div>
-                <ul className="list-disc list-inside space-y-0.5 text-danger">
-                  {b.risks.map((t, i) => (
-                    <li key={i}>{t}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-
-          {b.keyInfo && Object.values(b.keyInfo).some((v) => v) && (
-            <div>
-              <div className="text-xs font-medium text-fg-muted mb-1">关键信息</div>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-1">
-                {Object.entries(b.keyInfo)
-                  .filter(([, v]) => v)
-                  .map(([k, v]) => (
-                    <div key={k} className="flex gap-2 text-sm">
-                      <span className="text-fg-muted shrink-0">{k}</span>
-                      <span className="break-all">{v}</span>
-                    </div>
-                  ))}
-              </div>
-            </div>
-          )}
-          {b.model && <div className="text-xs text-fg-subtle">模型 {b.model}</div>}
-        </div>
-      )}
-    </Card>
   )
 }
 
