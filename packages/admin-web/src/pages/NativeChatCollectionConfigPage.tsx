@@ -19,24 +19,9 @@ function newRule(): NativeChatCollectionRule {
   }
 }
 
-function defaultBusinessRules(): NativeChatCollectionRule[] {
-  const common = { enabled: true, channel: 'both' as const }
-  return [
-    { ...common, id: createRuleId(), match: 'title_contains', value: '就医服务群' },
-    { ...common, id: createRuleId(), match: 'title_contains', value: '陪诊' },
-    { ...common, id: createRuleId(), match: 'title_contains', value: '护工' },
-    {
-      ...common,
-      id: createRuleId(),
-      match: 'title_regex',
-      value: '(?:fwyy[0-9a-z|]{6,24}|OD[0-9a-z|]{6,24}|[#＃][0-9a-z|]{6,9}(?![0-9a-z|]))'
-    }
-  ]
-}
 
 export default function NativeChatCollectionConfigPage(): React.JSX.Element {
   const [rules, setRules] = useState<NativeChatCollectionRule[]>([])
-  const [needsInitialSave, setNeedsInitialSave] = useState(false)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<Error | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -48,13 +33,7 @@ export default function NativeChatCollectionConfigPage(): React.JSX.Element {
     setLoadError(null)
     try {
       const config = await adminApi.nativeChatCollectionConfig()
-      if (config.rules.length === 0) {
-        setRules(defaultBusinessRules())
-        setNeedsInitialSave(true)
-      } else {
-        setRules(config.rules)
-        setNeedsInitialSave(false)
-      }
+      setRules(config.rules)
     } catch (error) {
       setLoadError(error instanceof Error ? error : new Error(String(error)))
     } finally {
@@ -76,7 +55,6 @@ export default function NativeChatCollectionConfigPage(): React.JSX.Element {
     try {
       const result = await adminApi.saveNativeChatCollectionConfig({ rules })
       setRules(result.rules)
-      setNeedsInitialSave(false)
       setSaved(true)
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : String(error))
@@ -93,12 +71,7 @@ export default function NativeChatCollectionConfigPage(): React.JSX.Element {
       <PageHeader title="微信与企微会话采集" subtitle="统一设置适用于所有连接客户端。标题或指定会话 ID 命中任一启用规则后纳入采集。" />
       <Card className="p-5">
         <div className="space-y-4">
-          {needsInitialSave && (
-            <div className="rounded-md border border-line bg-surface-2 p-4 text-sm text-fg-muted">
-              已预填原有会话匹配规则，并加入标题包含“护工”的规则。保存后，这套规则会应用于所有连接客户端。
-            </div>
-          )}
-          {rules.length === 0 && !needsInitialSave && (
+          {rules.length === 0 && (
             <div className="rounded-md border border-line bg-surface-2 p-4 text-sm text-fg-muted">
               当前没有启用的采集规则，客户端不会读取会话消息。添加规则并保存后才会开始采集。
             </div>

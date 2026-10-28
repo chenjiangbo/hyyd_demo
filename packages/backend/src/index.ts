@@ -20,6 +20,7 @@ import {
 } from './routes/api.js'
 import { startOrderAiSchedule } from './jobs/orderAiSchedule.js'
 import { startNativeChatImageAnalysisWorker } from './services/nativeChatImageAnalysis.js'
+import { initializeNativeChatCollectionConfig } from './services/nativeChatCollectionConfig.js'
 import { startOrderReminderSchedule } from './jobs/orderReminderSchedule.js'
 import { loadChineseWorkdayCalendar, startChineseWorkdayCalendarSync } from './jobs/chineseWorkdayCalendarSync.js'
 import { registerAdminRoutes, ADMIN_COOKIE, verifyAdminToken } from './routes/admin.js'
@@ -309,6 +310,7 @@ async function start() {
     await ensureBOrderFormTables(prisma)
     await ensureReminderTables(prisma, server.log)
     await ensureSysSettingsTable(prisma, server.log)
+    await initializeNativeChatCollectionConfig(prisma)
     await loadChineseWorkdayCalendar(prisma)
     await ensureTaikangHuanyuChannelMappingTable(prisma)
     await ensureOrderAttributionMismatchTable(prisma)

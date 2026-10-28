@@ -3,6 +3,23 @@ import type { PrismaClient } from '@prisma/client'
 
 const SETTING_KEY = 'native_chat_collection_config'
 
+export const DEFAULT_NATIVE_CHAT_COLLECTION_RULES: NativeChatCollectionRule[] = [
+  { id: 'default-title-medical-group', enabled: true, channel: 'both', match: 'title_contains', value: '就医服务群' },
+  { id: 'default-title-escort', enabled: true, channel: 'both', match: 'title_contains', value: '陪诊' },
+  { id: 'default-title-caregiver', enabled: true, channel: 'both', match: 'title_contains', value: '护工' },
+  { id: 'default-title-order-code', enabled: true, channel: 'both', match: 'title_regex', value: '(?:fwyy[0-9a-z|]{6,24}|OD[0-9a-z|]{6,24}|[#＃][0-9a-z|]{6,9}(?![0-9a-z|]))' }
+]
+
+/** Only creates defaults when the setting has never existed; an administrator may save an empty rule list. */
+export async function initializeNativeChatCollectionConfig(prisma: PrismaClient): Promise<void> {
+  const config: NativeChatCollectionConfig = { version: 1, updatedAt: new Date().toISOString(), rules: DEFAULT_NATIVE_CHAT_COLLECTION_RULES }
+  await prisma.$executeRaw`
+    INSERT INTO sys_settings (key, value, updated_at)
+    VALUES (${SETTING_KEY}, ${JSON.stringify(config)}::jsonb, NOW())
+    ON CONFLICT (key) DO NOTHING
+  `
+}
+
 export const EMPTY_NATIVE_CHAT_COLLECTION_CONFIG: NativeChatCollectionConfig = {
   version: 1,
   updatedAt: null,
