@@ -407,7 +407,7 @@ function parseNativeMatch(
   applications: Set<string>,
   orderIdsByApplication: Map<string, Set<number>>,
   knownApplicationNo: string | null
-): Omit<NativeRegistrationMatch, 'candidateApplicationCount' | 'candidateOrderCount'> {
+): Omit<NativeRegistrationMatch, 'candidateApplicationCount' | 'candidateOrderCount' | 'candidateApplications'> {
   const parsed = parseJsonObject(content)
   if (knownApplicationNo && !applications.has(knownApplicationNo)) throw new Error('后台已关联申领号不在订单候选范围内')
   const applicationDecision = knownApplicationNo ? 'matched' : parsed.applicationDecision

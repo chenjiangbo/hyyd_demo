@@ -9,7 +9,7 @@ import { Lightbox } from '../components/Lightbox'
 import { fmtTime, fmtTimeFull, fmtBytes, fmtDuration } from '../lib/format'
 import { ORDER_FIELD_GROUPS, KNOWN_KEYS, isEmptyVal } from '../lib/orderFields'
 import { AsrBadge } from '../components/badges'
-import type { OrderFull, OrderMessage } from '../api/types'
+import type { OrderMessage } from '../api/types'
 
 type OrderDetailTab = 'basic' | 'messages' | 'calls'
 type MessageChannelTab = 'all' | 'wxwork' | 'wechat'

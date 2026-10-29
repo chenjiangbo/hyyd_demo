@@ -53,6 +53,11 @@ export function registerNativeChatDiscoveryRoutes(fastify: FastifyInstance, pris
     for (const session of sessions) {
       linkedSessions.push({ session, link: await resolveNativeChatApplicationLink(prisma, employeeId, session.title) })
     }
+    linkedSessions.sort((a, b) => {
+      const aKey = `${a.session.channel}\u0000${a.session.accountId}\u0000${a.session.sourceConversationId}`
+      const bKey = `${b.session.channel}\u0000${b.session.accountId}\u0000${b.session.sourceConversationId}`
+      return aKey.localeCompare(bKey)
+    })
     await prisma.$transaction(async (tx) => {
       for (const { session, link } of linkedSessions) {
         await tx.$queryRaw<Array<{ id: number }>>`

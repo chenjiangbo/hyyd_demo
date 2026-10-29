@@ -56,8 +56,16 @@ function parseAnalysis(parsed: Awaited<ReturnType<typeof understandImage>>, atte
 }
 
 async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
-  const chunks: Buffer[] = []
-  for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array))
+  const chunks: Uint8Array[] = []
+  for await (const chunk of stream) {
+    if (typeof chunk === 'string') {
+      chunks.push(Buffer.from(chunk))
+    } else if (chunk instanceof Uint8Array) {
+      chunks.push(chunk)
+    } else {
+      throw new Error('图片存储流返回了无法读取的数据块')
+    }
+  }
   return Buffer.concat(chunks)
 }
 
