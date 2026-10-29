@@ -382,8 +382,7 @@ export async function listHuanyuHospitals(rawSearch: unknown, currentId?: unknow
        FROM dim_hy_yywh
       WHERE (? != '' AND (CAST(id AS CHAR) = ? OR name = ?))
          OR (? = '' OR CAST(id AS CHAR) LIKE CONCAT('%', ?, '%') OR name LIKE CONCAT('%', ?, '%'))
-      ORDER BY (CASE WHEN ? != '' AND (CAST(id AS CHAR) = ? OR name = ?) THEN 0 ELSE 1 END), id
-      LIMIT 200`,
+      ORDER BY (CASE WHEN ? != '' AND (CAST(id AS CHAR) = ? OR name = ?) THEN 0 ELSE 1 END), id`,
     [current, current, current, search, search, search, current, current, current]
   )
   return rows.map((row) => ({ id: String(row.id), name: String(row.name ?? '') }))
@@ -409,8 +408,7 @@ export async function listHuanyuHospitalAddresses(hospitalId: unknown, rawSearch
           (? != '' AND (CAST(DZ_ID AS CHAR) = ? OR ADDRESS = ?))
           OR (? = '' OR CAST(DZ_ID AS CHAR) LIKE CONCAT('%', ?, '%') OR ADDRESS LIKE CONCAT('%', ?, '%'))
         )
-      ORDER BY (CASE WHEN ? != '' AND (CAST(DZ_ID AS CHAR) = ? OR ADDRESS = ?) THEN 0 ELSE 1 END), DZ_ID
-      LIMIT 200`,
+      ORDER BY (CASE WHEN ? != '' AND (CAST(DZ_ID AS CHAR) = ? OR ADDRESS = ?) THEN 0 ELSE 1 END), DZ_ID`,
     [hospital, current, current, current, search, search, search, current, current, current]
   )
   return rows.map((row) => ({ id: String(row.id), name: String(row.name ?? '') }))
@@ -441,8 +439,7 @@ export async function listHuanyuHospitalDepartments(hospitalId: unknown, rawSear
           (? != '' AND (CAST(ks.ID AS CHAR) = ? OR ks.NAME = ?))
           OR (? = '' OR CAST(ks.ID AS CHAR) LIKE CONCAT('%', ?, '%') OR ks.NAME LIKE CONCAT('%', ?, '%'))
         )
-      ORDER BY (CASE WHEN ? != '' AND (CAST(ks.ID AS CHAR) = ? OR ks.NAME = ?) THEN 0 ELSE 1 END), ks.ID
-      LIMIT 200`,
+      ORDER BY (CASE WHEN ? != '' AND (CAST(ks.ID AS CHAR) = ? OR ks.NAME = ?) THEN 0 ELSE 1 END), ks.ID`,
     [hospital, current, current, current, search, search, search, current, current, current]
   )
   return rows.map((row) => ({
@@ -485,8 +482,7 @@ export async function listHuanyuHospitalDoctors(hospitalId: unknown, departmentI
           (? != '' AND (CAST(ID AS CHAR) = ? OR NAME = ?))
           OR (? = '' OR CAST(ID AS CHAR) LIKE CONCAT('%', ?, '%') OR NAME LIKE CONCAT('%', ?, '%'))
         )
-      ORDER BY (CASE WHEN ? != '' AND (CAST(ID AS CHAR) = ? OR NAME = ?) THEN 0 ELSE 1 END), ID
-      LIMIT 200`,
+      ORDER BY (CASE WHEN ? != '' AND (CAST(ID AS CHAR) = ? OR NAME = ?) THEN 0 ELSE 1 END), ID`,
     [hospital, department, department, current, current, current, search, search, search, current, current, current]
   )
   return rows.map((row) => ({
@@ -520,8 +516,7 @@ export async function listHuanyuEscorts(rawSearch: unknown, currentId?: unknown)
         (? != '' AND (CAST(pzr.id AS CHAR) = ? OR pzr.name = ?))
         OR (? = '' OR CAST(pzr.id AS CHAR) LIKE CONCAT('%', ?, '%') OR pzr.name LIKE CONCAT('%', ?, '%') OR pzr.sj LIKE CONCAT('%', ?, '%'))
       )
-      ORDER BY (CASE WHEN ? != '' AND (CAST(pzr.id AS CHAR) = ? OR pzr.name = ?) THEN 0 ELSE 1 END), pzr.id
-      LIMIT 200`,
+      ORDER BY (CASE WHEN ? != '' AND (CAST(pzr.id AS CHAR) = ? OR pzr.name = ?) THEN 0 ELSE 1 END), pzr.id`,
     [current, current, current, search, search, search, search, current, current, current]
   )
   return rows.map((row) => ({

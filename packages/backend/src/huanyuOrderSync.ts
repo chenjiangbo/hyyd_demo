@@ -272,7 +272,7 @@ export async function syncHuanyuOrderFromTaikang(
       BBQ_XQ: text(field(raw, 'intendDateAmorpm'), 20),
       DATE_XQ: text(field(raw, 'intendDate'), 20),
       YYQDLX: '1',
-      xtsj_: formatShanghaiDateTime(order.createdAt),
+      xtsj_: formatShanghaiDateTime(order.createdAt).replace(/[- :]/g, ''),
       expectedProvince: text(field(raw, 'intendProvince'), 50),
       expectedCity: text(field(raw, 'intendCity'), 50),
       expectedHospital: text(field(raw, 'intendHos', 'hospital'), 255),

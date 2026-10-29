@@ -10,6 +10,7 @@ export interface MasterSaveInput {
 }
 
 export interface MasterSaveCreation {
+  key: string
   type: 'hospital' | 'address' | 'department' | 'doctor' | 'escort'
   name: string
   parent?: string
@@ -28,6 +29,8 @@ type Db = Pick<PoolConnection, 'execute'>
 type Row = RowDataPacket & Record<string, unknown>
 const clean = (value: unknown): string => typeof value === 'string' ? value.trim() : ''
 const invalid = /^(未明确|未知|暂无|无|待定|待确认|不详|空|未填写|待补|随便|待选|未显示医生姓名|none|null|undefined|\/|-)$/i
+export const masterCreationKey = (type: MasterSaveCreation['type'], name: string, parent = ''): string => `${type}:${name}:${parent}`
+export type MasterSaveDetails = Record<string, Record<string, string>>
 
 function validName(value: string, label: string): void {
   if (value.length < 2 || invalid.test(value) || /^\d+$/.test(value)) throw new Error(`${label}名称无效，请核对后保存`)
@@ -39,8 +42,7 @@ async function rows(db: Db, sql: string, values: any[]): Promise<Row[]> {
   return result as Row[]
 }
 
-function one(found: Row[], label: string): Row | null {
-  if (found.length > 1) throw new Error(`${label}存在多条匹配档案，请从下拉列表选择准确记录`)
+function one(found: Row[], _label: string): Row | null {
   return found[0] ?? null
 }
 
@@ -55,7 +57,7 @@ async function nextId(db: Db, table: 'f_hy_yywh' | 'f_hy_ys' | 'f_hy_pzr', width
 }
 
 /** Preview and commit use identical relationship checks. Only commit may write. */
-async function resolve(db: Db, input: MasterSaveInput, create: boolean): Promise<MasterSaveResolution> {
+async function resolve(db: Db, input: MasterSaveInput, create: boolean, details: MasterSaveDetails | null = null): Promise<MasterSaveResolution> {
   const result: MasterSaveResolution = {
     hospital: null, hospitalAddress: null, department: null, doctor: null,
     escortIds: [], creations: []
@@ -67,6 +69,13 @@ async function resolve(db: Db, input: MasterSaveInput, create: boolean): Promise
   const dateParts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date())
   const datePart = (type: string) => dateParts.find((part) => part.type === type)?.value ?? ''
   const today = `${datePart('year')}${datePart('month')}${datePart('day')}`
+  const selected = (type: MasterSaveCreation['type'], name: string, parent = ''): Record<string, string> => {
+    const values = details?.[masterCreationKey(type, name, parent)] ?? {}
+    return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, clean(value)]))
+  }
+  const requireChoice = async (label: string, value: string, sql: string, params: unknown[]): Promise<void> => {
+    if (!value || !(await rows(db, sql, params)).length) throw new Error(`请核对并选择${label}`)
+  }
 
   if (!hospitalValue && (addressValue || departmentValue || doctorValue)) throw new Error('请先填写医院')
   if (!departmentValue && doctorValue) throw new Error('请先填写医生所属科室')
@@ -75,7 +84,7 @@ async function resolve(db: Db, input: MasterSaveInput, create: boolean): Promise
   if (hospitalValue) {
     const found = await byIdThenName(db,
       'SELECT id, name FROM dim_hy_yywh WHERE CAST(id AS CHAR) = ? LIMIT 2', [hospitalValue],
-      'SELECT id, name FROM dim_hy_yywh WHERE name = ? LIMIT 2', [hospitalValue], '医院')
+      'SELECT id, name FROM dim_hy_yywh WHERE name = ? ORDER BY id LIMIT 2', [hospitalValue], '医院')
     if (found) {
       result.hospital = String(found.id)
       hospitalName = String(found.name)
@@ -84,12 +93,18 @@ async function resolve(db: Db, input: MasterSaveInput, create: boolean): Promise
       if ((await rows(db, 'SELECT id FROM f_hy_yywh WHERE name = ? LIMIT 1', [hospitalValue])).length) {
         throw new Error('该医院已有停用档案，请先核对原档案，不能重复建档')
       }
-      result.creations.push({ type: 'hospital', name: hospitalValue })
+      result.creations.push({ key: masterCreationKey('hospital', hospitalValue), type: 'hospital', name: hospitalValue })
       if (create) {
+        const data = selected('hospital', hospitalValue)
+        if (details) {
+          await requireChoice('医院级别', data.level, 'SELECT id FROM dim_yydjB486 WHERE CAST(id AS CHAR) = ? LIMIT 1', [data.level])
+          await requireChoice('省份', data.province, 'SELECT S_ID FROM DIM_CSLB WHERE CAST(S_ID AS CHAR) = ? LIMIT 1', [data.province])
+          await requireChoice('城市', data.city, 'SELECT X_ID FROM DIM_CSLB WHERE CAST(S_ID AS CHAR) = ? AND CAST(X_ID AS CHAR) = ? LIMIT 1', [data.province, data.city])
+        }
         const id = await nextId(db, 'f_hy_yywh', 4)
         await db.execute(
-          "INSERT INTO f_hy_yywh (id, name, state, u_date) VALUES (?, ?, '启用', ?)",
-          [id, hospitalValue, today])
+          "INSERT INTO f_hy_yywh (id, name, LEVEL, DQ_SF, DQ_CS, state, u_date) VALUES (?, ?, ?, ?, ?, '启用', ?)",
+          [id, hospitalValue, data.level || null, data.province || null, data.city || null, today])
         result.hospital = id
       }
     }
@@ -99,7 +114,7 @@ async function resolve(db: Db, input: MasterSaveInput, create: boolean): Promise
     if (result.hospital) {
       const found = await byIdThenName(db,
         'SELECT CAST(DZ_ID AS CHAR) AS id, ADDRESS AS name FROM dim_yydz_20240307 WHERE LEFT(CAST(DZ_ID AS CHAR), 4) = ? AND CAST(DZ_ID AS CHAR) = ? LIMIT 2', [result.hospital, addressValue],
-        'SELECT CAST(DZ_ID AS CHAR) AS id, ADDRESS AS name FROM dim_yydz_20240307 WHERE LEFT(CAST(DZ_ID AS CHAR), 4) = ? AND ADDRESS = ? LIMIT 2', [result.hospital, addressValue], '医院地址')
+        'SELECT CAST(DZ_ID AS CHAR) AS id, ADDRESS AS name FROM dim_yydz_20240307 WHERE LEFT(CAST(DZ_ID AS CHAR), 4) = ? AND ADDRESS = ? ORDER BY DZ_ID LIMIT 2', [result.hospital, addressValue], '医院地址')
       if (found) result.hospitalAddress = String(found.id)
     }
     if (!result.hospitalAddress) {
@@ -120,7 +135,7 @@ async function resolve(db: Db, input: MasterSaveInput, create: boolean): Promise
           result.hospitalAddress = String(saved.id)
         }
       }
-      result.creations.push({ type: 'address', name: addressValue, parent: hospitalName })
+      result.creations.push({ key: masterCreationKey('address', addressValue, hospitalName), type: 'address', name: addressValue, parent: hospitalName })
     }
   }
 
@@ -129,7 +144,7 @@ async function resolve(db: Db, input: MasterSaveInput, create: boolean): Promise
     if (result.hospital) {
       const found = await byIdThenName(db,
         'SELECT CAST(ID AS CHAR) AS id, NAME AS name FROM dim_hy_yy_ks WHERE id_yy = ? AND CAST(ID AS CHAR) = ? LIMIT 2', [result.hospital, departmentValue],
-        'SELECT CAST(ID AS CHAR) AS id, NAME AS name FROM dim_hy_yy_ks WHERE id_yy = ? AND NAME = ? LIMIT 2', [result.hospital, departmentValue], '医院科室')
+        'SELECT CAST(ID AS CHAR) AS id, NAME AS name FROM dim_hy_yy_ks WHERE id_yy = ? AND NAME = ? ORDER BY ID LIMIT 2', [result.hospital, departmentValue], '医院科室')
       if (found) {
         result.department = String(found.id)
         departmentName = String(found.name)
@@ -141,14 +156,19 @@ async function resolve(db: Db, input: MasterSaveInput, create: boolean): Promise
         'SELECT id FROM f_hy_yy_ks WHERE id_yy = ? AND name = ? LIMIT 1', [result.hospital, departmentValue])).length) {
         throw new Error('该医院科室已有停用档案，请先核对原档案，不能重复建档')
       }
-      result.creations.push({ type: 'department', name: departmentValue, parent: hospitalName })
+      result.creations.push({ key: masterCreationKey('department', departmentValue, hospitalName), type: 'department', name: departmentValue, parent: hospitalName })
       if (create && result.hospital) {
+        const data = selected('department', departmentValue, hospitalName)
+        if (details) {
+          await requireChoice('对内一级科室', data.internalOne, 'SELECT id FROM dim_hy_kswh WHERE CAST(id AS CHAR) = ? AND (STATE IS NULL OR STATE != ?) LIMIT 1', [data.internalOne, '停用'])
+          await requireChoice('对内二级科室', data.internalTwo, 'SELECT id FROM dim_hy_xfks WHERE CAST(id AS CHAR) = ? AND CAST(NAME_YJKS AS CHAR) = ? AND (STATE IS NULL OR STATE != ?) LIMIT 1', [data.internalTwo, data.internalOne, '停用'])
+        }
         const max = await rows(db, 'SELECT MAX(CAST(xh AS UNSIGNED)) AS n FROM f_hy_yy_ks WHERE id_yy = ?', [result.hospital])
         const xh = String(Number(max[0]?.n ?? 0) + 1).padStart(4, '0')
         const id = `${result.hospital}${xh}`
         await db.execute(
-          "INSERT INTO f_hy_yy_ks (id, name, state, u_date, id_yy, xh) VALUES (?, ?, '启用', ?, ?, ?)",
-          [id, departmentValue, today, result.hospital, xh])
+          "INSERT INTO f_hy_yy_ks (id, name, KSDL, KSXF, state, u_date, id_yy, xh) VALUES (?, ?, ?, ?, '启用', ?, ?, ?)",
+          [id, departmentValue, data.internalOne || null, data.internalTwo || null, today, result.hospital, xh])
         result.department = id
       }
     }
@@ -168,7 +188,7 @@ async function resolve(db: Db, input: MasterSaveInput, create: boolean): Promise
         const found = await byIdThenName(db,
           `SELECT CAST(ID AS CHAR) AS id FROM dim_hy_ys WHERE ${scope} AND CAST(ID AS CHAR) = ? LIMIT 2`,
           [result.hospital, result.department, result.department, doctorValue],
-          `SELECT CAST(ID AS CHAR) AS id FROM dim_hy_ys WHERE ${scope} AND NAME = ? LIMIT 2`,
+          `SELECT CAST(ID AS CHAR) AS id FROM dim_hy_ys WHERE ${scope} AND NAME = ? ORDER BY ID LIMIT 2`,
           [result.hospital, result.department, result.department, doctorValue], '医生')
         if (found) result.doctor = String(found.id)
       }
@@ -180,27 +200,43 @@ async function resolve(db: Db, input: MasterSaveInput, create: boolean): Promise
         [result.hospital, result.department, result.department, doctorValue])).length) {
         throw new Error('该医院科室的医生已有停用档案，请先核对原档案，不能重复建档')
       }
-      result.creations.push({ type: 'doctor', name: doctorValue, parent: `${hospitalName} / ${departmentName}` })
+      const parent = `${hospitalName} / ${departmentName}`
+      result.creations.push({ key: masterCreationKey('doctor', doctorValue, parent), type: 'doctor', name: doctorValue, parent })
       if (create && result.hospital && result.department) {
+        const data = selected('doctor', doctorValue, parent)
+        if (details) {
+          if (!['男', '女'].includes(data.sex)) throw new Error('请核对并选择医生性别')
+          if (!['知名专家', '主任医师', '副主任医师', '主治医师', '住院医师'].includes(data.title)) throw new Error('请核对并选择医生职称')
+          if (!['教授', '副教授', '讲师'].includes(data.teachingTitle)) throw new Error('请核对并选择医生教学职称')
+        }
+        const region = details ? one(await rows(db, `SELECT sf.S_NAME AS provinceName, cs.X_NAME AS cityName
+          FROM f_hy_yywh h LEFT JOIN DIM_CSLB sf ON CAST(sf.S_ID AS CHAR) = CAST(h.DQ_SF AS CHAR)
+          LEFT JOIN DIM_CSLB cs ON CAST(cs.X_ID AS CHAR) = CAST(h.DQ_CS AS CHAR) AND CAST(cs.S_ID AS CHAR) = CAST(h.DQ_SF AS CHAR)
+          WHERE h.id = ? LIMIT 1`, [result.hospital]), '医院地区') : null
+        if (details && (!region?.provinceName || !region?.cityName)) throw new Error('医院省市未核实，不能创建医生')
         const id = await nextId(db, 'f_hy_ys', 5)
         await db.execute(
-          "INSERT INTO f_hy_ys (id, name, yy, dwks, state, c_date, u_date) VALUES (?, ?, ?, ?, '启用', ?, ?)",
-          [id, doctorValue, result.hospital, result.department, today, today])
+          "INSERT INTO f_hy_ys (id, name, SEX, DQ_SF, DQ_CS, yy, dwks, ZC, JXZC, state, c_date, u_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '启用', ?, ?)",
+          [id, doctorValue, data.sex || null, region?.provinceName ? String(region.provinceName) : null, region?.cityName ? String(region.cityName) : null, result.hospital, result.department, data.title || null, data.teachingTitle || null, today, today])
         result.doctor = id
       }
     }
   }
 
+  const createdEscortIds = new Map<string, string>()
   for (const escort of input.escortList ?? []) {
     const value = clean(escort.escortName)
     if (!value) { result.escortIds.push(null); continue }
+    const repeatedPhone = clean(escort.phone).replace(/\D/g, '')
+    const repeatedId = createdEscortIds.get(`${value}:${repeatedPhone}`)
+    if (repeatedId) { result.escortIds.push(repeatedId); continue }
     let found = one(await rows(db,
       'SELECT CAST(ID AS CHAR) AS id, NAME AS name, SJ AS sj FROM dim_hy_pzr WHERE CAST(ID AS CHAR) = ? LIMIT 2', [value]), '陪诊人员')
     if (!found) {
       const phone = clean(escort.phone).replace(/\D/g, '')
       if (!/^1[3-9]\d{9}$/.test(phone)) throw new Error(`陪诊人员“${value}”需要填写有效手机号`)
       found = one(await rows(db,
-        "SELECT CAST(ID AS CHAR) AS id, NAME AS name, SJ AS sj FROM dim_hy_pzr WHERE TRIM(NAME) = ? AND REPLACE(SJ, ' ', '') = ? LIMIT 2",
+        "SELECT CAST(ID AS CHAR) AS id, NAME AS name, SJ AS sj FROM dim_hy_pzr WHERE TRIM(NAME) = ? AND REPLACE(SJ, ' ', '') = ? ORDER BY ID LIMIT 2",
         [value, phone]), '陪诊人员')
       if (!found) {
         validName(value, '陪诊人员')
@@ -209,11 +245,21 @@ async function resolve(db: Db, input: MasterSaveInput, create: boolean): Promise
           [value, phone])).length) {
           throw new Error(`陪诊人员“${value}”已有停用档案，请先核对原档案，不能重复建档`)
         }
-        result.creations.push({ type: 'escort', name: `${value}（${phone}）` })
+        const creationName = `${value}（${phone}）`
+        result.creations.push({ key: masterCreationKey('escort', creationName), type: 'escort', name: creationName })
         if (create) {
+          const data = selected('escort', creationName)
+          if (details) {
+            if (!['男', '女'].includes(data.sex)) throw new Error(`请核对并选择陪诊人员“${value}”的性别`)
+            if (!['本部', '外包'].includes(data.escortType)) throw new Error(`请核对并选择陪诊人员“${value}”的类型`)
+            if (!result.hospital) throw new Error('请先核对医院，才能确定陪诊人员省市')
+          }
+          const region = details ? one(await rows(db, 'SELECT DQ_SF AS province, DQ_CS AS city FROM f_hy_yywh WHERE id = ? LIMIT 1', [result.hospital]), '医院地区') : null
+          if (details && (!region?.province || !region?.city)) throw new Error('医院省市未核实，不能创建陪诊人员')
           const id = await nextId(db, 'f_hy_pzr', 5)
-          await db.execute("INSERT INTO f_hy_pzr (id, name, sj, state, c_date, u_date) VALUES (?, ?, ?, '启用', ?, ?)",
-            [id, value, phone, today, today])
+          await db.execute("INSERT INTO f_hy_pzr (id, name, XB, sj, SF, CS, pzrlx, state, c_date, u_date) VALUES (?, ?, ?, ?, ?, ?, ?, '启用', ?, ?)",
+            [id, value, data.sex || null, phone, region?.province ? String(region.province) : null, region?.city ? String(region.city) : null, data.escortType || null, today, today])
+          createdEscortIds.set(`${value}:${phone}`, id)
           result.escortIds.push(id)
           continue
         }
@@ -231,7 +277,7 @@ export async function previewHuanyuMasterSave(input: MasterSaveInput): Promise<M
   try { return await resolve(connection, input, false) } finally { connection.release() }
 }
 
-export async function commitHuanyuMasterSave(input: MasterSaveInput, confirmedCreations: MasterSaveCreation[] | null): Promise<MasterSaveResolution> {
+export async function commitHuanyuMasterSave(input: MasterSaveInput, confirmedCreations: MasterSaveCreation[] | null, details: MasterSaveDetails | null = null): Promise<MasterSaveResolution> {
   const connection = await getRemoteDictionaryPool().getConnection()
   let locked = false
   try {
@@ -244,7 +290,7 @@ export async function commitHuanyuMasterSave(input: MasterSaveInput, confirmedCr
     if (JSON.stringify(latest.creations) !== JSON.stringify(confirmedCreations ?? [])) {
       throw new Error('维表情况已变化，请重新点击保存并确认最新新增内容')
     }
-    const resolved = await resolve(connection, input, true)
+    const resolved = await resolve(connection, input, true, details)
     await connection.commit()
     return resolved
   } catch (error) {

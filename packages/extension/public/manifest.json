@@ -15,6 +15,7 @@
     "storage",
     "activeTab",
     "tabs",
+    "webRequest",
     "alarms",
     "unlimitedStorage"
   ],
@@ -35,6 +36,13 @@
       "js": ["content.global.js"],
       "run_at": "document_end",
       "all_frames": false
+    },
+    {
+      "matches": ["*://*.51zsyl.com/*"],
+      "js": ["hyhomeCalculation.global.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
     },
     {
       "matches": ["*://*.51zsyl.com/*"],

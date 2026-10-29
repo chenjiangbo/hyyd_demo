@@ -2384,7 +2384,7 @@ function onAuthFail(reason: string, identity: CollectionIdentity | null) {
     return;
   }
   // 连续多轮确认失败，才认定真过期
-  showExpiredBanner();
+  // 登录失效仅记录日志并同步后台状态，不在业务页面展示提示。
   if (identity) chrome.runtime.sendMessage({ type: 'TAIKANG_TOKEN_STATUS', ok: false, reason,
     account: identity.userName, generation: identity.generation });
 }
@@ -2392,27 +2392,8 @@ function onAuthFail(reason: string, identity: CollectionIdentity | null) {
 // ─── 登录过期提示条（注入泰康页面顶部） ──────────────────────
 const EXPIRED_BANNER_ID = 'huanyu-token-expired-banner';
 
-function showExpiredBanner() {
-  if (document.getElementById(EXPIRED_BANNER_ID)) return;
-  const bar = document.createElement('div');
-  bar.id = EXPIRED_BANNER_ID;
-  bar.style.cssText = [
-    'position:fixed', 'top:0', 'left:0', 'right:0', 'z-index:2147483647',
-    'background:#e53e3e', 'color:#fff', 'font-size:14px', 'line-height:1.5',
-    'padding:10px 36px 10px 16px', 'text-align:center', 'box-sizing:border-box',
-    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
-    'box-shadow:0 2px 6px rgba(0,0,0,0.2)',
-  ].join(';');
-  bar.textContent =
-    '⚠【寰宇采集】检测到泰康登录态多次失效，采集已暂停。若你仍能正常使用泰康，可忽略本提示；否则请重新登录，登录后自动恢复。';
-  const close = document.createElement('span');
-  close.textContent = '✕';
-  close.style.cssText =
-    'position:absolute;top:50%;right:16px;transform:translateY(-50%);cursor:pointer;font-weight:bold';
-  close.onclick = () => bar.remove();
-  bar.appendChild(close);
-  (document.body || document.documentElement).appendChild(bar);
-}
+// 清除旧版本可能遗留的登录失效提示条。
+removeExpiredBanner();
 
 function removeExpiredBanner() {
   document.getElementById(EXPIRED_BANNER_ID)?.remove();

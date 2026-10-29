@@ -14,7 +14,9 @@ const TIME_FIELDS = [
 ] as const
 
 type Config = { backendUrl: string; employeeCode: string }
-type Active = { token: string; tabId: number; orderNo: string; formOrderNo: string | null | undefined; invalidated: boolean; suspended: boolean; lastSeenAt: number; refreshPending: boolean }
+type Active = { token: string; tabId: number; orderNo: string; formOrderNo: string | null | undefined; invalidated: boolean; suspended: boolean; lastSeenAt: number; refreshPending: boolean; needResetMasterData: boolean }
+type MasterReviewField = { id: string; label: string; value: string; options: Array<{ value: string; label: string; parent?: string }>; source?: { label: string; url: string } }
+type MasterReviewItem = { key: string; type: string; name: string; parent?: string; address?: string; fields: MasterReviewField[] }
 export type PetOrderAiPanel = {
   kind: 'progress' | 'error' | 'form'
   id: string
@@ -24,7 +26,7 @@ export type PetOrderAiPanel = {
   fields?: Array<{ id: string; label: string; type: 'text' | 'date' | 'datetime-local' | 'select'; value: string; placeholder: string; options?: Array<{ value: string; label: string }>; copyable?: boolean; readOnly?: boolean }>
   sections?: Array<{ id: string; title: string; fieldIds: string[]; repeatable?: boolean }>
   actions?: Array<{ id: string; label: string; tone?: 'primary' | 'secondary'; loading?: boolean }>
-  confirmation?: { title: string; creations: Array<{ type: string; name: string; parent?: string }> }
+  confirmation?: { title: string; creations: Array<{ key: string; type: string; name: string; parent?: string }>; review: MasterReviewItem[] }
   submitMessage?: string
   submitState?: 'idle' | 'submitting' | 'success' | 'error'
 }
@@ -43,7 +45,8 @@ export class PetOrderAiService {
     private readonly port = PORT,
     private readonly suspendPanel: (id: string) => void = () => {},
     private readonly resumePanel: (id: string) => void = () => {},
-    private readonly ensurePanelVisible: (id: string) => void = () => {}
+    private readonly ensurePanelVisible: (id: string) => void = () => {},
+    private readonly isPetFocused: () => boolean = () => false
   ) {}
 
   setConfig(config: Config): void {
@@ -57,7 +60,7 @@ export class PetOrderAiService {
     if (this.server) return
     this.server = createServer((request, response) => {
       const origin = request.headers.origin
-      const allowedPath = ['/pet/order-page', '/pet/order-site-config'].includes(request.url ?? '')
+      const allowedPath = ['/pet/order-page', '/pet/order-site-config', '/pet/window-focus'].includes(request.url ?? '')
       // Chrome MV3 service-worker fetches to loopback may omit Origin. Accept that local request,
       // while continuing to reject requests carrying a different web/extension origin.
       if ((origin && origin !== EXTENSION_ORIGIN) || !allowedPath) {
@@ -70,6 +73,12 @@ export class PetOrderAiService {
       response.setHeader('Access-Control-Allow-Headers', 'Content-Type')
       response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
       if (request.method === 'OPTIONS') { response.writeHead(204).end(); return }
+      if (request.url === '/pet/window-focus') {
+        if (request.method !== 'GET') { response.writeHead(405).end(); return }
+        response.setHeader('Content-Type', 'application/json; charset=utf-8')
+        response.writeHead(200).end(JSON.stringify({ focused: this.isPetFocused() }))
+        return
+      }
       if (request.url === '/pet/order-site-config') {
         if (request.method !== 'GET') { response.writeHead(405).end(); return }
         void this.loadSiteConfig().then((site) => {
@@ -91,7 +100,7 @@ export class PetOrderAiService {
       request.on('end', () => {
         try {
           const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
-          if ((body.event !== 'open' && body.event !== 'close' && body.event !== 'suspend') ||
+          if ((body.event !== 'open' && body.event !== 'close' && body.event !== 'suspend' && body.event !== 'refresh-failed' && body.event !== 'refresh-complete') ||
               typeof body.token !== 'string' || !/^[a-f0-9-]{36}$/.test(body.token) ||
               typeof body.tabId !== 'number' || !Number.isInteger(body.tabId) || body.tabId < 0 ||
               typeof body.orderNo !== 'string' || !/^[A-Za-z0-9-]{6,64}$/.test(body.orderNo) ||
@@ -100,13 +109,20 @@ export class PetOrderAiService {
             response.writeHead(400).end()
             return
           }
+          if ((body.event === 'refresh-failed' || body.event === 'refresh-complete') && this.active?.token === body.token && this.active.orderNo === body.orderNo && this.active.tabId === body.tabId && this.currentPanel?.kind === 'form') {
+            const failed = body.event === 'refresh-failed'
+            this.currentPanel = { ...this.currentPanel, submitState: failed ? 'error' : 'success', submitMessage: failed ? '远程订单已更新，但自动刷新失败。请返回列表重新打开订单查看最新数据。' : '填单成功' }
+            this.updatePanel(this.currentPanel.id, this.currentPanel)
+          }
           const refresh = body.event === 'open'
             ? this.open(body.token, body.tabId, body.orderNo, body.formOrderNo as string | null | undefined)
             : body.event === 'suspend'
               ? (this.suspend(body.token), false)
-              : (this.close(body.token), false)
+              : body.event === 'close' ? (this.close(body.token), false) : false
           response.setHeader('Content-Type', 'application/json; charset=utf-8')
-          response.writeHead(200).end(JSON.stringify({ refresh }))
+          const needResetMasterData = refresh && Boolean(this.active?.needResetMasterData)
+          if (refresh && this.active) this.active.needResetMasterData = false
+          response.writeHead(200).end(JSON.stringify({ refresh, needResetMasterData }))
         } catch {
           response.writeHead(400).end()
         }
@@ -183,10 +199,26 @@ export class PetOrderAiService {
       this.updatePanel(panelId, this.currentPanel)
       return
     }
-    this.currentPanel = { ...this.currentPanel, fields: this.currentPanel.fields?.map((field) =>
-      Object.prototype.hasOwnProperty.call(fields, field.id) ? { ...field, value: fields[field.id] } : field) }
+    // 陪诊行可在渲染界面增删，提交时同步完整行结构，后续状态更新不能丢掉新增行。
+    const currentFields = this.currentPanel.fields ?? []
+    const escortFields = escortIndexes.flatMap((index) => {
+      const prefix = `escort-${index}`
+      return [
+        { id: `${prefix}-date`, label: '服务日期/时间', type: 'datetime-local' as const, placeholder: '请选择服务日期/时间' },
+        { id: `${prefix}-name`, label: '陪诊人', type: 'text' as const, placeholder: '请输入陪诊人' },
+        { id: `${prefix}-phone`, label: '陪诊电话', type: 'text' as const, placeholder: '请输入陪诊电话' }
+      ].map((field) => ({ ...field, ...currentFields.find((existing) => existing.id === field.id), value: fields[field.id] ?? '' }))
+    })
+    this.currentPanel = { ...this.currentPanel,
+      fields: [...currentFields.filter((field) => !/^escort-\d+-(date|name|phone)$/.test(field.id)).map((field) =>
+        Object.prototype.hasOwnProperty.call(fields, field.id) ? { ...field, value: fields[field.id] } : field), ...escortFields],
+      sections: [...(this.currentPanel.sections ?? []).filter((section) => !section.repeatable), ...escortIndexes.map((index) => {
+        const prefix = `escort-${index}`
+        return { id: prefix, title: `陪诊服务 ${index}`, fieldIds: [`${prefix}-date`, `${prefix}-name`, `${prefix}-phone`], repeatable: true }
+      })]
+    }
     const requestFields = {
-      orderStatus: fields.orderStatus ?? '', documentNo: fields.documentNo ?? '',
+      orderStatus: fields.orderStatus ?? '',
       hospital: fields.hospital ?? '', hospitalAddress: fields.hospitalAddress ?? '', department: fields.department ?? '', doctor: fields.doctor ?? '',
       requestTime: fields.requestTime ?? '', responseTime: fields.responseTime ?? '', serviceStartTime: fields.serviceStartTime ?? '',
       bookingFeedbackTime: fields.bookingFeedbackTime ?? '', latestTicketTime: fields.latestTicketTime ?? '',
@@ -195,35 +227,65 @@ export class PetOrderAiService {
         phone: fields[`escort-${index}-phone`] ?? '', sequence: index
       }))
     }
-    const confirmedMasterCreations = actionId === 'confirm-master-create' ? this.currentPanel.confirmation?.creations : undefined
-    this.currentPanel = { ...this.currentPanel, submitState: 'submitting', submitMessage: '正在检查维表并更新远程订单…', actions: [] }
+    const confirmation = actionId === 'confirm-master-create' ? this.currentPanel.confirmation : undefined
+    const confirmedMasterCreations = confirmation?.creations
+    const masterDetails = confirmation ? Object.fromEntries(confirmation.review.map((item) => [item.key,
+      Object.fromEntries(item.fields.map((field) => [field.id, fields[`master:${item.key}:${field.id}`] ?? field.value]))])) : undefined
+    if (confirmation) {
+      this.currentPanel = { ...this.currentPanel, confirmation: { ...confirmation,
+        review: confirmation.review.map((item) => ({ ...item, fields: item.fields.map((field) => ({ ...field,
+          value: masterDetails?.[item.key]?.[field.id] ?? field.value })) })) } }
+      const missing = confirmation.review.flatMap((item) => item.fields.map((field) => ({ item, field })))
+        .find(({ item, field }) => !masterDetails?.[item.key]?.[field.id])
+      if (missing) {
+        this.currentPanel = { ...this.currentPanel, submitState: 'error', submitMessage: `请核对并选择${missing.item.name}的${missing.field.label}` }
+        this.updatePanel(panelId, this.currentPanel)
+        return
+      }
+    }
+    this.currentPanel = { ...this.currentPanel, submitState: 'submitting', submitMessage: '正在填单...', actions: [] }
     this.updatePanel(panelId, this.currentPanel)
     try {
       const response = await fetch(`${config.backendUrl}/api/v1/pet/huanyu-order-update`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Employee-Code': config.employeeCode },
-        body: JSON.stringify({ orderNo: active.orderNo, fields: requestFields, confirmedMasterCreations }),
-        signal: AbortSignal.timeout(20_000)
+        body: JSON.stringify({ orderNo: active.orderNo, fields: requestFields, confirmedMasterCreations, masterDetails }),
+        signal: AbortSignal.timeout(40_000)
       })
-      const payload = await response.json() as { ok?: boolean; requiresMasterDataConfirmation?: boolean; creations?: Array<{ type: string; name: string; parent?: string }>; error?: string; escortCount?: number }
+      const payload = await response.json() as { ok?: boolean; requiresMasterDataConfirmation?: boolean; creations?: Array<{ key: string; type: string; name: string; parent?: string }>; review?: MasterReviewItem[]; error?: string; escortCount?: number; needResetMasterData?: boolean }
       if (this.active !== active || this.currentPanel?.id !== panelId || this.currentPanel.kind !== 'form') return
+      if (payload.needResetMasterData === true) active.needResetMasterData = true
       if (payload.requiresMasterDataConfirmation && payload.creations?.length) {
+        if (!payload.review || payload.review.length !== payload.creations.length) throw new Error('建档核对资料未完整返回，请稍后重试')
         this.currentPanel = { ...this.currentPanel, submitState: 'idle', submitMessage: undefined,
-          confirmation: { title: '确认本次新增维表资料', creations: payload.creations },
-          actions: [{ id: 'cancel-master-create', label: '返回修改' }, { id: 'confirm-master-create', label: '一键创建维表并更新', tone: 'primary' }] }
+          confirmation: { title: '核对建档信息', creations: payload.creations, review: payload.review ?? [] },
+          actions: [{ id: 'cancel-master-create', label: '返回修改' }, { id: 'confirm-master-create', label: '确认创建并填单', tone: 'primary' }] }
       } else if (!response.ok || !payload.ok) {
+        if (payload.needResetMasterData === true) {
+          this.currentPanel = { ...this.currentPanel, confirmation: undefined }
+          throw new Error(`档案已创建，但订单更新失败：${payload.error || `HTTP ${response.status}`}；请重试更新`)
+        }
         throw new Error(payload.error || `订单更新失败（${response.status}）`)
       } else {
         active.refreshPending = true
         this.currentPanel = { ...this.currentPanel, confirmation: undefined, submitState: 'success',
-          submitMessage: `远程更新成功，已更新 ${payload.escortCount ?? 0} 条陪诊记录；正在刷新订单表单…`,
+          submitMessage: '填单成功',
           actions: [{ id: 'one-click-fill', label: '再次更新', tone: 'primary' }] }
+        const pendingPanel = this.currentPanel
+        setTimeout(() => {
+          if (this.active !== active || this.currentPanel !== pendingPanel) return
+          active.refreshPending = false
+          this.currentPanel = { ...this.currentPanel, submitState: 'error', submitMessage: '远程订单已更新，但自动刷新超时。请返回列表重新打开订单查看最新数据。' }
+          this.updatePanel(panelId, this.currentPanel)
+        }, 35000)
       }
       this.updatePanel(panelId, this.currentPanel)
     } catch (error) {
       if (this.active !== active || this.currentPanel?.id !== panelId || this.currentPanel.kind !== 'form') return
       this.currentPanel = { ...this.currentPanel, submitState: 'error',
         submitMessage: error instanceof Error ? error.message : '订单更新失败',
-        actions: [{ id: 'one-click-fill', label: '重试', tone: 'primary' }] }
+        actions: this.currentPanel.confirmation
+          ? [{ id: 'cancel-master-create', label: '返回修改' }, { id: 'confirm-master-create', label: '重试创建并填单', tone: 'primary' }]
+          : [{ id: 'one-click-fill', label: '重试', tone: 'primary' }] }
       this.updatePanel(panelId, this.currentPanel)
     }
   }
@@ -261,7 +323,7 @@ export class PetOrderAiService {
       return refresh
     }
     if (this.active) this.close(this.active.token)
-    this.active = { token, tabId, orderNo, formOrderNo, invalidated: Boolean(formOrderNo && formOrderNo !== orderNo), suspended: false, lastSeenAt: Date.now(), refreshPending: false }
+    this.active = { token, tabId, orderNo, formOrderNo, invalidated: Boolean(formOrderNo && formOrderNo !== orderNo), suspended: false, lastSeenAt: Date.now(), refreshPending: false, needResetMasterData: false }
     const id = `order-ai:${token}`
     if (this.active.invalidated || formOrderNo !== orderNo) {
       this.requireReopen(this.active)
