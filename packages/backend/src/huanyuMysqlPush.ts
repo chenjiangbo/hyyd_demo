@@ -1,7 +1,6 @@
 import mysql, { type Pool, type RowDataPacket } from 'mysql2/promise'
 import type { PrismaClient } from '@prisma/client'
 import { getEnv } from './env.js'
-import { formatShanghaiDateTime } from './time/shanghaiTime.js'
 
 let pushPool: Pool | null = null
 
@@ -194,7 +193,6 @@ export interface HuanyuMysqlPushOptions {
 export interface PetHuanyuOrderUpdate {
   orderNo: string
   orderStatus: string
-  documentNo: string
   hospitalId: string | null
   hospitalAddressId: string | null
   departmentId: string | null
@@ -231,7 +229,7 @@ export async function updateHuanyuOrderDirectlyOnMysql(input: PetHuanyuOrderUpda
 
     await connection.execute(
         `UPDATE \`HY_FACT_DDCX_NEW\` SET
-        \`DD_state\` = ?, \`JZR_ZJHM\` = COALESCE(?, \`JZR_ZJHM\`),
+        \`DD_state\` = ?,
         \`H_NAME\` = COALESCE(?, \`H_NAME\`), \`H_ADDRESS\` = COALESCE(?, \`H_ADDRESS\`),
         \`H_KS\` = COALESCE(?, \`H_KS\`), \`H_YS\` = COALESCE(?, \`H_YS\`),
         \`BBQ_XQ\` = COALESCE(?, \`BBQ_XQ\`), \`DATE_XQ\` = COALESCE(?, \`DATE_XQ\`),
@@ -239,27 +237,28 @@ export async function updateHuanyuOrderDirectlyOnMysql(input: PetHuanyuOrderUpda
         \`BBQ_QDFW\` = COALESCE(?, \`BBQ_QDFW\`), \`DATE_QDFW\` = COALESCE(?, \`DATE_QDFW\`),
         \`BBQ_FK\` = COALESCE(?, \`BBQ_FK\`), \`DATE_FK\` = COALESCE(?, \`DATE_FK\`),
         \`lastQueuingTime\` = COALESCE(?, \`lastQueuingTime\`),
-        \`PZR\` = COALESCE(?, \`PZR\`), \`xtsj_\` = ?
+        \`PZR\` = COALESCE(?, \`PZR\`)
        WHERE \`DDBH\` = ?`,
-      [input.orderStatus, input.documentNo || null, input.hospitalId, input.hospitalAddressId,
+      [input.orderStatus, input.hospitalId, input.hospitalAddressId,
         input.departmentId, input.doctorId,
         input.requestTime, input.requestTime?.slice(0, 8) ?? null,
         input.responseTime, input.responseTime?.slice(0, 8) ?? null,
         input.serviceStartTime, input.serviceStartTime?.slice(0, 8) ?? null,
         input.bookingFeedbackTime, input.bookingFeedbackTime?.slice(0, 8) ?? null,
         input.latestTicketTime, input.escortList.find((escort) => escort.escortId)?.escortId ?? null,
-        formatShanghaiDateTime(new Date()), orderNo]
+        orderNo]
     )
 
     if (input.escortList.length > 0) await connection.execute('DELETE FROM `fact_hy_pzrxx` WHERE `DDBH` = ?', [orderNo])
-    for (const [index, escort] of input.escortList.entries()) {
+    let sequence = 0
+    for (const escort of input.escortList) {
       if (!escort.escortId) continue
-      const sequence = escort.sequence.trim() || String(index + 1)
+      sequence += 1
       await connection.execute(
         `INSERT INTO \`fact_hy_pzrxx\` (\`DDBH\`, \`PZR\`, \`BBQ_FW\`, \`ZJ\`, \`xtsj\`)
          VALUES (?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE \`PZR\` = VALUES(\`PZR\`), \`BBQ_FW\` = VALUES(\`BBQ_FW\`), \`xtsj\` = VALUES(\`xtsj\`)`,
-        [orderNo, escort.escortId, escort.serviceDate, `${orderNo}_${sequence}`, formatShanghaiDateTime(new Date())]
+        [orderNo, escort.escortId, escort.serviceDate, `${orderNo}${sequence}`, String(sequence)]
       )
     }
     await connection.commit()

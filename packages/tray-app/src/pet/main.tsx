@@ -30,6 +30,7 @@ function droppedPathFromUri(value: string): string | null {
 export function Pet(): React.JSX.Element {
   const [businessPanel, setBusinessPanel] = useState<PetPanel | null>(null)
   const [businessPanelVisible, setBusinessPanelVisible] = useState(true)
+  const [panelResumed, setPanelResumed] = useState(false)
   const committedLookupSelections = useRef<Record<string, string>>({})
   const [mode, setMode] = useState<PetMode>('idle')
   const [message, setMessage] = useState('把图片拖给我吧')
@@ -207,6 +208,7 @@ export function Pet(): React.JSX.Element {
         return
       }
       const nextPanel = value as PetPanel
+      setPanelResumed(false)
       if (nextPanel.kind === 'form') {
         committedLookupSelections.current = Object.fromEntries(['hospital', 'department'].flatMap((fieldId) => {
           const field = nextPanel.fields.find((item) => item.id === fieldId)
@@ -219,7 +221,10 @@ export function Pet(): React.JSX.Element {
       setBusinessPanelVisible(true)
     }
     const unsubscribe = window.api.onPetPanel((value) => { receivedEvent = true; apply(value) })
-    const unsubscribeVisibility = window.api.onPetPanelVisibility(setBusinessPanelVisible)
+    const unsubscribeVisibility = window.api.onPetPanelVisibility((visible) => {
+      if (!visible) setPanelResumed(true)
+      setBusinessPanelVisible(visible)
+    })
     void window.api.getPetPanel().then((value) => { if (!receivedEvent) apply(value) })
     return () => { mounted = false; unsubscribe(); unsubscribeVisibility() }
   }, [])
@@ -266,6 +271,21 @@ export function Pet(): React.JSX.Element {
             : null)
 
   const changeBusinessField = (fieldId: string, value: string, selectedOption?: PetLookupOption): void => {
+    if (fieldId.startsWith('master:')) {
+      setBusinessPanel((current) => {
+        if (current?.kind !== 'form' || !current.confirmation) return current
+        const match = current.confirmation.review.find((item) => item.fields.some((field) => `master:${item.key}:${field.id}` === fieldId))
+        if (!match) return current
+        const changedId = fieldId.slice(`master:${match.key}:`.length)
+        return { ...current, confirmation: { ...current.confirmation, review: current.confirmation.review.map((item) => item.key !== match.key ? item : {
+          ...item, fields: item.fields.map((field) => ({ ...field,
+            value: field.id === changedId ? value :
+              (changedId === 'province' && field.id === 'city') || (changedId === 'internalOne' && field.id === 'internalTwo') ? '' : field.value
+          }))
+        }) } }
+      })
+      return
+    }
     const currentValue = businessPanel?.kind === 'form'
       ? String(businessPanel.fields.find((field) => field.id === fieldId)?.value ?? '')
       : ''
@@ -346,7 +366,8 @@ export function Pet(): React.JSX.Element {
   const businessAction = (actionId: string): void => {
     if (!businessPanel || !('id' in businessPanel) || typeof businessPanel.id !== 'string') return
     const fields = businessPanel.kind === 'form'
-      ? Object.fromEntries(businessPanel.fields.map((field) => [field.id, field.value]))
+      ? Object.fromEntries([...businessPanel.fields.map((field) => [field.id, field.value]),
+        ...(businessPanel.confirmation?.review.flatMap((item) => item.fields.map((field) => [`master:${item.key}:${field.id}`, field.value])) ?? [])])
       : undefined
     window.api.sendPetPanelAction({ panelId: businessPanel.id, actionId, fields })
   }
@@ -490,6 +511,7 @@ export function Pet(): React.JSX.Element {
       </div>
       {expanded && panel !== null && <PetBubble
         panel={panel}
+        skipEntranceAnimation={panelResumed && panel === businessPanel}
         onSelectCandidate={selectCandidate}
         onSelectApplication={selectImageApplication}
         onResolveImageOrder={resolveImageOrder}

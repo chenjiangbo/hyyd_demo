@@ -54,6 +54,7 @@ import {
   REGISTRATION_ASSIST_REMOTE_AUTHORITATIVE_COLUMNS
 } from '../huanyuMysqlPush.js'
 import { previewHuanyuMasterSave, commitHuanyuMasterSave, type MasterSaveCreation, type MasterSaveResolution } from '../services/huanyuMasterSave.js'
+import { buildMasterReview } from '../services/huanyuMasterResearch.js'
 import { requestAbiRefund } from '../services/abiRefundService.js'
 import { getHyhomeOrderSite } from '../services/hyhomeOrderSites.js'
 import { scheduleOrderIdCardOcr } from '../services/orderIdCardOcr.js'
@@ -4216,13 +4217,18 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     if (!cleanText(fields.orderStatus)) return reply.status(400).send({ ok: false, error: '请选择订单状态' })
     const confirmedCreations: MasterSaveCreation[] | null = Array.isArray(body.confirmedMasterCreations)
       ? body.confirmedMasterCreations : null
+    let needResetMasterData = false
     try {
       if (!await huanyuOrderExistsOnMysql(orderNo)) return reply.status(404).send({ ok: false, error: `远端寰宇订单 ${orderNo} 不存在` })
       const preview = await previewHuanyuMasterSave(masterInput)
       if (preview.creations.length && !confirmedCreations) {
-        return reply.send({ ok: false, requiresMasterDataConfirmation: true, creations: preview.creations })
+        const review = await buildMasterReview(preview.creations, masterInput)
+        return reply.send({ ok: false, requiresMasterDataConfirmation: true, creations: preview.creations, review })
       }
-      const resolved: MasterSaveResolution = await commitHuanyuMasterSave(masterInput, confirmedCreations ?? [])
+      const masterDetails = body.masterDetails && typeof body.masterDetails === 'object' && !Array.isArray(body.masterDetails)
+        ? body.masterDetails as Record<string, Record<string, string>> : {}
+      const resolved: MasterSaveResolution = await commitHuanyuMasterSave(masterInput, confirmedCreations ?? [], masterDetails)
+      needResetMasterData = resolved.creations.length > 0
       const storageTime = (value: unknown): string | null => {
         const raw = cleanText(value)
         if (!raw) return null
@@ -4233,7 +4239,6 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       const update = await updateHuanyuOrderDirectlyOnMysql({
         orderNo,
         orderStatus: cleanText(fields.orderStatus),
-        documentNo: cleanText(fields.documentNo),
         hospitalId: resolved.hospital,
         hospitalAddressId: resolved.hospitalAddress,
         departmentId: resolved.department,
@@ -4249,11 +4254,11 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
           sequence: item.sequence
         })).filter((item) => Boolean(item.escortId))
       })
-      return reply.send({ ok: true, orderNo, escortCount: update.escortCount })
+      return reply.send({ ok: true, orderNo, escortCount: update.escortCount, needResetMasterData })
     } catch (error) {
       const message = error instanceof Error ? error.message : '浮动精灵更新失败'
       const status = message.includes('维表情况已变化') ? 409 : 400
-      return reply.status(status).send({ ok: false, error: message })
+      return reply.status(status).send({ ok: false, error: message, needResetMasterData })
     }
   })
 

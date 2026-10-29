@@ -25,6 +25,8 @@ export interface ChatOptions {
   maxTokens?: number
   temperature?: number
   plugins?: Array<{ id: string; engine?: string; max_results?: number }>
+  enableSearch?: boolean
+  timeoutMs?: number
 }
 
 export interface ChatResult {
@@ -80,6 +82,10 @@ export async function chat(
   }
   if (options.maxTokens)   body.max_tokens   = options.maxTokens
   if (options.temperature !== undefined) body.temperature = options.temperature
+  if (options.enableSearch) {
+    body.enable_search = true
+    body.search_options = { forced_search: true }
+  }
 
   const res = await fetch(getLlmChatEndpoint(), {
     method: 'POST',
@@ -88,6 +94,7 @@ export async function chat(
       'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
+    ...(options.timeoutMs ? { signal: AbortSignal.timeout(options.timeoutMs) } : {}),
   })
 
   if (!res.ok) {

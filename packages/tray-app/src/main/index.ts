@@ -42,6 +42,7 @@ const pendingPetImageMatches = new Map<number, NativePendingImageMatch>()
 let pendingPetPanel: { id: string; kind: string; [key: string]: unknown } | null = null
 let petPanelSuspended = false
 let petPanelChangedDuringSuspension = false
+let lastPetBubbleSize: { width: number; height: number } | undefined
 let lastPetOrderReminderKey: string | null = null
 let wxworkCollectorNoticeActive: 'directory-missing' | 'not-installed' | null = null
 const captureSidecar = new CaptureSidecarClient()
@@ -50,7 +51,7 @@ const nativeChatCollectors = new NativeChatCollectorManager()
 const materialStore = new MaterialStore()
 const materialSync = new MaterialSyncWorker(materialStore)
 const petIntake = new PetIntakeService()
-const petOrderAi = new PetOrderAiService(showPetPanel, updatePetPanel, hidePetPanel, undefined, suspendPetPanel, resumePetPanel, ensurePetPanelVisible)
+const petOrderAi = new PetOrderAiService(showPetPanel, updatePetPanel, hidePetPanel, undefined, suspendPetPanel, resumePetPanel, ensurePetPanelVisible, () => Boolean(petWindow && !petWindow.isDestroyed() && petWindow.isFocused()))
 
 function validPetPanel(value: unknown): value is { id: string; kind: string; [key: string]: unknown } {
   if (!value || typeof value !== 'object') return false
@@ -313,6 +314,10 @@ function createPetWindow(): void {
   raisePetWindow()
   petWindow.on('show', raisePetWindow)
   petWindow.setMenuBarVisibility(false)
+  petWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https:\/\/www\.haodf\.com\/(hospital|doctor)\/\d+\.html$/.test(url)) void shell.openExternal(url)
+    return { action: 'deny' }
+  })
   petWindow.webContents.on('context-menu', (event) => {
     event.preventDefault()
     if (!petWindow || petWindow.isDestroyed()) return
@@ -364,6 +369,7 @@ function createPetWindow(): void {
 
 function resizePetWindow(expanded: boolean, bubbleSize?: { width: number; height: number }): { bubbleSide: PetBubbleSide } {
   if (!petWindow || petWindow.isDestroyed()) throw new Error('浮动精灵窗口尚未创建')
+  if (bubbleSize) lastPetBubbleSize = bubbleSize
 
   const bounds = petWindow.getBounds()
   const wasExpanded = bounds.width > PET_IDLE_SIZE.width || bounds.height > PET_IDLE_SIZE.height
@@ -378,8 +384,8 @@ function resizePetWindow(expanded: boolean, bubbleSize?: { width: number; height
   const area = display.workArea
   const target = expanded
     ? (() => {
-        const measuredWidth = bubbleSize?.width ?? PET_SPEAKING_SIZE.width - 36
-        const measuredHeight = bubbleSize?.height ?? 240
+        const measuredWidth = (bubbleSize ?? lastPetBubbleSize)?.width ?? PET_SPEAKING_SIZE.width - 36
+        const measuredHeight = (bubbleSize ?? lastPetBubbleSize)?.height ?? 240
         return {
           width: Math.max(PET_SPEAKING_SIZE.width, Math.ceil(measuredWidth + 120)),
           height: Math.max(PET_SPEAKING_SIZE.height, Math.ceil(measuredHeight + 60))
@@ -404,7 +410,7 @@ function resizePetWindow(expanded: boolean, bubbleSize?: { width: number; height
   const clampedX = Math.max(area.x, Math.min(x, area.x + area.width - targetWidth))
   const clampedY = Math.max(area.y, Math.min(y, area.y + area.height - targetHeight))
   const nextBounds = { x: clampedX, y: clampedY, width: targetWidth, height: targetHeight }
-  petWindow.setBounds(nextBounds, true)
+  if (bounds.x !== nextBounds.x || bounds.y !== nextBounds.y || bounds.width !== nextBounds.width || bounds.height !== nextBounds.height) petWindow.setBounds(nextBounds, false)
   writePetDiagnostic('window:resize', { expanded, side: petBubbleSide, before: bounds, anchor: { x: characterAnchorX, y: characterAnchorY }, workArea: area, after: petWindow.getBounds() })
   return { bubbleSide: petBubbleSide }
 }

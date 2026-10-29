@@ -80,6 +80,15 @@ export interface PetFormSection {
   repeatable?: boolean
 }
 
+interface MasterReviewField {
+  id: string
+  label: string
+  value: string
+  options: Array<{ value: string; label: string; parent?: string }>
+  source?: { label: string; url: string }
+}
+interface MasterReviewItem { key: string; type: string; name: string; parent?: string; address?: string; fields: MasterReviewField[] }
+
 export type PetPanel =
   | { kind: 'speech'; text: string; actions?: PetAction[] }
   | { kind: 'progress'; text: string; progress?: number }
@@ -95,7 +104,7 @@ export type PetPanel =
       fields: PetField[]
       actions: PetAction[]
       submitState?: 'idle' | 'submitting' | 'success' | 'error'
-      confirmation?: { title: string; creations: Array<{ type: string; name: string; parent?: string }> }
+      confirmation?: { title: string; creations: Array<{ key: string; type: string; name: string; parent?: string }>; review: MasterReviewItem[] }
       submitMessage?: string
     }
 
@@ -105,6 +114,7 @@ type PetFieldChange = (fieldId: string, value: string, selectedOption?: PetLooku
 
 interface PetBubbleProps {
   panel: PetPanel
+  skipEntranceAnimation?: boolean
   onAction?: (actionId: string) => void
   onSelectCandidate?: (orderId: number) => void
   onFieldChange?: PetFieldChange
@@ -132,21 +142,39 @@ function Actions({ actions, onAction }: { actions: PetAction[]; onAction?: (acti
 
 function SelectField({ field, onFieldChange }: { field: PetField; onFieldChange?: PetFieldChange }): React.JSX.Element {
   const [open, setOpen] = useState(false)
+  const [position, setPosition] = useState<React.CSSProperties>({})
   const root = useRef<HTMLDivElement>(null)
+  const optionsRoot = useRef<HTMLDivElement>(null)
+  const openOptions = (): void => {
+    const rect = root.current?.getBoundingClientRect()
+    if (!rect) return
+    const bounds = root.current?.closest('.pet-bubble--form')?.getBoundingClientRect()
+    const top = Math.max(4, bounds?.top ?? 0)
+    const bottom = Math.min(window.innerHeight - 4, bounds?.bottom ?? window.innerHeight)
+    const below = bottom - rect.bottom - 5
+    const above = rect.top - top - 5
+    const upward = below < 190 && above > below
+    setPosition({ position: 'fixed', left: rect.left, width: rect.width, maxHeight: Math.max(0, Math.min(190, upward ? above : below)), ...(upward ? { top: 'auto', bottom: window.innerHeight - rect.top + 4 } : { top: rect.bottom + 4 }) })
+    setOpen(true)
+  }
   useEffect(() => {
     if (!open) return
-    const close = (event: MouseEvent): void => { if (!root.current?.contains(event.target as Node)) setOpen(false) }
+    const close = (event: MouseEvent): void => { if (!root.current?.contains(event.target as Node) && !optionsRoot.current?.contains(event.target as Node)) setOpen(false) }
+    const closeOnScroll = (event: Event): void => { if (!optionsRoot.current?.contains(event.target as Node)) setOpen(false) }
+    const closeOnResize = (): void => setOpen(false)
     document.addEventListener('mousedown', close)
-    return () => document.removeEventListener('mousedown', close)
+    window.addEventListener('scroll', closeOnScroll, true)
+    window.addEventListener('resize', closeOnResize)
+    return () => { document.removeEventListener('mousedown', close); window.removeEventListener('scroll', closeOnScroll, true); window.removeEventListener('resize', closeOnResize) }
   }, [open])
   const selected = field.options?.find((option) => option.value === String(field.value))
   return <div className="pet-bubble__search-select pet-bubble__choice-select" ref={root}>
-    <button type="button" className="pet-bubble__select-trigger" role="combobox" aria-label={field.label} aria-haspopup="listbox" aria-expanded={open} aria-controls={`${field.id}-options`} onClick={() => setOpen(!open)} onKeyDown={(event) => { if (event.key === 'Escape') setOpen(false) }}>
+    <button type="button" className="pet-bubble__select-trigger" role="combobox" aria-label={field.label} aria-haspopup="listbox" aria-expanded={open} aria-controls={`${field.id}-options`} onClick={() => { if (open) setOpen(false); else openOptions() }} onKeyDown={(event) => { if (event.key === 'Escape') setOpen(false) }}>
       <span>{selected?.label ?? (String(field.value) || '请选择')}</span><span className="pet-bubble__select-chevron" aria-hidden="true" />
     </button>
-    {open && <div className="pet-bubble__search-options" id={`${field.id}-options`} role="listbox" aria-label={field.label}>
-      {[{ value: '', label: '请选择' }, ...(field.options ?? [])].map((option) => <button key={option.value} type="button" role="option" aria-selected={String(field.value) === option.value} onClick={() => { onFieldChange?.(field.id, option.value); setOpen(false) }}>{option.label}</button>)}
-    </div>}
+    {open && createPortal(<div ref={optionsRoot} className="pet-bubble__search-options pet-bubble__lookup-portal" style={position} id={`${field.id}-options`} role="listbox" aria-label={field.label}>
+      {[{ value: '', label: '请选择' }, ...(field.options ?? [])].map((option) => <button key={option.value} type="button" role="option" aria-selected={String(field.value) === option.value} onClick={(event) => { event.preventDefault(); setOpen(false); onFieldChange?.(field.id, option.value) }}>{option.label}</button>)}
+    </div>, document.body)}
   </div>
 }
 
@@ -248,6 +276,9 @@ function Field({ field, panel, onFieldChange, onLookup }: {
   const [lookupOptions, setLookupOptions] = useState<PetLookupOption[]>([])
   const [lookupOpen, setLookupOpen] = useState(false)
   const [lookupBusy, setLookupBusy] = useState(false)
+  const [lookupPosition, setLookupPosition] = useState<React.CSSProperties>({})
+  const lookupInput = useRef<HTMLInputElement>(null)
+  const lookupRequest = useRef(0)
   const fields = new Map(panel.fields.map((item) => [item.id, item]))
   const kind: PetLookupKind | null = field.id === 'hospital' ? 'hospital'
     : field.id === 'hospitalAddress' ? 'address'
@@ -259,11 +290,35 @@ function Field({ field, panel, onFieldChange, onLookup }: {
   const initialValue = useRef(String(field.value))
   const lookup = async (query: string, currentId?: string): Promise<void> => {
     if (!kind || !onLookup) return
+    const request = ++lookupRequest.current
     setLookupBusy(true)
-    try { setLookupOptions(await onLookup(kind, query, { hospitalId: hospitalValue, departmentId: departmentValue, currentId })) }
-    catch { setLookupOptions([]) }
-    finally { setLookupBusy(false) }
+    try { const options = await onLookup(kind, query, { hospitalId: hospitalValue, departmentId: departmentValue, currentId }); if (request === lookupRequest.current) setLookupOptions(options) }
+    catch { if (request === lookupRequest.current) setLookupOptions([]) }
+    finally { if (request === lookupRequest.current) setLookupBusy(false) }
   }
+  const positionLookup = (): void => {
+    const input = lookupInput.current
+    if (!input) return
+    const rect = input.getBoundingClientRect()
+    const bounds = input.closest('.pet-bubble--form')?.getBoundingClientRect()
+    const top = Math.max(4, bounds?.top ?? 0)
+    const bottom = Math.min(window.innerHeight - 4, bounds?.bottom ?? window.innerHeight)
+    const below = bottom - rect.bottom - 5
+    const above = rect.top - top - 5
+    const upward = below < 120 && above > below
+    const height = Math.max(0, Math.min(190, upward ? above : below))
+    setLookupPosition({ position: 'fixed', left: rect.left, width: rect.width, maxHeight: height, ...(upward ? { top: 'auto', bottom: window.innerHeight - rect.top + 4 } : { top: rect.bottom + 4 }) })
+  }
+  useEffect(() => {
+    if (!lookupOpen) return
+    const closeOnScroll = (event: Event): void => {
+      if ((event.target as Element | null)?.closest?.('.pet-bubble__lookup-portal')) return
+      setLookupOpen(false)
+    }
+    window.addEventListener('scroll', closeOnScroll, true)
+    window.addEventListener('resize', positionLookup)
+    return () => { window.removeEventListener('scroll', closeOnScroll, true); window.removeEventListener('resize', positionLookup) }
+  }, [lookupOpen])
   useEffect(() => {
     if (!kind || !onLookup || !initialValue.current.trim() || String(field.value) !== initialValue.current) return
     let active = true
@@ -296,21 +351,22 @@ function Field({ field, panel, onFieldChange, onLookup }: {
   } else if (kind) {
     const selected = lookupOptions.find((option) => option.id === String(field.value) || option.name === String(field.value))
     control = <div className="pet-bubble__search-select">
-      <input {...common} type="text" value={selected?.name ?? String(field.value)} onFocus={() => {
+      <input {...common} ref={lookupInput} type="text" value={selected?.name ?? String(field.value)} onFocus={() => {
+        positionLookup()
         setLookupOpen(true)
         const currentValue = String(field.value)
-        void lookup(selected?.name ?? currentValue, currentValue || undefined)
-      }} onBlur={() => window.setTimeout(() => setLookupOpen(false), 200)} onChange={(event) => { onFieldChange?.(field.id, event.target.value); setLookupOpen(true); void lookup(event.target.value) }} />
-      {lookupOpen && <div className="pet-bubble__search-options">
+        void lookup('', currentValue || undefined)
+      }} onClick={() => { if (!lookupOpen) { positionLookup(); setLookupOpen(true); void lookup('', String(field.value) || undefined) } }} onBlur={() => window.setTimeout(() => setLookupOpen(false), 200)} onChange={(event) => { onFieldChange?.(field.id, event.target.value); positionLookup(); setLookupOpen(true); void lookup(event.target.value) }} />
+      {lookupOpen && createPortal(<div className="pet-bubble__search-options pet-bubble__lookup-portal" style={lookupPosition}>
         {lookupBusy && <small>加载中…</small>}
-        {!lookupBusy && lookupOptions.length === 0 && <small>暂无匹配维表，可继续输入</small>}
-        {lookupOptions.slice(0, 6).map((option) => <button key={option.id} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => {
+        {!lookupBusy && lookupOptions.length === 0 && <small>无匹配项，可手动输入</small>}
+        {lookupOptions.map((option) => <button key={option.id} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => {
           const currentValue = String(field.value)
-          if (currentValue !== option.id && currentValue !== option.name) onFieldChange?.(field.id, option.id, option)
+          if (currentValue !== option.id) onFieldChange?.(field.id, option.id, option)
           if (kind === 'escort' && option.phone) onFieldChange?.(field.id.replace(/-name$/, '-phone'), option.phone)
           setLookupOpen(false)
         }}>{option.name}</button>)}
-      </div>}
+      </div>, document.body)}
     </div>
   } else {
     control = <div className="pet-bubble__input-with-copy"><input {...common} type={field.type} step={field.type === 'datetime-local' ? '1' : undefined} value={String(field.value)} onPaste={field.type === 'datetime-local' ? (event) => {
@@ -357,7 +413,31 @@ function FormFields({ panel, onFieldChange, onLookup, onAddEscortRecord, onRemov
   </div>
 }
 
-export function PetBubble({ panel, onAction, onSelectCandidate, onSelectApplication, onResolveImageOrder, onDiscardImageMatch, onFieldChange, onLookup, onSizeChange, onAddEscortRecord, onRemoveEscortRecord }: PetBubbleProps): React.JSX.Element {
+function MasterReview({ items, onFieldChange }: { items: MasterReviewItem[]; onFieldChange?: PetFieldChange }): React.JSX.Element {
+  const address = items.find((item) => item.type === 'address')
+  const hospital = items.find((item) => item.type === 'hospital')
+  const visible = items.filter((item) => item.type !== 'address' || !hospital)
+  const titles: Record<string, string> = { hospital: '医院', address: '医院', department: '对外科室', doctor: '医生', escort: '陪诊人' }
+  return <div className="pet-bubble__master-review" aria-label="核对建档信息">
+    <h2>核对建档信息</h2>
+    <div className="pet-bubble__master-review-list">{visible.map((item) => {
+      const itemAddress = item.type === 'hospital' ? address?.name : item.type === 'address' ? item.name : ''
+      const sources = [...new Map(item.fields.flatMap((field) => field.source ? [[field.source.url, field.source]] as const : [])).values()]
+      return <section className={`pet-bubble__master-card pet-bubble__master-card--${item.type}`} key={item.key}>
+        <div className="pet-bubble__master-identity"><strong>{titles[item.type] ?? item.type}</strong><span>{item.type === 'address' ? item.parent : item.name}</span>{item.type === 'escort' && <small>电话随当前订单使用</small>}{sources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noopener noreferrer">查看{source.label}</a>)}</div>
+        <div className="pet-bubble__master-fields">{item.fields.map((reviewField) => {
+          const parentId = reviewField.id === 'city' ? 'province' : reviewField.id === 'internalTwo' ? 'internalOne' : ''
+          const parent = parentId ? item.fields.find((field) => field.id === parentId)?.value : ''
+          const options = parentId ? reviewField.options.filter((option) => option.parent === parent) : reviewField.options
+          const id = `master:${item.key}:${reviewField.id}`
+          return <label className="pet-bubble__master-field" key={id}><span>{reviewField.label}</span><SelectField field={{ id, label: reviewField.label, type: 'select', value: reviewField.value, options, placeholder: '请选择' }} onFieldChange={onFieldChange} /></label>
+        })}{itemAddress && <div className="pet-bubble__master-address"><span>医院地址</span><span>{itemAddress}</span></div>}</div>
+      </section>
+    })}</div>
+  </div>
+}
+
+export function PetBubble({ panel, skipEntranceAnimation, onAction, onSelectCandidate, onSelectApplication, onResolveImageOrder, onDiscardImageMatch, onFieldChange, onLookup, onSizeChange, onAddEscortRecord, onRemoveEscortRecord }: PetBubbleProps): React.JSX.Element {
   const bubbleRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
@@ -378,7 +458,7 @@ export function PetBubble({ panel, onAction, onSelectCandidate, onSelectApplicat
   }, [onSizeChange, panel])
 
   return (
-    <section ref={bubbleRef} className={`pet-bubble pet-bubble--${panel.kind}`} style={panel.kind === 'form' ? ({
+    <section ref={bubbleRef} className={`pet-bubble pet-bubble--${panel.kind}${skipEntranceAnimation ? ' pet-bubble--no-entrance' : ''}${panel.kind === 'form' && panel.confirmation ? ' pet-bubble--master-review' : ''}`} style={panel.kind === 'form' ? ({
       maxHeight: `${Math.max(240, window.screen.availHeight - 54)}px`,
       '--pet-form-body-max-height': `${Math.max(140, window.screen.availHeight - 230)}px`
     } as React.CSSProperties) : undefined} role="status" aria-live="polite">
@@ -387,7 +467,7 @@ export function PetBubble({ panel, onAction, onSelectCandidate, onSelectApplicat
       {panel.kind === 'progress' && <><p className="pet-bubble__text">{panel.text}</p>{panel.progress !== undefined && <div className="pet-bubble__progress" aria-label={`处理进度 ${panel.progress}%`}><span style={{ width: `${Math.max(0, Math.min(100, panel.progress))}%` }} /></div>}</>}
       {panel.kind === 'error' && <><p className="pet-bubble__text">{panel.text}</p><Actions actions={panel.actions ?? []} onAction={onAction} /></>}
       {panel.kind === 'candidate-list' && <><h2 className="pet-bubble__title">{panel.title}</h2><div className="pet-bubble__candidate-list">{panel.items.map((candidate, index) => <button className="pet-bubble__candidate" key={candidate.orderId} type="button" onClick={() => onSelectCandidate?.(candidate.orderId)}><strong>{index === 0 ? '可能的订单 · ' : ''}{candidate.customerName || '未识别患者'}</strong><span>{candidate.hospital || '医院待确认'} · {candidate.department || '科室待确认'}</span><small>{candidate.sourceOrderNo}</small></button>)}</div></>}
-      {panel.kind === 'form' && <><div className={`pet-bubble__form-header${panel.title ? '' : ' pet-bubble__form-header--untitled'}`}>{panel.title && <h2 className="pet-bubble__title">{panel.title}</h2>}{panel.description && <p className="pet-bubble__description">{panel.description}</p>}</div><FormFields panel={panel} onFieldChange={onFieldChange} onLookup={onLookup} onAddEscortRecord={onAddEscortRecord} onRemoveEscortRecord={onRemoveEscortRecord} />{panel.submitMessage && <p className={`pet-bubble__submit-message pet-bubble__submit-message--${panel.submitState ?? 'idle'}`}>{panel.submitMessage}</p>}{panel.confirmation && <div className="pet-bubble__master-confirm"><strong>{panel.confirmation.title}</strong><p>以下资料在远端维表中未找到。确认后将创建维表并继续更新订单：</p><ul>{panel.confirmation.creations.map((item, index) => <li key={`${item.type}-${index}`}>{({ hospital: '医院', address: '医院地址', department: '医院科室', doctor: '医生', escort: '陪诊人员' } as Record<string, string>)[item.type] ?? item.type}：{item.name}{item.parent ? `（所属：${item.parent}）` : ''}</li>)}</ul></div>}<Actions actions={panel.actions} onAction={onAction} /></>}
+      {panel.kind === 'form' && (panel.confirmation ? <><MasterReview items={panel.confirmation.review} onFieldChange={onFieldChange} />{panel.submitMessage && <p className={`pet-bubble__submit-message pet-bubble__submit-message--${panel.submitState ?? 'idle'}`}>{panel.submitMessage}</p>}<Actions actions={panel.actions} onAction={onAction} /></> : <><div className={`pet-bubble__form-header${panel.title ? '' : ' pet-bubble__form-header--untitled'}`}>{panel.title && <h2 className="pet-bubble__title">{panel.title}</h2>}{panel.description && <p className="pet-bubble__description">{panel.description}</p>}</div><FormFields panel={panel} onFieldChange={onFieldChange} onLookup={onLookup} onAddEscortRecord={onAddEscortRecord} onRemoveEscortRecord={onRemoveEscortRecord} />{panel.submitMessage && <p className={`pet-bubble__submit-message pet-bubble__submit-message--${panel.submitState ?? 'idle'}`}>{panel.submitMessage}</p>}<Actions actions={panel.actions} onAction={onAction} /></>)}
       {panel.kind === 'image-match' && <>
         <h2 className="pet-bubble__title">请确认挂号凭证的归属</h2>
         <img className="pet-bubble__image-preview" src={panel.match.imageUrl} alt="待确认的挂号凭证" />

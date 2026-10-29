@@ -4,6 +4,7 @@ type PageKind = 'list' | 'detail' | 'other'
 const sourceIdPattern = /\bvar\s+g_srcresid\s*=\s*["']([^"']+)["']/m
 let pageKind: PageKind | null = null
 let detailHeartbeat: number | null = null
+let focusHeartbeat: number | null = null
 let scheduledScan: number | null = null
 let lastDetailOrderNo: string | null | undefined
 let site = siteForUrl(normalizeHyhomeSites(null), location.href)
@@ -65,6 +66,8 @@ function scan(): void {
     pageKind = null
     if (detailHeartbeat !== null) window.clearInterval(detailHeartbeat)
     detailHeartbeat = null
+    if (focusHeartbeat !== null) window.clearInterval(focusHeartbeat)
+    focusHeartbeat = null
     return
   }
   const resourceId = sourceResourceId()
@@ -85,9 +88,14 @@ function scan(): void {
   }
   if (next === 'detail' && detailHeartbeat === null) {
     detailHeartbeat = window.setInterval(() => send('detail'), 5_000)
+    focusHeartbeat = window.setInterval(() => {
+      void chrome.runtime.sendMessage({ type: 'HYHOME_PAGE_EVENT', kind: 'focus-check' }).catch(() => undefined)
+    }, 1_000)
   } else if (next !== 'detail' && detailHeartbeat !== null) {
     window.clearInterval(detailHeartbeat)
     detailHeartbeat = null
+    if (focusHeartbeat !== null) window.clearInterval(focusHeartbeat)
+    focusHeartbeat = null
   }
 }
 
@@ -99,6 +107,13 @@ document.addEventListener('click', (event) => {
   const channelOrderNo = row?.querySelector('[id^="GRID1.D"]')?.textContent?.trim()
   if (orderNo && /^[A-Za-z0-9-]{6,64}$/.test(orderNo)) send('selected', orderNo, channelOrderNo ?? '')
 }, true)
+
+window.addEventListener('message', (event) => {
+  if (event.source !== window || event.origin !== location.origin || event.data?.source !== 'HYYD_HYHOME_CALCULATION') return
+  if (event.data?.type === 'capture' && pageKind === 'list') void chrome.runtime.sendMessage({ type: 'HYHOME_PAGE_EVENT', kind: 'calculation', values: event.data.values }).catch(() => undefined)
+  if (event.data?.type === 'failure' && pageKind === 'detail') void chrome.runtime.sendMessage({ type: 'HYHOME_PAGE_EVENT', kind: 'refresh-failed' }).catch(() => undefined)
+  if (event.data?.type === 'trace') void chrome.runtime.sendMessage({ type: 'HYHOME_PAGE_EVENT', kind: 'trace', stage: event.data.stage }).catch(() => undefined)
+})
 
 window.addEventListener('pagehide', () => {
   if (pageKind === 'detail') send('leave')
@@ -115,9 +130,25 @@ chrome.storage.onChanged.addListener((changes, area) => {
   scan()
 })
 
-chrome.runtime.onMessage.addListener((message: { type?: string }) => {
+chrome.runtime.onMessage.addListener((message: { type?: string; orderNo?: string; detailResourceId?: string; values?: Record<string, string> }, _sender, sendResponse) => {
+  if (message?.type === 'HYHOME_RESET_MASTER_DATA') {
+    if (pageKind !== 'detail') { sendResponse({ resetButton: 'not-detail' }); return }
+    if (!message.orderNo || readDetailOrderNo() !== message.orderNo) { sendResponse({ resetButton: 'order-mismatch' }); return }
+    const elements = [...document.querySelectorAll<HTMLElement>('button, input[type="button"], input[type="submit"], a, [role="button"]')]
+    const matches = elements.filter((element) => {
+      const label = element instanceof HTMLInputElement ? element.value : element.textContent ?? ''
+      return label.trim() === '重置维表' && element.getClientRects().length > 0
+    })
+    if (matches.length === 1) {
+      try { matches[0].click(); sendResponse({ resetButton: 'clicked' }) }
+      catch { sendResponse({ resetButton: 'click-error' }) }
+    }
+    else { console.warn('[寰宇订单刷新] 未找到唯一可见的重置维表按钮，继续刷新订单'); sendResponse({ resetButton: matches.length === 0 ? 'not-found' : 'multiple' }) }
+    return
+  }
   if (message?.type === 'HYHOME_REFRESH_ORDER_FORM' && pageKind === 'detail') {
-    window.location.reload()
+    if (!message.orderNo || !site || readDetailOrderNo() !== message.orderNo || message.detailResourceId !== site.detailResourceId || !message.values) { console.warn('[寰宇订单刷新] 详情页校验失败，未发起计算'); return }
+    window.postMessage({ source: 'HYYD_HYHOME_CALCULATION', type: 'recalculate', orderNo: message.orderNo, detailResourceId: site.detailResourceId, values: message.values }, location.origin)
   }
 })
 const observer = new MutationObserver(() => {
