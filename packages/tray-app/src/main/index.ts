@@ -543,10 +543,10 @@ function updateCollectorTrayStatus(status: NativeChatCollectorHealth): void {
     { type: 'separator' },
     { label: `微信消息采集：${collectorStateLabel(status.wechat.state)}`, enabled: false },
     { label: `企微消息采集：${collectorStateLabel(status.wxwork.state)}`, enabled: false },
-    { label: '打开消息采集日志', click: () => {
+    { label: '打开消息采集日志目录', click: () => {
       void nativeChatCollectors.openLog().catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error)
-        dialog.showErrorBox('无法打开消息采集日志', message)
+        dialog.showErrorBox('无法打开消息采集日志目录', message)
       })
     } },
     { type: 'separator' },

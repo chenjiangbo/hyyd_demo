@@ -38,7 +38,7 @@ export type NativeChatAttachmentState =
 /** Source-side attachment details used by collectors and downstream message handling. */
 export interface NativeChatAttachmentSourceMetadata extends Record<string, unknown> {
   rendition?: 'thumbnail' | 'non_thumbnail' | 'missing' | 'unverified'
-  nonThumbnailState?: 'pending' | 'available'
+  nonThumbnailState?: 'pending' | 'available' | 'expired'
   originalName?: string | null
   localName?: string | null
   resolutionState?:
@@ -49,6 +49,7 @@ export interface NativeChatAttachmentSourceMetadata extends Record<string, unkno
     | 'invalid_resource_metadata'
     | 'local_record_video_not_matched'
     | 'resource_file_not_found'
+    | 'retry_expired_30_days'
   imageAnalysis?: {
     status: 'pending' | 'processing' | 'retrying' | 'completed' | 'failed'
     imageType?: string | null

@@ -85,6 +85,14 @@ class LocalFileSizeMismatchError(RuntimeError):
     """A name-matched local file does not have the source-reported size."""
 
 
+class ImageAesKeyUnavailableError(RuntimeError):
+    """The image payload exists, but its current WeChat AES key is unavailable."""
+
+
+class InvalidMessageFileXmlError(ValueError):
+    """A file message's optional appmsg XML is malformed."""
+
+
 def _jpeg_like(pt: bytes) -> bool:
     return (
         (pt[:3] == b"\xff\xd8\xff")
@@ -634,7 +642,7 @@ class MediaDownloader:
         if aes_key is None:
             aes_key = self._resolve_aes_key()
             if not aes_key:
-                raise RuntimeError(
+                raise ImageAesKeyUnavailableError(
                     "无法获取图片 AES 密钥：请保持微信登录，并先在微信聊天中"
                     "打开（点击查看大图）任意一张图片，再重试 detect_image_key()；"
                     "或通过 MediaDownloader(image_key='...') 手动传入密钥。"
@@ -2323,7 +2331,7 @@ class MediaDownloader:
         try:
             root = ET.fromstring(content)
         except ET.ParseError as exc:
-            raise ValueError("WeChat file message contains invalid appmsg XML") from exc
+            raise InvalidMessageFileXmlError("WeChat file message contains invalid appmsg XML") from exc
         title = root.findtext("./appmsg/title")
         name = title.strip() if isinstance(title, str) else None
         if name:
@@ -2343,7 +2351,12 @@ class MediaDownloader:
         return name, size
 
     def _file_names(self, row: dict) -> tuple[Optional[str], Optional[str]]:
-        message_name, _ = self._message_file_metadata(row)
+        try:
+            message_name, _ = self._message_file_metadata(row)
+        except InvalidMessageFileXmlError:
+            # Keep resolving through message_resource.db; malformed optional XML
+            # must not block an otherwise identifiable file message.
+            message_name = None
         resource_names: tuple[Optional[str], Optional[str]] = (None, None)
         if row.get("server_id") not in (None, ""):
             resource_rows = []
@@ -2582,7 +2595,10 @@ class MediaDownloader:
         original_name, local_name = self._file_names(row)
         if not original_name and not local_name:
             return None
-        _, source_size = self._message_file_metadata(row)
+        try:
+            _, source_size = self._message_file_metadata(row)
+        except InvalidMessageFileXmlError:
+            source_size = None
         base = os.path.join(self.db.account_dir, "msg", "file")
         source = self.find_downloaded_file(base, original_name, local_name, source_size)
         if source is None:

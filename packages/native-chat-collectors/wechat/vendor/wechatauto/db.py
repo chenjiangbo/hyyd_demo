@@ -1918,11 +1918,11 @@ class WeChatDB:
     def get_recent_messages_for_initial_sync(
         self, user: str, limit: int = 200, cursor=None, cutoff_epoch: Optional[float] = None
     ) -> List[dict]:
-        """Read the next page of messages inside the initial-history time window.
+        """Read the initial window's latest capped set, then continue after its cursor.
 
-        ``limit`` is a page size, never a total history cap. Pages use the same
-        total order and cursor as incremental reads so acknowledged pages can be
-        resumed without skipping rows.
+        On the zero cursor, return the latest ``limit`` source rows inside the
+        cutoff. Later calls use the regular ascending cursor order, so messages
+        arriving after that initial snapshot can still be collected.
         """
         want = int(limit)
         if want <= 0:
@@ -1939,6 +1939,7 @@ class WeChatDB:
         local_id = int(cursor["localId"])
         if sort_seq < 0 or local_id < 0:
             raise ValueError("initial history cursor values must be non-negative")
+        first_initial_page = sort_seq == 0 and not cursor_shard and local_id == 0
 
         def query(tables):
             rows = []
@@ -1954,15 +1955,16 @@ class WeChatDB:
                     tie_filter = "sort_seq > ?"
                     cursor_params = (sort_seq,)
                 create_time_seconds = "CASE WHEN CAST(create_time AS REAL) > 10000000000 THEN CAST(create_time AS REAL) / 1000.0 ELSE CAST(create_time AS REAL) END"
+                order = "ORDER BY sort_seq DESC, local_id DESC" if first_initial_page else "ORDER BY sort_seq ASC, local_id ASC"
                 sql = (
                     "SELECT local_id, local_type, real_sender_id, create_time, message_content, source, "
                     "packed_info_data, compress_content, server_id, sort_seq, ? AS shard FROM %s "
-                    "WHERE username = ? AND %s AND %s >= ? "
-                    "ORDER BY sort_seq ASC, local_id ASC LIMIT %d"
-                ) % (table, tie_filter, create_time_seconds, want)
-                rows.extend(conn.execute(sql, (shard, user) + cursor_params + (cutoff,)).fetchall())
+                    "WHERE %s AND %s >= ? "
+                    "%s LIMIT %d"
+                ) % (table, tie_filter, create_time_seconds, order, want)
+                rows.extend(conn.execute(sql, (shard,) + cursor_params + (cutoff,)).fetchall())
             rows.sort(key=lambda row: (row["sort_seq"], row["shard"], row["local_id"]))
-            return rows[:want], self._shard_maps(tables)
+            return (rows[-want:] if first_initial_page else rows[:want]), self._shard_maps(tables)
 
         got = self._run_msg_query(
             user, query

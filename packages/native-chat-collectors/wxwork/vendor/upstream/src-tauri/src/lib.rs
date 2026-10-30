@@ -2519,6 +2519,7 @@ fn build_message_query(
     conversation_rowid_cutoffs: Option<&HashMap<String, i64>>,
     pending_media_rowids: Option<&HashMap<String, Vec<i64>>>,
 ) -> Result<(String, Vec<rusqlite::types::Value>), CommandError> {
+    const INITIAL_HISTORY_LIMIT: usize = 200;
     let mut predicates = Vec::new();
     let mut values = Vec::new();
     if let Some(cutoff) = cutoff {
@@ -2598,7 +2599,7 @@ fn build_message_query(
             values.push(rusqlite::types::Value::Text(initial_json));
             let parameter = values.len();
             format!(
-                " OR EXISTS (SELECT 1 FROM json_each(?{parameter}) initial WHERE initial.key = {table}.conversation_id AND ({time_column} * CASE WHEN ABS({time_column}) < 100000000000 THEN 1000 WHEN ABS({time_column}) < 100000000000000 THEN 1 WHEN ABS({time_column}) < 100000000000000000 THEN 0.001 ELSE 0.000001 END >= CAST(initial.value AS INTEGER) OR {table}.rowid = (SELECT MAX(latest.rowid) FROM {table} latest WHERE latest.conversation_id = {table}.conversation_id)))"
+                " OR EXISTS (SELECT 1 FROM json_each(?{parameter}) initial WHERE initial.key = {table}.conversation_id AND ((({time_column} * CASE WHEN ABS({time_column}) < 100000000000 THEN 1000 WHEN ABS({time_column}) < 100000000000000 THEN 1 WHEN ABS({time_column}) < 100000000000000000 THEN 0.001 ELSE 0.000001 END >= CAST(initial.value AS INTEGER)) AND {table}.rowid IN (SELECT recent.rowid FROM {table} recent WHERE recent.conversation_id = {table}.conversation_id AND (recent.send_time * CASE WHEN ABS(recent.send_time) < 100000000000 THEN 1000 WHEN ABS(recent.send_time) < 100000000000000 THEN 1 WHEN ABS(recent.send_time) < 100000000000000000 THEN 0.001 ELSE 0.000001 END >= CAST(initial.value AS INTEGER)) ORDER BY recent.rowid DESC LIMIT {INITIAL_HISTORY_LIMIT})) OR {table}.rowid = (SELECT MAX(latest.rowid) FROM {table} latest WHERE latest.conversation_id = {table}.conversation_id)))"
             )
         };
         let cursor_match = format!(

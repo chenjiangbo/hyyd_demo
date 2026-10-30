@@ -28,6 +28,8 @@ from wechatauto.records import normalize_message_type_code  # noqa: E402
 from wechatauto.media import (  # noqa: E402
     AmbiguousLocalFileError,
     AmbiguousResourceMetadataError,
+    ImageAesKeyUnavailableError,
+    InvalidMessageFileXmlError,
     InvalidResourceMetadataError,
     LocalFileSizeMismatchError,
     MediaDownloader,
@@ -97,6 +99,44 @@ class RepeatedErrorReporter:
                     "Collection issue recovered after %d repeated attempts conversation=%s sourceMessage=%s stage=%s: %s",
                     issue["repeat_count"], key[1], key[2] or None, key[0], key[3],
                 )
+
+
+class MediaRetryState:
+    """Persist per-image AES failures so restart cannot reset the retry limit."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.counts: dict[str, int] = {}
+        if path.exists():
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(value, dict) or any(
+                not isinstance(key, str) or not key or type(count) is not int or count < 1
+                for key, count in value.items()
+            ):
+                raise ValueError("微信图片密钥重试状态文件格式无效")
+            self.counts = value
+
+    def aes_failure(self, attachment_id: str) -> int:
+        count = self.counts.get(attachment_id, 0) + 1
+        self.counts[attachment_id] = count
+        self._save()
+        return count
+
+    def clear(self, attachment_id: str) -> None:
+        if self.counts.pop(attachment_id, None) is not None:
+            self._save()
+
+    def _save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_name(self.path.name + ".partial")
+        temporary.write_text(json.dumps(self.counts, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.replace(temporary, self.path)
+
+
+def retry_state_path_from_args() -> Path:
+    if len(sys.argv) != 3 or sys.argv[1] != "--retry-state" or not sys.argv[2].strip():
+        raise ValueError("微信采集进程缺少 --retry-state 本地重试状态路径")
+    return Path(sys.argv[2])
 
 
 def emit(value: dict[str, Any]) -> None:
@@ -181,7 +221,16 @@ def local_attachment(path: str | None, source_attachment_id: str, kind: str, fil
     }
 
 
-def encode_message(db: WeChatDB, media_reader: MediaDownloader, account_id: str, username: str, msg: dict[str, Any], observed_at: str) -> list[dict[str, Any]]:
+def encode_message(
+    db: WeChatDB,
+    media_reader: MediaDownloader,
+    account_id: str,
+    username: str,
+    msg: dict[str, Any],
+    observed_at: str,
+    retry_state: MediaRetryState,
+    media_expired: bool = False,
+) -> list[dict[str, Any]]:
     sid = source_id(msg)
     message_media_dir = Path(media_reader.save_dir) / hashlib.sha256(sid.encode("utf-8")).hexdigest()
     raw_code = msg.get("local_type")
@@ -242,22 +291,38 @@ def encode_message(db: WeChatDB, media_reader: MediaDownloader, account_id: str,
             raw_fields = item.get("raw_fields") or {}
             if item_type in {"image", "file", "video"}:
                 message_media_dir.mkdir(parents=True, exist_ok=True)
-                try:
+                attachment_source_id = f"{sid}:item:{item_index}"
+                if media_expired:
+                    local_path = None
+                    resolution_state = "not_found"
+                    resolution_detail = "retry_expired_30_days"
                     if item_type == "image":
-                        local_path = media_reader.download_merged_forward_image(username, item, save_dir=str(message_media_dir))
-                    elif item_type == "video":
-                        local_path = media_reader.download_merged_forward_video(username, item, save_dir=str(message_media_dir))
-                    else:
-                        local_path = find_merged_forward_file(db, media_reader, username, item, str(message_media_dir))
-                except AmbiguousLocalFileError as exc:
-                    local_path = None
-                    resolution_state = "ambiguous"
-                    resolution_detail = "different_local_files"
-                    candidate_files = exc.candidates
-                except LocalFileSizeMismatchError:
-                    local_path = None
-                    resolution_state = "not_downloaded"
-                    resolution_detail = "size_mismatch"
+                        retry_state.clear(attachment_source_id)
+                else:
+                    try:
+                        if item_type == "image":
+                            local_path = media_reader.download_merged_forward_image(username, item, save_dir=str(message_media_dir))
+                            if local_path:
+                                retry_state.clear(attachment_source_id)
+                        elif item_type == "video":
+                            local_path = media_reader.download_merged_forward_video(username, item, save_dir=str(message_media_dir))
+                        else:
+                            local_path = find_merged_forward_file(db, media_reader, username, item, str(message_media_dir))
+                    except ImageAesKeyUnavailableError as exc:
+                        local_path = None
+                        attempts = retry_state.aes_failure(attachment_source_id)
+                        resolution_state = "error" if attempts >= 3 else "not_downloaded"
+                        resolution_detail = "image_aes_key_unavailable_exhausted" if attempts >= 3 else "image_aes_key_unavailable"
+                        LOG.warning("Merged image remains unresolved sourceMessage=%s attachment=%s AESFailures=%s", sid, attachment_source_id, attempts)
+                    except AmbiguousLocalFileError as exc:
+                        local_path = None
+                        resolution_state = "ambiguous"
+                        resolution_detail = "different_local_files"
+                        candidate_files = exc.candidates
+                    except LocalFileSizeMismatchError:
+                        local_path = None
+                        resolution_state = "not_downloaded"
+                        resolution_detail = "size_mismatch"
                 attachment.append(local_attachment(
                     local_path,
                     f"{sid}:item:{item_index}",
@@ -281,7 +346,12 @@ def encode_message(db: WeChatDB, media_reader: MediaDownloader, account_id: str,
                         rendition, full_state = "unverified", "pending"
                     else:
                         rendition, full_state = "missing", "pending"
-                    attachment[0]["sourceMetadata"] = {"rendition": rendition, "nonThumbnailState": full_state}
+                    attachment[0]["sourceMetadata"] = {
+                        "rendition": rendition,
+                        "nonThumbnailState": "expired" if media_expired else full_state,
+                        **({"resolutionState": resolution_detail, "terminal": True} if media_expired or resolution_state == "error" else {}),
+                        **({"aesFailureCount": attempts} if not media_expired and resolution_detail and resolution_detail.startswith("image_aes_key_unavailable") else {}),
+                    }
                 if item_type == "file" and resolution_state:
                     attachment[0]["sourceMetadata"] = {
                         "resolutionState": resolution_detail or resolution_state,
@@ -294,6 +364,8 @@ def encode_message(db: WeChatDB, media_reader: MediaDownloader, account_id: str,
                         "resourceId": resource_id,
                         "resolutionState": None if local_path else "local_record_video_not_matched" if not valid_resource_id else "resource_file_not_found",
                     }
+                if media_expired or resolution_detail == "image_aes_key_unavailable_exhausted":
+                    attachment[0].setdefault("sourceMetadata", {}).update({"resolutionState": resolution_detail, "terminal": True})
             if item_type == "location":
                 location_parts = [raw_fields.get("title"), raw_fields.get("desc"), raw_fields.get("link")]
                 item_text = "\n".join(dict.fromkeys(value.strip() for value in location_parts if isinstance(value, str) and value.strip())) or item_text
@@ -317,13 +389,42 @@ def encode_message(db: WeChatDB, media_reader: MediaDownloader, account_id: str,
         file_name = None
         file_metadata = None
         file_resolution_state = None
+        source_byte_size = None
         if kind == "image":
-            local_path = media_reader.download_image(username, int(msg["local_id"]), save_dir=str(message_media_dir), tier="best", shard=msg.get("shard"))
+            attachment_source_id = f"{sid}:media"
+            if media_expired:
+                local_path = None
+                file_resolution_state = "not_found"
+                file_metadata = {"resolutionState": "retry_expired_30_days", "terminal": True}
+                retry_state.clear(attachment_source_id)
+            else:
+                try:
+                    local_path = media_reader.download_image(username, int(msg["local_id"]), save_dir=str(message_media_dir), tier="best", shard=msg.get("shard"))
+                    if local_path:
+                        retry_state.clear(attachment_source_id)
+                except ImageAesKeyUnavailableError as exc:
+                    local_path = None
+                    attempts = retry_state.aes_failure(attachment_source_id)
+                    terminal = attempts >= 3
+                    file_resolution_state = "error" if terminal else "not_downloaded"
+                    file_metadata = {
+                        "resolutionState": "image_aes_key_unavailable_exhausted" if terminal else "image_aes_key_unavailable",
+                        "resolutionError": str(exc),
+                        "aesFailureCount": attempts,
+                        "terminal": terminal,
+                    }
+                    LOG.warning("Image attachment remains unresolved sourceMessage=%s AESFailures=%s terminal=%s", sid, attempts, terminal)
         elif kind == "file":
             source_row = media_reader._get_typed_message_row(username, int(msg["local_id"]), 49, shard=msg.get("shard"))
             if source_row is None:
                 raise RuntimeError(f"File message row could not be re-read: {sid}")
-            source_file_name, source_byte_size = media_reader._message_file_metadata(source_row)
+            message_xml_error = None
+            try:
+                source_file_name, source_byte_size = media_reader._message_file_metadata(source_row)
+            except InvalidMessageFileXmlError as exc:
+                source_file_name, source_byte_size = None, None
+                message_xml_error = str(exc)
+                LOG.warning("File message XML metadata unavailable sourceMessage=%s; trying resource metadata", sid)
             try:
                 original_name, local_name = media_reader._file_names(source_row)
             except AmbiguousResourceMetadataError as exc:
@@ -352,17 +453,22 @@ def encode_message(db: WeChatDB, media_reader: MediaDownloader, account_id: str,
             else:
                 file_name = original_name or local_name or source_file_name
                 file_metadata = {"originalName": original_name, "localName": local_name}
-                try:
-                    local_path = media_reader.download_file(username, int(msg["local_id"]), save_dir=str(message_media_dir), shard=msg.get("shard"))
-                except AmbiguousLocalFileError as exc:
+                if message_xml_error:
+                    file_metadata["messageXmlError"] = message_xml_error
+                if media_expired:
                     local_path = None
-                    file_resolution_state = "ambiguous"
-                    file_metadata["resolutionState"] = "different_local_files"
-                    file_metadata["candidateFiles"] = exc.candidates
-                except LocalFileSizeMismatchError:
-                    local_path = None
-                    file_resolution_state = "not_downloaded"
-                    file_metadata["resolutionState"] = "size_mismatch"
+                else:
+                    try:
+                        local_path = media_reader.download_file(username, int(msg["local_id"]), save_dir=str(message_media_dir), shard=msg.get("shard"))
+                    except AmbiguousLocalFileError as exc:
+                        local_path = None
+                        file_resolution_state = "ambiguous"
+                        file_metadata["resolutionState"] = "different_local_files"
+                        file_metadata["candidateFiles"] = exc.candidates
+                    except LocalFileSizeMismatchError:
+                        local_path = None
+                        file_resolution_state = "not_downloaded"
+                        file_metadata["resolutionState"] = "size_mismatch"
                 if local_path is None:
                     LOG.warning(
                         "File attachment remains pending sourceMessage=%s resolutionState=%s candidateCount=%s",
@@ -370,8 +476,20 @@ def encode_message(db: WeChatDB, media_reader: MediaDownloader, account_id: str,
                         file_metadata.get("resolutionState", "source_file_not_found"),
                         len(file_metadata.get("candidateFiles", [])),
                     )
+            if media_expired:
+                file_resolution_state = "not_found"
+                file_metadata = {
+                    **(file_metadata or {}),
+                    "resolutionState": "retry_expired_30_days",
+                    "terminal": True,
+                }
         elif kind == "video":
-            local_path = media_reader.download_video(username, int(msg["local_id"]), save_dir=str(message_media_dir), shard=msg.get("shard"))
+            if media_expired:
+                local_path = None
+                file_resolution_state = "not_found"
+                file_metadata = {"resolutionState": "retry_expired_30_days", "terminal": True}
+            else:
+                local_path = media_reader.download_video(username, int(msg["local_id"]), save_dir=str(message_media_dir), shard=msg.get("shard"))
         else:
             local_path = media_reader.download_voice(username, int(msg["local_id"]), save_dir=str(message_media_dir), shard=msg.get("shard"))
         attachment = local_attachment(local_path, f"{sid}:media", kind, file_name, source_byte_size if kind == "file" else None)
@@ -398,6 +516,7 @@ def recheck_media_message(
     account_id: str,
     username: str,
     source_message_id: str,
+    retry_state: MediaRetryState,
 ) -> list[dict[str, Any]]:
     shard, separator, local_id_text = source_message_id.rpartition(":")
     if not separator or not shard or not local_id_text.isdigit():
@@ -406,10 +525,31 @@ def recheck_media_message(
     if row is None:
         raise RuntimeError(f"Pending media message row is no longer available: {source_message_id}")
     observed_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-    rows = encode_message(db, media_reader, account_id, username, row, observed_at)
+    source_time = row.get("create_time")
+    if isinstance(source_time, (int, float)):
+        source_epoch = float(source_time)
+        if abs(source_epoch) >= 10_000_000_000:
+            source_epoch /= 1000
+    elif isinstance(source_time, str):
+        try:
+            source_epoch = float(source_time)
+            if abs(source_epoch) >= 10_000_000_000:
+                source_epoch /= 1000
+        except ValueError:
+            try:
+                source_epoch = datetime.fromisoformat(source_time.replace("Z", "+00:00")).timestamp()
+            except ValueError as exc:
+                raise ValueError(f"Pending media message has an invalid source timestamp: {source_message_id}") from exc
+    else:
+        raise ValueError(f"Pending media message has no valid source timestamp: {source_message_id}")
+    media_expired = time.time() - source_epoch >= 30 * 24 * 60 * 60
+    rows = encode_message(db, media_reader, account_id, username, row, observed_at, retry_state, media_expired)
     return [
         message for message in rows
-        if any(attachment.get("localPath") for attachment in message.get("attachments", []))
+        if any(
+            attachment.get("localPath") or (attachment.get("sourceMetadata") or {}).get("terminal") is True
+            for attachment in message.get("attachments", [])
+        )
     ]
 
 
@@ -453,6 +593,7 @@ def find_merged_forward_file(db: WeChatDB, media_reader: MediaDownloader, userna
 
 def main() -> int:
     try:
+        retry_state = MediaRetryState(retry_state_path_from_args())
         db = WeChatDB()
     except Exception as exc:
         emit({"event": "fatal", "message": str(exc)})
@@ -624,6 +765,13 @@ def main() -> int:
                     if is_initial
                     else db.get_new_messages_after(username, cursor=cursor, limit=500)
                 )
+                if is_initial or rows:
+                    emit({
+                        "event": "source_read_result", "channel": "wechat",
+                        "sourceConversationId": username,
+                        "isInitialHistory": is_initial,
+                        "sourceRowCount": len(rows),
+                    })
                 if not rows:
                     if is_initial:
                         latest = db.get_latest_message_cursor(username, username)
@@ -657,7 +805,7 @@ def main() -> int:
                     messages = []
                     for row in rows:
                         try:
-                            messages.extend(encode_message(db, media_reader, account_id, username, row, seen_at))
+                            messages.extend(encode_message(db, media_reader, account_id, username, row, seen_at, retry_state))
                         except Exception:
                             failed_source_message_id = source_id(row)
                             raise
@@ -766,7 +914,7 @@ def main() -> int:
                 media_last_checked[check_key] = now
                 try:
                     updated_messages = recheck_media_message(
-                        db, media_reader, account_id, username, source_message_id
+                        db, media_reader, account_id, username, source_message_id, retry_state
                     )
                     if not updated_messages:
                         continue

@@ -110,7 +110,9 @@ fn filter_initial_history(
     let mut maximum_row_ids = HashMap::<String, i64>::new();
     let batches = export.get_mut("batches").and_then(Value::as_array_mut)
         .ok_or("source export missing batches")?;
-    for batch in batches {
+    let mut messages_by_batch = Vec::<Vec<Value>>::with_capacity(batches.len());
+    let mut recent_candidates = HashMap::<String, Vec<(i64, usize, Value)>>::new();
+    for (batch_index, batch) in batches.iter_mut().enumerate() {
         let Some(messages) = batch.get_mut("messages").and_then(Value::as_array_mut) else {
             return Err("source export batch missing messages".into());
         };
@@ -134,10 +136,40 @@ fn filter_initial_history(
             let sent_at = chrono::DateTime::parse_from_rfc3339(sent_at)
                 .map_err(|error| format!("initial source message {source_id} has invalid sent_at: {error}"))?;
             if sent_at.timestamp_millis() >= *cutoff_ms {
-                retained.push(message);
+                let candidates = recent_candidates.entry(conversation_id.to_owned()).or_default();
+                candidates.push((row_id, batch_index, message));
+                if candidates.len() > PAGE_SIZE {
+                    let oldest_index = candidates.iter().enumerate()
+                        .min_by_key(|(_, (candidate_row_id, _, _))| *candidate_row_id)
+                        .map(|(index, _)| index)
+                        .ok_or("企微初始历史候选消息集合为空")?;
+                    candidates.swap_remove(oldest_index);
+                }
             }
         }
-        *messages = retained;
+        messages_by_batch.push(retained);
+    }
+    for candidates in recent_candidates.into_values() {
+        for (_, batch_index, message) in candidates {
+            messages_by_batch.get_mut(batch_index)
+                .ok_or("企微初始历史消息批次索引无效")?
+                .push(message);
+        }
+    }
+    for (batch, messages) in batches.iter_mut().zip(messages_by_batch) {
+        let mut ordered_messages = messages.into_iter()
+            .map(|message| {
+                let source_id = message.get("source_message_id").and_then(Value::as_str)
+                    .ok_or("source message missing source ID while sorting initial history")?;
+                let row_id = source_id.split(':').next().ok_or("initial source message ID is invalid")?
+                    .parse::<i64>().map_err(|_| format!("initial source message ID is not a row number: {source_id}"))?;
+                Ok((row_id, message))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        ordered_messages.sort_by_key(|(row_id, _)| *row_id);
+        let target = batch.get_mut("messages").and_then(Value::as_array_mut)
+            .ok_or("source export batch missing messages")?;
+        *target = ordered_messages.into_iter().map(|(_, message)| message).collect();
     }
     Ok(maximum_row_ids)
 }
@@ -216,6 +248,13 @@ fn read_export(include_media: bool, selected: &[String], source_root: &str, time
     let export = collect_local_export_selected_with_cursors_and_pending_at_root(include_media, false, selected, source_root.to_owned(), time_cutoffs, rowid_cutoffs, pending_media_rowids)?;
     export.validate().map_err(|error| format!("source export validation failed: {error}"))?;
     serde_json::to_value(export).map_err(|error| format!("source export serialization failed: {error}"))
+}
+
+fn exported_message_count(export: &Value, selected: &HashSet<String>) -> usize {
+    export.get("batches").and_then(Value::as_array).into_iter().flatten()
+        .flat_map(|batch| batch.get("messages").and_then(Value::as_array).into_iter().flatten())
+        .filter(|message| message.get("conversation_id").and_then(Value::as_str).is_some_and(|id| selected.contains(id)))
+        .count()
 }
 
 fn referenced_media_hashes(export: &Value, selected: &HashSet<String>) -> HashSet<String> {
@@ -478,6 +517,32 @@ fn main() {
     }
 }
 
+fn acknowledge_initial_history_complete(
+    command: &Value,
+    watermarks: &HashMap<String, i64>,
+    initial_cutoffs: &mut HashMap<String, i64>,
+    checkpoint_inflight: &mut HashMap<String, i64>,
+) -> Result<String, String> {
+    let conversation_id = command
+        .get("sourceConversationId")
+        .and_then(Value::as_str)
+        .ok_or("initial history completion ACK missing conversation ID")?
+        .to_owned();
+    let cursor = command
+        .get("cursor")
+        .and_then(Value::as_str)
+        .ok_or("initial history completion ACK missing cursor")?;
+    let row_id = cursor_source_row_id(cursor)?;
+    if !initial_cutoffs.contains_key(&conversation_id)
+        || watermarks.get(&conversation_id) != Some(&row_id)
+    {
+        return Err(format!("unexpected initial history completion ACK for {conversation_id}"));
+    }
+    initial_cutoffs.remove(&conversation_id);
+    checkpoint_inflight.remove(&conversation_id);
+    Ok(conversation_id)
+}
+
 fn run() -> Result<(), String> {
     let args = parse_args()?;
     let commands = command_reader();
@@ -575,6 +640,8 @@ fn run() -> Result<(), String> {
                 .filter(|(conversation_id, _)| !checkpoint_inflight.contains_key(*conversation_id))
                 .map(|(conversation_id, cutoff)| (conversation_id.clone(), *cutoff))
                 .collect::<HashMap<_, _>>();
+            let scan_started = Instant::now();
+            emit(&json!({"event":"source_scan_progress","channel":"wxwork","stage":"source_read_started","selectedConversationCount":selected.len(),"initialHistoryConversationCount":initial_conversations.len(),"pendingMediaConversationCount":pending_media_rows.len()}))?;
             let mut export = match read_export(
                 !selected.is_empty(), &selected_ids, &args.source_root,
                 &conversation_time_cutoffs, &conversation_rowid_cutoffs, &pending_media_rows,
@@ -587,17 +654,25 @@ fn run() -> Result<(), String> {
                     continue;
                 }
             };
+            let source_message_count = exported_message_count(&export, &selected);
+            emit(&json!({"event":"source_scan_progress","channel":"wxwork","stage":"source_read_completed","sourceMessageCount":source_message_count,"elapsedMs":scan_started.elapsed().as_millis()}))?;
             let initial_maximum_row_ids = filter_initial_history(&mut export, &initial_conversations)?;
+            let filtered_source_message_count = exported_message_count(&export, &selected);
+            emit(&json!({"event":"source_scan_progress","channel":"wxwork","stage":"history_filter_completed","sourceMessageCount":source_message_count,"messageCountAfterHistoryLimit":filtered_source_message_count,"elapsedMs":scan_started.elapsed().as_millis()}))?;
             if !pending_media_rows.is_empty() { last_pending_media_scan = Instant::now(); }
             let scan_id = Uuid::new_v4().to_string();
             let needed_media = referenced_media_hashes(&export, &selected);
             let media = media_files(&export, &args.media_dir, &scan_id, &needed_media)?;
+            emit(&json!({"event":"source_scan_progress","channel":"wxwork","stage":"media_staging_completed","mediaReferenceCount":needed_media.len(),"localMediaFileCount":media.len(),"elapsedMs":scan_started.elapsed().as_millis()}))?;
             let (sessions, messages) = normalized_messages(
                 &export,
                 &selected,
                 &media,
                 &args.account_directory_id,
             )?;
+            let normalized_message_count = messages.values().map(Vec::len).sum::<usize>();
+            let conversations_with_messages = messages.values().filter(|rows| !rows.is_empty()).count();
+            emit(&json!({"event":"source_scan_progress","channel":"wxwork","stage":"messages_ready","sourceMessageCount":source_message_count,"messageCountAfterHistoryLimit":filtered_source_message_count,"normalizedMessageCount":normalized_message_count,"conversationsWithMessages":conversations_with_messages,"selectedConversationCount":selected.len(),"elapsedMs":scan_started.elapsed().as_millis()}))?;
             let account_id = export.get("batches").and_then(Value::as_array).and_then(|batches|batches.first())
                 .and_then(|batch|batch.get("source_instance_id")).and_then(Value::as_str)
                 .ok_or("source export missing account ID")?.to_owned();
@@ -670,6 +745,14 @@ fn run() -> Result<(), String> {
                                     else { pending_media.insert(conversation_id.clone(), pending_ids); }
                                     break;
                                 }
+                            Ok(command) if command.get("type").and_then(Value::as_str) == Some("initial_history_complete_ack") => {
+                                acknowledge_initial_history_complete(
+                                    &command,
+                                    &watermarks,
+                                    &mut initial_cutoffs,
+                                    &mut checkpoint_inflight,
+                                )?;
+                            }
                             Ok(command) if command.get("type").and_then(Value::as_str) == Some("reject")
                                 && command.get("sourceConversationId").and_then(Value::as_str) == Some(conversation_id.as_str())
                                 && command.get("cursor").and_then(Value::as_str) == Some(cursor.as_str()) => {
@@ -703,13 +786,15 @@ fn run() -> Result<(), String> {
                     checkpoint_inflight.insert(conversation_id.clone(), row_id);
                     loop {
                         match commands.recv_timeout(Duration::from_secs(1)) {
-                            Ok(command) if command.get("type").and_then(Value::as_str) == Some("initial_history_complete_ack")
-                                && command.get("sourceConversationId").and_then(Value::as_str) == Some(conversation_id.as_str())
-                                && command.get("cursor").and_then(Value::as_str) == Some(cursor.as_str()) => {
-                                    initial_cutoffs.remove(&conversation_id);
-                                    checkpoint_inflight.remove(&conversation_id);
-                                    break;
-                                }
+                            Ok(command) if command.get("type").and_then(Value::as_str) == Some("initial_history_complete_ack") => {
+                                let acknowledged_conversation = acknowledge_initial_history_complete(
+                                    &command,
+                                    &watermarks,
+                                    &mut initial_cutoffs,
+                                    &mut checkpoint_inflight,
+                                )?;
+                                if acknowledged_conversation == conversation_id { break; }
+                            }
                             Ok(command) if command.get("type").and_then(Value::as_str) == Some("stop") => { should_stop = true; break; }
                             Ok(command) if command.get("type").and_then(Value::as_str) == Some("subscribe") => {
                                 let (next_selected, next_watermarks, next_pending_media, next_initial_cutoffs) = parse_subscriptions(&command)?;
