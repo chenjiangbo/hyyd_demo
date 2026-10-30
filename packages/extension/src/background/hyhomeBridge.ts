@@ -11,6 +11,12 @@ const calculationKeys = ['taskid', '_srcrptid', '_srccell', '_srcgridid', 'iscon
 // 在扩展后台监听报表计算请求，避免依赖网页脚本中的 XMLHttpRequest 包装。
 chrome.webRequest.onBeforeRequest.addListener((details) => {
   if (details.tabId < 0 || !new URL(details.url).pathname.endsWith('/reqmgr.do') || !details.requestBody) return
+  void captureCalculation(details)
+}, { urls: ['<all_urls>'], types: ['xmlhttprequest'] }, ['requestBody'])
+
+async function captureCalculation(details: chrome.webRequest.WebRequestBodyDetails): Promise<void> {
+  const configured = await chrome.storage.local.get(HYHOME_CONFIG_KEY)
+  if (!siteForUrl(normalizeHyhomeSites(configured[HYHOME_CONFIG_KEY]), details.url)) return
   let params: URLSearchParams
   if (details.requestBody.formData) {
     params = new URLSearchParams()
@@ -34,7 +40,7 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
     await remember(details.tabId, session)
     console.info('[寰宇订单刷新] 后台已记录当前订单计算参数')
   }).catch(() => undefined)
-}, { urls: ['*://*.51zsyl.com/*'], types: ['xmlhttprequest'] }, ['requestBody'])
+}
 
 async function tabWindowVisible(tab: chrome.tabs.Tab): Promise<boolean> {
   if (!tab.active || typeof tab.windowId !== 'number') return false

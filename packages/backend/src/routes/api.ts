@@ -4238,7 +4238,15 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       }
       const masterDetails = body.masterDetails && typeof body.masterDetails === 'object' && !Array.isArray(body.masterDetails)
         ? body.masterDetails as Record<string, Record<string, string>> : {}
-      const resolved: MasterSaveResolution = await commitHuanyuMasterSave(masterInput, confirmedCreations ?? [], masterDetails)
+      let confirmed = confirmedCreations ?? []
+      if (body.addressChanged === true && confirmedCreations) {
+        const withoutAddress = (items: MasterSaveCreation[]) => items.filter((item) => item.type !== 'address')
+        if (JSON.stringify(withoutAddress(preview.creations)) !== JSON.stringify(withoutAddress(confirmedCreations))) {
+          return reply.status(409).send({ ok: false, error: '建档信息已变化，请返回重新核对' })
+        }
+        confirmed = preview.creations
+      }
+      const resolved: MasterSaveResolution = await commitHuanyuMasterSave(masterInput, confirmed, masterDetails)
       needResetMasterData = resolved.creations.length > 0
       const storageTime = (value: unknown): string | null => {
         const raw = cleanText(value)

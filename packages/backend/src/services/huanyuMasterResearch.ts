@@ -19,6 +19,7 @@ export interface MasterReviewItem {
   fields: MasterReviewField[]
   address?: string
   phone?: string
+  addressSuggestion?: { value: string }
 }
 
 type SearchResult = { url?: string; title?: string; content?: string; sourceType?: string; display?: { tags?: string[] } }
@@ -157,10 +158,13 @@ export async function buildMasterReview(creations: MasterSaveCreation[], input: 
   const needsDoctor = creations.some((item) => item.type === 'doctor')
   const needsDepartment = creations.some((item) => item.type === 'department')
   const doctorName = clean(input.doctor)
+  const suppliedAddress = clean(input.hospitalAddress)
+  // 只有空地址或仅含省市等概括性位置时才建议补全；数字视为已有地址 ID。
+  const needsAddress = !suppliedAddress || (!/^\d+$/.test(suppliedAddress) && (suppliedAddress.length < 6 || /^(?:[\u4e00-\u9fa5]{2,12}(?:省|市|自治区|自治州|地区|盟))+$/.test(suppliedAddress)))
   const attributesPromise = (needsHospital || needsDoctor) ? aiJson(
     `联网查询并严格核对同名情况。医院：${JSON.stringify(hospitalName)}；科室：${JSON.stringify(departmentName)}；医生：${JSON.stringify(doctorName)}。` +
-    `只查询${needsHospital ? '医院等级、省份、城市' : ''}${needsDoctor ? '、医生性别、职称、教学职称' : ''}。` +
-    '医生性别只能是男或女，不得根据姓名猜测；职称只能是知名专家、主任医师、副主任医师、主治医师、住院医师；教学职称只能是教授、副教授、讲师。未找到明确资料或不确定时返回null。不要输出地址或来源。JSON格式：{"level":null,"province":null,"city":null,"sex":null,"title":null,"teachingTitle":null}。', true) : Promise.resolve<Record<string, unknown>>({})
+    `原始医院地址：${JSON.stringify(suppliedAddress)}。只查询${needsHospital ? '医院等级、省份、城市' : ''}${needsHospital && needsAddress ? '、医院详细地址' : ''}${needsDoctor ? '、医生性别、职称、教学职称' : ''}。` +
+    '医生性别只能是男或女，不得根据姓名猜测；职称只能是知名专家、主任医师、副主任医师、主治医师、住院医师；教学职称只能是教授、副教授、讲师。医院如有多个院区且无法确定对应院区，地址返回null；地址只填写来源明确的完整地址。未找到明确资料或不确定时返回null。JSON格式：{"level":null,"province":null,"city":null,"address":null,"sex":null,"title":null,"teachingTitle":null}。', true) : Promise.resolve<Record<string, unknown>>({})
   const departmentPromise = needsDepartment && departmentName && !matchInternalDepartment(departmentName, second) ? aiJson(
     `根据科室名称从以下真实字典选出唯一对应的对内二级科室；不能确定则返回null，不可编造ID。科室：${JSON.stringify(departmentName)}。字典：${JSON.stringify(second.map((item) => ({ id: item.value, name: item.label, parent: item.parent })))}。只返回JSON：{"id":null}。`, false) : Promise.resolve<Record<string, unknown>>({})
   const hospitalResults = creations.some((item) => item.type === 'hospital') && hospitalName ? await searchHaodf('hospital', hospitalName) : []
@@ -193,6 +197,10 @@ export async function buildMasterReview(creations: MasterSaveCreation[], input: 
       field('province', '省份', provinces, aiProvince?.value ?? location.province),
       field('city', '城市', cities, aiProvince ? aiCity?.value ?? '' : location.city)
     ]
+    if (creation.type === 'hospital' && needsAddress) {
+      const value = clean(attributes.address)
+      if (value.length >= 8 && value.length <= 200 && !/[\r\n]/.test(value) && value !== suppliedAddress) item.addressSuggestion = { value }
+    }
     if (creation.type === 'address') item.address = creation.name
     if (creation.type === 'department') item.fields = [
       field('internalOne', '对内一级科室', first, matchedDepartment?.parent ?? ''),

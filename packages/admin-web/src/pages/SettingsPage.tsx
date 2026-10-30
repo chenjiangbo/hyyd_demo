@@ -10,7 +10,7 @@ const THEME_OPTIONS: Array<{ value: ThemePreference; label: string }> = [
 ]
 
 export default function SettingsPage(): React.JSX.Element {
-  const [orderSite, setOrderSite] = useState<HyhomeOrderSite>({ origin: '', listResourceId: '', detailResourceId: '' })
+  const [orderSite, setOrderSite] = useState<HyhomeOrderSite>({ origin: '', origins: [''], listResourceId: '', detailResourceId: '' })
   const [orderSiteMessage, setOrderSiteMessage] = useState<{ ok: boolean; text: string } | null>(null)
   const [orderSiteSaving, setOrderSiteSaving] = useState(false)
   const { preference, setPreference } = useTheme()
@@ -36,15 +36,31 @@ export default function SettingsPage(): React.JSX.Element {
   useEffect(() => {
     loadAppInfo()
     void adminApi.hyhomeOrderSite().then((site) => {
-      if (site) setOrderSite(site)
+      if (site) setOrderSite({ ...site, origins: site.origins ?? [site.origin] })
     }).catch((error) => setOrderSiteMessage({ ok: false, text: error instanceof Error ? error.message : '读取站点配置失败' }))
   }, [])
 
   const saveOrderSite = async () => {
-    setOrderSiteSaving(true)
     setOrderSiteMessage(null)
+    const origins: string[] = []
+    for (const [index, value] of orderSite.origins.entries()) {
+      let url: URL
+      try {
+        url = new URL(value.trim())
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error()
+      } catch {
+        setOrderSiteMessage({ ok: false, text: `第 ${index + 1} 个站点地址无效，请填写完整的 http(s) 地址，不要填写路径。` })
+        return
+      }
+      if (origins.includes(url.origin)) {
+        setOrderSiteMessage({ ok: false, text: `第 ${index + 1} 个站点地址重复，请删除重复地址。` })
+        return
+      }
+      origins.push(url.origin)
+    }
+    setOrderSiteSaving(true)
     try {
-      const saved = await adminApi.saveHyhomeOrderSite(orderSite)
+      const saved = await adminApi.saveHyhomeOrderSite({ ...orderSite, origins })
       setOrderSite(saved)
       setOrderSiteMessage({ ok: true, text: '已保存。精灵会自动同步，当前页面刷新后即可检测。' })
     } catch (error) {
@@ -99,10 +115,27 @@ export default function SettingsPage(): React.JSX.Element {
       <Card className="p-5 max-w-2xl space-y-4">
         <div>
           <h2 className="text-base font-semibold text-fg-default">寰宇订单页面识别</h2>
-          <p className="text-xs text-fg-muted mt-1">当前后台只配置当前环境的一处站点。测试后台填测试地址，生产后台填生产地址；浏览器插件会自动读取，无需逐台填写。</p>
+          <p className="text-xs text-fg-muted mt-1">配置当前环境的访问地址，多个地址共用资源 ID；浏览器插件会自动读取。</p>
+        </div>
+        <div className="space-y-2">
+          <span className="text-sm font-medium text-fg-default">站点地址</span>
+          {orderSite.origins.map((origin, index) => (
+            <div key={index} className="flex items-center gap-2">
+              <label className="flex-1">
+                <span className="sr-only">站点地址 {index + 1}</span>
+                <input className="w-full rounded-md border border-line bg-surface-1 px-3 py-2 text-sm text-fg-default"
+                  value={origin} placeholder={index === 0 ? '例如 http://hyhomecs.51zsyl.com:8081' : '例如 http://192.168.1.100:8081'}
+                  onChange={(event) => setOrderSite({ ...orderSite, origins: orderSite.origins.map((item, i) => i === index ? event.target.value : item) })} />
+              </label>
+              {orderSite.origins.length > 1 && <button type="button" className="text-sm text-fg-muted hover:text-fg-default"
+                aria-label={`删除站点地址 ${index + 1}`}
+                onClick={() => setOrderSite({ ...orderSite, origins: orderSite.origins.filter((_, i) => i !== index) })}>删除</button>}
+            </div>
+          ))}
+          <button type="button" className="text-sm text-accent hover:underline" disabled={orderSite.origins.length >= 50}
+            onClick={() => setOrderSite({ ...orderSite, origins: [...orderSite.origins, ''] })}>＋ 添加站点地址</button>
         </div>
         {([
-          ['origin', '站点地址', '例如 http://hyhomecs.51zsyl.com:8081'],
           ['listResourceId', '订单列表资源 ID', '订单列表页面的 g_srcresid'],
           ['detailResourceId', '订单维护资源 ID', '订单维护页面的 g_srcresid']
         ] as const).map(([key, label, placeholder]) => (
@@ -113,7 +146,7 @@ export default function SettingsPage(): React.JSX.Element {
               onChange={(event) => setOrderSite({ ...orderSite, [key]: event.target.value })} />
           </label>
         ))}
-        <p className="text-xs text-fg-muted">站点地址只填协议、域名和端口，不填页面路径。当前扩展可读取 51zsyl.com 的子域名；若生产站点使用其他域名，需先更新扩展的网站访问权限。</p>
+        <p className="text-xs text-fg-muted">站点地址填写协议、域名或 IP 和端口，不填页面路径；保存后刷新业务页面。</p>
         <button type="button" onClick={() => void saveOrderSite()} disabled={orderSiteSaving}
           className="px-4 py-2 rounded-md text-sm font-medium bg-accent text-white disabled:opacity-50">
           {orderSiteSaving ? '正在保存…' : '保存订单站点配置'}

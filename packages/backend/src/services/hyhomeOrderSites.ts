@@ -2,6 +2,7 @@ import type { PrismaClient } from '@prisma/client'
 
 export type HyhomeOrderSite = {
   origin: string
+  origins: string[]
   listResourceId: string
   detailResourceId: string
 }
@@ -11,19 +12,21 @@ const KEY = 'hyhome_order_page_site'
 export function validateHyhomeOrderSite(input: unknown): HyhomeOrderSite {
   if (!input || typeof input !== 'object') throw new Error('请填写订单站点配置')
   const item = input as Record<string, unknown>
-  const address = typeof item.origin === 'string' ? item.origin.trim() : ''
+  const addresses = Array.isArray(item.origins) ? item.origins : [item.origin]
   const listResourceId = typeof item.listResourceId === 'string' ? item.listResourceId.trim() : ''
   const detailResourceId = typeof item.detailResourceId === 'string' ? item.detailResourceId.trim() : ''
-  let url: URL
-  try { url = new URL(address) } catch { throw new Error('站点地址无效') }
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
-      url.pathname !== '/' || url.search || url.hash || !url.hostname) {
-    throw new Error('站点地址只需填写 http(s)://域名[:端口]')
-  }
+  if (!addresses.length || addresses.length > 50) throw new Error('请填写 1 至 50 个站点地址')
+  const origins = [...new Set(addresses.map((address) => {
+    if (typeof address !== 'string') throw new Error('站点地址无效')
+    let url: URL
+    try { url = new URL(address.trim()) } catch { throw new Error('站点地址无效') }
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash || !url.hostname) throw new Error('站点地址只需填写 http(s)://域名或IP[:端口]')
+    return url.origin
+  }))]
   if (!listResourceId || !detailResourceId || listResourceId.length > 200 || detailResourceId.length > 200) {
     throw new Error('请填写有效的订单列表和订单维护资源 ID')
   }
-  return { origin: url.origin, listResourceId, detailResourceId }
+  return { origin: origins[0], origins, listResourceId, detailResourceId }
 }
 
 export async function getHyhomeOrderSite(prisma: PrismaClient): Promise<HyhomeOrderSite | null> {
