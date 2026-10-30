@@ -15,7 +15,6 @@ import shutil
 import sys
 import threading
 import time
-import traceback
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +27,8 @@ from wechatauto.db import WeChatDB  # noqa: E402
 from wechatauto.records import normalize_message_type_code  # noqa: E402
 from wechatauto.media import (  # noqa: E402
     AmbiguousLocalFileError,
+    AmbiguousResourceMetadataError,
+    InvalidResourceMetadataError,
     LocalFileSizeMismatchError,
     MediaDownloader,
 )
@@ -37,6 +38,65 @@ LOG = logging.getLogger("hyyd.wechat.collector")
 COMMANDS: queue.Queue[dict[str, Any]] = queue.Queue()
 STOP = threading.Event()
 MEDIA_RECHECK_INTERVAL_SECONDS = 300
+INITIAL_HISTORY_PAGE_SIZE = 200
+ERROR_SUMMARY_INTERVAL_SECONDS = 60
+
+
+class RepeatedErrorReporter:
+    """Emit the first complete failure, then periodic counts for the same fault."""
+
+    def __init__(self) -> None:
+        self.issues: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+
+    def report(
+        self,
+        stage: str,
+        conversation_id: str | None,
+        exc: Exception,
+        source_message_id: str | None = None,
+    ) -> None:
+        now = time.monotonic()
+        message = str(exc)
+        issue_key = (stage, conversation_id or "", source_message_id or "", f"{type(exc).__name__}:{message}")
+        issue = self.issues.get(issue_key)
+        if issue is None:
+            issue = {"last_report": now, "repeat_count": 0}
+            self.issues[issue_key] = issue
+            message_context = f"sourceMessageId={source_message_id}; " if source_message_id else ""
+            detail = f"{message_context}{message}"
+            payload: dict[str, Any] = {"event": "error", "stage": stage, "message": detail}
+            if conversation_id:
+                payload["sourceConversationId"] = conversation_id
+            if source_message_id:
+                payload["sourceMessageId"] = source_message_id
+            emit(payload)
+            LOG.error("Collection failure conversation=%s sourceMessage=%s stage=%s", conversation_id, source_message_id, stage, exc_info=True)
+            return
+
+        issue["repeat_count"] += 1
+        if now - issue["last_report"] < ERROR_SUMMARY_INTERVAL_SECONDS:
+            return
+        repeat_count = issue["repeat_count"]
+        issue["repeat_count"] = 0
+        issue["last_report"] = now
+        message_context = f"sourceMessageId={source_message_id}; " if source_message_id else ""
+        detail = f"{message_context}{message}; repeated {repeat_count} times since the last report"
+        payload = {"event": "error", "stage": stage, "message": detail, "repeatCount": repeat_count}
+        if conversation_id:
+            payload["sourceConversationId"] = conversation_id
+        if source_message_id:
+            payload["sourceMessageId"] = source_message_id
+        emit(payload)
+        LOG.warning("Collection failure repeated %d times conversation=%s sourceMessage=%s stage=%s: %s", repeat_count, conversation_id, source_message_id, stage, message)
+
+    def clear_conversation(self, conversation_id: str, stage: str) -> None:
+        for key in [key for key in self.issues if key[0] == stage and key[1] == conversation_id]:
+            issue = self.issues.pop(key)
+            if issue["repeat_count"]:
+                LOG.warning(
+                    "Collection issue recovered after %d repeated attempts conversation=%s sourceMessage=%s stage=%s: %s",
+                    issue["repeat_count"], key[1], key[2] or None, key[0], key[3],
+                )
 
 
 def emit(value: dict[str, Any]) -> None:
@@ -177,6 +237,7 @@ def encode_message(db: WeChatDB, media_reader: MediaDownloader, account_id: str,
             attachment = []
             resolution_state = None
             resolution_detail = None
+            candidate_files: list[dict[str, Any]] = []
             item_text = item.get("text")
             raw_fields = item.get("raw_fields") or {}
             if item_type in {"image", "file", "video"}:
@@ -188,9 +249,11 @@ def encode_message(db: WeChatDB, media_reader: MediaDownloader, account_id: str,
                         local_path = media_reader.download_merged_forward_video(username, item, save_dir=str(message_media_dir))
                     else:
                         local_path = find_merged_forward_file(db, media_reader, username, item, str(message_media_dir))
-                except AmbiguousLocalFileError:
+                except AmbiguousLocalFileError as exc:
                     local_path = None
                     resolution_state = "ambiguous"
+                    resolution_detail = "different_local_files"
+                    candidate_files = exc.candidates
                 except LocalFileSizeMismatchError:
                     local_path = None
                     resolution_state = "not_downloaded"
@@ -220,7 +283,10 @@ def encode_message(db: WeChatDB, media_reader: MediaDownloader, account_id: str,
                         rendition, full_state = "missing", "pending"
                     attachment[0]["sourceMetadata"] = {"rendition": rendition, "nonThumbnailState": full_state}
                 if item_type == "file" and resolution_state:
-                    attachment[0]["sourceMetadata"] = {"resolutionState": resolution_detail or resolution_state}
+                    attachment[0]["sourceMetadata"] = {
+                        "resolutionState": resolution_detail or resolution_state,
+                        **({"candidateFiles": candidate_files} if candidate_files else {}),
+                    }
                 if item_type == "video":
                     resource_id = raw_fields.get("fileid") or raw_fields.get("datafileid")
                     valid_resource_id = isinstance(resource_id, str) and re.fullmatch(r"[0-9a-fA-F]{32}", resource_id)
@@ -257,30 +323,53 @@ def encode_message(db: WeChatDB, media_reader: MediaDownloader, account_id: str,
             source_row = media_reader._get_typed_message_row(username, int(msg["local_id"]), 49, shard=msg.get("shard"))
             if source_row is None:
                 raise RuntimeError(f"File message row could not be re-read: {sid}")
-            original_name, local_name = media_reader._file_names(source_row)
-            file_name = original_name or local_name
             source_file_name, source_byte_size = media_reader._message_file_metadata(source_row)
-            file_name = file_name or source_file_name
-            file_metadata = {"originalName": original_name, "localName": local_name}
             try:
-                local_path = media_reader.download_file(username, int(msg["local_id"]), save_dir=str(message_media_dir), shard=msg.get("shard"))
-            except AmbiguousLocalFileError:
+                original_name, local_name = media_reader._file_names(source_row)
+            except AmbiguousResourceMetadataError as exc:
+                original_name, local_name = source_file_name, None
+                file_name = source_file_name
+                file_metadata = {
+                    "originalName": original_name,
+                    "localName": None,
+                    "resolutionState": "ambiguous_resource_metadata",
+                    "candidateResourceRecords": exc.candidates,
+                }
                 local_path = None
                 file_resolution_state = "ambiguous"
-                file_metadata["resolutionState"] = "ambiguous"
-            except LocalFileSizeMismatchError:
+            except InvalidResourceMetadataError as exc:
+                original_name, local_name = source_file_name, None
+                file_name = source_file_name
+                file_metadata = {
+                    "originalName": original_name,
+                    "localName": None,
+                    "resolutionState": "invalid_resource_metadata",
+                    "candidateResourceRecords": exc.candidates,
+                    "resolutionError": str(exc),
+                }
                 local_path = None
-                file_resolution_state = "not_downloaded"
-                file_metadata["resolutionState"] = "size_mismatch"
-            if local_path is None:
-                LOG.warning(
-                    "File attachment remains pending sourceMessage=%s serverIdPresent=%s packedInfoPresent=%s originalNamePresent=%s localNamePresent=%s",
-                    sid,
-                    bool(source_row.get("server_id")),
-                    bool(source_row.get("packed_info")),
-                    bool(original_name),
-                    bool(local_name),
-                )
+                file_resolution_state = "error"
+            else:
+                file_name = original_name or local_name or source_file_name
+                file_metadata = {"originalName": original_name, "localName": local_name}
+                try:
+                    local_path = media_reader.download_file(username, int(msg["local_id"]), save_dir=str(message_media_dir), shard=msg.get("shard"))
+                except AmbiguousLocalFileError as exc:
+                    local_path = None
+                    file_resolution_state = "ambiguous"
+                    file_metadata["resolutionState"] = "different_local_files"
+                    file_metadata["candidateFiles"] = exc.candidates
+                except LocalFileSizeMismatchError:
+                    local_path = None
+                    file_resolution_state = "not_downloaded"
+                    file_metadata["resolutionState"] = "size_mismatch"
+                if local_path is None:
+                    LOG.warning(
+                        "File attachment remains pending sourceMessage=%s resolutionState=%s candidateCount=%s",
+                        sid,
+                        file_metadata.get("resolutionState", "source_file_not_found"),
+                        len(file_metadata.get("candidateFiles", [])),
+                    )
         elif kind == "video":
             local_path = media_reader.download_video(username, int(msg["local_id"]), save_dir=str(message_media_dir), shard=msg.get("shard"))
         else:
@@ -386,10 +475,14 @@ def main() -> int:
     })
     threading.Thread(target=read_commands, name="wechat-command-reader", daemon=True).start()
     selected: dict[str, dict[str, Any]] = {}
+    initial_states: dict[str, tuple[float, int]] = {}
+    initial_processed: dict[str, int] = {}
+    checkpoint_inflight: set[str] = set()
     pending_media: dict[str, set[str]] = {}
     media_inflight: dict[str, str] = {}
     last_sessions_refresh = time.monotonic()
     media_last_checked: dict[tuple[str, str], float] = {}
+    error_reporter = RepeatedErrorReporter()
 
     while not STOP.is_set():
         try:
@@ -400,6 +493,7 @@ def main() -> int:
                     if not isinstance(raw, list):
                         raise ValueError("subscribe.conversations must be an array")
                     next_selected: dict[str, dict[str, Any]] = {}
+                    next_initial_states: dict[str, tuple[float, int]] = {}
                     for item in raw:
                         if not isinstance(item, dict):
                             raise ValueError("conversation subscription must be an object")
@@ -419,6 +513,14 @@ def main() -> int:
                         if not isinstance(cursor.get("shard"), str) or not isinstance(cursor.get("localId"), int) or cursor["localId"] < 0:
                             raise ValueError(f"cursor for {username} has invalid shard/localId")
                         next_selected[username] = cursor
+                        cutoff_ms = item.get("initialHistoryCutoffEpochMs")
+                        page_size = item.get("initialHistoryPageSize")
+                        if cutoff_ms is not None:
+                            if type(cutoff_ms) is not int or cutoff_ms <= 0:
+                                raise ValueError(f"initial history cutoff for {username} must be a positive epoch millisecond")
+                            if type(page_size) is not int or page_size != INITIAL_HISTORY_PAGE_SIZE:
+                                raise ValueError(f"initial history page size for {username} must be {INITIAL_HISTORY_PAGE_SIZE}")
+                            next_initial_states[username] = (cutoff_ms / 1000.0, page_size)
                         pending_ids = item.get("pendingMediaSourceMessageIds")
                         if not isinstance(pending_ids, list) or any(not isinstance(message_id, str) or not message_id for message_id in pending_ids):
                             raise ValueError(f"pending media message IDs for {username} must be an array of non-empty strings")
@@ -426,7 +528,12 @@ def main() -> int:
                             pending_media[username] = set(pending_ids)
                         else:
                             pending_media.pop(username, None)
+                    for pending_username in checkpoint_inflight:
+                        if pending_username in selected:
+                            next_selected.setdefault(pending_username, selected[pending_username])
                     selected = next_selected
+                    initial_states = next_initial_states
+                    checkpoint_inflight.intersection_update(selected)
                     pending_media = {name: ids for name, ids in pending_media.items() if name in selected}
                     for name, message_id in media_inflight.items():
                         if name in selected:
@@ -449,10 +556,20 @@ def main() -> int:
                     if not isinstance(pending_ids, list) or any(not isinstance(message_id, str) or not message_id for message_id in pending_ids):
                         raise ValueError("ack pending media message IDs must be an array of non-empty strings")
                     selected[conversation_id] = acknowledged
+                    checkpoint_inflight.discard(conversation_id)
                     if pending_ids:
                         pending_media[conversation_id] = set(pending_ids)
                     else:
                         pending_media.pop(conversation_id, None)
+                elif command.get("type") == "initial_history_complete_ack":
+                    conversation_id = str(command.get("sourceConversationId") or "")
+                    if conversation_id not in selected or conversation_id not in initial_states:
+                        raise ValueError("initial history completion ACK references a conversation not being backfilled")
+                    if str(command.get("cursor") or "") != json.dumps(selected[conversation_id], separators=(",", ":")):
+                        raise ValueError("initial history completion ACK cursor mismatch")
+                    initial_states.pop(conversation_id)
+                    initial_processed.pop(conversation_id, None)
+                    checkpoint_inflight.discard(conversation_id)
                 elif command.get("type") == "media_ack":
                     conversation_id = str(command.get("sourceConversationId") or "")
                     source_message_id = str(command.get("sourceMessageId") or "")
@@ -492,18 +609,40 @@ def main() -> int:
                 } for item in latest]})
                 last_sessions_refresh = now
             except Exception as exc:
-                emit({"event": "error", "stage": "session_refresh", "message": str(exc)})
+                error_reporter.report("session_refresh", None, exc)
 
         for username, cursor in list(selected.items()):
             if STOP.is_set():
                 break
+            if username in checkpoint_inflight:
+                continue
+            failed_source_message_id = None
             try:
-                rows = db.get_new_messages_after(username, cursor=cursor, limit=500)
+                is_initial = username in initial_states
+                rows = (
+                    db.get_recent_messages_for_initial_sync(username, limit=initial_states[username][1], cursor=cursor, cutoff_epoch=initial_states[username][0])
+                    if is_initial
+                    else db.get_new_messages_after(username, cursor=cursor, limit=500)
+                )
                 if not rows:
+                    if is_initial:
+                        latest = db.get_latest_message_cursor(username, username)
+                        current_order = (cursor["sortSeq"], cursor["shard"], cursor["localId"])
+                        latest_order = (latest["sortSeq"], latest["shard"], latest["localId"]) if latest else current_order
+                        if latest and latest_order > current_order:
+                            checkpoint = latest
+                            emit({"event": "cursor_checkpoint", "channel": "wechat", "accountId": account_id,
+                                "sourceConversationId": username, "cursorAfter": json.dumps(checkpoint, separators=(",", ":"))})
+                            checkpoint_inflight.add(username)
+                            continue
+                        emit({"event": "initial_history_complete", "channel": "wechat", "accountId": account_id,
+                            "sourceConversationId": username, "cursorAfter": json.dumps(cursor, separators=(",", ":")),
+                            "sourceRowsProcessedThisRun": initial_processed.get(username, 0)})
+                        checkpoint_inflight.add(username)
                     continue
-                # 500 rows are a page boundary only; every subsequent page is read before this sync completes.
-                while rows and not STOP.is_set():
-                    last_row = rows[-1]
+                source_rows = rows
+                if rows and not STOP.is_set():
+                    last_row = source_rows[-1] if is_initial else rows[-1]
                     highest = int(last_row["sort_seq"])
                     shard = last_row.get("shard")
                     if not isinstance(shard, str) or not shard:
@@ -517,7 +656,12 @@ def main() -> int:
                     seen_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
                     messages = []
                     for row in rows:
-                        messages.extend(encode_message(db, media_reader, account_id, username, row, seen_at))
+                        try:
+                            messages.extend(encode_message(db, media_reader, account_id, username, row, seen_at))
+                        except Exception:
+                            failed_source_message_id = source_id(row)
+                            raise
+                    failed_source_message_id = None
                     messages.sort(key=lambda message: (
                         message["occurredAt"],
                         message.get("sourceItemIndex") if message.get("sourceItemIndex") is not None else -1,
@@ -541,6 +685,17 @@ def main() -> int:
                                 raise ValueError("ack cursor does not match the in-flight message batch")
                             selected[username] = next_cursor
                             cursor = next_cursor
+                            if is_initial:
+                                initial_processed[username] = initial_processed.get(username, 0) + len(source_rows)
+                            is_initial = username in initial_states
+                            pending_ids = command.get("pendingMediaSourceMessageIds")
+                            if not isinstance(pending_ids, list) or any(not isinstance(message_id, str) or not message_id for message_id in pending_ids):
+                                raise ValueError("ack pending media message IDs must be an array of non-empty strings")
+                            if pending_ids:
+                                pending_media[username] = set(pending_ids)
+                            else:
+                                pending_media.pop(username, None)
+                            error_reporter.clear_conversation(username, "message_poll")
                             break
                         elif command.get("type") == "subscribe":
                             # Do not replace the active cursor while a batch is awaiting durable acknowledgement.
@@ -548,6 +703,7 @@ def main() -> int:
                             if not isinstance(pending, list):
                                 raise ValueError("subscribe.conversations must be an array")
                             replacement: dict[str, dict[str, Any]] = {}
+                            replacement_initial_states: dict[str, tuple[float, int]] = {}
                             for item in pending:
                                 if not isinstance(item, dict):
                                     raise ValueError("conversation subscription must be an object")
@@ -564,6 +720,12 @@ def main() -> int:
                                 if not isinstance(token.get("shard"), str) or not isinstance(token.get("localId"), int) or token["localId"] < 0:
                                     raise ValueError(f"cursor for {selected_username} has invalid shard/localId")
                                 replacement[selected_username] = token
+                                cutoff_ms = item.get("initialHistoryCutoffEpochMs")
+                                page_size = item.get("initialHistoryPageSize")
+                                if cutoff_ms is not None:
+                                    if type(cutoff_ms) is not int or cutoff_ms <= 0 or type(page_size) is not int or page_size != INITIAL_HISTORY_PAGE_SIZE:
+                                        raise ValueError(f"initial history configuration for {selected_username} is invalid")
+                                    replacement_initial_states[selected_username] = (cutoff_ms / 1000.0, page_size)
                                 pending_ids = item.get("pendingMediaSourceMessageIds")
                                 if not isinstance(pending_ids, list) or any(not isinstance(message_id, str) or not message_id for message_id in pending_ids):
                                     raise ValueError(f"pending media message IDs for {selected_username} must be an array of non-empty strings")
@@ -573,7 +735,10 @@ def main() -> int:
                                     pending_media.pop(selected_username, None)
                             # Keep the in-flight conversation subscribed until its durable ACK arrives.
                             replacement.setdefault(username, cursor)
+                            if username in initial_states:
+                                replacement_initial_states.setdefault(username, initial_states[username])
                             selected = replacement
+                            initial_states = replacement_initial_states
                             pending_media = {name: ids for name, ids in pending_media.items() if name in selected}
                             for name, message_id in media_inflight.items():
                                 if name in selected:
@@ -587,14 +752,8 @@ def main() -> int:
                             STOP.set()
                         else:
                             raise ValueError(f"Unsupported collector command while awaiting batch acknowledgement: {command.get('type')}")
-                    if STOP.is_set():
-                        break
-                    if username not in selected:
-                        break
-                    rows = db.get_new_messages_after(username, cursor=cursor, limit=500)
             except Exception as exc:
-                emit({"event": "error", "stage": "message_poll", "sourceConversationId": username, "message": str(exc)})
-                LOG.error("Message read failed for %s: %s", username, traceback.format_exc())
+                error_reporter.report("message_poll", username, exc, failed_source_message_id)
 
         now = time.monotonic()
         for username, source_message_ids in list(pending_media.items()):
@@ -611,6 +770,7 @@ def main() -> int:
                     )
                     if not updated_messages:
                         continue
+                    error_reporter.clear_conversation(username, "media_recheck")
                     emit({
                         "event": "media_batch", "channel": "wechat", "accountId": account_id,
                         "sourceConversationId": username, "mediaSourceMessageId": source_message_id,
@@ -619,8 +779,7 @@ def main() -> int:
                     media_inflight[username] = source_message_id
                     break
                 except Exception as exc:
-                    emit({"event": "error", "stage": "media_recheck", "sourceConversationId": username, "message": str(exc)})
-                    LOG.error("Media recheck failed for %s: %s", username, traceback.format_exc())
+                    error_reporter.report("media_recheck", username, exc, source_message_id)
         STOP.wait(1)
     return 0
 

@@ -23,6 +23,7 @@ import glob
 import hashlib
 import hmac as hmac_mod
 import json
+import math
 import os
 import queue
 import re
@@ -1913,6 +1914,80 @@ class WeChatDB:
             return []
         rows, maps = result
         return [self._msg_row_to_dict(row, maps) for row in rows]
+
+    def get_recent_messages_for_initial_sync(
+        self, user: str, limit: int = 200, cursor=None, cutoff_epoch: Optional[float] = None
+    ) -> List[dict]:
+        """Read the next page of messages inside the initial-history time window.
+
+        ``limit`` is a page size, never a total history cap. Pages use the same
+        total order and cursor as incremental reads so acknowledged pages can be
+        resumed without skipping rows.
+        """
+        want = int(limit)
+        if want <= 0:
+            raise ValueError("limit must be positive")
+        cutoff = float(cutoff_epoch if cutoff_epoch is not None else time.time() - 30 * 24 * 60 * 60)
+        if not math.isfinite(cutoff):
+            raise ValueError("initial history cutoff must be a finite timestamp")
+        if cursor is None:
+            cursor = {"sortSeq": 0, "shard": "", "localId": 0}
+        if not isinstance(cursor, dict):
+            raise ValueError("initial history cursor must be an object")
+        sort_seq = int(cursor["sortSeq"])
+        cursor_shard = str(cursor["shard"])
+        local_id = int(cursor["localId"])
+        if sort_seq < 0 or local_id < 0:
+            raise ValueError("initial history cursor values must be non-negative")
+
+        def query(tables):
+            rows = []
+            for conn, table in tables:
+                shard = self._shard_label(conn)
+                if shard > cursor_shard:
+                    tie_filter = "(sort_seq > ? OR sort_seq = ? OR (sort_seq = ? AND local_id > ?))"
+                    cursor_params = (sort_seq, sort_seq, sort_seq, local_id)
+                elif shard == cursor_shard:
+                    tie_filter = "(sort_seq > ? OR (sort_seq = ? AND local_id > ?))"
+                    cursor_params = (sort_seq, sort_seq, local_id)
+                else:
+                    tie_filter = "sort_seq > ?"
+                    cursor_params = (sort_seq,)
+                create_time_seconds = "CASE WHEN CAST(create_time AS REAL) > 10000000000 THEN CAST(create_time AS REAL) / 1000.0 ELSE CAST(create_time AS REAL) END"
+                sql = (
+                    "SELECT local_id, local_type, real_sender_id, create_time, message_content, source, "
+                    "packed_info_data, compress_content, server_id, sort_seq, ? AS shard FROM %s "
+                    "WHERE username = ? AND %s AND %s >= ? "
+                    "ORDER BY sort_seq ASC, local_id ASC LIMIT %d"
+                ) % (table, tie_filter, create_time_seconds, want)
+                rows.extend(conn.execute(sql, (shard, user) + cursor_params + (cutoff,)).fetchall())
+            rows.sort(key=lambda row: (row["sort_seq"], row["shard"], row["local_id"]))
+            return rows[:want], self._shard_maps(tables)
+
+        got = self._run_msg_query(
+            user, query
+        )
+        if not got:
+            return []
+        rows, maps = got
+        return [self._msg_row_to_dict(row, maps) for row in rows]
+
+    def get_latest_message_cursor(self, user: str, conversation_id: str) -> Optional[dict]:
+        """Return the latest source cursor for a conversation across all shards."""
+        rows = self._run_msg_query(
+            user,
+            lambda tables: self._shard_rows(
+                tables,
+                "WHERE username = ?",
+                params=(conversation_id,),
+                order_ext="ORDER BY sort_seq DESC, local_id DESC",
+                per_shard_limit=1,
+            ),
+        )
+        if not rows:
+            return None
+        latest = max(rows, key=lambda row: (row["sort_seq"], row["shard"], row["local_id"]))
+        return {"sortSeq": int(latest["sort_seq"]), "shard": str(latest["shard"]), "localId": int(latest["local_id"])}
 
     def get_messages(self, user: str, limit: int = 20, offset: int = 0) -> List[dict]:
         """读取指定会话（微信号/群号）的最近消息（跨分片合并后按 sort_seq 降序）

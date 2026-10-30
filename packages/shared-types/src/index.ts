@@ -41,7 +41,14 @@ export interface NativeChatAttachmentSourceMetadata extends Record<string, unkno
   nonThumbnailState?: 'pending' | 'available'
   originalName?: string | null
   localName?: string | null
-  resolutionState?: 'size_mismatch' | 'ambiguous'
+  resolutionState?:
+    | 'size_mismatch'
+    | 'ambiguous'
+    | 'ambiguous_resource_metadata'
+    | 'different_local_files'
+    | 'invalid_resource_metadata'
+    | 'local_record_video_not_matched'
+    | 'resource_file_not_found'
   imageAnalysis?: {
     status: 'pending' | 'processing' | 'retrying' | 'completed' | 'failed'
     imageType?: string | null

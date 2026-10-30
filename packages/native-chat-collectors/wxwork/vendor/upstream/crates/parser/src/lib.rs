@@ -176,6 +176,8 @@ fn extract_media(payload: &Value, message_type: &MessageType) -> Vec<MediaRefV1>
     };
 
     vec![MediaRefV1 {
+        resolution_state: None,
+        candidate_files: Vec::new(),
         content_hash: None,
         original_name: payload
             .get("name")

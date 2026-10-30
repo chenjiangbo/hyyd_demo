@@ -157,6 +157,15 @@ export interface OrderAiBusinessConfigResponse {
   fields: Array<{ code: string; label: string; serviceTypes: string[]; requiresConfirmation: boolean }>
 }
 
+export type AiSkillScope = 'common' | 'service_type' | 'step' | 'field' | 'task_skills'
+export type AiSkillEntries = Record<string, string>
+export interface AiSkillConfigResponse {
+  entries: AiSkillEntries
+  serviceTypes: Array<{ value: string; label: string; steps: Array<{ code: string; name: string }> }>
+  fields: Array<{ code: string; label: string; system: 'ABI' | '泰康'; serviceTypes: string[] }>
+  taskSkills: Array<{ code: string; label: string }>
+}
+
 export interface HuanyuChannelOption {
   id: string
   name: string
@@ -313,6 +322,14 @@ export const adminApi = {
     })
   },
 
+  aiSkillConfig() {
+    return request<AiSkillConfigResponse>('/api/v1/admin/ai-skills')
+  },
+  saveAiSkillConfig(entries: AiSkillEntries) {
+    return request<{ entries: AiSkillEntries; message: string }>('/api/v1/admin/ai-skills', {
+      method: 'PUT', body: JSON.stringify({ entries })
+    })
+  },
   // ───── 泰康业务—寰宇渠道映射 ─────
   taikangHuanyuChannelMappings() {
     return request<TaikangHuanyuChannelMapping[]>('/api/v1/admin/taikang-huanyu-channel-mappings')

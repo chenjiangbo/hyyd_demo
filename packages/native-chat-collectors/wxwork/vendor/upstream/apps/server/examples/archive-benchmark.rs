@@ -57,6 +57,8 @@ fn batch(start: usize, count: usize, body_bytes: usize, generation: u128) -> Arc
             ));
             let media = if index % 20 == 0 {
                 vec![MediaRefV1 {
+                    resolution_state: None,
+                    candidate_files: Vec::new(),
                     content_hash: None,
                     original_name: Some("synthetic-file.txt".into()),
                     mime_type: Some("text/plain".into()),

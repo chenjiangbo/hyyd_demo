@@ -9,6 +9,8 @@ export type NativeChatApplicationLink = {
   status: NativeChatApplicationLinkStatus
 }
 
+type LinkOrder = { id: number; rawJson: unknown; customerName: string | null }
+
 function applicationNoOf(rawJson: unknown): string | null {
   if (!rawJson || typeof rawJson !== 'object' || Array.isArray(rawJson)) return null
   const value = (rawJson as Record<string, unknown>).crmApplyNo
@@ -21,28 +23,41 @@ export async function resolveNativeChatApplicationLink(
   employeeId: number,
   title: string | null
 ): Promise<NativeChatApplicationLink> {
-  const extracted = extractOrderCandidate(title)
-  if (!extracted) return { applicationNo: null, candidate: null, status: 'no_candidate' }
+  const links = await resolveNativeChatApplicationLinks(prisma, employeeId, [title])
+  const link = links[0]
+  if (!link) throw new Error('会话业务关联解析没有返回结果')
+  return link
+}
 
-  const confirmed = await prisma.unmatchedOrderRef.findUnique({
-    where: { employee_candidate: { employeeId, candidate: extracted.raw } },
-    select: { status: true, resolvedOrderId: true, resolvedApplicationNo: true }
-  })
-  if (confirmed?.status === 'confirmed') {
-    if (confirmed.resolvedApplicationNo) {
-      return { applicationNo: confirmed.resolvedApplicationNo, candidate: extracted.raw, status: 'matched' }
-    }
-    if (confirmed.resolvedOrderId) {
-      const order = await prisma.order.findUnique({
-        where: { id: confirmed.resolvedOrderId },
-        select: { rawJson: true }
-      })
-      const applicationNo = applicationNoOf(order?.rawJson)
-      if (applicationNo) return { applicationNo, candidate: extracted.raw, status: 'matched' }
-    }
+/** Resolve a discovery snapshot with one order lookup and one confirmation lookup for the whole batch. */
+export async function resolveNativeChatApplicationLinks(
+  prisma: PrismaClient,
+  employeeId: number,
+  titles: Array<string | null>
+): Promise<NativeChatApplicationLink[]> {
+  const extracted = titles.map((title) => extractOrderCandidate(title))
+  const candidateValues = [...new Set(extracted.flatMap((item) => item ? [item.raw] : []))]
+  if (candidateValues.length === 0) {
+    return titles.map((): NativeChatApplicationLink => ({ applicationNo: null, candidate: null, status: 'no_candidate' }))
   }
 
-  const orders = await prisma.order.findMany({ select: { id: true, rawJson: true, customerName: true } })
+  const confirmedRows = await prisma.unmatchedOrderRef.findMany({
+    where: { employeeId, candidate: { in: candidateValues } },
+    select: { candidate: true, status: true, resolvedOrderId: true, resolvedApplicationNo: true }
+  })
+  const confirmedByCandidate = new Map(confirmedRows.map((row) => [row.candidate, row]))
+  const needsOrderResolution = candidateValues.some((candidate) => {
+    const row = confirmedByCandidate.get(candidate)
+    return row?.status !== 'confirmed' || !row.resolvedApplicationNo
+  })
+  const confirmedOrderIds = confirmedRows.flatMap((row) =>
+    row.status === 'confirmed' && row.resolvedOrderId && !row.resolvedApplicationNo ? [row.resolvedOrderId] : [])
+  const orders: LinkOrder[] = needsOrderResolution
+    ? await prisma.order.findMany({ select: { id: true, rawJson: true, customerName: true } })
+    : confirmedOrderIds.length
+      ? await prisma.order.findMany({ where: { id: { in: confirmedOrderIds } }, select: { id: true, rawJson: true, customerName: true } })
+      : []
+  const orderById = new Map(orders.map((order) => [order.id, order]))
   const applicationOrders = new Map<string, typeof orders>()
   for (const order of orders) {
     const applicationNo = applicationNoOf(order.rawJson)
@@ -63,15 +78,27 @@ export async function resolveNativeChatApplicationLink(
       name: grouped.map((order) => order.customerName).find(Boolean) ?? null
     }
   })
-  const result = resolveOrder(extracted.raw, entries, 2, title)
-  if (result.status === 'matched') {
-    const applicationNo = idToApplication.get(result.orderId)
-    if (!applicationNo) throw new Error(`订单候选匹配成功但未找到申领号映射：${extracted.raw}`)
-    return { applicationNo, candidate: extracted.raw, status: 'matched' }
-  }
-  return {
-    applicationNo: null,
-    candidate: extracted.raw,
-    status: result.status === 'ambiguous' ? 'ambiguous' : result.status === 'name_mismatch' ? 'name_mismatch' : 'unmatched'
-  }
+  return titles.map((title, index): NativeChatApplicationLink => {
+    const item = extracted[index]
+    if (!item) return { applicationNo: null, candidate: null, status: 'no_candidate' }
+    const confirmed = confirmedByCandidate.get(item.raw)
+    if (confirmed?.status === 'confirmed') {
+      if (confirmed.resolvedApplicationNo) {
+        return { applicationNo: confirmed.resolvedApplicationNo, candidate: item.raw, status: 'matched' }
+      }
+      const applicationNo = confirmed.resolvedOrderId ? applicationNoOf(orderById.get(confirmed.resolvedOrderId)?.rawJson) : null
+      if (applicationNo) return { applicationNo, candidate: item.raw, status: 'matched' }
+    }
+    const result = resolveOrder(item.raw, entries, 2, title)
+    if (result.status === 'matched') {
+      const applicationNo = idToApplication.get(result.orderId)
+      if (!applicationNo) throw new Error(`订单候选匹配成功但未找到申领号映射：${item.raw}`)
+      return { applicationNo, candidate: item.raw, status: 'matched' }
+    }
+    return {
+      applicationNo: null,
+      candidate: item.raw,
+      status: result.status === 'ambiguous' ? 'ambiguous' : result.status === 'name_mismatch' ? 'name_mismatch' : 'unmatched'
+    }
+  })
 }

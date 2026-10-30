@@ -18,11 +18,15 @@ type CollectorEvent =
   | { event: 'ready'; channel: Channel; accountId: string; sessions: Session[] }
   | { event: 'sessions'; sessions: Session[] }
   | { event: 'message_batch'; channel: Channel; accountId: string; sourceConversationId: string; sortSeq?: number; cursorAfter?: string; messages: NativeChatMessage[] }
+  | { event: 'cursor_checkpoint'; channel: Channel; accountId: string; sourceConversationId: string; cursorAfter: string }
+  | { event: 'initial_history_complete'; channel: Channel; accountId: string; sourceConversationId: string; cursorAfter: string; sourceRowsProcessedThisRun: number }
   | { event: 'media_batch'; channel: 'wechat'; accountId: string; sourceConversationId: string; mediaSourceMessageId: string; messages: NativeChatMessage[] }
-  | { event: 'fatal' | 'error'; stage?: string; message?: string; sourceConversationId?: string }
+  | { event: 'fatal' | 'error'; stage?: string; message?: string; sourceConversationId?: string; sourceMessageId?: string; repeatCount?: number }
   | { event: 'subscribed'; conversationIds: string[] }
+type DiscoveryEvent = Extract<CollectorEvent, { event: 'ready' | 'sessions' }>
 type CursorMap = Record<string, string>
 type PendingMediaMap = Record<string, Record<string, string[]>>
+type InitialHistoryState = { version: 1; legacyCursorsMigrated: boolean; pendingCutoffs: Record<string, number>; completed: string[] }
 export type NativePendingImageMatch = {
   attachmentId: number
   messageId: number
@@ -58,9 +62,15 @@ export type NativeChatCollectorHealth = { wechat: CollectorHealth; wxwork: Colle
 
 const CONFIG_REFRESH_MS = 30_000
 const MAX_RETRIES = 5
+const DISCOVERY_RETRY_DELAYS_MS = [5_000, 15_000] as const
+const DISCOVERY_MAX_ATTEMPTS = DISCOVERY_RETRY_DELAYS_MS.length + 1
+const DISCOVERY_FULL_SYNC_MS = 5 * 60_000
 const CURSOR_FILE = 'native-chat-cursors.json'
+const INITIAL_HISTORY_PAGE_SIZE = 200
+const INITIAL_HISTORY_DAYS = 30
 const PENDING_MEDIA_FILE = 'native-chat-pending-media.json'
 const SUBSCRIPTIONS_FILE = 'native-chat-subscriptions.json'
+const INITIAL_HISTORY_FILE = 'native-chat-initial-history.json'
 
 class BackendResponseError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string) { super(message) }
@@ -68,6 +78,26 @@ class BackendResponseError extends Error {
 
 function cursorKey(session: Pick<Session, 'channel' | 'accountId' | 'sourceConversationId'>): string {
   return [session.channel, session.accountId, session.sourceConversationId].join('\u001f')
+}
+
+function stableDiscoveryValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableDiscoveryValue)
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([key]) => key !== 'lastTime')
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, item]) => [key, stableDiscoveryValue(item)]))
+}
+
+function discoveryFingerprint(session: Session): string {
+  return JSON.stringify({
+    channel: session.channel,
+    accountId: session.accountId,
+    sourceConversationId: session.sourceConversationId,
+    title: session.title,
+    kind: session.kind,
+    sourceMetadata: stableDiscoveryValue(session.sourceMetadata ?? null)
+  })
 }
 
 function matchesRule(rule: NativeChatCollectionRule, session: Session): boolean {
@@ -127,6 +157,29 @@ function parseSubscriptionsFile(path: string): Session[] {
   return value as Session[]
 }
 
+function parseInitialHistoryState(path: string): InitialHistoryState {
+  if (!existsSync(path)) return { version: 1, legacyCursorsMigrated: false, pendingCutoffs: {}, completed: [] }
+  const value: unknown = JSON.parse(readFileSync(path, 'utf8'))
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('本地首次回补状态文件格式错误')
+  const state = value as Partial<InitialHistoryState>
+  if (state.version !== 1 || typeof state.legacyCursorsMigrated !== 'boolean'
+    || !state.pendingCutoffs || typeof state.pendingCutoffs !== 'object' || Array.isArray(state.pendingCutoffs)
+    || !Array.isArray(state.completed) || state.completed.some((key) => typeof key !== 'string' || !key)) {
+    throw new Error('本地首次回补状态文件字段无效')
+  }
+  for (const [key, cutoff] of Object.entries(state.pendingCutoffs)) {
+    if (!key || typeof cutoff !== 'number' || !Number.isSafeInteger(cutoff) || cutoff <= 0) {
+      throw new Error('本地首次回补状态文件包含无效时间范围')
+    }
+  }
+  return {
+    version: 1,
+    legacyCursorsMigrated: state.legacyCursorsMigrated,
+    pendingCutoffs: { ...state.pendingCutoffs },
+    completed: [...new Set(state.completed)]
+  }
+}
+
 function cursorForSession(channel: Channel, stored: string | undefined): string {
   if (stored !== undefined) return stored
   return channel === 'wechat'
@@ -168,6 +221,7 @@ export class NativeChatCollectorManager {
   private sessions = new Map<string, Session>()
   private selectedSubscriptions: Session[]
   private cursors: CursorMap
+  private initialHistoryState: InitialHistoryState
   private pendingMedia: PendingMediaMap
   private refreshTimer: NodeJS.Timeout | null = null
   private refreshing = false
@@ -176,6 +230,7 @@ export class NativeChatCollectorManager {
   private wxworkContextBlocked = false
   private lastWxworkContextError: string | null = null
   private readonly cursorPath = join(app.getPath('userData'), CURSOR_FILE)
+  private readonly initialHistoryPath = join(app.getPath('userData'), INITIAL_HISTORY_FILE)
   private readonly pendingMediaPath = join(app.getPath('userData'), PENDING_MEDIA_FILE)
   private readonly subscriptionsPath = join(app.getPath('userData'), SUBSCRIPTIONS_FILE)
   private readonly logPath = join(app.getPath('userData'), 'native-chat-collectors.log')
@@ -186,9 +241,14 @@ export class NativeChatCollectorManager {
   private statusListener: ((status: NativeChatCollectorHealth) => void) | null = null
   private imageMatchListener: ((match: NativePendingImageMatch) => void) | null = null
   private pendingImageMatches = new Map<number, NativePendingImageMatch>()
+  private pendingDiscoveryEvents = new Map<Channel, DiscoveryEvent>()
+  private discoveryWorkerRunning = false
+  private successfulDiscoveryFingerprints = new Map<Channel, Map<string, string>>()
+  private lastFullDiscoveryAt = new Map<Channel, number>()
 
   constructor() {
     this.cursors = parseCursorFile(this.cursorPath)
+    this.initialHistoryState = parseInitialHistoryState(this.initialHistoryPath)
     this.pendingMedia = parsePendingMediaFile(this.pendingMediaPath)
     let resetLegacyWxworkCursors = false
     for (const [key, cursor] of Object.entries(this.cursors)) {
@@ -210,7 +270,25 @@ export class NativeChatCollectorManager {
       this.persistCursors()
     }
     this.selectedSubscriptions = parseSubscriptionsFile(this.subscriptionsPath)
-    for (const session of this.selectedSubscriptions) this.sessions.set(cursorKey(session), session)
+    const now = Date.now()
+    const initialCutoff = now - INITIAL_HISTORY_DAYS * 24 * 60 * 60 * 1000
+    let historyStateChanged = false
+    for (const session of this.selectedSubscriptions) {
+      const key = cursorKey(session)
+      this.sessions.set(key, session)
+      if (!this.initialHistoryState.completed.includes(key) && this.initialHistoryState.pendingCutoffs[key] === undefined) {
+        if (this.cursors[key] !== undefined) this.cursors[key] = cursorForSession(session.channel, undefined)
+        this.initialHistoryState.pendingCutoffs[key] = initialCutoff
+        historyStateChanged = true
+      }
+    }
+    this.initialHistoryState.legacyCursorsMigrated = true
+    if (historyStateChanged) {
+      this.persistCursors()
+      this.persistInitialHistoryState()
+    } else if (!existsSync(this.initialHistoryPath)) {
+      this.persistInitialHistoryState()
+    }
   }
 
   setConfig(config: { backendUrl: string; employeeCode: string }): void {
@@ -218,7 +296,13 @@ export class NativeChatCollectorManager {
     const employeeCode = config.employeeCode.trim()
     if (!/^https?:\/\//i.test(backendUrl)) throw new Error('消息采集服务地址无效')
     if (!employeeCode) throw new Error('消息采集缺少员工身份')
+    const changedIdentity = this.config?.backendUrl !== backendUrl || this.config?.employeeCode !== employeeCode
     this.config = { backendUrl, employeeCode }
+    if (changedIdentity) {
+      this.successfulDiscoveryFingerprints.clear()
+      this.lastFullDiscoveryAt.clear()
+      this.pendingDiscoveryEvents.clear()
+    }
     this.stopping = false
     this.setHealth('wechat', 'starting', '正在启动微信采集程序')
     this.setHealth('wxwork', 'starting', '正在识别企业微信账号并启动采集程序')
@@ -242,6 +326,7 @@ export class NativeChatCollectorManager {
 
   stop(): void {
     this.stopping = true
+    this.pendingDiscoveryEvents.clear()
     if (this.refreshTimer) clearInterval(this.refreshTimer)
     this.refreshTimer = null
     for (const child of this.children.values()) {
@@ -287,7 +372,7 @@ export class NativeChatCollectorManager {
       this.pendingImageMatches = current
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
-      this.addLog('error', `挂号凭证待确认列表同步失败：${detail}`)
+      this.log('app', 'error', `挂号凭证待确认列表同步失败：${detail}`)
     }
   }
 
@@ -303,6 +388,11 @@ export class NativeChatCollectorManager {
   private log(channel: Channel | 'app', event: string, detail: string): void {
     mkdirSync(app.getPath('userData'), { recursive: true })
     appendFileSync(this.logPath, `${JSON.stringify({ at: new Date().toISOString(), channel, event, detail })}\n`, 'utf8')
+  }
+
+  private logStructured(channel: Channel | 'app', event: string, fields: Record<string, unknown>): void {
+    mkdirSync(app.getPath('userData'), { recursive: true })
+    appendFileSync(this.logPath, `${JSON.stringify({ at: new Date().toISOString(), channel, event, ...fields })}\n`, 'utf8')
   }
 
   private setHealth(channel: Channel, state: CollectorHealthState, detail: string): void {
@@ -468,7 +558,7 @@ export class NativeChatCollectorManager {
           throw new Error('collector event must be an object with an event type')
         }
         const eventName = (parsed as { event: string }).event
-        if (!['ready', 'sessions', 'message_batch', 'media_batch', 'fatal', 'error', 'subscribed'].includes(eventName)) {
+        if (!['ready', 'sessions', 'message_batch', 'cursor_checkpoint', 'initial_history_complete', 'media_batch', 'fatal', 'error', 'subscribed'].includes(eventName)) {
           throw new Error(`unsupported collector event: ${eventName}`)
         }
         event = parsed as CollectorEvent
@@ -481,9 +571,169 @@ export class NativeChatCollectorManager {
         if (child) child.kill()
         return
       }
+      if (event.event === 'ready' || event.event === 'sessions') {
+        this.enqueueDiscoveryEvent(channel, event)
+        continue
+      }
       void this.handleEventWithRetry(channel, event)
     }
     this.buffers.set(channel, buffer)
+  }
+
+  private enqueueDiscoveryEvent(channel: Channel, event: DiscoveryEvent): void {
+    // A fresh full directory replaces an older queued one for this channel.
+    this.pendingDiscoveryEvents.set(channel, event)
+    if (this.discoveryWorkerRunning) return
+    this.discoveryWorkerRunning = true
+    void this.drainDiscoveryEvents()
+  }
+
+  private async drainDiscoveryEvents(): Promise<void> {
+    try {
+      while (!this.stopping && this.pendingDiscoveryEvents.size > 0) {
+        const next = this.pendingDiscoveryEvents.entries().next().value as [Channel, DiscoveryEvent] | undefined
+        if (!next) break
+        const [channel, event] = next
+        this.pendingDiscoveryEvents.delete(channel)
+        try {
+          await this.processDiscoveryEvent(channel, event)
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error)
+          this.log(channel, 'discovery_event_error', `${this.eventDescription(event)}；${detail}`)
+          this.setHealth(channel, 'error', `会话目录处理失败：${detail}`)
+        }
+      }
+    } finally {
+      this.discoveryWorkerRunning = false
+      if (!this.stopping && this.pendingDiscoveryEvents.size > 0) {
+        this.discoveryWorkerRunning = true
+        void this.drainDiscoveryEvents()
+      }
+    }
+  }
+
+  private async processDiscoveryEvent(channel: Channel, event: DiscoveryEvent): Promise<void> {
+    if (channel === 'wxwork' && !this.verifyWxworkContext()) return
+    if (!Array.isArray(event.sessions)) throw new Error('采集进程会话目录格式错误')
+    if (event.event === 'ready' && event.channel !== channel) throw new Error('采集进程就绪事件的平台与进程不一致')
+    for (const session of event.sessions) {
+      if (session.channel !== channel) throw new Error('采集进程返回的平台与进程不一致')
+    }
+
+    const current = new Map(event.sessions.map((session) => [cursorKey(session), discoveryFingerprint(session)]))
+    this.logStructured(channel, 'discovery_inventory', {
+      eventType: event.event,
+      discoveredSessionCount: event.sessions.length,
+      sessions: event.sessions.map((session) => ({
+        title: session.title,
+        kind: session.kind,
+        accountId: session.accountId,
+        sourceConversationId: session.sourceConversationId
+      }))
+    })
+    const previous = this.successfulDiscoveryFingerprints.get(channel)
+    const fullSyncDue = !previous || event.event === 'ready'
+      || Date.now() - (this.lastFullDiscoveryAt.get(channel) ?? 0) >= DISCOVERY_FULL_SYNC_MS
+    const changedSessions = previous
+      ? event.sessions.filter((session) => previous.get(cursorKey(session)) !== current.get(cursorKey(session)))
+      : event.sessions
+    const discoverySessions = fullSyncDue ? event.sessions : changedSessions
+    const shouldPostDiscovery = fullSyncDue || changedSessions.length > 0
+
+    if (!shouldPostDiscovery) {
+      await this.refreshSubscriptions(event.sessions, channel)
+      this.successfulDiscoveryFingerprints.set(channel, current)
+      this.setHealth(channel, 'running', '会话目录无变化，采集正常')
+      this.log(channel, 'discovery_unchanged', `sessions=${event.sessions.length}`)
+      return
+    }
+
+    let collectionConfig: NativeChatCollectionConfig | null = null
+    let collectionConfigError: string | null = null
+    try {
+      const response = await this.request('GET', '/api/v1/native-chat/collection-config', undefined, 0)
+      const candidate = response.data as NativeChatCollectionConfig
+      if (!candidate || !Array.isArray(candidate.rules)) throw new Error('服务端会话采集配置格式错误')
+      collectionConfig = candidate
+      const ruleMatches = event.sessions.map((session) => {
+        const rule = candidate.rules.find((item) => matchesRule(item, session))
+        return { title: session.title, kind: session.kind, sourceConversationId: session.sourceConversationId, matchedRuleId: rule?.id ?? null }
+      })
+      this.logStructured(channel, 'discovery_rule_match', {
+        configVersion: candidate.version,
+        discoveredSessionCount: event.sessions.length,
+        matchedSessionCount: ruleMatches.filter((item) => item.matchedRuleId !== null).length,
+        unmatchedSessionCount: ruleMatches.filter((item) => item.matchedRuleId === null).length,
+        sessions: ruleMatches
+      })
+    } catch (error) {
+      collectionConfigError = error instanceof Error ? error.message : String(error)
+      this.logStructured(channel, 'discovery_rule_match', {
+        configVersion: null,
+        discoveredSessionCount: event.sessions.length,
+        matchedSessionCount: null,
+        unmatchedSessionCount: null,
+        matchingStatus: 'configuration_unavailable',
+        error: collectionConfigError
+      })
+    }
+
+    let lastError: Error | null = null
+    for (let attempt = 0; attempt < DISCOVERY_MAX_ATTEMPTS; attempt++) {
+      if (this.stopping) return
+      const attemptStartedAt = Date.now()
+      try {
+        const response = await this.request('POST', '/api/v1/native-chat/discovery', { sessions: discoverySessions }, 0, 120_000)
+        const confirmedCount = response?.data?.discovered
+        const persistedCount = response?.data?.persisted
+        if (!Number.isSafeInteger(confirmedCount) || confirmedCount !== discoverySessions.length
+          || !Number.isSafeInteger(persistedCount) || persistedCount !== discoverySessions.length) {
+          throw new Error(`后台确认会话数不符：提交 ${discoverySessions.length}，解析 ${String(confirmedCount)}，入库 ${String(persistedCount)}`)
+        }
+        if (this.stopping) return
+        this.successfulDiscoveryFingerprints.set(channel, current)
+        if (fullSyncDue) this.lastFullDiscoveryAt.set(channel, Date.now())
+        this.logStructured(channel, 'discovery_sync', {
+          eventType: event.event,
+          submittedSessionCount: discoverySessions.length,
+          confirmedSessionCount: confirmedCount,
+          persistedSessionCount: persistedCount,
+          elapsedMs: Date.now() - attemptStartedAt,
+          attempt: attempt + 1,
+          status: 'confirmed'
+        })
+        await this.refreshSubscriptions(event.sessions, channel, collectionConfig ?? undefined)
+        if (attempt > 0) this.log(channel, 'discovery_retry_recovered', `attempt=${attempt + 1}; sessions=${discoverySessions.length}`)
+        this.setHealth(channel, 'running', '采集程序已就绪并已连接后台')
+        return
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error))
+        this.logStructured(channel, 'discovery_sync', {
+          eventType: event.event,
+          submittedSessionCount: discoverySessions.length,
+          confirmedSessionCount: null,
+          elapsedMs: Date.now() - attemptStartedAt,
+          attempt: attempt + 1,
+          status: 'failed',
+          error: lastError.message,
+          matchingStatus: collectionConfig ? 'computed' : 'configuration_unavailable',
+          matchingError: collectionConfigError
+        })
+        const permanentClientError = error instanceof BackendResponseError
+          && error.status >= 400 && error.status < 500 && error.status !== 429
+        const newerSnapshotQueued = this.pendingDiscoveryEvents.size > 0
+        if (permanentClientError || newerSnapshotQueued || attempt + 1 >= DISCOVERY_MAX_ATTEMPTS) break
+        const delay = DISCOVERY_RETRY_DELAYS_MS[attempt] ?? DISCOVERY_RETRY_DELAYS_MS[DISCOVERY_RETRY_DELAYS_MS.length - 1]
+        this.log(channel, 'discovery_retry', `attempt=${attempt + 1}; delayMs=${delay}; ${lastError.message}`)
+        await new Promise((resolve) => setTimeout(resolve, delay))
+        if (this.pendingDiscoveryEvents.size > 0) break
+      }
+    }
+
+    const detail = `${this.eventDescription(event)}；${lastError?.message ?? '后台未确认会话目录'}；本轮重试结束，等待下一次目录刷新`
+    console.error(`[native-chat:${channel}] 会话目录同步失败：${detail}`)
+    this.log(channel, 'discovery_failed', detail)
+    this.setHealth(channel, 'error', `会话目录同步失败：${lastError?.message ?? '后台未确认'}`)
   }
 
   private async handleEventWithRetry(channel: Channel, event: CollectorEvent, attempt = 0): Promise<void> {
@@ -528,6 +778,62 @@ export class NativeChatCollectorManager {
       await this.post('/api/v1/native-chat/discovery', { sessions: event.sessions })
       await this.refreshSubscriptions(event.sessions, channel)
       this.setHealth(channel, 'running', '采集程序已就绪并已连接后台')
+      return
+    }
+    if (event.event === 'cursor_checkpoint') {
+      if (event.channel !== channel || typeof event.cursorAfter !== 'string' || !event.cursorAfter) {
+        throw new Error('首次采集游标确认格式错误')
+      }
+      const key = cursorKey({ channel, accountId: event.accountId, sourceConversationId: event.sourceConversationId })
+      if (!this.sessions.has(key)) throw new Error('首次采集游标对应的会话尚未登记')
+      let value: unknown
+      try { value = JSON.parse(event.cursorAfter) } catch { throw new Error('首次采集游标不是有效 JSON') }
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('首次采集游标格式错误')
+      if (channel === 'wechat') {
+        const cursorValue = value as { sortSeq?: unknown; shard?: unknown; localId?: unknown }
+        if (typeof cursorValue.sortSeq !== 'number' || !Number.isSafeInteger(cursorValue.sortSeq) || cursorValue.sortSeq < 0
+          || typeof cursorValue.shard !== 'string' || typeof cursorValue.localId !== 'number'
+          || !Number.isSafeInteger(cursorValue.localId) || cursorValue.localId < 0) {
+          throw new Error('微信首次采集游标字段无效')
+        }
+      } else {
+        wxworkCursorRowId(event.cursorAfter)
+      }
+      const previous = this.cursors[key]
+      const previousIsAhead = previous && (channel === 'wxwork'
+        ? wxworkCursorRowId(previous) > wxworkCursorRowId(event.cursorAfter)
+        : cursorSortSeq(channel, previous) > cursorSortSeq(channel, event.cursorAfter))
+      if (!previousIsAhead) {
+        this.cursors[key] = event.cursorAfter
+        this.persistCursors()
+      }
+      this.send(channel, {
+        type: 'ack',
+        sourceConversationId: event.sourceConversationId,
+        cursor: event.cursorAfter,
+        pendingMediaSourceMessageIds: Object.keys(this.pendingMedia[key] ?? {})
+      })
+      return
+    }
+    if (event.event === 'initial_history_complete') {
+      if (event.channel !== channel || !Number.isSafeInteger(event.sourceRowsProcessedThisRun) || event.sourceRowsProcessedThisRun < 0) {
+        throw new Error('首次历史回补完成事件格式错误')
+      }
+      const key = cursorKey({ channel, accountId: event.accountId, sourceConversationId: event.sourceConversationId })
+      const cutoff = this.initialHistoryState.pendingCutoffs[key]
+      if (cutoff === undefined || !this.sessions.has(key)) throw new Error('首次历史回补完成事件对应的会话未处于回补状态')
+      if (this.cursors[key] !== event.cursorAfter) throw new Error('首次历史回补完成游标与客户端已确认游标不一致')
+      delete this.initialHistoryState.pendingCutoffs[key]
+      if (!this.initialHistoryState.completed.includes(key)) this.initialHistoryState.completed.push(key)
+      this.persistInitialHistoryState()
+      this.send(channel, { type: 'initial_history_complete_ack', sourceConversationId: event.sourceConversationId, cursor: event.cursorAfter })
+      this.logStructured(channel, 'initial_history_complete', {
+        title: this.sessions.get(key)?.title ?? null,
+        sourceConversationId: event.sourceConversationId,
+        cutoffEpochMs: cutoff,
+        cursorAfter: event.cursorAfter,
+        sourceRowsProcessedThisRun: event.sourceRowsProcessedThisRun
+      })
       return
     }
     if (event.event === 'message_batch' || event.event === 'media_batch') {
@@ -622,6 +928,16 @@ export class NativeChatCollectorManager {
         ? storedCursor
         : cursor
       this.persistCursors()
+      const initialBackfillCutoff = this.initialHistoryState.pendingCutoffs[key]
+      this.logStructured(channel, initialBackfillCutoff === undefined ? 'message_batch_ack' : 'initial_history_page_ack', {
+        title: conversation.title,
+        sourceConversationId: event.sourceConversationId,
+        messageCount: messages.length,
+        attachmentCount: messages.reduce((count, message) => count + (message.attachments?.length ?? 0), 0),
+        cursorAfter: cursor,
+        initialHistoryCutoffEpochMs: initialBackfillCutoff ?? null,
+        status: 'backend_confirmed'
+      })
       this.send(channel, {
         type: 'ack',
         sourceConversationId: event.sourceConversationId,
@@ -633,7 +949,12 @@ export class NativeChatCollectorManager {
       return
     }
     if (event.event === 'fatal' || event.event === 'error') {
-      const detail = `stage=${event.stage ?? 'unknown'}；${event.message ?? '采集进程未提供错误详情'}；游标未推进`
+      const progress = event.stage === 'message_poll'
+        ? '游标未推进'
+        : event.stage === 'media_recheck'
+          ? '附件补查未完成'
+          : null
+      const detail = [`stage=${event.stage ?? 'unknown'}`, event.message ?? '采集进程未提供错误详情', progress].filter(Boolean).join('；')
       console.error(`[native-chat:${channel}] 采集错误 ${detail}`)
       this.log(channel, event.event, detail)
       this.setHealth(channel, 'error', detail)
@@ -643,7 +964,7 @@ export class NativeChatCollectorManager {
     }
   }
 
-  private async refreshSubscriptions(discoveredSessions?: Session[], discoveredChannel?: Channel): Promise<void> {
+  private async refreshSubscriptions(discoveredSessions?: Session[], discoveredChannel?: Channel, knownConfig?: NativeChatCollectionConfig): Promise<void> {
     if (this.refreshing || this.stopping || !this.config) return
     if (process.platform === 'win32' && !this.wxworkContextBlocked) {
       if (this.wxworkContext) this.verifyWxworkContext(true)
@@ -651,8 +972,8 @@ export class NativeChatCollectorManager {
     }
     this.refreshing = true
     try {
-      const response = await this.get('/api/v1/native-chat/collection-config')
-      const config = response.data as NativeChatCollectionConfig
+      const response = knownConfig ? null : await this.get('/api/v1/native-chat/collection-config')
+      const config = knownConfig ?? response?.data as NativeChatCollectionConfig
       if (!config || !Array.isArray(config.rules)) throw new Error('服务端会话采集配置格式错误')
       const nextSessions = new Map(this.sessions)
       if (discoveredSessions) {
@@ -662,6 +983,34 @@ export class NativeChatCollectorManager {
         for (const session of discoveredSessions) nextSessions.set(cursorKey(session), session)
       }
       const selected = [...nextSessions.values()].filter((session) => config.rules.some((rule) => matchesRule(rule, session)))
+      let historyChanged = false
+      const initialCutoff = Date.now() - INITIAL_HISTORY_DAYS * 24 * 60 * 60 * 1000
+      for (const session of selected) {
+        const key = cursorKey(session)
+        if (this.initialHistoryState.completed.includes(key) || this.initialHistoryState.pendingCutoffs[key] !== undefined) continue
+        if (this.cursors[key] !== undefined) this.cursors[key] = cursorForSession(session.channel, undefined)
+        this.initialHistoryState.pendingCutoffs[key] = initialCutoff
+        historyChanged = true
+      }
+      if (historyChanged) {
+        this.persistCursors()
+        this.persistInitialHistoryState()
+      }
+      if (discoveredSessions && discoveredChannel) {
+        const matchDetails = discoveredSessions.map((session) => ({
+          title: session.title,
+          kind: session.kind,
+          sourceConversationId: session.sourceConversationId,
+          matchedRuleId: config.rules.find((rule) => matchesRule(rule, session))?.id ?? null
+        }))
+        this.logStructured(discoveredChannel, 'discovery_rule_match_applied', {
+          configVersion: config.version,
+          discoveredSessionCount: discoveredSessions.length,
+          matchedSessionCount: matchDetails.filter((item) => item.matchedRuleId !== null).length,
+          unmatchedSessionCount: matchDetails.filter((item) => item.matchedRuleId === null).length,
+          sessions: matchDetails
+        })
+      }
       this.persistSubscriptions(selected)
       this.sessions = nextSessions
       this.selectedSubscriptions = selected
@@ -672,12 +1021,30 @@ export class NativeChatCollectorManager {
             sourceConversationId: session.sourceConversationId,
             cursor: cursorForSession(session.channel, this.cursors[cursorKey(session)]),
             sortSeq: cursorSortSeq(session.channel, cursorForSession(session.channel, this.cursors[cursorKey(session)])),
+            ...(this.initialHistoryState.pendingCutoffs[cursorKey(session)] !== undefined
+              ? { initialHistoryCutoffEpochMs: this.initialHistoryState.pendingCutoffs[cursorKey(session)], initialHistoryPageSize: INITIAL_HISTORY_PAGE_SIZE }
+              : {}),
             pendingMediaSourceMessageIds: Object.keys(this.pendingMedia[cursorKey(session)] ?? {})
           }))
         })
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      if (discoveredSessions && discoveredChannel) {
+        this.logStructured(discoveredChannel, 'discovery_rule_match', {
+          configVersion: null,
+          discoveredSessionCount: discoveredSessions.length,
+          matchedSessionCount: null,
+          unmatchedSessionCount: null,
+          matchingStatus: 'configuration_unavailable',
+          error: message,
+          sessions: discoveredSessions.map((session) => ({
+            title: session.title,
+            kind: session.kind,
+            sourceConversationId: session.sourceConversationId
+          }))
+        })
+      }
       console.error(`[native-chat] 采集规则同步失败，继续使用上次已确认的会话订阅：${message}`)
       this.log('app', 'subscription_sync_error', message)
       this.sendSavedSubscriptions()
@@ -699,6 +1066,14 @@ export class NativeChatCollectorManager {
     renameSync(temporary, this.cursorPath)
   }
 
+  private persistInitialHistoryState(): void {
+    const directory = app.getPath('userData')
+    mkdirSync(directory, { recursive: true })
+    const temporary = `${this.initialHistoryPath}.partial`
+    writeFileSync(temporary, JSON.stringify(this.initialHistoryState), 'utf8')
+    renameSync(temporary, this.initialHistoryPath)
+  }
+
   private sendSavedSubscriptions(): void {
     for (const channel of ['wechat', 'wxwork'] as const) {
       this.send(channel, {
@@ -709,6 +1084,9 @@ export class NativeChatCollectorManager {
             sourceConversationId: session.sourceConversationId,
             cursor,
             sortSeq: cursorSortSeq(session.channel, cursor),
+            ...(this.initialHistoryState.pendingCutoffs[cursorKey(session)] !== undefined
+              ? { initialHistoryCutoffEpochMs: this.initialHistoryState.pendingCutoffs[cursorKey(session)], initialHistoryPageSize: INITIAL_HISTORY_PAGE_SIZE }
+              : {}),
             pendingMediaSourceMessageIds: Object.keys(this.pendingMedia[cursorKey(session)] ?? {})
           }
         })
@@ -736,6 +1114,7 @@ export class NativeChatCollectorManager {
         if (fullImagePending) pending.add(attachmentId)
         else if (attachment.localPath || attachment.state === 'available') pending.delete(attachmentId)
         else if (attachment.state === 'not_downloaded') pending.add(attachmentId)
+        else if (attachment.state === 'ambiguous' || attachment.sourceMetadata?.resolutionState === 'invalid_resource_metadata') pending.add(attachmentId)
       }
       if (pending.size) conversation[rootMessageId] = [...pending].sort()
       else delete conversation[rootMessageId]
@@ -772,12 +1151,12 @@ export class NativeChatCollectorManager {
     }
   }
 
-  private async get(path: string): Promise<any> {
-    return this.request('GET', path)
+  private async get(path: string, maxRetries = MAX_RETRIES, timeoutMs = 30_000): Promise<any> {
+    return this.request('GET', path, undefined, maxRetries, timeoutMs)
   }
 
-  private async post(path: string, body: unknown): Promise<any> {
-    return this.request('POST', path, body)
+  private async post(path: string, body: unknown, maxRetries = MAX_RETRIES, timeoutMs = 30_000): Promise<any> {
+    return this.request('POST', path, body, maxRetries, timeoutMs)
   }
 
   private async uploadAttachment(id: number, path: string, replace = false): Promise<void> {
@@ -786,7 +1165,7 @@ export class NativeChatCollectorManager {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         stage = 'request_upload_url'
-        const response = await this.post(`/api/v1/native-chat/attachments/${id}/upload-url`, { replace })
+        const response = await this.post(`/api/v1/native-chat/attachments/${id}/upload-url`, { replace }, 0)
         const target = response.data as { uploaded?: boolean; storageKey?: string; url?: string }
         if (target.uploaded) return
         if (!target.url || !target.storageKey) throw new Error('服务端未返回附件上传地址')
@@ -807,7 +1186,7 @@ export class NativeChatCollectorManager {
         }
         if (!putResponse.ok) throw new Error(`附件上传失败 HTTP ${putResponse.status}`)
         stage = 'complete_upload'
-        await this.post(`/api/v1/native-chat/attachments/${id}/complete`, { storageKey: target.storageKey, replace })
+        await this.post(`/api/v1/native-chat/attachments/${id}/complete`, { storageKey: target.storageKey, replace }, 0)
         return
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -819,12 +1198,12 @@ export class NativeChatCollectorManager {
     throw lastError ?? new Error('附件上传失败')
   }
 
-  private async request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<any> {
+  private async request(method: 'GET' | 'POST', path: string, body?: unknown, maxRetries = MAX_RETRIES, timeoutMs = 30_000): Promise<any> {
     if (!this.config) throw new Error('消息采集服务尚未配置')
     let lastError: Error | null = null
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 30_000)
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
       try {
         const response = await fetch(`${this.config.backendUrl}${path}`, {
           method,
@@ -843,9 +1222,11 @@ export class NativeChatCollectorManager {
         return result
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        lastError = new Error(`${method} ${path} 请求失败：${message}`)
+        lastError = error instanceof BackendResponseError
+          ? new BackendResponseError(`${method} ${path} 请求失败：${message}`, error.status, error.code)
+          : new Error(`${method} ${path} 请求失败：${message}`)
         if (error instanceof BackendResponseError && error.status >= 400 && error.status < 500 && error.status !== 429) break
-        if (attempt === MAX_RETRIES) break
+        if (attempt === maxRetries) break
         await new Promise((resolve) => setTimeout(resolve, Math.min(30_000, 1_000 * (2 ** attempt))))
       } finally {
         clearTimeout(timer)

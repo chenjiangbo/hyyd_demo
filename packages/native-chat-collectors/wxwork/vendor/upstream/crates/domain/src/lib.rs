@@ -63,6 +63,20 @@ pub struct MediaRefV1 {
     pub source_locator: String,
     pub integrity: MediaIntegrity,
     pub missing_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_files: Vec<MediaCandidateFileV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaCandidateFileV1 {
+    pub file_name: String,
+    pub byte_size: u64,
+    pub relative_path: String,
+    pub modified_at: Option<u64>,
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -827,6 +827,8 @@ mod tests {
             quoted_message_id: Some("internal-quote".into()),
             lifecycle: archive_domain::LifecycleState::Active,
             media: vec![archive_domain::MediaRefV1 {
+                resolution_state: None,
+                candidate_files: Vec::new(),
                 content_hash: Some("internal-hash".into()),
                 original_name: Some("@附件.txt".into()),
                 mime_type: None,

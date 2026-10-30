@@ -46,6 +46,10 @@ import {
   saveOrderAiAutomationConfig,
   validateOrderAiAutomationConfig
 } from '../services/orderAiAutomationConfig.js'
+import {
+  getOrderAiSkillConfig,
+  saveOrderAiSkillConfig
+} from '../services/orderAiSkillConfig.js'
 
 const TAIKANG_BUSINESS_CONFIG = {
   green_pass: '泰康绿通',
@@ -759,6 +763,22 @@ export function registerAdminRoutes(
         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
       `
       return reply.send({ data: { config, message: 'AI 业务配置已保存' } })
+    })
+
+    // AI Skill 配置：仅供后台维护和预览，当前不接入订单 AI 调用链路。
+    fastify.get('/api/v1/admin/ai-skills', async (_request, reply) => {
+      return reply.send({ data: await getOrderAiSkillConfig(prisma) })
+    })
+
+    fastify.put<{ Body: unknown }>('/api/v1/admin/ai-skills', async (request, reply) => {
+      const body = request.body as Record<string, unknown> | null
+      if (!body || typeof body !== 'object' || !body.entries) return reply.status(400).send({ error: '配置内容格式错误' })
+      try {
+        const entries = await saveOrderAiSkillConfig(prisma, body.entries)
+        return reply.send({ data: { entries, message: '配置已保存' } })
+      } catch (error) {
+        return reply.status(400).send({ error: error instanceof Error ? error.message : String(error) })
+      }
     })
 
     // 系统提醒规则与说明：集中汇总定时任务、业务触发条件、客户端通知与防重机制。

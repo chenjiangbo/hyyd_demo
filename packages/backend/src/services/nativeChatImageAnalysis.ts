@@ -8,7 +8,9 @@ const BUCKET = 'materials'
 const WORKER_INTERVAL_MS = 15_000
 const PROMPT_VERSION = 'image-understanding-v1'
 const MAX_ATTEMPTS = 2
+const MAX_CONCURRENT_ANALYSIS = 2
 const activeAttachments = new Set<number>()
+let concurrentAnalysisCount = 0
 let workerTimer: ReturnType<typeof setInterval> | null = null
 let workerTicking = false
 
@@ -112,7 +114,9 @@ async function getAttachment(prisma: PrismaClient, id: number) {
 
 async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: number): Promise<void> {
   if (activeAttachments.has(id)) return
+  if (concurrentAnalysisCount >= MAX_CONCURRENT_ANALYSIS) return
   activeAttachments.add(id)
+  concurrentAnalysisCount++
   try {
     if (!await isImageAiEnabled(prisma)) return
     const attachment = await getAttachment(prisma, id)
@@ -216,6 +220,7 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
     }
   } finally {
     activeAttachments.delete(id)
+    concurrentAnalysisCount--
   }
 }
 
@@ -288,6 +293,7 @@ export function startNativeChatImageAnalysisWorker(prisma: PrismaClient, minio: 
 }
 
 export function notifyNativeChatImageReady(prisma: PrismaClient, minio: Minio.Client, attachmentId: number): void {
+  if (concurrentAnalysisCount >= MAX_CONCURRENT_ANALYSIS) return
   void processAttachment(prisma, minio, attachmentId).catch((error) => {
     console.error(`[native-chat:image] 附件 ${attachmentId} 图片处理失败：`, error instanceof Error ? error.stack || error.message : error)
   })

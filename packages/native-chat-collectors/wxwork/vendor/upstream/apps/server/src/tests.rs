@@ -1490,6 +1490,8 @@ fn archive_streaming_preserves_filtered_formats_orders_redaction_and_snapshot() 
             }
             if index % 2 == 0 {
                 message.media.push(MediaRefV1 {
+                    resolution_state: None,
+                    candidate_files: Vec::new(),
                     content_hash: None,
                     original_name: Some("@<attachment>.txt".into()),
                     mime_type: None,

@@ -313,6 +313,8 @@ fn search_candidates_preserve_filters_counts_and_attachment_matches() {
             if index != 2 && index != 5 {
                 message.message_type = MessageType::File;
                 message.media.push(MediaRefV1 {
+                    resolution_state: None,
+                    candidate_files: Vec::new(),
                     content_hash: None,
                     original_name: Some(
                         match index {
@@ -642,6 +644,8 @@ fn missing_media_metadata_is_retained_and_counted() {
     let mut store = ArchiveStore::open(&directory.path().join("archive.db")).unwrap();
     let mut input = batch("附件");
     input.messages[0].media.push(MediaRefV1 {
+        resolution_state: None,
+        candidate_files: Vec::new(),
         content_hash: None,
         original_name: Some("附件.pdf".into()),
         mime_type: Some("application/pdf".into()),
@@ -749,7 +753,11 @@ fn recollection_retains_verified_images_but_replaces_changed_media_identity() {
 }
 
 fn shared_media(hash: &str) -> MediaRefV1 {
+        resolution_state: None,
+        candidate_files: Vec::new(),
     MediaRefV1 {
+        resolution_state: None,
+        candidate_files: Vec::new(),
         content_hash: Some(hash.into()),
         original_name: Some("synthetic.bin".into()),
         mime_type: None,

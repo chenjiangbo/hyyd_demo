@@ -60,6 +60,26 @@ DEFAULT_SAVE_PATH = os.path.join(os.path.expanduser("~"), "Documents", "wechatau
 class AmbiguousLocalFileError(RuntimeError):
     """More than one local file could represent a source attachment."""
 
+    def __init__(self, message: str, candidates: Optional[list[dict]] = None):
+        super().__init__(message)
+        self.candidates = candidates or []
+
+
+class AmbiguousResourceMetadataError(RuntimeError):
+    """Distinct source-resource records still describe this message ambiguously."""
+
+    def __init__(self, candidates: list[dict]):
+        super().__init__("WeChat message resource metadata contains conflicting records")
+        self.candidates = candidates
+
+
+class InvalidResourceMetadataError(RuntimeError):
+    """The source-resource records for a message cannot be parsed as filenames."""
+
+    def __init__(self, message: str, candidates: Optional[list[dict]] = None):
+        super().__init__(message)
+        self.candidates = candidates or []
+
 
 class LocalFileSizeMismatchError(RuntimeError):
     """A name-matched local file does not have the source-reported size."""
@@ -2333,22 +2353,81 @@ class MediaDownloader:
                 conn = self.db._open(rel)
                 try:
                     r = conn.execute(
-                        "SELECT d.packed_info FROM MessageResourceDetail d "
+                        "SELECT d.rowid AS detail_row_id, d.message_id, d.resource_id, "
+                        "d.type AS resource_type, d.size AS resource_size, "
+                        "d.data_index, d.packed_info, i.chat_id, i.sender_id, "
+                        "i.message_local_type, i.message_create_time, "
+                        "i.message_local_id, i.message_origin_source "
+                        "FROM MessageResourceDetail d "
                         "LEFT JOIN MessageResourceInfo i ON d.message_id=i.message_id "
-                        "WHERE i.message_svr_id=?",
+                        "WHERE i.message_svr_id=? ORDER BY d.rowid",
                         (row["server_id"],),
                     ).fetchall()
                 finally:
                     conn.close()
                 resource_rows.extend(r)
-            if len(resource_rows) > 1:
-                raise RuntimeError("WeChat message resource metadata matched more than one record")
-            if resource_rows and resource_rows[0]["packed_info"]:
-                resource_names = self._resource_file_names(bytes(resource_rows[0]["packed_info"]))
+
+            # Weixin may retain duplicate MessageResourceInfo/Detail rows for the
+            # same source message. Ignore surrogate row IDs when deciding whether
+            # these are the same logical resource, but require every source field
+            # and the packed filename metadata to agree.
+            logical_records: dict[tuple, dict] = {}
+            for resource_row in resource_rows:
+                packed_info = bytes(resource_row["packed_info"] or b"")
+                context = tuple(resource_row[name] for name in (
+                    "chat_id", "sender_id", "message_local_type", "message_create_time",
+                    "message_local_id", "message_origin_source", "resource_type",
+                    "resource_size", "data_index",
+                ))
+                signature = context + (packed_info,)
+                record = logical_records.get(signature)
+                if record is None:
+                    try:
+                        names = self._resource_file_names(packed_info) if packed_info else (None, None)
+                    except (TypeError, ValueError) as exc:
+                        raise InvalidResourceMetadataError(str(exc), [{
+                            "messageIds": [resource_row["message_id"]],
+                            "resourceIds": [resource_row["resource_id"]],
+                            "detailRowIds": [resource_row["detail_row_id"]],
+                            "packedInfoBytes": len(packed_info),
+                            "packedInfoSha256": hashlib.sha256(packed_info).hexdigest(),
+                        }]) from exc
+                    record = {
+                        "originalName": names[0],
+                        "localName": names[1],
+                        "messageIds": [],
+                        "resourceIds": [],
+                        "detailRowIds": [],
+                        "resourceType": resource_row["resource_type"],
+                        "byteSize": resource_row["resource_size"],
+                        "dataIndex": resource_row["data_index"],
+                        "packedInfoBytes": len(packed_info),
+                        "packedInfoSha256": hashlib.sha256(packed_info).hexdigest(),
+                    }
+                    logical_records[signature] = record
+                for output_key, source_key in (("messageIds", "message_id"), ("resourceIds", "resource_id"), ("detailRowIds", "detail_row_id")):
+                    value = resource_row[source_key]
+                    if value is not None and value not in record[output_key]:
+                        record[output_key].append(value)
+
+            if len(logical_records) > 1:
+                raise AmbiguousResourceMetadataError(list(logical_records.values()))
+            if logical_records:
+                only_record = next(iter(logical_records.values()))
+                resource_names = (only_record["originalName"], only_record["localName"])
 
         resource_original, local_name = resource_names
         if message_name and resource_original and message_name != resource_original:
-            raise RuntimeError("WeChat file title conflicts with its source resource filename")
+            raise AmbiguousResourceMetadataError([{
+                "source": "message_xml",
+                "originalName": message_name,
+                "localName": None,
+                "byteSize": self._message_file_metadata(row)[1],
+            }, {
+                "source": "message_resource",
+                "originalName": resource_original,
+                "localName": local_name,
+            }])
         return message_name or resource_original, local_name
 
     def _file_name(self, row: dict) -> Optional[str]:
@@ -2433,8 +2512,41 @@ class MediaDownloader:
         matches = [match for match in matches if match[1] == best_rank]
         paths = sorted({path for _, _, path in matches})
         if len(paths) > 1:
-            raise AmbiguousLocalFileError("Multiple local files match the source name and download suffix")
+            sizes = [os.path.getsize(path) for path in paths]
+            same_content = False
+            if len(set(sizes)) == 1:
+                candidates = [MediaDownloader._local_file_fingerprint(path, base) for path in paths]
+                fingerprints = {item["sha256"] for item in candidates}
+                same_content = len(fingerprints) == 1
+            else:
+                candidates = [
+                    MediaDownloader._local_file_fingerprint(path, base, include_hash=False)
+                    for path in paths
+                ]
+            if same_content:
+                # Same size and SHA-256 identify duplicate copies for this lookup.
+                return paths[0]
+            raise AmbiguousLocalFileError(
+                "Multiple different local files match the source name and download suffix",
+                candidates=candidates,
+            )
         return paths[0]
+
+    @staticmethod
+    def _local_file_fingerprint(path: str, base: str, include_hash: bool = True) -> dict:
+        result = {
+            "fileName": os.path.basename(path),
+            "byteSize": os.path.getsize(path),
+            "relativePath": os.path.relpath(path, base),
+            "modifiedAt": int(os.path.getmtime(path) * 1000),
+        }
+        if include_hash:
+            digest = hashlib.sha256()
+            with open(path, "rb") as file_obj:
+                for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            result["sha256"] = digest.hexdigest()
+        return result
 
     @staticmethod
     def _matches_source_file_type(path: str, source_name: Optional[str]) -> bool:

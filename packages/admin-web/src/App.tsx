@@ -23,6 +23,7 @@ import OrderAiConfigPage from './pages/OrderAiConfigPage'
 import SystemRemindersPage from './pages/SystemRemindersPage'
 import TaikangHuanyuChannelMappingPage from './pages/TaikangHuanyuChannelMappingPage'
 import OrderAiBusinessConfigPage from './pages/OrderAiBusinessConfigPage'
+import AiSkillConfigPage from './pages/AiSkillConfigPage'
 import TaikangFormSessionsPage from './pages/TaikangFormSessionsPage'
 import TaikangFormSessionPage from './pages/TaikangFormSessionPage'
 import NativeChatCollectionConfigPage from './pages/NativeChatCollectionConfigPage'
@@ -68,6 +69,7 @@ export default function App(): React.JSX.Element {
         <Route path="sms-config" element={<SmsConfigPage />} />
         <Route path="order-ai-config" element={<OrderAiConfigPage />} />
         <Route path="order-ai-business-config" element={<OrderAiBusinessConfigPage />} />
+        <Route path="ai-skills" element={<AiSkillConfigPage />} />
         <Route path="taikang-huanyu-channel-mappings" element={<TaikangHuanyuChannelMappingPage />} />
         <Route path="system-reminders" element={<SystemRemindersPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />

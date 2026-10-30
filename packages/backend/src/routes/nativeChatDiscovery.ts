@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
-import type { PrismaClient } from '@prisma/client'
-import { resolveNativeChatApplicationLink } from '../services/nativeChatApplicationLink.js'
+import { Prisma, type PrismaClient } from '@prisma/client'
+import { resolveNativeChatApplicationLinks } from '../services/nativeChatApplicationLink.js'
 
 type DiscoveredSession = {
   channel: 'wechat' | 'wxwork'
@@ -45,32 +45,35 @@ export function registerNativeChatDiscoveryRoutes(fastify: FastifyInstance, pris
       return reply.status(400).send({ error: error instanceof Error ? error.message : '会话目录格式错误' })
     }
     const employeeId = request.employee.id
-    const observedAt = new Date()
-    const linkedSessions: Array<{
-      session: DiscoveredSession
-      link: Awaited<ReturnType<typeof resolveNativeChatApplicationLink>>
-    }> = []
-    for (const session of sessions) {
-      linkedSessions.push({ session, link: await resolveNativeChatApplicationLink(prisma, employeeId, session.title) })
-    }
-    linkedSessions.sort((a, b) => {
-      const aKey = `${a.session.channel}\u0000${a.session.accountId}\u0000${a.session.sourceConversationId}`
-      const bKey = `${b.session.channel}\u0000${b.session.accountId}\u0000${b.session.sourceConversationId}`
+    const orderedSessions = [...sessions].sort((a, b) => {
+      const aKey = `${a.channel}\u0000${a.accountId}\u0000${a.sourceConversationId}`
+      const bKey = `${b.channel}\u0000${b.accountId}\u0000${b.sourceConversationId}`
       return aKey.localeCompare(bKey)
     })
+    const startedAt = Date.now()
+    const linkStartedAt = Date.now()
+    const links = await resolveNativeChatApplicationLinks(prisma, employeeId, orderedSessions.map((session) => session.title))
+    const linkElapsedMs = Date.now() - linkStartedAt
+    let persistedSessionCount = 0
     await prisma.$transaction(async (tx) => {
-      for (const { session, link } of linkedSessions) {
-        await tx.$queryRaw<Array<{ id: number }>>`
-          INSERT INTO native_chat_conversations (
-            employee_id, channel, account_id, source_conversation_id, title,
-            conversation_kind, application_no, application_candidate, application_link_status,
-            source_metadata, first_observed_at, last_observed_at
-          ) VALUES (
+      for (let offset = 0; offset < orderedSessions.length; offset += 200) {
+        const values = orderedSessions.slice(offset, offset + 200).map((session, batchIndex) => {
+          const link = links[offset + batchIndex]
+          if (!link) throw new Error(`会话 ${session.sourceConversationId} 缺少业务关联解析结果`)
+          return Prisma.sql`(
             ${employeeId}, ${session.channel}, ${session.accountId}, ${session.sourceConversationId},
             ${session.title}, ${session.kind}, ${link.applicationNo}, ${link.candidate}, ${link.status},
             ${session.sourceMetadata == null ? null : JSON.stringify(session.sourceMetadata)}::jsonb,
             NOW(), NOW()
-          )
+          )`
+        })
+        if (values.length === 0) continue
+        const persistedRows = await tx.$queryRaw<Array<{ id: number }>>(Prisma.sql`
+          INSERT INTO native_chat_conversations (
+            employee_id, channel, account_id, source_conversation_id, title,
+            conversation_kind, application_no, application_candidate, application_link_status,
+            source_metadata, first_observed_at, last_observed_at
+          ) VALUES ${Prisma.join(values)}
           ON CONFLICT (employee_id, channel, account_id, source_conversation_id)
           DO UPDATE SET title = EXCLUDED.title,
                         conversation_kind = EXCLUDED.conversation_kind,
@@ -84,9 +87,21 @@ export function registerNativeChatDiscoveryRoutes(fastify: FastifyInstance, pris
                         source_metadata = EXCLUDED.source_metadata,
                         last_observed_at = NOW()
           RETURNING id
-        `
+        `)
+        if (persistedRows.length !== values.length) {
+          throw new Error(`会话目录批次入库数不匹配：提交 ${values.length}，确认 ${persistedRows.length}`)
+        }
+        persistedSessionCount += persistedRows.length
       }
     })
-    return reply.send({ data: { discovered: sessions.length } })
+    request.log.info({
+      event: 'native_chat_discovery_completed',
+      employeeId,
+      submittedSessionCount: sessions.length,
+      persistedSessionCount,
+      applicationLinkResolutionMs: linkElapsedMs,
+      elapsedMs: Date.now() - startedAt
+    })
+    return reply.send({ data: { discovered: sessions.length, persisted: persistedSessionCount } })
   })
 }

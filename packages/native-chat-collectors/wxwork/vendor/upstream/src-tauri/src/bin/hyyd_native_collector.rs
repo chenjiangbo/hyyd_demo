@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use wecom_archive_desktop::collect_local_export_selected_with_cursors_and_pending_at_root;
 
-const PAGE_SIZE: usize = 500;
+const PAGE_SIZE: usize = 200;
 const FULL_SCAN_INTERVAL: Duration = Duration::from_secs(120);
 const PENDING_MEDIA_RESCAN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const MEDIA_UPDATE_WINDOW_MS: i64 = 5 * 60 * 1000;
@@ -103,6 +103,45 @@ fn source_row_id(message: &Value) -> Result<i64, String> {
     Ok(row_id)
 }
 
+fn filter_initial_history(
+    export: &mut Value,
+    initial_conversations: &HashMap<String, i64>,
+) -> Result<HashMap<String, i64>, String> {
+    let mut maximum_row_ids = HashMap::<String, i64>::new();
+    let batches = export.get_mut("batches").and_then(Value::as_array_mut)
+        .ok_or("source export missing batches")?;
+    for batch in batches {
+        let Some(messages) = batch.get_mut("messages").and_then(Value::as_array_mut) else {
+            return Err("source export batch missing messages".into());
+        };
+        let mut retained = Vec::with_capacity(messages.len());
+        for message in std::mem::take(messages) {
+            let conversation_id = message.get("conversation_id").and_then(Value::as_str)
+                .ok_or("source message missing conversation ID during initial-history filtering")?;
+            let Some(cutoff_ms) = initial_conversations.get(conversation_id) else {
+                retained.push(message);
+                continue;
+            };
+            let source_id = message.get("source_message_id").and_then(Value::as_str)
+                .ok_or("initial source message missing source ID")?;
+            let row_id = source_id.split(':').next().ok_or("initial source message ID is invalid")?
+                .parse::<i64>().map_err(|_| format!("initial source message ID is not a row number: {source_id}"))?;
+            maximum_row_ids.entry(conversation_id.to_owned())
+                .and_modify(|current| *current = (*current).max(row_id))
+                .or_insert(row_id);
+            let sent_at = message.get("sent_at").and_then(Value::as_str)
+                .ok_or_else(|| format!("initial source message {source_id} is missing sent_at"))?;
+            let sent_at = chrono::DateTime::parse_from_rfc3339(sent_at)
+                .map_err(|error| format!("initial source message {source_id} has invalid sent_at: {error}"))?;
+            if sent_at.timestamp_millis() >= *cutoff_ms {
+                retained.push(message);
+            }
+        }
+        *messages = retained;
+    }
+    Ok(maximum_row_ids)
+}
+
 fn message_pages(rows: &[Value]) -> Result<Vec<Vec<Value>>, String> {
     let mut pages = Vec::new();
     let mut page = Vec::new();
@@ -126,12 +165,13 @@ fn pending_source_row_id(source_message_id: &str) -> Result<i64, String> {
     Ok(row_id)
 }
 
-fn parse_subscriptions(command: &Value) -> Result<(HashSet<String>, HashMap<String, i64>, HashMap<String, HashSet<i64>>), String> {
+fn parse_subscriptions(command: &Value) -> Result<(HashSet<String>, HashMap<String, i64>, HashMap<String, HashSet<i64>>, HashMap<String, i64>), String> {
     let conversations = command.get("conversations").and_then(Value::as_array)
         .ok_or("subscribe.conversations must be an array")?;
     let mut selected = HashSet::new();
     let mut watermarks = HashMap::new();
     let mut pending_media = HashMap::new();
+    let mut initial_cutoffs = HashMap::new();
     for session in conversations {
         let conversation_id = session.get("sourceConversationId").and_then(Value::as_str)
             .filter(|id| !id.trim().is_empty())
@@ -139,6 +179,14 @@ fn parse_subscriptions(command: &Value) -> Result<(HashSet<String>, HashMap<Stri
         let cursor = session.get("cursor").and_then(Value::as_str)
             .ok_or_else(|| format!("subscription for {conversation_id} missing cursor"))?;
         let row_id = cursor_source_row_id(cursor)?;
+        if let Some(cutoff) = session.get("initialHistoryCutoffEpochMs") {
+            let cutoff = cutoff.as_i64().filter(|value| *value > 0)
+                .ok_or_else(|| format!("invalid initial history cutoff for {conversation_id}"))?;
+            if session.get("initialHistoryPageSize").and_then(Value::as_u64) != Some(PAGE_SIZE as u64) {
+                return Err(format!("invalid initial history page size for {conversation_id}"));
+            }
+            initial_cutoffs.insert(conversation_id.clone(), cutoff);
+        }
         if !selected.insert(conversation_id.clone()) {
             return Err(format!("duplicate subscription for {conversation_id}"));
         }
@@ -152,7 +200,7 @@ fn parse_subscriptions(command: &Value) -> Result<(HashSet<String>, HashMap<Stri
         }
         if !row_ids.is_empty() { pending_media.insert(conversation_id.to_owned(), row_ids); }
     }
-    Ok((selected, watermarks, pending_media))
+    Ok((selected, watermarks, pending_media, initial_cutoffs))
 }
 
 fn parse_ack_pending_media(command: &Value) -> Result<HashSet<i64>, String> {
@@ -284,6 +332,12 @@ fn message_attachments(message: &Value, source_id: &str, media: &HashMap<String,
             "state": "not_downloaded",
             "sourceMetadata": source_metadata,
         });
+        if let Some(state) = reference.get("resolution_state") {
+            attachment["sourceMetadata"]["resolutionState"] = state.clone();
+        }
+        if let Some(candidates) = reference.get("candidate_files") {
+            attachment["sourceMetadata"]["candidateFiles"] = candidates.clone();
+        }
         if let Some((path, size)) = available {
             attachment["localPath"] = json!(path);
             attachment["byteSize"] = json!(size);
@@ -430,6 +484,8 @@ fn run() -> Result<(), String> {
     let mut selected = HashSet::<String>::new();
     let mut watermarks = HashMap::<String, i64>::new();
     let mut pending_media = HashMap::<String, HashSet<i64>>::new();
+    let mut initial_cutoffs = HashMap::<String, i64>::new();
+    let mut checkpoint_inflight = HashMap::<String, i64>::new();
     let mut fingerprints = HashMap::<String, String>::new();
     let mut last_scan = Instant::now() - FULL_SCAN_INTERVAL;
     let mut last_pending_media_scan = Instant::now() - PENDING_MEDIA_RESCAN_INTERVAL;
@@ -446,13 +502,47 @@ fn run() -> Result<(), String> {
             match command.get("type").and_then(Value::as_str) {
                 Some("__protocol_error") => return Err(format!("collector command protocol failed: {}", command.get("message").and_then(Value::as_str).unwrap_or("unknown input error"))),
                 Some("subscribe") => {
-                    let (next_selected, next_watermarks, next_pending_media) = parse_subscriptions(&command)?;
-                    if next_selected != selected || next_watermarks != watermarks || next_pending_media != pending_media {
+                    let (mut next_selected, mut next_watermarks, next_pending_media, next_initial_cutoffs) = parse_subscriptions(&command)?;
+                    for conversation_id in checkpoint_inflight.keys() {
+                        if let Some(watermark) = watermarks.get(conversation_id) {
+                            next_selected.insert(conversation_id.clone());
+                            next_watermarks.insert(conversation_id.clone(), *watermark);
+                        }
+                    }
+                    if next_selected != selected || next_watermarks != watermarks || next_pending_media != pending_media || next_initial_cutoffs != initial_cutoffs {
                         selected = next_selected;
                         watermarks = next_watermarks;
                         pending_media = next_pending_media;
+                        initial_cutoffs = next_initial_cutoffs;
+                        checkpoint_inflight.retain(|conversation_id, _| selected.contains(conversation_id));
                         last_scan = Instant::now() - FULL_SCAN_INTERVAL;
                     }
+                }
+                Some("ack") => {
+                    let conversation_id = command.get("sourceConversationId").and_then(Value::as_str)
+                        .ok_or("cursor checkpoint ACK missing conversation ID")?.to_owned();
+                    let cursor = command.get("cursor").and_then(Value::as_str)
+                        .ok_or("cursor checkpoint ACK missing cursor")?;
+                    let row_id = cursor_source_row_id(cursor)?;
+                    if checkpoint_inflight.get(&conversation_id) != Some(&row_id) {
+                        return Err(format!("unexpected cursor checkpoint ACK for {conversation_id}"));
+                    }
+                    watermarks.insert(conversation_id.clone(), row_id);
+                    checkpoint_inflight.remove(&conversation_id);
+                    last_scan = Instant::now() - FULL_SCAN_INTERVAL;
+                }
+                Some("initial_history_complete_ack") => {
+                    let conversation_id = command.get("sourceConversationId").and_then(Value::as_str)
+                        .ok_or("initial history completion ACK missing conversation ID")?.to_owned();
+                    let cursor = command.get("cursor").and_then(Value::as_str)
+                        .ok_or("initial history completion ACK missing cursor")?;
+                    let row_id = cursor_source_row_id(cursor)?;
+                    if !initial_cutoffs.contains_key(&conversation_id) || watermarks.get(&conversation_id) != Some(&row_id) {
+                        return Err(format!("unexpected initial history completion ACK for {conversation_id}"));
+                    }
+                    initial_cutoffs.remove(&conversation_id);
+                    checkpoint_inflight.remove(&conversation_id);
+                    last_scan = Instant::now() - FULL_SCAN_INTERVAL;
                 }
                 Some("stop") => should_stop = true,
                 other => return Err(format!("unsupported collector command: {other:?}")),
@@ -473,13 +563,19 @@ fn run() -> Result<(), String> {
                 })
                 .collect::<Result<HashMap<_, _>, _>>()?;
             let scan_time = chrono::Utc::now().timestamp_millis().saturating_sub(MEDIA_UPDATE_WINDOW_MS);
-            let conversation_time_cutoffs = selected.iter().map(|conversation_id| (conversation_id.clone(), scan_time)).collect::<HashMap<_, _>>();
+            let conversation_time_cutoffs = selected.iter().map(|conversation_id| (
+                conversation_id.clone(), initial_cutoffs.get(conversation_id).copied().unwrap_or(scan_time)
+            )).collect::<HashMap<_, _>>();
             let pending_media_rows = if last_pending_media_scan.elapsed() >= PENDING_MEDIA_RESCAN_INTERVAL {
                 pending_media.iter().map(|(conversation, row_ids)| (conversation.clone(), row_ids.iter().copied().collect::<Vec<_>>())).collect::<HashMap<_, _>>()
             } else {
                 HashMap::new()
             };
-            let export = match read_export(
+            let initial_conversations = initial_cutoffs.iter()
+                .filter(|(conversation_id, _)| !checkpoint_inflight.contains_key(*conversation_id))
+                .map(|(conversation_id, cutoff)| (conversation_id.clone(), *cutoff))
+                .collect::<HashMap<_, _>>();
+            let mut export = match read_export(
                 !selected.is_empty(), &selected_ids, &args.source_root,
                 &conversation_time_cutoffs, &conversation_rowid_cutoffs, &pending_media_rows,
             ) {
@@ -491,6 +587,7 @@ fn run() -> Result<(), String> {
                     continue;
                 }
             };
+            let initial_maximum_row_ids = filter_initial_history(&mut export, &initial_conversations)?;
             if !pending_media_rows.is_empty() { last_pending_media_scan = Instant::now(); }
             let scan_id = Uuid::new_v4().to_string();
             let needed_media = referenced_media_hashes(&export, &selected);
@@ -510,11 +607,33 @@ fn run() -> Result<(), String> {
             } else {
                 emit(&json!({"event":"sessions","sessions":sessions}))?;
             }
-            for (conversation_id, rows) in &messages {
-                if !selected.contains(conversation_id) { continue; }
-                for page in message_pages(rows)? {
+            for conversation_id in selected.clone() {
+                if checkpoint_inflight.contains_key(&conversation_id) { continue; }
+                let initial_maximum_row_id = initial_maximum_row_ids.get(&conversation_id).copied();
+                let rows = messages.get(&conversation_id).map(Vec::as_slice).unwrap_or(&[]);
+                if rows.is_empty() {
+                    if let Some(row_id) = initial_maximum_row_id {
+                        if row_id > watermarks.get(&conversation_id).copied().unwrap_or(0) {
+                            let cursor = json!({"sourceRowId":row_id}).to_string();
+                            emit(&json!({"event":"cursor_checkpoint","channel":"wxwork","accountId":account_id.clone(),"sourceConversationId":conversation_id,"cursorAfter":cursor}))?;
+                            checkpoint_inflight.insert(conversation_id.clone(), row_id);
+                        } else if initial_cutoffs.contains_key(&conversation_id) {
+                            let cursor = json!({"sourceRowId":row_id}).to_string();
+                            emit(&json!({"event":"initial_history_complete","channel":"wxwork","accountId":account_id.clone(),"sourceConversationId":conversation_id,"cursorAfter":cursor,"sourceRowsProcessedThisRun":0}))?;
+                            checkpoint_inflight.insert(conversation_id.clone(), row_id);
+                        }
+                    } else if initial_cutoffs.contains_key(&conversation_id) {
+                        let row_id = watermarks.get(&conversation_id).copied().unwrap_or(0);
+                        let cursor = json!({"sourceRowId":row_id}).to_string();
+                        emit(&json!({"event":"initial_history_complete","channel":"wxwork","accountId":account_id.clone(),"sourceConversationId":conversation_id,"cursorAfter":cursor,"sourceRowsProcessedThisRun":0}))?;
+                        checkpoint_inflight.insert(conversation_id.clone(), row_id);
+                    }
+                    continue;
+                }
+                let pages = message_pages(rows)?;
+                for (page_index, page) in pages.iter().enumerate() {
                     let mut changed = Vec::new();
-                    for message in &page {
+                    for message in page {
                         let id = message.get("sourceMessageId").and_then(Value::as_str).ok_or("normalized message missing source ID")?;
                         let mut fingerprint_value = message.clone();
                         fingerprint_value.as_object_mut().map(|object| { object.remove("observedAt"); });
@@ -530,7 +649,12 @@ fn run() -> Result<(), String> {
                     if changed.is_empty() { continue; }
                     let messages = changed.iter().map(|(_, _, message)| message.clone()).collect::<Vec<_>>();
                     let row_ids = page.iter().map(source_row_id).collect::<Result<Vec<_>, _>>()?;
-                    let cursor_row_id = row_ids.into_iter().max().ok_or("企微消息页为空")?;
+                    let mut cursor_row_id = row_ids.into_iter().max().ok_or("企微消息页为空")?;
+                    if page_index + 1 == pages.len() {
+                        if let Some(initial_maximum_row_id) = initial_maximum_row_id {
+                            cursor_row_id = cursor_row_id.max(initial_maximum_row_id);
+                        }
+                    }
                     let cursor = json!({"sourceRowId":cursor_row_id}).to_string();
                     emit(&json!({"event":"message_batch","channel":"wxwork","accountId":account_id.clone(),"sourceConversationId":conversation_id,"cursorAfter":cursor,"messages":messages}))?;
                     loop {
@@ -542,22 +666,23 @@ fn run() -> Result<(), String> {
                                     for (id, fingerprint, _) in changed { fingerprints.insert(id, fingerprint); }
                                     watermarks.entry(conversation_id.clone()).and_modify(|current| *current = (*current).max(cursor_row_id)).or_insert(cursor_row_id);
                                     let pending_ids = parse_ack_pending_media(&command)?;
-                                    if pending_ids.is_empty() { pending_media.remove(conversation_id); }
+                                    if pending_ids.is_empty() { pending_media.remove(&conversation_id); }
                                     else { pending_media.insert(conversation_id.clone(), pending_ids); }
                                     break;
                                 }
                             Ok(command) if command.get("type").and_then(Value::as_str) == Some("reject")
                                 && command.get("sourceConversationId").and_then(Value::as_str) == Some(conversation_id.as_str())
                                 && command.get("cursor").and_then(Value::as_str) == Some(cursor.as_str()) => {
-                                    selected.remove(conversation_id);
+                                    selected.remove(&conversation_id);
                                     break;
                                 }
                             Ok(command) if command.get("type").and_then(Value::as_str) == Some("subscribe") => {
-                                let (next_selected, next_watermarks, next_pending_media) = parse_subscriptions(&command)?;
-                                if next_selected != selected || next_watermarks != watermarks || next_pending_media != pending_media {
+                    let (next_selected, next_watermarks, next_pending_media, next_initial_cutoffs) = parse_subscriptions(&command)?;
+                                if next_selected != selected || next_watermarks != watermarks || next_pending_media != pending_media || next_initial_cutoffs != initial_cutoffs {
                                     selected = next_selected;
                                     watermarks = next_watermarks;
                                     pending_media = next_pending_media;
+                                    initial_cutoffs = next_initial_cutoffs;
                                 }
                             }
                             Ok(command) if command.get("type").and_then(Value::as_str) == Some("__protocol_error") => {
@@ -571,6 +696,37 @@ fn run() -> Result<(), String> {
                     if should_stop { break; }
                 }
                 if should_stop { break; }
+                if initial_cutoffs.contains_key(&conversation_id) {
+                    let row_id = watermarks.get(&conversation_id).copied().unwrap_or(0);
+                    let cursor = json!({"sourceRowId":row_id}).to_string();
+                    emit(&json!({"event":"initial_history_complete","channel":"wxwork","accountId":account_id.clone(),"sourceConversationId":conversation_id,"cursorAfter":cursor,"sourceRowsProcessedThisRun":rows.len()}))?;
+                    checkpoint_inflight.insert(conversation_id.clone(), row_id);
+                    loop {
+                        match commands.recv_timeout(Duration::from_secs(1)) {
+                            Ok(command) if command.get("type").and_then(Value::as_str) == Some("initial_history_complete_ack")
+                                && command.get("sourceConversationId").and_then(Value::as_str) == Some(conversation_id.as_str())
+                                && command.get("cursor").and_then(Value::as_str) == Some(cursor.as_str()) => {
+                                    initial_cutoffs.remove(&conversation_id);
+                                    checkpoint_inflight.remove(&conversation_id);
+                                    break;
+                                }
+                            Ok(command) if command.get("type").and_then(Value::as_str) == Some("stop") => { should_stop = true; break; }
+                            Ok(command) if command.get("type").and_then(Value::as_str) == Some("subscribe") => {
+                                let (next_selected, next_watermarks, next_pending_media, next_initial_cutoffs) = parse_subscriptions(&command)?;
+                                selected = next_selected;
+                                watermarks = next_watermarks;
+                                pending_media = next_pending_media;
+                                initial_cutoffs = next_initial_cutoffs;
+                            }
+                            Ok(command) if command.get("type").and_then(Value::as_str) == Some("__protocol_error") => {
+                                return Err(format!("collector command protocol failed: {}", command.get("message").and_then(Value::as_str).unwrap_or("unknown input error")));
+                            }
+                            Ok(command) => return Err(format!("unsupported collector command while awaiting initial history completion ACK: {command}")),
+                            Err(mpsc::RecvTimeoutError::Timeout) => {}
+                            Err(mpsc::RecvTimeoutError::Disconnected) => { should_stop = true; break; }
+                        }
+                    }
+                }
             }
             for (_hash, (path, _)) in &media {
                 let _ = fs::remove_file(path);

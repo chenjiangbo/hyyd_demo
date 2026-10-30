@@ -2100,6 +2100,8 @@ mod tests {
             quoted_message_id: None,
             lifecycle: archive_domain::LifecycleState::Recalled,
             media: vec![archive_domain::MediaRefV1 {
+                resolution_state: None,
+                candidate_files: Vec::new(),
                 content_hash: None,
                 original_name: Some("<img src=x onerror=alert(1)>".into()),
                 mime_type: None,

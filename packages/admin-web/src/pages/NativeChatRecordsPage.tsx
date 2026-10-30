@@ -50,6 +50,52 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 }
 
+function candidateText(value: unknown): string {
+  return Array.isArray(value) ? value.map(String).join('、') : value == null || value === '' ? '未提供' : String(value)
+}
+
+function candidateTime(value: unknown): string {
+  const timestamp = Number(value)
+  return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleString() : '未提供'
+}
+
+function AttachmentMatchCandidates({ sourceMetadata }: { sourceMetadata: Record<string, unknown> | null }): React.JSX.Element | null {
+  if (!sourceMetadata) return null
+  const resourceRecords = Array.isArray(sourceMetadata.candidateResourceRecords)
+    ? sourceMetadata.candidateResourceRecords.map(asRecord).filter((item): item is Record<string, unknown> => item !== null)
+    : []
+  const localFiles = Array.isArray(sourceMetadata.candidateFiles)
+    ? sourceMetadata.candidateFiles.map(asRecord).filter((item): item is Record<string, unknown> => item !== null)
+    : []
+  if (!resourceRecords.length && !localFiles.length) return null
+  return (
+    <details className="basis-full text-fg-muted">
+      <summary className="cursor-pointer">查看匹配候选</summary>
+      <div className="mt-2 space-y-2 break-all">
+        {resourceRecords.map((record, index) => (
+          <div key={`resource-${index}`} className="rounded border border-line px-2 py-1">
+            <div>资源记录：{candidateText(record.originalName || record.localName)}</div>
+            {typeof record.localName === 'string' && typeof record.originalName === 'string' && <div>本地文件名：{candidateText(record.localName)}</div>}
+            {record.byteSize != null && <div>源文件大小：{candidateText(record.byteSize)} 字节</div>}
+            <div>消息记录 ID：{candidateText(record.messageIds)}</div>
+            {record.resourceIds != null && <div>资源 ID：{candidateText(record.resourceIds)}</div>}
+            {typeof record.packedInfoSha256 === 'string' && <div>元数据指纹：{candidateText(record.packedInfoSha256)}</div>}
+          </div>
+        ))}
+        {localFiles.map((file, index) => (
+          <div key={`local-${index}`} className="rounded border border-line px-2 py-1">
+            <div>本机文件：{candidateText(file.fileName)}</div>
+            <div>文件大小：{candidateText(file.byteSize)} 字节</div>
+            {file.relativePath != null && <div>所在位置：{candidateText(file.relativePath)}</div>}
+            {file.modifiedAt != null && <div>本机修改时间：{candidateTime(file.modifiedAt)}</div>}
+            {typeof file.sha256 === 'string' && <div>内容指纹：{candidateText(file.sha256)}</div>}
+          </div>
+        ))}
+      </div>
+    </details>
+  )
+}
+
 function ImageAnalysisLog({
   attachment,
   enabled
@@ -429,11 +475,18 @@ function MessageCard({
                     ? '尚未关联到本机视频文件'
                   : attachment.kind === 'video' && attachment.sourceMetadata?.resolutionState === 'resource_file_not_found'
                     ? '未找到这条视频对应的本机文件'
+                  : attachment.sourceMetadata?.resolutionState === 'ambiguous_resource_metadata'
+                    ? '微信资源记录不一致，附件未匹配'
+                  : attachment.sourceMetadata?.resolutionState === 'different_local_files'
+                    ? '本机找到多个内容不同的候选文件，未自动选择'
+                  : attachment.sourceMetadata?.resolutionState === 'invalid_resource_metadata'
+                    ? '微信文件信息无法解析'
                   : attachment.sourceMetadata?.resolutionState === 'size_mismatch'
                     ? '文件暂未匹配，继续查找'
                   : attachmentStateName(attachment.state, attachment.availableInStorage)}
               </span>
               <span className="text-fg-subtle">{formatBytes(attachment.byteSize)}</span>
+              <AttachmentMatchCandidates sourceMetadata={attachment.sourceMetadata} />
               {attachment.availableInStorage && (
                 <button
                   className="text-accent-strong underline"

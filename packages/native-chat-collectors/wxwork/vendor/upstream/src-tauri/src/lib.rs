@@ -7,11 +7,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use archive_domain::{
     ArchiveBatchV1, ClientExportV1, CollectionScope, ConversationV1, EmployeeNoticeEvidence,
-    ExternalContactConsent, MediaIntegrity, MessageType, ParticipantV1, RetentionDirective,
+    ExternalContactConsent, MediaCandidateFileV1, MediaIntegrity, MessageType, ParticipantV1, RetentionDirective,
     SourceAdapter, SourceCandidate, SourceCapability,
 };
 use chrono::{Local, NaiveTime, TimeDelta, TimeZone, Utc};
@@ -246,6 +246,12 @@ struct MediaResolver {
 
 static MEDIA_MD5_CACHE: OnceLock<Mutex<HashMap<PathBuf, (u64, Option<SystemTime>, String)>>> = OnceLock::new();
 
+#[derive(Debug)]
+enum MediaLookupFailure {
+    Error(String),
+    Ambiguous(Vec<PathBuf>),
+}
+
 impl MediaResolver {
     fn new(candidate: &SourceCandidate, options: MediaCollectionOptions) -> Result<Self, String> {
         let mut root_candidates = candidate.media_roots.clone();
@@ -319,6 +325,27 @@ impl MediaResolver {
         })
     }
 
+    fn resolve_candidates(&self, candidate_root: &Path, locator: &str) -> Vec<PathBuf> {
+        let locator_path = PathBuf::from(locator);
+        let mut direct = if locator_path.is_absolute() {
+            vec![locator_path]
+        } else {
+            std::iter::once(candidate_root.join(&locator_path))
+                .chain(self.roots.iter().map(|root| root.join(&locator_path)))
+                .collect()
+        }.into_iter().filter_map(|path| self.authorized_file(path)).collect::<Vec<_>>();
+        direct.sort();
+        direct.dedup();
+        if !direct.is_empty() { return direct; }
+
+        let mut matches = media_lookup_keys(locator).into_iter().flat_map(|key| {
+            self.files_by_key.get(&key).into_iter().flatten().cloned()
+        }).filter_map(|path| self.authorized_file(path)).collect::<Vec<_>>();
+        matches.sort();
+        matches.dedup();
+        matches
+    }
+
     fn resolve_named_file(&self, name: &str, expected_size: Option<u64>, images_only: bool) -> Option<PathBuf> {
         let expected_size = expected_size?;
         self.resolve_named_file_ranked(name, Some(expected_size), images_only)
@@ -329,6 +356,11 @@ impl MediaResolver {
     }
 
     fn resolve_named_file_ranked(&self, name: &str, expected_size: Option<u64>, images_only: bool) -> Option<PathBuf> {
+        let mut candidates = self.resolve_named_file_ranked_candidates(name, expected_size, images_only);
+        (candidates.len() == 1).then(|| candidates.remove(0))
+    }
+
+    fn resolve_named_file_ranked_candidates(&self, name: &str, expected_size: Option<u64>, images_only: bool) -> Vec<PathBuf> {
         let mut candidates = self.files.iter().filter_map(|path| {
             let actual = path.file_name()?.to_str()?;
             let rank = downloaded_name_rank(name, actual)?;
@@ -338,14 +370,15 @@ impl MediaResolver {
                 else { file_signature_matches(path, Some(name), None) };
             valid.then(|| (rank, path.clone()))
         }).collect::<Vec<_>>();
-        let best_rank = candidates.iter().map(|(rank, _)| *rank).max()?;
+        let Some(best_rank) = candidates.iter().map(|(rank, _)| *rank).max() else { return Vec::new(); };
         candidates.retain(|(rank, _)| *rank == best_rank);
-        candidates.sort_by(|left, right| left.1.cmp(&right.1));
-        candidates.dedup_by(|left, right| left.1 == right.1);
-        (candidates.len() == 1).then(|| candidates.remove(0).1)
+        let mut paths = candidates.into_iter().map(|(_, path)| path).collect::<Vec<_>>();
+        paths.sort();
+        paths.dedup();
+        paths
     }
 
-    fn resolve_by_content_md5(&self, hints: &[String], images_only: bool, expected_size: Option<u64>) -> Result<Option<PathBuf>, String> {
+    fn resolve_by_content_md5(&self, hints: &[String], images_only: bool, expected_size: Option<u64>) -> Result<Option<PathBuf>, MediaLookupFailure> {
         let wanted = hints.iter()
             .map(|hint| hint.trim().to_ascii_lowercase())
             .filter(|hint| hint.len() == 32 && hint.bytes().all(|byte| byte.is_ascii_hexdigit()))
@@ -353,20 +386,20 @@ impl MediaResolver {
         if wanted.is_empty() { return Ok(None); }
 
         let cache = MEDIA_MD5_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut cache = cache.lock().map_err(|_| "企微媒体 MD5 索引锁不可用".to_owned())?;
+        let mut cache = cache.lock().map_err(|_| MediaLookupFailure::Error("企微媒体 MD5 索引锁不可用".to_owned()))?;
         let mut matches = Vec::<(String, PathBuf)>::new();
         for path in &self.files {
-            let before = fs::metadata(path).map_err(|error| format!("读取企微媒体文件信息失败，无法完成 MD5 查找：{} ({error})", path.display()))?;
+            let before = fs::metadata(path).map_err(|error| MediaLookupFailure::Error(format!("读取企微媒体文件信息失败，无法完成 MD5 查找：{} ({error})", path.display())))?;
             if !before.is_file() { continue; }
             let length = before.len();
             let modified = before.modified().ok();
             let hash = match cache.get(path) {
                 Some((cached_length, cached_modified, hash)) if *cached_length == length && *cached_modified == modified && modified.is_some() => hash.clone(),
                 _ => {
-                    let hash = md5_file(path).map_err(|error| format!("计算企微媒体文件 MD5 失败：{} ({error})", path.display()))?;
-                    let after = fs::metadata(path).map_err(|error| format!("复核企微媒体文件信息失败，无法完成 MD5 查找：{} ({error})", path.display()))?;
+                    let hash = md5_file(path).map_err(|error| MediaLookupFailure::Error(format!("计算企微媒体文件 MD5 失败：{} ({error})", path.display())))?;
+                    let after = fs::metadata(path).map_err(|error| MediaLookupFailure::Error(format!("复核企微媒体文件信息失败，无法完成 MD5 查找：{} ({error})", path.display())))?;
                     if after.len() != length || after.modified().ok() != modified {
-                        return Err(format!("企微媒体文件在 MD5 查找期间发生变化：{}", path.display()));
+                        return Err(MediaLookupFailure::Error(format!("企微媒体文件在 MD5 查找期间发生变化：{}", path.display())));
                     }
                     if modified.is_some() { cache.insert(path.clone(), (length, modified, hash.clone())); }
                     hash
@@ -387,10 +420,10 @@ impl MediaResolver {
             let largest = matches.into_iter().filter(|(_, path)| image_pixel_area(path) == largest_area).collect::<Vec<_>>();
             let largest_hashes = largest.iter().map(|(hash, _)| hash).collect::<std::collections::BTreeSet<_>>();
             if largest_hashes.len() == 1 { return Ok(largest.into_iter().next().map(|(_, path)| path)); }
-            return Err(format!("企微图片的多个识别码命中不同文件，且无法唯一确定清晰度：{}", largest.iter().map(|(_, path)| path.display().to_string()).collect::<Vec<_>>().join("; ")));
+            return Err(MediaLookupFailure::Ambiguous(largest.into_iter().map(|(_, path)| path).collect()));
         }
         if matched_hashes.len() > 1 {
-            return Err(format!("企微消息中的多个媒体 MD5 分别命中不同文件内容，无法唯一确定附件：{}", matches.iter().map(|(_, path)| path.display().to_string()).collect::<Vec<_>>().join("; ")));
+            return Err(MediaLookupFailure::Ambiguous(matches.into_iter().map(|(_, path)| path).collect()));
         }
         Ok(matches.into_iter().next().map(|(_, path)| path))
     }
@@ -399,6 +432,40 @@ impl MediaResolver {
         let path = candidate.canonicalize().ok()?;
         (path.is_file() && self.roots.iter().any(|root| path.starts_with(root))).then_some(path)
     }
+}
+
+fn select_identical_media_candidate(
+    resolver: &MediaResolver,
+    mut paths: Vec<PathBuf>,
+) -> Result<(Option<PathBuf>, Vec<MediaCandidateFileV1>), String> {
+    paths.sort();
+    paths.dedup();
+    if paths.is_empty() { return Ok((None, Vec::new())); }
+    if paths.len() == 1 { return Ok((paths.into_iter().next(), Vec::new())); }
+
+    let mut candidates = Vec::with_capacity(paths.len());
+    for path in &paths {
+        let before = fs::metadata(path).map_err(|error| format!("读取企微候选文件信息失败：{} ({error})", path.display()))?;
+        let (sha256, byte_size) = media_store::hash_source(path).map_err(|error| format!("计算企微候选文件 SHA-256 失败：{} ({error})", path.display()))?;
+        let after = fs::metadata(path).map_err(|error| format!("复核企微候选文件信息失败：{} ({error})", path.display()))?;
+        if before.len() != after.len() || before.modified().ok() != after.modified().ok() || byte_size != after.len() {
+            return Err(format!("企微候选文件在内容核对期间发生变化：{}", path.display()));
+        }
+        let root = resolver.roots.iter().filter(|root| path.starts_with(root))
+            .max_by_key(|root| root.components().count())
+            .ok_or_else(|| format!("企微候选文件不在已扫描媒体目录内：{}", path.display()))?;
+        let relative_path = path.strip_prefix(root).map_err(|error| error.to_string())?
+            .to_string_lossy().replace('\\', "/");
+        let file_name = path.file_name().and_then(|name| name.to_str())
+            .ok_or_else(|| format!("企微候选文件名不是有效文本：{}", path.display()))?.to_owned();
+        let modified_at = after.modified().ok().and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok());
+        candidates.push(MediaCandidateFileV1 { file_name, byte_size, relative_path, modified_at, sha256 });
+    }
+    let first = &candidates[0];
+    let identical = candidates.iter().all(|candidate| candidate.byte_size == first.byte_size && candidate.sha256 == first.sha256);
+    let selected = identical.then(|| paths.into_iter().next()).flatten();
+    Ok((selected, if identical { Vec::new() } else { candidates }))
 }
 
 fn md5_file(path: &Path) -> std::io::Result<String> {
@@ -443,7 +510,7 @@ fn image_pixel_area(path: &Path) -> u64 {
     0
 }
 
-fn best_image_path(paths: impl IntoIterator<Item = PathBuf>, expected_size: Option<u64>) -> Option<PathBuf> {
+fn best_image_candidates(paths: impl IntoIterator<Item = PathBuf>, expected_size: Option<u64>) -> Vec<PathBuf> {
     let mut candidates = paths.into_iter().filter_map(|path| {
         let size = fs::metadata(&path).ok()?.len();
         let area = image_pixel_area(&path);
@@ -451,7 +518,7 @@ fn best_image_path(paths: impl IntoIterator<Item = PathBuf>, expected_size: Opti
     }).collect::<Vec<_>>();
     candidates.sort();
     candidates.dedup();
-    (candidates.len() == 1).then(|| candidates.remove(0))
+    candidates
 }
 
 fn downloaded_name_rank(expected: &str, actual: &str) -> Option<(u64, u8)> {
@@ -2492,7 +2559,7 @@ fn build_message_query(
             Some(values.len())
         } else { None };
         let time_match = time_parameter.map(|parameter| format!(
-            " OR EXISTS (SELECT 1 FROM json_each(?{parameter}) updated WHERE updated.key = {table}.conversation_id AND {time_column} >= CAST(updated.value AS INTEGER))"
+            " OR (CAST((SELECT cursor.value FROM json_each(?{rowid_parameter}) cursor WHERE cursor.key = {table}.conversation_id) AS INTEGER) > 0 AND EXISTS (SELECT 1 FROM json_each(?{parameter}) updated WHERE updated.key = {table}.conversation_id AND {time_column} >= CAST(updated.value AS INTEGER)))"
         )).unwrap_or_default();
         let pending_match = if let Some(pending) = pending_media_rowids {
             if pending.is_empty() {
@@ -2510,8 +2577,35 @@ fn build_message_query(
         } else {
             String::new()
         };
+        let mut initial_conversations = HashMap::<String, i64>::new();
+        for (conversation_id, row_id) in rowid_cutoffs.iter().filter(|(_, row_id)| **row_id == 0) {
+            let cutoff = conversation_cutoffs.and_then(|cutoffs| cutoffs.get(conversation_id)).copied()
+                .ok_or_else(|| CommandError {
+                    code: "INITIAL_HISTORY_CUTOFF_MISSING",
+                    message: format!("首次回补会话缺少时间范围：{conversation_id}"),
+                    recoverable: true,
+                })?;
+            initial_conversations.insert(conversation_id.clone(), cutoff);
+        }
+        let initial_match = if initial_conversations.is_empty() {
+            String::new()
+        } else {
+            let initial_json = serde_json::to_string(&initial_conversations).map_err(|_| CommandError {
+                code: "COLLECTION_FILTER_SERIALIZATION_FAILED",
+                message: "无法编码首次采集会话范围；未生成导出。".into(),
+                recoverable: true,
+            })?;
+            values.push(rusqlite::types::Value::Text(initial_json));
+            let parameter = values.len();
+            format!(
+                " OR EXISTS (SELECT 1 FROM json_each(?{parameter}) initial WHERE initial.key = {table}.conversation_id AND ({time_column} * CASE WHEN ABS({time_column}) < 100000000000 THEN 1000 WHEN ABS({time_column}) < 100000000000000 THEN 1 WHEN ABS({time_column}) < 100000000000000000 THEN 0.001 ELSE 0.000001 END >= CAST(initial.value AS INTEGER) OR {table}.rowid = (SELECT MAX(latest.rowid) FROM {table} latest WHERE latest.conversation_id = {table}.conversation_id)))"
+            )
+        };
+        let cursor_match = format!(
+            "(CAST((SELECT cursor.value FROM json_each(?{rowid_parameter}) cursor WHERE cursor.key = {table}.conversation_id) AS INTEGER) > 0 AND {table}.rowid > CAST((SELECT cursor.value FROM json_each(?{rowid_parameter}) cursor WHERE cursor.key = {table}.conversation_id) AS INTEGER))"
+        );
         predicates.push(format!(
-                "(EXISTS (SELECT 1 FROM json_each(?{rowid_parameter}) cursor WHERE cursor.key = {table}.conversation_id AND {table}.rowid > CAST(cursor.value AS INTEGER)){time_match}{pending_match})"
+                "(EXISTS (SELECT 1 FROM json_each(?{rowid_parameter}) cursor WHERE cursor.key = {table}.conversation_id) AND ({cursor_match}{time_match}{pending_match}{initial_match}))"
         ));
     }
     if let Some(selected) = selected_conversation_ids {
@@ -4938,6 +5032,8 @@ fn ensure_media_reference(message: &mut archive_domain::MessageV1) {
         return;
     }
     message.media.push(archive_domain::MediaRefV1 {
+        resolution_state: None,
+        candidate_files: Vec::new(),
         content_hash: None,
         original_name: message
             .raw_payload
@@ -4976,6 +5072,8 @@ fn ensure_merged_forward_media_refs(message: &mut archive_domain::MessageV1) {
             .or_else(|| original_name.clone())
             .unwrap_or_default();
         message.media.push(archive_domain::MediaRefV1 {
+            resolution_state: None,
+            candidate_files: Vec::new(),
             content_hash: None,
             original_name,
             mime_type: media.get("mime_type").and_then(serde_json::Value::as_str).map(str::to_owned),
@@ -5009,6 +5107,12 @@ fn update_merged_forward_media_payload(message: &mut archive_domain::MessageV1) 
         item["media"]["mime_type"] = serde_json::json!(reference.mime_type.clone());
         item["media"]["original_name"] = serde_json::json!(reference.original_name.clone());
         item["media"]["integrity"] = serde_json::json!(reference.integrity.clone());
+        if let Some(state) = &reference.resolution_state {
+            item["media"]["resolutionState"] = serde_json::json!(state);
+        }
+        if !reference.candidate_files.is_empty() {
+            item["media"]["candidateFiles"] = serde_json::json!(&reference.candidate_files);
+        }
     }
 }
 
@@ -5196,7 +5300,7 @@ fn resolve_media_metadata_with_local_paths(
         }
         let mut identified_candidates = Vec::new();
         for locator in &identified_locators {
-            if let Some(path) = resolver.resolve(&candidate.root_path, locator) {
+            for path in resolver.resolve_candidates(&candidate.root_path, locator) {
                 if media_is_image || media.size_bytes.is_none_or(|expected| fs::metadata(&path).is_ok_and(|metadata| metadata.len() == expected)) {
                     identified_candidates.push(path);
                 }
@@ -5204,9 +5308,7 @@ fn resolve_media_metadata_with_local_paths(
         }
         let mut named_candidates = Vec::new();
         if let Some(name) = media.original_name.as_deref() {
-            if let Some(path) = resolver.resolve_named_file(name, media.size_bytes, media_is_image) {
-                named_candidates.push(path);
-            }
+            named_candidates.extend(resolver.resolve_named_file_ranked_candidates(name, media.size_bytes, media_is_image));
         }
         let hint_values = if is_merged {
             merged_media.get("media_lookup_hints")
@@ -5214,7 +5316,7 @@ fn resolve_media_metadata_with_local_paths(
             message.raw_payload.get("media_lookup_hints")
         };
         for hint in hint_values.and_then(serde_json::Value::as_array).into_iter().flatten().filter_map(serde_json::Value::as_str) {
-            if let Some(path) = resolver.resolve_named_file(hint, media.size_bytes, media_is_image) { named_candidates.push(path); }
+            named_candidates.extend(resolver.resolve_named_file_ranked_candidates(hint, media.size_bytes, media_is_image));
         }
         identified_candidates.sort();
         identified_candidates.dedup();
@@ -5236,11 +5338,13 @@ fn resolve_media_metadata_with_local_paths(
         if !media_is_image {
             file_candidates.retain(|path| file_signature_matches(path, media.original_name.as_deref(), media.mime_type.as_deref()));
         }
-        let mut resolved = if media_is_image {
-            best_image_path(file_candidates, media.size_bytes)
+        let file_candidates = if media_is_image {
+            best_image_candidates(file_candidates, media.size_bytes)
         } else {
-            (file_candidates.len() == 1).then(|| file_candidates.remove(0))
+            file_candidates
         };
+        let (mut resolved, mut unresolved_candidates) = select_identical_media_candidate(resolver, file_candidates)
+            .map_err(|error| CommandError { code: "MEDIA_CANDIDATE_CHECK_FAILED", message: error, recoverable: true })?;
         if resolved.is_none() {
             let mut md5_hints = Vec::new();
             if is_merged {
@@ -5268,16 +5372,34 @@ fn resolve_media_metadata_with_local_paths(
             let expected_size = media.size_bytes
                 .or_else(|| merged_media.get("datasize").or_else(|| merged_media.get("size_bytes")).or_else(|| merged_media.get("size")).and_then(serde_json::Value::as_u64))
                 .or_else(|| message.raw_payload.get("size_bytes").or_else(|| message.raw_payload.get("size")).and_then(serde_json::Value::as_u64));
-            resolved = resolver.resolve_by_content_md5(&md5_hints, media_is_image, expected_size)
-                .map_err(|error| CommandError { code: "MEDIA_HASH_LOOKUP_FAILED", message: error, recoverable: true })?;
+            match resolver.resolve_by_content_md5(&md5_hints, media_is_image, expected_size) {
+                Ok(path) => resolved = path,
+                Err(MediaLookupFailure::Ambiguous(paths)) => {
+                    let (selected, candidates) = select_identical_media_candidate(resolver, paths)
+                        .map_err(|error| CommandError { code: "MEDIA_CANDIDATE_CHECK_FAILED", message: error, recoverable: true })?;
+                    resolved = selected;
+                    unresolved_candidates = candidates;
+                }
+                Err(MediaLookupFailure::Error(error)) => return Err(CommandError {
+                    code: "MEDIA_HASH_LOOKUP_FAILED", message: error, recoverable: true,
+                }),
+            }
         }
         // Keep the source-size and content-hash lookups first. If they cannot
         // resolve a file, make a final filename pass that tolerates a missing
         // or stale size and picks the highest numbered local duplicate.
-        if resolved.is_none()
+        if resolved.is_none() && unresolved_candidates.is_empty()
             && let Some(name) = media.original_name.as_deref()
         {
-            resolved = resolver.resolve_named_file_relaxed(name, media_is_image);
+            let candidates = if media_is_image {
+                best_image_candidates(resolver.resolve_named_file_ranked_candidates(name, None, true), None)
+            } else {
+                resolver.resolve_named_file_ranked_candidates(name, None, false)
+            };
+            let (selected, details) = select_identical_media_candidate(resolver, candidates)
+                .map_err(|error| CommandError { code: "MEDIA_CANDIDATE_CHECK_FAILED", message: error, recoverable: true })?;
+            resolved = selected;
+            unresolved_candidates = details;
         }
         if media.original_name.as_deref().is_none_or(is_opaque_media_name)
             && let Some(local_name) = resolved.as_deref().and_then(Path::file_name).and_then(|name| name.to_str())
@@ -5331,12 +5453,22 @@ fn resolve_media_metadata_with_local_paths(
                 media.source_locator = format!("sha256:{hash}");
                 media.integrity = MediaIntegrity::Verified;
                 media.missing_reason = None;
+                media.resolution_state = None;
+                media.candidate_files.clear();
             }
             None => {
                 media.content_hash = None;
                 media.source_locator = "unavailable".into();
                 media.integrity = MediaIntegrity::Missing;
-                media.missing_reason = Some("not_found_in_authorized_media_roots".into());
+                if unresolved_candidates.is_empty() {
+                    media.missing_reason = Some("not_found_in_authorized_media_roots".into());
+                    media.resolution_state = None;
+                    media.candidate_files.clear();
+                } else {
+                    media.missing_reason = Some("ambiguous_local_file_candidates".into());
+                    media.resolution_state = Some("different_local_files".into());
+                    media.candidate_files = unresolved_candidates;
+                }
             }
         }
     }
