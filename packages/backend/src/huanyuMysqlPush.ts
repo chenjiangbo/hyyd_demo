@@ -272,8 +272,7 @@ export async function updateHuanyuOrderDirectlyOnMysql(input: PetHuanyuOrderUpda
         \`BBQ_YD\` = COALESCE(?, \`BBQ_YD\`), \`DATE_YD\` = COALESCE(?, \`DATE_YD\`),
         \`BBQ_QDFW\` = COALESCE(?, \`BBQ_QDFW\`), \`DATE_QDFW\` = COALESCE(?, \`DATE_QDFW\`),
         \`BBQ_FK\` = COALESCE(?, \`BBQ_FK\`), \`DATE_FK\` = COALESCE(?, \`DATE_FK\`),
-        \`lastQueuingTime\` = COALESCE(?, \`lastQueuingTime\`),
-        \`PZR\` = COALESCE(?, \`PZR\`)
+        \`lastQueuingTime\` = COALESCE(?, \`lastQueuingTime\`)
        WHERE \`DDBH\` = ?`,
       [input.orderStatus, input.hospitalId, input.hospitalAddressId,
         input.departmentId, input.doctorId,
@@ -281,7 +280,7 @@ export async function updateHuanyuOrderDirectlyOnMysql(input: PetHuanyuOrderUpda
         input.responseTime, input.responseTime?.slice(0, 8) ?? null,
         input.serviceStartTime, input.serviceStartTime?.slice(0, 8) ?? null,
         input.bookingFeedbackTime, input.bookingFeedbackTime?.slice(0, 8) ?? null,
-        input.latestTicketTime, input.escortList.find((escort) => escort.escortId)?.escortId ?? null,
+        input.latestTicketTime,
         orderNo]
     )
 
