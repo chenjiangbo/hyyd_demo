@@ -255,7 +255,6 @@ export async function syncHuanyuOrderFromTaikang(
       KHJL: text(manager, 50),
       JZR_XM: text(patientName, 50),
       JZR_ZJLX: huanyuDocumentType(field(raw, 'cardType')),
-      JZR_ZJHM: text(field(raw, 'cardId'), 50),
       JZR_XB: text(field(raw, 'sex'), 20),
       JZR_NL: ageFromBirthday(birthday),
       JZR_LXDH: text(patientPhone, 18),
@@ -264,19 +263,7 @@ export async function syncHuanyuOrderFromTaikang(
       JZR_JSLXFS: text(familyPhone, 18),
       JZR_JB: text(field(raw, 'suspectDisease'), 100),
       JZR_BZ: text(field(raw, 'comments', 'comment'), 2000),
-      H_NAME: text(field(raw, 'hospital', 'intendHos', 'visitingHospital'), 100),
-      H_ADDRESS: text(field(raw, 'visitingHospitalDetailAddress'), 500),
-      H_KS: text(field(raw, 'dept', 'intendDept'), 50),
-      H_YS: text(field(raw, 'doctor', 'intendDoc'), 50),
-      DDFWBZ: text(field(raw, 'comments', 'comment'), 2000),
-      BBQ_XQ: text(field(raw, 'intendDateAmorpm'), 20),
-      DATE_XQ: text(field(raw, 'intendDate'), 20),
-      YYQDLX: '1',
-      xtsj_: formatShanghaiDateTime(order.createdAt).replace(/[- :]/g, ''),
-      expectedProvince: text(field(raw, 'intendProvince'), 50),
-      expectedCity: text(field(raw, 'intendCity'), 50),
-      expectedHospital: text(field(raw, 'intendHos', 'hospital'), 255),
-      expectedDepartment: text(field(raw, 'intendDept', 'dept'), 255)
+      YYQDLX: '1'
     }
     await createHuanyuOrderOnMysql(remoteRow)
     const linked = await prisma.order.updateMany({

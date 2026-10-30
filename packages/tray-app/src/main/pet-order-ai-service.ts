@@ -380,6 +380,8 @@ export class PetOrderAiService {
       const payload = await response.json() as {
         data?: {
           fields?: Record<string, string>
+          documentNo?: string
+          documentNoStatus?: 'ok' | 'not_found' | 'unavailable'
           escortRecords?: Array<{ serviceDate?: string; escortName?: string; escortPhone?: string }>
         }
         error?: string
@@ -408,7 +410,7 @@ export class PetOrderAiService {
       }
       const fields = [
         { id: 'orderNo', label: '订单号', type: 'text' as const, value: orderNo, placeholder: '', readOnly: true, copyable: true },
-        { id: 'documentNo', label: '证件号码', type: 'text' as const, value: values.document_no ?? '', placeholder: '暂无证件号码', readOnly: true, copyable: true },
+        { id: 'documentNo', label: '证件号码', type: 'text' as const, value: payload.data?.documentNo ?? '', placeholder: payload.data?.documentNoStatus === 'unavailable' ? '远程读取失败' : payload.data?.documentNoStatus === 'not_found' ? '远程订单不存在' : '暂无证件号码', readOnly: true, copyable: true },
         { id: 'orderStatus', label: '订单状态', type: 'select' as const, value: values.order_status ?? '', placeholder: '请选择订单状态', options: statusOptions.map((item) => ({ value: String(item.id ?? item.name ?? ''), label: String(item.name ?? item.id ?? '') })) },
         ...HOSPITAL_FIELDS.map(([id, label]) => ({
           id, label, type: 'text' as const, value: values[id === 'hospitalAddress' ? 'hospital_address' : id] ?? '', placeholder: `请输入${label}`

@@ -28,6 +28,7 @@ import { addAdminSocket, removeAdminSocket } from './routes/adminBus.js'
 import { saveOrderAttachments, saveOrderDetailBundle } from './orderDetail.js'
 import { saveTaikangFormEvent } from './taikangFormRecording.js'
 import { ensureOrderIdCardOcrTable, scheduleOrderIdCardOcr } from './services/orderIdCardOcr.js'
+import { ensureGreenPassIdCardJobs, runGreenPassIdCardOcr, startGreenPassIdCardRetries } from './services/greenPassIdCardOcr.js'
 import { initScheduler } from './asr/transcribeScheduler.js'
 import fastifyStatic from '@fastify/static'
 import fastifyMultipart from '@fastify/multipart'
@@ -214,6 +215,8 @@ async function syncGreenPassHuanyuOrderAfterPersonalPool(orderId: number): Promi
         huanyuOrderNo: primaryDdbh
       })
       server.log.info(`泰康订单 ${order.sourceOrderNo} 已关联 ${remoteDdbhs.length} 个远程寰宇服务单`)
+      await prisma.$executeRaw`DELETE FROM green_pass_sync_retries WHERE order_id = ${order.id}`
+      void queueGreenPassIdCard(order.id)
       return
     }
 
@@ -236,12 +239,16 @@ async function syncGreenPassHuanyuOrderAfterPersonalPool(orderId: number): Promi
         huanyuOrderNo: result.ddbh
       })
       server.log.info(`已创建远程寰宇订单 ${result.ddbh}（泰康订单 ${order.sourceOrderNo}，客户经理=${managerName}）`)
+      await prisma.$executeRaw`DELETE FROM green_pass_sync_retries WHERE order_id = ${order.id}`
+      void queueGreenPassIdCard(order.id)
     }
     if (!result.channelFound || !result.productFound) {
       server.log.warn(`寰宇订单 ${result.ddbh} 字典映射不完整：渠道=${result.channelFound}，服务项目=${result.productFound}`)
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
+    await prisma.$executeRaw`INSERT INTO green_pass_sync_retries (order_id, updated_at) VALUES (${order.id}, CURRENT_TIMESTAMP)
+      ON CONFLICT (order_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP`
     await writeGreenPassHuanyuSyncLog({
       orderId: order.id,
       sourceOrderNo: order.sourceOrderNo,
@@ -300,6 +307,37 @@ async function ensureBuckets() {
   )
 }
 
+async function queueGreenPassIdCard(orderId: number): Promise<void> {
+  try {
+    await runGreenPassIdCardOcr(prisma, minioClient, orderId)
+  } catch (error) {
+    server.log.warn({ err: error, orderId }, '绿通身份证识别任务调度失败')
+  }
+}
+
+function startGreenPassSyncRetries(): () => void {
+  let running = false
+  const tick = async (): Promise<void> => {
+    if (running) return
+    running = true
+    try {
+      const rows = await prisma.$queryRaw<Array<{ order_id: number }>>`
+        SELECT order_id FROM green_pass_sync_retries WHERE updated_at < CURRENT_TIMESTAMP - INTERVAL '5 minutes'
+        ORDER BY updated_at LIMIT 20`
+      for (const row of rows) {
+        // 先推迟下一次重试，即便订单缺少归属或有其他同步任务占位也不会频繁重试。
+        await prisma.$executeRaw`UPDATE green_pass_sync_retries SET updated_at = CURRENT_TIMESTAMP WHERE order_id = ${row.order_id}`
+        try { await syncGreenPassHuanyuOrderAfterPersonalPool(row.order_id) }
+        catch (error) { server.log.warn({ orderId: row.order_id }, '绿通远程同步重试未完成') }
+      }
+    } catch (error) { server.log.warn({ err: error }, '绿通远程同步重试扫描失败') }
+    finally { running = false }
+  }
+  const timer = setInterval(() => { void tick() }, 60_000)
+  timer.unref()
+  return () => clearInterval(timer)
+}
+
 async function start() {
   try {
     await assertShanghaiDatabaseTimezone(prisma)
@@ -307,6 +345,7 @@ async function start() {
     // 该检查幂等，已有表不会被修改。
     await ensureHuanyuTables(prisma)
     await ensureOrderIdCardOcrTable(prisma)
+    await ensureGreenPassIdCardJobs(prisma)
     await ensureBOrderFormTables(prisma)
     await ensureReminderTables(prisma, server.log)
     await ensureSysSettingsTable(prisma, server.log)
@@ -787,9 +826,11 @@ async function start() {
                       server.log.error(error, `泰康个人池订单 ${payload.sourceOrderNo} 远程寰宇同步失败，等待下一轮列表同步重试`)
                     }
                   }
-                  void scheduleOrderIdCardOcr(prisma, minioClient, result.orderId).catch(() => {
-                    server.log.warn({ orderId: result.orderId }, '身份证附件自动识别未完成')
-                  })
+                  if (detailedOrder && isTaikangRegistrationAssistance(detailedOrder.rawJson)) {
+                    void scheduleOrderIdCardOcr(prisma, minioClient, result.orderId).catch(() => {
+                      server.log.warn({ orderId: result.orderId }, '身份证附件自动识别未完成')
+                    })
+                  }
                   server.log.info(`订单详情正文入库成功: orderId=${result.orderId}`)
                   // 注：原本要把对应的 pending command mark done，但插件
                   // 已不再消费 command，没有指令补推回路，无需 mark。
@@ -848,11 +889,17 @@ async function start() {
                   attachmentsComplete: payload.attachmentsComplete,
                   fingerprint: payload.fingerprint,
                   expectedEmployeeId: employeeId,
-                  expectedBatchId: batchId
+                  expectedBatchId: batchId,
+                  enqueueGreenPassIdCard: !isTaikangRegistrationAssistance(orderForAttribution.rawJson)
                 })
                 if (!result.attachmentsComplete) {
                   server.log.warn(`订单 ${payload.sourceOrderNo} 附件未完整保存；未推进采集指纹，将由插件重试`)
                 }
+                if (result.attachmentsComplete && !isTaikangRegistrationAssistance(orderForAttribution.rawJson)) {
+                  void queueGreenPassIdCard(result.orderId)
+                } else if (result.attachmentsComplete) void scheduleOrderIdCardOcr(prisma, minioClient, result.orderId).catch(() => {
+                  server.log.warn({ orderId: result.orderId }, '身份证附件自动识别未完成')
+                })
                 attachmentsAck(true, undefined, result.attachmentsComplete)
               } catch (error) {
                 server.log.error(error, `订单 ${payload.sourceOrderNo} 附件保存失败`)
@@ -1025,6 +1072,9 @@ async function start() {
     const port = appEnv.port
     const host = appEnv.host
     
+    const stopGreenPassIdCardRetries = startGreenPassIdCardRetries(prisma, minioClient)
+    const stopGreenPassSyncRetries = startGreenPassSyncRetries()
+    server.addHook('onClose', async () => { stopGreenPassIdCardRetries(); stopGreenPassSyncRetries() })
     await server.listen({ port, host })
     server.log.info(`寰宇医道后端服务启动成功，运行在: http://${host}:${port}`)
 

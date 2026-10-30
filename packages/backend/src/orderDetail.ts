@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client'
 import * as Minio from 'minio'
+import { enqueueGreenPassIdCardOcr } from './services/greenPassIdCardOcr.js'
 
 export const ATTACHMENT_BUCKET = 'order-attachments'
 
@@ -39,6 +40,7 @@ export interface SaveOrderAttachmentsInput {
   fingerprint: string
   expectedEmployeeId?: number
   expectedBatchId?: string
+  enqueueGreenPassIdCard?: boolean
 }
 
 export interface SaveOrderAttachmentsResult {
@@ -143,15 +145,18 @@ export async function saveOrderAttachments(
 
   // 仅在详情正文与附件均完整落库后推进指纹；否则插件会在下一轮重试。
   if (attachmentsComplete) {
-    const fingerprintSaved = await prisma.order.updateMany({
-      where: {
-        id: order.id,
-        ...(input.expectedEmployeeId ? { assignedEmployeeId: input.expectedEmployeeId } : {}),
-        ...(input.expectedBatchId ? { rawJson: { path: ['collectionBatchId'], equals: input.expectedBatchId } } : {})
-      },
-      data: { detailFingerprint: input.fingerprint }
+    await prisma.$transaction(async (tx) => {
+      const fingerprintSaved = await tx.order.updateMany({
+        where: {
+          id: order.id,
+          ...(input.expectedEmployeeId ? { assignedEmployeeId: input.expectedEmployeeId } : {}),
+          ...(input.expectedBatchId ? { rawJson: { path: ['collectionBatchId'], equals: input.expectedBatchId } } : {})
+        },
+        data: { detailFingerprint: input.fingerprint }
+      })
+      if (fingerprintSaved.count !== 1) throw new Error('保存详情指纹时订单归属发生变化')
+      if (input.enqueueGreenPassIdCard) await enqueueGreenPassIdCardOcr(tx, order.id)
     })
-    if (fingerprintSaved.count !== 1) throw new Error('保存详情指纹时订单归属发生变化')
   }
 
   return { orderId: order.id, attachmentCount: saved, skipped, attachmentsComplete }

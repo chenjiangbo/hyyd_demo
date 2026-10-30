@@ -171,18 +171,54 @@ export async function findHuanyuOrderNosOnMysqlByChannelOrderNo(channelOrderNo: 
 export async function createHuanyuOrderOnMysql(row: Record<string, unknown>): Promise<void> {
   const columns = [
     'DDBH', 'DD_state', 'BDQD', 'BDQD_DDBH', 'BDQD_DDBH2', 'BDQD_FWXM', 'DDJE', 'KHJL',
-    'JZR_XM', 'JZR_ZJLX', 'JZR_ZJHM', 'JZR_XB', 'JZR_NL', 'JZR_LXDH',
+    'JZR_XM', 'JZR_ZJLX', 'JZR_XB', 'JZR_NL', 'JZR_LXDH',
     'JZR_JSMC', 'JZR_JSGX', 'JZR_JSLXFS', 'JZR_JB', 'JZR_BZ',
-    'H_NAME', 'H_ADDRESS', 'H_KS', 'H_YS', 'DDFWBZ', 'BBQ_XQ', 'DATE_XQ', 'YYQDLX', 'xtsj_',
-    'expectedProvince', 'expectedCity', 'expectedHospital', 'expectedDepartment'
+    'YYQDLX', 'xtsj_'
   ] as const
-  const sql = `INSERT INTO \`HY_FACT_DDCX_NEW\` (${columns.map((column) => `\`${column}\``).join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`
+  const sql = `INSERT INTO \`HY_FACT_DDCX_NEW\` (${columns.map((column) => `\`${column}\``).join(', ')}) VALUES (${columns.map((column) => column === 'xtsj_' ? "DATE_FORMAT(NOW(), '%Y%m%d%H%i%s')" : '?').join(', ')})`
   const connection = await mysqlWriterPool().getConnection()
   try {
-    await connection.execute(sql, values(row, columns))
+    await connection.query("SET time_zone = '+08:00'")
+    await connection.execute(sql, values(row, columns.filter((column) => column !== 'xtsj_')))
   } finally {
     connection.release()
   }
+}
+
+/** 按关联订单号及渠道订单号共同核验，避免向错误订单补充证件号。 */
+export async function readRemoteOrderIdentity(orderNo: string, sourceOrderNo: string): Promise<{ name: string; documentType: string; documentNo: string } | null> {
+  const connection = await mysqlWriterPool().getConnection()
+  try {
+    const [rows] = await connection.execute<RowDataPacket[]>(
+      'SELECT `JZR_XM`, `JZR_ZJLX`, `JZR_ZJHM` FROM `HY_FACT_DDCX_NEW` WHERE `DDBH` = ? AND `BDQD_DDBH` = ? LIMIT 1',
+      [orderNo, sourceOrderNo]
+    )
+    const row = rows[0]
+    return row ? { name: String(row.JZR_XM ?? ''), documentType: String(row.JZR_ZJLX ?? ''), documentNo: String(row.JZR_ZJHM ?? '') } : null
+  } finally { connection.release() }
+}
+
+/** 精灵按已核对的寰宇订单号读取当前远端证件号码。 */
+export async function readRemoteOrderDocumentNo(orderNo: string): Promise<{ documentNo: string } | null> {
+  const connection = await mysqlWriterPool().getConnection()
+  try {
+    const [rows] = await connection.execute<RowDataPacket[]>(
+      'SELECT `JZR_ZJHM` FROM `HY_FACT_DDCX_NEW` WHERE `DDBH` = ? LIMIT 1', [orderNo]
+    )
+    return rows[0] ? { documentNo: String(rows[0].JZR_ZJHM ?? '').trim() } : null
+  } finally { connection.release() }
+}
+
+/** 只在远程值与识别前读取的值完全一致时更新，保护并发人工修改。 */
+export async function updateRemoteOrderIdentity(orderNo: string, sourceOrderNo: string, expected: { name: string; documentType: string; documentNo: string }, documentNo: string): Promise<boolean> {
+  const connection = await mysqlWriterPool().getConnection()
+  try {
+    const [result] = await connection.execute<import('mysql2').ResultSetHeader>(
+      'UPDATE `HY_FACT_DDCX_NEW` SET `JZR_ZJHM` = ? WHERE `DDBH` = ? AND `BDQD_DDBH` = ? AND BINARY COALESCE(`JZR_ZJHM`, \'\') = BINARY ? AND BINARY COALESCE(`JZR_XM`, \'\') = BINARY ? AND BINARY COALESCE(`JZR_ZJLX`, \'\') = BINARY ?',
+      [documentNo, orderNo, sourceOrderNo, expected.documentNo, expected.name, expected.documentType]
+    )
+    return result.affectedRows === 1
+  } finally { connection.release() }
 }
 
 export interface HuanyuMysqlPushOptions {

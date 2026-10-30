@@ -149,7 +149,10 @@ const CREATE_STATEMENTS = [
   // 一个 B 端订单可以对应多次寰宇服务；运营步骤必须按具体寰宇服务单隔离。
   `ALTER TABLE b_order_operations ADD COLUMN IF NOT EXISTS huanyu_order_no VARCHAR(64);`,
   `UPDATE b_order_operations op SET huanyu_order_no = o.huanyu_order_no FROM orders o
-     WHERE op.order_id = o.id AND op.huanyu_order_no IS NULL AND o.huanyu_order_no IS NOT NULL;`,
+     WHERE op.order_id = o.id AND op.huanyu_order_no IS NULL AND o.huanyu_order_no IS NOT NULL
+       AND op.id = (SELECT MIN(candidate.id) FROM b_order_operations candidate WHERE candidate.order_id = op.order_id AND candidate.huanyu_order_no IS NULL)
+       AND NOT EXISTS (SELECT 1 FROM b_order_operations existing
+         WHERE existing.order_id = op.order_id AND existing.huanyu_order_no = o.huanyu_order_no);`,
   `ALTER TABLE b_order_operations DROP CONSTRAINT IF EXISTS b_order_operations_order_key;`,
   `DO $$ BEGIN
      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'b_order_operations_order_huanyu_key') THEN
