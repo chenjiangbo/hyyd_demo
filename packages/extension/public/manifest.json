@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "寰宇医道 - 浏览器探针",
-  "version": "1.2.22",
+  "version": "1.2.23",
   "description": "连接泰康与寰宇订单页面到寰宇医道中枢",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx+eRKwwiXRozhlnfB8hHD80wvPiTRQDkCBYwWY9nmSgzrflZHwK5fgcx4aX8fAC+UbghYJhUH8u0p5esr0eV5FZuP6YGoW2eKLLBRDbRxyjas61M6y/w8ttHkp3ckk7lAEuenfziOuYC54c/UInKU4jNg0gj42E4GD/AOPe0fWyj9W0NPHk1KcKuCgsItDsoTHS6x1io/JNybriuiu66yawh2ggp4c0gj2cliVHxhrJfSoAgcYnE6wka9CrDmyVe5I9i8u2OXp2KiFfe/S36cSjbgLPlVYYDq2jPZESQb6jSo5YTgN0XiLw+5cZgQDMgziqAvE1iVQIdvtXkCy3sPQIDAQAB",
   "update_url": "http://47.93.40.50:9093/ext/update.xml",
@@ -17,7 +17,8 @@
     "tabs",
     "webRequest",
     "alarms",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "scripting"
   ],
   "background": {
     "service_worker": "background.global.js",
@@ -25,36 +26,35 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://ccm.taikang.com/*"],
-      "js": ["formRecorderPage.global.js"],
+      "matches": [
+        "*://ccm.taikang.com/*"
+      ],
+      "js": [
+        "formRecorderPage.global.js"
+      ],
       "run_at": "document_start",
       "world": "MAIN",
       "all_frames": false
     },
     {
-      "matches": ["*://ccm.taikang.com/*"],
-      "js": ["content.global.js"],
+      "matches": [
+        "*://ccm.taikang.com/*"
+      ],
+      "js": [
+        "content.global.js"
+      ],
       "run_at": "document_end",
       "all_frames": false
-    },
-    {
-      "matches": ["*://*.51zsyl.com/*"],
-      "js": ["hyhomeCalculation.global.js"],
-      "run_at": "document_start",
-      "world": "MAIN",
-      "all_frames": true
-    },
-    {
-      "matches": ["*://*.51zsyl.com/*"],
-      "js": ["hyhomeDetector.global.js"],
-      "run_at": "document_end",
-      "all_frames": true
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["pageProbe.global.js"],
-      "matches": ["*://ccm.taikang.com/*"]
+      "resources": [
+        "pageProbe.global.js"
+      ],
+      "matches": [
+        "*://ccm.taikang.com/*"
+      ]
     }
   ],
   "action": {

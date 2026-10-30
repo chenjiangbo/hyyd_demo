@@ -49,6 +49,7 @@ import {
   pullHuanyuOrderFromMysqlByChannelOrderNo,
   pushHuanyuOrderToMysql,
   huanyuOrderExistsOnMysql,
+  readRemoteOrderDocumentNo,
   updateHuanyuOrderDirectlyOnMysql,
   refreshRegistrationAssistFieldsFromMysql,
   REGISTRATION_ASSIST_REMOTE_AUTHORITATIVE_COLUMNS
@@ -4146,7 +4147,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       WHERE huanyu_order_no = ${orderNo}
         AND status = 'pending'
         AND candidate_type IN ('new_or_confirmed', 'change_candidate')
-        AND field_code IN ('document_no', 'order_status', 'hospital', 'hospital_address', 'department', 'doctor',
+        AND field_code IN ('order_status', 'hospital', 'hospital_address', 'department', 'doctor',
           'request_time', 'response_time', 'service_start_time', 'appointment_success_time', 'latest_ticket_time',
           'escort_service_date', 'escort_name', 'escort_phone', 'escort_records')
       ORDER BY field_code, created_at DESC, id DESC
@@ -4184,7 +4185,17 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     delete fields.escort_service_date
     delete fields.escort_name
     delete fields.escort_phone
-    return reply.send({ data: { orderNo, fields, escortRecords } })
+    let documentNo = ''
+    let documentNoStatus: 'ok' | 'not_found' | 'unavailable' = 'ok'
+    try {
+      const remote = await readRemoteOrderDocumentNo(orderNo)
+      if (remote) documentNo = remote.documentNo
+      else documentNoStatus = 'not_found'
+    } catch (error) {
+      documentNoStatus = 'unavailable'
+      fastify.log.warn({ orderNo, error: error instanceof Error ? error.name : 'Error' }, '读取远程订单证件号失败')
+    }
+    return reply.send({ data: { orderNo, fields, escortRecords, documentNo, documentNoStatus } })
   })
 
   // 浮动精灵一键填单：维表检查/确认沿用客户端规则，但订单只直接写远端 MySQL，不落本地快照。
@@ -4227,7 +4238,15 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       }
       const masterDetails = body.masterDetails && typeof body.masterDetails === 'object' && !Array.isArray(body.masterDetails)
         ? body.masterDetails as Record<string, Record<string, string>> : {}
-      const resolved: MasterSaveResolution = await commitHuanyuMasterSave(masterInput, confirmedCreations ?? [], masterDetails)
+      let confirmed = confirmedCreations ?? []
+      if (body.addressChanged === true && confirmedCreations) {
+        const withoutAddress = (items: MasterSaveCreation[]) => items.filter((item) => item.type !== 'address')
+        if (JSON.stringify(withoutAddress(preview.creations)) !== JSON.stringify(withoutAddress(confirmedCreations))) {
+          return reply.status(409).send({ ok: false, error: '建档信息已变化，请返回重新核对' })
+        }
+        confirmed = preview.creations
+      }
+      const resolved: MasterSaveResolution = await commitHuanyuMasterSave(masterInput, confirmed, masterDetails)
       needResetMasterData = resolved.creations.length > 0
       const storageTime = (value: unknown): string | null => {
         const raw = cleanText(value)

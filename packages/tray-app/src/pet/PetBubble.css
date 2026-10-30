@@ -192,7 +192,9 @@
 .pet-bubble__master-card--escort .pet-bubble__master-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .pet-bubble__master-field { display: grid; min-width: 0; gap: 3px; color: #756359; font-size: 12px; }
 .pet-bubble__master-address { grid-column: 1 / -1; display: grid; gap: 3px; padding-top: 6px; border-top: 1px solid #f0e1d7; font-size: 12px; }
-.pet-bubble__master-address span:last-child { padding: 6px 8px; border: 1px solid #eadbd1; border-radius: 6px; background: #f8f4f0; }
+.pet-bubble__master-address > span:nth-child(even) { padding: 6px 8px; border: 1px solid #eadbd1; border-radius: 6px; background: #f8f4f0; }
+.pet-bubble__master-address a, .pet-bubble__master-address button { color: #a34b31; font: inherit; }
+.pet-bubble__master-address button { padding: 0; border: 0; background: none; cursor: pointer; text-decoration: underline; }
 @media (max-width: 620px) { .pet-bubble__master-card { grid-template-columns: 1fr; gap: 8px; } .pet-bubble__master-identity { border-right: 0; border-bottom: 1px solid #f0e1d7; padding: 0 0 6px; } .pet-bubble__master-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .pet-bubble__remove-record,
 .pet-bubble__add-record { border: 0; color: #a34b31; background: transparent; cursor: pointer; font: inherit; }
@@ -225,3 +227,43 @@
   .pet-bubble__progress span { transition: none; }
   .pet-bubble--form { animation: none; }
 }
+
+/* 订单核对：用分隔线建立层级，保留可滚动表单和固定操作区。 */
+.pet-bubble--order-ai { width: 390px; padding: 12px 16px 10px; }
+.pet-bubble--order-ai .pet-bubble__description { margin: 0 0 5px; color: #93766a; line-height: 1.35; }
+.pet-bubble--order-ai .pet-bubble__form-body { padding-right: 3px; }
+.pet-bubble--order-ai .pet-bubble__form-section { min-width: 0; margin: 0; padding: 3px 0 5px; border: 0; border-radius: 0; border-bottom: 1px solid #f1e2d9; }
+.pet-bubble--order-ai .pet-bubble__form-section legend { padding: 0 8px 0 0; color: #75402e; font-size: 13px; font-weight: 700; }
+.pet-bubble--order-ai .pet-bubble__form-section .pet-bubble__fields { gap: 2px; }
+.pet-bubble--order-ai .pet-bubble__field { grid-template-columns: 88px minmax(0, 1fr); gap: 6px; color: #80675b; }
+.pet-bubble--order-ai .pet-bubble__field input, .pet-bubble--order-ai .pet-bubble__select-trigger { min-height: 26px; border-color: #eadbd1; background: #fff; }
+.pet-bubble--order-ai .pet-bubble__field input[readonly] { background: #f8f4f0; }
+.pet-bubble--order-ai .pet-bubble__field--empty input:not([readonly]), .pet-bubble--order-ai .pet-bubble__field--empty .pet-bubble__select-trigger { border-color: #eac8b3; background: #fffbf7; }
+.pet-bubble--order-ai .pet-bubble__escort-card { padding: 3px 6px; border: 1px solid #f0e2d9; border-radius: 8px; background: #fffdfa; }
+.pet-bubble--order-ai .pet-bubble__escort-card > header { padding: 0 0 1px; color: #8b5140; }
+.pet-bubble--order-ai .pet-bubble__add-record { margin-top: 4px; font-weight: 600; }
+.pet-bubble--order-ai .pet-bubble__actions { justify-content: flex-end; margin-top: 6px; }
+.pet-bubble--order-ai .pet-bubble__action--primary { min-width: 100px; font-size: 13px; font-weight: 600; }
+
+.pet-bubble__datetime-input { position: relative; flex: 1 1 0; min-width: 0; }
+.pet-bubble__datetime-input input { width: 100%; padding-right: 30px; cursor: text; }
+.pet-bubble__input-with-copy .pet-bubble__calendar-icon { position: absolute; right: 3px; top: 50%; transform: translateY(-50%); width: 25px; height: 24px; padding: 0; border: 0; background: transparent; color: #9b6b58; font-size: 15px; cursor: pointer; }
+.pet-bubble__search-select:has(.pet-bubble__lookup-chevron) input { padding-right: 25px; }
+.pet-bubble__lookup-chevron { position: absolute; right: 10px; top: 50%; width: 6px; height: 6px; border-right: 1.5px solid #916959; border-bottom: 1.5px solid #916959; transform: translateY(-70%) rotate(45deg); pointer-events: none; }
+
+/* 建档核对与订单填单共用紧凑的分组和控件风格。 */
+.pet-bubble--master-review { padding: 12px 16px 10px; }
+.pet-bubble--master-review .pet-bubble__master-review { padding-right: 3px; overscroll-behavior: contain; }
+.pet-bubble--master-review .pet-bubble__master-review h2 { margin: 0 0 5px; color: #75402e; font-size: 13px; font-weight: 700; }
+.pet-bubble--master-review .pet-bubble__master-review-list { gap: 0; }
+.pet-bubble--master-review .pet-bubble__master-card { padding: 9px 0; border: 0; border-bottom: 1px solid #f1e2d9; border-radius: 0; background: transparent; }
+.pet-bubble--master-review .pet-bubble__master-identity { border-color: #f1e2d9; }
+.pet-bubble--master-review .pet-bubble__master-identity strong { color: #75402e; font-size: 13px; }
+.pet-bubble--master-review .pet-bubble__master-field { color: #80675b; }
+.pet-bubble--master-review .pet-bubble__select-trigger { min-height: 26px; border-color: #eadbd1; background: #fff; }
+.pet-bubble--master-review .pet-bubble__master-field--empty .pet-bubble__select-trigger { border-color: #eac8b3; background: #fffbf7; }
+.pet-bubble--master-review .pet-bubble__master-address { border-color: #f1e2d9; color: #80675b; }
+.pet-bubble--master-review .pet-bubble__master-address > span:nth-child(even) { padding: 4px 7px; border-color: #eadbd1; border-radius: 7px; background: #f8f4f0; color: #542b21; }
+.pet-bubble--master-review .pet-bubble__actions { justify-content: flex-end; margin-top: 6px; }
+.pet-bubble--master-review .pet-bubble__action--primary { min-width: 100px; font-size: 13px; font-weight: 600; }
+.pet-bubble--master-review .pet-bubble__master-address button:disabled { opacity: .6; cursor: default; text-decoration: none; }

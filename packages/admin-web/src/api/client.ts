@@ -42,7 +42,7 @@ import type {
   OrderAiAutomationConfig
 } from './types'
 
-export type HyhomeOrderSite = { origin: string; listResourceId: string; detailResourceId: string }
+export type HyhomeOrderSite = { origin: string; origins: string[]; listResourceId: string; detailResourceId: string }
 
 export type {
   SmsConfig,

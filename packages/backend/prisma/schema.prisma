@@ -106,6 +106,8 @@ model Order {
   aiSummaries             AiSummary[]
   attachments             OrderAttachment[]
   idCardOcrAttempt         OrderIdCardOcrAttempt?
+  greenPassIdCardJob       GreenPassIdCardJob?
+  greenPassSyncRetry       GreenPassSyncRetry?
   materials               Material[]
   statusHistory           OrderStatusHistory[]
 
@@ -185,6 +187,23 @@ model OrderIdCardOcrAttempt {
   result      String   @default("pending") @db.VarChar(24)
 
   @@map("order_id_card_ocr_attempts")
+}
+
+model GreenPassIdCardJob {
+  orderId   Int      @id @map("order_id")
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status    String   @default("pending") @db.VarChar(24)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamp(6)
+
+  @@map("green_pass_id_card_jobs")
+}
+
+model GreenPassSyncRetry {
+  orderId   Int      @id @map("order_id")
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamp(6)
+
+  @@map("green_pass_sync_retries")
 }
 
 // 现场采集版的核心数据：员工从微信/企微复制粘贴进来的素材。

@@ -16,7 +16,7 @@ const TIME_FIELDS = [
 type Config = { backendUrl: string; employeeCode: string }
 type Active = { token: string; tabId: number; orderNo: string; formOrderNo: string | null | undefined; invalidated: boolean; suspended: boolean; lastSeenAt: number; refreshPending: boolean; needResetMasterData: boolean }
 type MasterReviewField = { id: string; label: string; value: string; options: Array<{ value: string; label: string; parent?: string }>; source?: { label: string; url: string } }
-type MasterReviewItem = { key: string; type: string; name: string; parent?: string; address?: string; fields: MasterReviewField[] }
+type MasterReviewItem = { key: string; type: string; name: string; parent?: string; address?: string; addressSuggestion?: { value: string }; fields: MasterReviewField[] }
 export type PetOrderAiPanel = {
   kind: 'progress' | 'error' | 'form'
   id: string
@@ -26,7 +26,7 @@ export type PetOrderAiPanel = {
   fields?: Array<{ id: string; label: string; type: 'text' | 'date' | 'datetime-local' | 'select'; value: string; placeholder: string; options?: Array<{ value: string; label: string }>; copyable?: boolean; readOnly?: boolean }>
   sections?: Array<{ id: string; title: string; fieldIds: string[]; repeatable?: boolean }>
   actions?: Array<{ id: string; label: string; tone?: 'primary' | 'secondary'; loading?: boolean }>
-  confirmation?: { title: string; creations: Array<{ key: string; type: string; name: string; parent?: string }>; review: MasterReviewItem[] }
+  confirmation?: { title: string; originalAddress?: string; creations: Array<{ key: string; type: string; name: string; parent?: string }>; review: MasterReviewItem[] }
   submitMessage?: string
   submitState?: 'idle' | 'submitting' | 'success' | 'error'
 }
@@ -36,6 +36,7 @@ export class PetOrderAiService {
   private config: Config | null = null
   private active: Active | null = null
   private currentPanel: PetOrderAiPanel | null = null
+  private masterDraft: Record<string, Record<string, string>> = {}
   private leaseTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(
@@ -177,7 +178,10 @@ export class PetOrderAiService {
     const active = this.active
     if (!active || panelId !== `order-ai:${active.token}` || this.currentPanel?.kind !== 'form') return
     if (actionId === 'cancel-master-create') {
-      this.currentPanel = { ...this.currentPanel, confirmation: undefined, submitMessage: undefined, submitState: 'idle',
+      for (const item of this.currentPanel.confirmation?.review ?? []) {
+        this.masterDraft[item.key] = Object.fromEntries(item.fields.map((field) => [field.id, typeof values[`master:${item.key}:${field.id}`] === 'string' ? values[`master:${item.key}:${field.id}`] as string : field.value]))
+      }
+      this.currentPanel = { ...this.currentPanel, fields: this.currentPanel.fields?.map((field) => typeof values[field.id] === 'string' ? { ...field, value: values[field.id] as string } : field), confirmation: undefined, submitMessage: undefined, submitState: 'idle',
         actions: [{ id: 'one-click-fill', label: '一键填单', tone: 'primary' }] }
       this.updatePanel(panelId, this.currentPanel)
       return
@@ -199,6 +203,7 @@ export class PetOrderAiService {
       this.updatePanel(panelId, this.currentPanel)
       return
     }
+    const addressChanged = actionId === 'confirm-master-create' && (fields.hospitalAddress ?? '') !== (this.currentPanel.confirmation?.originalAddress ?? '')
     // 陪诊行可在渲染界面增删，提交时同步完整行结构，后续状态更新不能丢掉新增行。
     const currentFields = this.currentPanel.fields ?? []
     const escortFields = escortIndexes.flatMap((index) => {
@@ -248,7 +253,7 @@ export class PetOrderAiService {
     try {
       const response = await fetch(`${config.backendUrl}/api/v1/pet/huanyu-order-update`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Employee-Code': config.employeeCode },
-        body: JSON.stringify({ orderNo: active.orderNo, fields: requestFields, confirmedMasterCreations, masterDetails }),
+        body: JSON.stringify({ orderNo: active.orderNo, fields: requestFields, confirmedMasterCreations, masterDetails, addressChanged }),
         signal: AbortSignal.timeout(40_000)
       })
       const payload = await response.json() as { ok?: boolean; requiresMasterDataConfirmation?: boolean; creations?: Array<{ key: string; type: string; name: string; parent?: string }>; review?: MasterReviewItem[]; error?: string; escortCount?: number; needResetMasterData?: boolean }
@@ -257,7 +262,15 @@ export class PetOrderAiService {
       if (payload.requiresMasterDataConfirmation && payload.creations?.length) {
         if (!payload.review || payload.review.length !== payload.creations.length) throw new Error('建档核对资料未完整返回，请稍后重试')
         this.currentPanel = { ...this.currentPanel, submitState: 'idle', submitMessage: undefined,
-          confirmation: { title: '核对建档信息', creations: payload.creations, review: payload.review ?? [] },
+          confirmation: { title: '核对建档信息', originalAddress: requestFields.hospitalAddress, creations: payload.creations, review: payload.review.map((item) => {
+            const draft = this.masterDraft[item.key] ?? {}
+            const fields = item.fields.map((field) => ({ ...field, value: field.options.some((option) => option.value === draft[field.id]) ? draft[field.id] : field.value }))
+            for (const field of fields) {
+              const parentId = field.id === 'city' ? 'province' : field.id === 'internalTwo' ? 'internalOne' : ''
+              if (parentId && field.value && !field.options.some((option) => option.value === field.value && option.parent === fields.find((parent) => parent.id === parentId)?.value)) field.value = ''
+            }
+            return { ...item, fields }
+          }) },
           actions: [{ id: 'cancel-master-create', label: '返回修改' }, { id: 'confirm-master-create', label: '确认创建并填单', tone: 'primary' }] }
       } else if (!response.ok || !payload.ok) {
         if (payload.needResetMasterData === true) {
@@ -269,7 +282,7 @@ export class PetOrderAiService {
         active.refreshPending = true
         this.currentPanel = { ...this.currentPanel, confirmation: undefined, submitState: 'success',
           submitMessage: '填单成功',
-          actions: [{ id: 'one-click-fill', label: '再次更新', tone: 'primary' }] }
+          actions: [{ id: 'one-click-fill', label: '一键填单', tone: 'primary' }] }
         const pendingPanel = this.currentPanel
         setTimeout(() => {
           if (this.active !== active || this.currentPanel !== pendingPanel) return
@@ -366,6 +379,7 @@ export class PetOrderAiService {
     if (this.active?.token !== token) return
     this.active = null
     this.currentPanel = null
+    this.masterDraft = {}
     this.hidePanel(`order-ai:${token}`)
   }
 
@@ -380,6 +394,8 @@ export class PetOrderAiService {
       const payload = await response.json() as {
         data?: {
           fields?: Record<string, string>
+          documentNo?: string
+          documentNoStatus?: 'ok' | 'not_found' | 'unavailable'
           escortRecords?: Array<{ serviceDate?: string; escortName?: string; escortPhone?: string }>
         }
         error?: string
@@ -408,7 +424,7 @@ export class PetOrderAiService {
       }
       const fields = [
         { id: 'orderNo', label: '订单号', type: 'text' as const, value: orderNo, placeholder: '', readOnly: true, copyable: true },
-        { id: 'documentNo', label: '证件号码', type: 'text' as const, value: values.document_no ?? '', placeholder: '暂无证件号码', readOnly: true, copyable: true },
+        { id: 'documentNo', label: '证件号码', type: 'text' as const, value: payload.data?.documentNo ?? '', placeholder: payload.data?.documentNoStatus === 'unavailable' ? '远程读取失败' : payload.data?.documentNoStatus === 'not_found' ? '远程订单不存在' : '暂无证件号码', readOnly: true, copyable: true },
         { id: 'orderStatus', label: '订单状态', type: 'select' as const, value: values.order_status ?? '', placeholder: '请选择订单状态', options: statusOptions.map((item) => ({ value: String(item.id ?? item.name ?? ''), label: String(item.name ?? item.id ?? '') })) },
         ...HOSPITAL_FIELDS.map(([id, label]) => ({
           id, label, type: 'text' as const, value: values[id === 'hospitalAddress' ? 'hospital_address' : id] ?? '', placeholder: `请输入${label}`
@@ -425,7 +441,7 @@ export class PetOrderAiService {
       ]
       const formPanel: PetOrderAiPanel = {
         kind: 'form', id, title: '',
-        description: '以下为 AI 分析结果，请核对无误后点击一键填单。',
+        description: '以下为订单的部分字段及 AI 建议值，核对或修改后可一键填单。',
         fields,
         sections: [
           { id: 'order-info', title: '订单信息', fieldIds: ['orderNo', 'documentNo', 'orderStatus'] },
