@@ -326,6 +326,8 @@ pub struct ConversationV1 {
     pub display_name: Option<String>,
     pub conversation_type: Option<String>,
     pub participant_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_unix_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

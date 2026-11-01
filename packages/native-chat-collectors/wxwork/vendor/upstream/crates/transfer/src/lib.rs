@@ -2119,6 +2119,7 @@ mod tests {
             "fixture",
             vec![batch],
             vec![ConversationV1 {
+                last_activity_unix_ms: None,
                 conversation_id: "fixture-conversation".into(),
                 display_name: Some("合成会话 <test>".into()),
                 conversation_type: None,
@@ -2251,6 +2252,7 @@ mod tests {
         older_message.sent_at = Utc::now() - chrono::Duration::days(1);
         export.batches[0].messages.push(older_message);
         export.conversations.push(ConversationV1 {
+                last_activity_unix_ms: None,
             conversation_id: "older-conversation".into(),
             display_name: Some("较早会话".into()),
             conversation_type: None,

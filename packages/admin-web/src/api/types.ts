@@ -81,6 +81,11 @@ export interface NativeChatAdminAttachment {
   byteSize: string | null
   state: string
   sourceMetadata: Record<string, unknown> | null
+  applicationNo: string | null
+  orderId: number | null
+  applicationLinkStatus: string
+  applicationLinkSource: string | null
+  applicationLinkEvidence: Record<string, unknown> | null
   availableInStorage: boolean
 }
 
@@ -96,6 +101,11 @@ export interface NativeChatAdminMessage {
   sourceTypeCode: string | null
   text: string | null
   sourceMetadata: Record<string, unknown> | null
+  applicationNo: string | null
+  orderId: number | null
+  applicationLinkStatus: string
+  applicationLinkSource: string | null
+  applicationLinkEvidence: Record<string, unknown> | null
   occurredAt: string
   observedAt: string
   attachments: NativeChatAdminAttachment[]

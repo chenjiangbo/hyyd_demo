@@ -15,10 +15,14 @@ async function readAttachment(prisma: PrismaClient, attachmentId: number, employ
     storage_key: string | null
     source_metadata: unknown
     application_no: string | null
+    order_id: number | null
     application_link_status: string
+    application_link_source: string | null
+    application_link_evidence: unknown
   }>>`
     SELECT a.id, c.employee_id, a.storage_key
-         , a.message_id, c.id AS conversation_id, a.source_metadata, c.application_no, c.application_link_status
+         , a.message_id, c.id AS conversation_id, a.source_metadata,
+           a.application_no, a.order_id, a.application_link_status, a.application_link_source, a.application_link_evidence
       FROM native_chat_attachments a
       JOIN native_chat_messages m ON m.id = a.message_id
       JOIN native_chat_conversations c ON c.id = m.conversation_id
@@ -90,11 +94,13 @@ export function registerNativeChatAttachmentRoutes(
       source_metadata: unknown
       occurred_at: Date
       application_no: string | null
+      order_id: number | null
+      application_link_status: string
       channel: string
       sender_name: string | null
     }>>`
       SELECT a.id, a.message_id, a.file_name, a.storage_key, a.source_metadata,
-             m.occurred_at, c.application_no, c.channel, m.sender_name
+             m.occurred_at, a.application_no, a.order_id, a.application_link_status, c.channel, m.sender_name
         FROM native_chat_attachments a
         JOIN native_chat_messages m ON m.id = a.message_id
         JOIN native_chat_conversations c ON c.id = m.conversation_id
@@ -129,6 +135,8 @@ export function registerNativeChatAttachmentRoutes(
         channel: row.channel,
         senderName: row.sender_name,
         applicationNo: row.application_no,
+        orderId: row.order_id,
+        applicationLinkStatus: row.application_link_status,
         description: typeof analysis.description === 'string' ? analysis.description : '',
         candidateApplications: Array.isArray(match.candidateApplications) ? match.candidateApplications : [],
         applicationDecision: match.applicationDecision,
@@ -167,35 +175,30 @@ export function registerNativeChatAttachmentRoutes(
     if (orderId !== null && !candidateOrders.some((candidate) => Number(candidate.orderId) === orderId)) {
       return reply.status(400).send({ error: '订单不属于所选申领号' })
     }
-    if (attachment.application_no && attachment.application_no !== applicationNo) {
-      return reply.status(409).send({ error: '图片所在会话已关联到另一个申领号' })
-    }
     await prisma.$transaction(async (tx) => {
-      if (!attachment.application_no) {
-        const changed = await tx.$executeRaw`
-          UPDATE native_chat_conversations
-             SET application_no = ${applicationNo}, application_link_status = 'matched', application_linked_at = NOW()
-           WHERE id = ${attachment.conversation_id} AND application_no IS NULL
-        `
-        if (changed !== 1) {
-          const latest = await tx.$queryRaw<Array<{ application_no: string | null }>>`
-            SELECT application_no FROM native_chat_conversations WHERE id = ${attachment.conversation_id}
-          `
-          if (latest[0]?.application_no !== applicationNo) {
-            throw new Error('会话申领号已被其他操作更新，请刷新后重新确认')
-          }
-        }
-      }
       const resolution = {
         status: 'manager_confirmed',
         applicationNo,
         orderId,
+        previous: {
+          applicationNo: attachment.application_no,
+          orderId: attachment.order_id,
+          status: attachment.application_link_status,
+          source: attachment.application_link_source,
+          evidence: attachment.application_link_evidence
+        },
         confirmedByEmployeeId: request.employee!.id,
         confirmedAt: new Date().toISOString()
       }
       await tx.$executeRaw`
         UPDATE native_chat_attachments
-           SET source_metadata = jsonb_set(
+           SET application_no = ${applicationNo},
+               order_id = ${orderId},
+               application_link_status = 'matched',
+               application_link_source = 'manager_confirmation',
+               application_link_evidence = ${JSON.stringify(resolution)}::jsonb,
+               application_linked_at = NOW(),
+               source_metadata = jsonb_set(
              COALESCE(source_metadata, '{}'::jsonb),
              '{imageAnalysis,registrationMatch,managerResolution}',
              ${JSON.stringify(resolution)}::jsonb,

@@ -773,6 +773,7 @@ fn export_bytes(body: &str, batch_id: Uuid, batch_hash: &str) -> Vec<u8> {
         "test-client",
         vec![batch],
         vec![ConversationV1 {
+                last_activity_unix_ms: None,
             conversation_id: "conversation-fixture".into(),
             display_name: Some("测试会话".into()),
             conversation_type: Some("direct".into()),

@@ -19,7 +19,7 @@ import { understandImage } from '../llm/imageUnderstandService.js'
 import { applyOrderWorkflowEvent } from '../workflow/serviceWorkflow.js'
 import { findHuanyuOrderNosOnMysqlByChannelOrderNo } from '../huanyuMysqlPush.js'
 import { parseShanghaiDateTime } from '../time/shanghaiTime.js'
-import { loadNativeChatAiBatch } from '../services/nativeChatAiAdapter.js'
+import { loadNativeChatAiBatch, loadNativeChatFieldAiBatch } from '../services/nativeChatAiAdapter.js'
 
 async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = []
@@ -296,7 +296,7 @@ async function loadBFormSavedValues(prisma: PrismaClient, orderId: number): Prom
 
 /**
  * 自动字段与服务步骤分析。它不生成也不更新旧版 AI 简报，且使用独立水位：
- * 同一批输入无论成功还是失败都只尝试一次；有新素材后才会再次入队。
+ * 失败保留未处理水位，同一批输入最多自动重试三次。
  */
 export async function analyzeOrderFields(
   prisma: PrismaClient,
@@ -327,19 +327,17 @@ export async function analyzeOrderFields(
     console.warn(`[order-ai-field] orderId=${orderId} 远端寰宇订单发现失败，使用本地已关联单号: ${describeError(error)}`)
   }
   const captureWhere = applicationNo ? { OR: [{ applicationNo }, { orderId }] } : { orderId }
-  const [msgs, calls, mats, nativeBatch] = await Promise.all([
-    prisma.message.findMany({ where: captureWhere, orderBy: { id: 'asc' } }),
+  const [calls, mats, nativeBatch] = await Promise.all([
     prisma.call.findMany({ where: captureWhere, orderBy: { id: 'asc' } }),
     prisma.material.findMany({ where: { orderId }, orderBy: { id: 'asc' } }),
-    loadNativeChatAiBatch(prisma, applicationNo)
+    loadNativeChatFieldAiBatch(prisma, applicationNo, orderId)
   ])
-  const maxMessageId = msgs.at(-1)?.id ?? lastMsgId
+  const maxMessageId = lastMsgId
   const maxCallId = calls.at(-1)?.id ?? lastCallId
   const maxMaterialId = mats.at(-1)?.id ?? lastMaterialId
   const hasNewContent =
     newlyDiscoveredHuanyuOrder ||
     (!!nativeBatch.latestChangedAt && (!lastNativeAt || nativeBatch.latestChangedAt > lastNativeAt)) ||
-    msgs.some((m) => m.id > lastMsgId && (m.contentText ?? '').trim().length > 0) ||
     calls.some((c) => c.id > lastCallId && ((c.asrText ?? '').trim().length > 0 || (c.durationSec ?? 0) > 0)) ||
     mats.some((m) => m.id > lastMaterialId && (m.type === 'image' || (m.textContent ?? '').trim().length > 0))
 
@@ -353,6 +351,20 @@ export async function analyzeOrderFields(
     return { skipped: true, reason: 'no_new_content', fieldExtractionSucceeded: false }
   }
 
+  const retrySourceKey = JSON.stringify([maxMessageId, maxCallId, maxMaterialId, nativeBatch.latestChangedAt?.toISOString() ?? null])
+  const retryRows = await prisma.$queryRaw<Array<{ source_key: string; failure_count: number; next_retry_at: Date | null }>>`
+    SELECT source_key, failure_count, next_retry_at FROM order_ai_retry_state WHERE order_id = ${orderId}
+  `
+  const retry = retryRows[0]
+  if (!options.force && retry?.source_key === retrySourceKey) {
+    if (retry.failure_count >= 4) return { skipped: true, reason: 'automatic_retries_exhausted', fieldExtractionSucceeded: false }
+    if (retry.next_retry_at && retry.next_retry_at.getTime() > Date.now()) {
+      return { skipped: true, reason: 'waiting_for_retry', fieldExtractionSucceeded: false }
+    }
+  }
+
+  let runId: bigint | null = null
+  try {
   for (const material of mats) {
     if (material.type === 'image') await ensureImageUnderstood(prisma, minio, material)
   }
@@ -385,9 +397,8 @@ export async function analyzeOrderFields(
     for (const orderNo of linked) huanyuOrders.push({ orderNo, serviceType: applicationOrder.service_type, bOrderNo: applicationOrder.source_order_no })
   }
   const bFormSaved = await loadBFormSavedValues(prisma, orderId)
-  const runId = await createRunningAnalysisRun(prisma, { orderId, applicationNo, maxMessageId, maxCallId, maxMaterialId })
+  runId = await createRunningAnalysisRun(prisma, { orderId, applicationNo, maxMessageId, maxCallId, maxMaterialId })
 
-  try {
     const extraction = await extractOrderServiceFields({
       orderId,
       applicationNo,
@@ -401,10 +412,6 @@ export async function analyzeOrderFields(
         bFormSaved
       },
       messages: [
-        ...msgs.map((m) => ({
-          id: m.id, channel: m.channel, senderName: m.senderName, contentText: m.contentText,
-          occurredAt: m.sortTime ?? m.chatTime ?? m.capturedAt
-        })),
         ...nativeBatch.messages.map((message) => ({
           id: -1_000_000_000 - message.id,
           sourceRef: message.sourceRef,
@@ -468,22 +475,34 @@ export async function analyzeOrderFields(
       }
     }
     console.log(`[order-ai-field] orderId=${orderId} runId=${runId} status=succeeded materialMaxId=${maxMaterialId} messageMaxId=${maxMessageId} callMaxId=${maxCallId} model=${extraction.model} candidates=${extraction.candidates.length} events=${extraction.workflowEvents.length}`)
+    await prisma.$transaction(async (tx) => {
+      await tx.order.update({
+        where: { id: orderId },
+        data: { fieldAiLastMsgId: maxMessageId, fieldAiLastCallId: maxCallId, fieldAiLastMaterialId: maxMaterialId, fieldAiLastNativeAt: nativeBatch.latestChangedAt ?? lastNativeAt }
+      })
+      await tx.$executeRaw`DELETE FROM order_ai_retry_state WHERE order_id = ${orderId}`
+    })
     return { skipped: false, model: extraction.model, fieldExtractionSucceeded: true }
   } catch (error) {
     const errorMessage = describeError(error)
     console.error(`[order-ai-field] orderId=${orderId} runId=${runId} status=failed materialMaxId=${maxMaterialId} messageMaxId=${maxMessageId} callMaxId=${maxCallId} model=${String(process.env.HYYD_LLM_MODEL ?? 'qwen-plus')} promptVersion=${ORDER_AI_FIELD_PROMPT_VERSION}\n${errorMessage}`)
     try {
-      await failRunningAnalysisRun(prisma, runId, errorMessage)
+      if (runId !== null) await failRunningAnalysisRun(prisma, runId, errorMessage)
     } catch (runError) {
       console.error(`[order-ai-field] orderId=${orderId} runId=${runId} 失败记录写入异常:\n${describeError(runError)}`)
     }
+    const failureCount = retry?.source_key === retrySourceKey ? retry.failure_count + 1 : 1
+    const delayMs = [30_000, 120_000, 300_000][failureCount - 1]
+    const nextRetryAt = delayMs === undefined ? null : new Date(Date.now() + delayMs)
+    await prisma.$executeRaw`
+      INSERT INTO order_ai_retry_state (order_id, source_key, failure_count, next_retry_at, last_error, updated_at)
+      VALUES (${orderId}, ${retrySourceKey}, ${failureCount}, ${nextRetryAt}, ${errorMessage.slice(0, 8000)}, NOW())
+      ON CONFLICT (order_id) DO UPDATE SET source_key = EXCLUDED.source_key,
+        failure_count = EXCLUDED.failure_count, next_retry_at = EXCLUDED.next_retry_at,
+        last_error = EXCLUDED.last_error, updated_at = NOW()
+    `
+    console.error(`[order-ai-field] orderId=${orderId} failures=${failureCount} nextRetry=${nextRetryAt?.toISOString() ?? 'exhausted'}`)
     return { skipped: false, fieldExtractionSucceeded: false }
-  } finally {
-    // 自动任务不重试：本批输入无论成功或失败均消费，新的消息/通话/补录才会触发下一次调用。
-    await prisma.order.update({
-      where: { id: orderId },
-      data: { fieldAiLastMsgId: maxMessageId, fieldAiLastCallId: maxCallId, fieldAiLastMaterialId: maxMaterialId, fieldAiLastNativeAt: nativeBatch.latestChangedAt ?? lastNativeAt }
-    })
   }
 }
 

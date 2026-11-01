@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use wecom_archive_desktop::collect_local_export_selected_with_cursors_and_pending_at_root;
+use wecom_archive_desktop::collect_local_export_selected_with_cursors_and_pending_at_root_with_progress;
 
 const PAGE_SIZE: usize = 200;
 const FULL_SCAN_INTERVAL: Duration = Duration::from_secs(120);
@@ -245,7 +245,42 @@ fn parse_ack_pending_media(command: &Value) -> Result<HashSet<i64>, String> {
 }
 
 fn read_export(include_media: bool, selected: &[String], source_root: &str, time_cutoffs: &HashMap<String, i64>, rowid_cutoffs: &HashMap<String, i64>, pending_media_rowids: &HashMap<String, Vec<i64>>) -> Result<Value, String> {
-    let export = collect_local_export_selected_with_cursors_and_pending_at_root(include_media, false, selected, source_root.to_owned(), time_cutoffs, rowid_cutoffs, pending_media_rowids)?;
+    let progress_state = std::sync::Arc::new(std::sync::Mutex::new((0u8, String::from("开始读取"), String::from("正在读取企微数据源。"))));
+    let callback_state = progress_state.clone();
+    let progress: wecom_archive_server::LocalCollectionProgressReporter = std::sync::Arc::new(move |percent, stage, detail| {
+        if let Ok(mut state) = callback_state.lock() {
+            *state = (percent, stage.to_owned(), detail.to_owned());
+        }
+        let _ = emit(&json!({
+            "event": "source_scan_progress",
+            "channel": "wxwork",
+            "stage": stage,
+            "percent": percent,
+            "detail": detail,
+        }));
+    });
+    let (stop_heartbeat, heartbeat_stop) = mpsc::channel();
+    let heartbeat_state = progress_state.clone();
+    let heartbeat_started = Instant::now();
+    let heartbeat = thread::spawn(move || loop {
+        if heartbeat_stop.recv_timeout(Duration::from_secs(10)).is_ok() { break; }
+        let state = heartbeat_state.lock().ok().map(|state| state.clone());
+        if let Some((percent, stage, detail)) = state {
+            let _ = emit(&json!({
+                "event": "source_scan_progress",
+                "channel": "wxwork",
+                "stage": "export_heartbeat",
+                "activePercent": percent,
+                "activeStage": stage,
+                "activeDetail": detail,
+                "elapsedMs": heartbeat_started.elapsed().as_millis(),
+            }));
+        }
+    });
+    let export_result = collect_local_export_selected_with_cursors_and_pending_at_root_with_progress(include_media, false, selected, source_root.to_owned(), time_cutoffs, rowid_cutoffs, pending_media_rowids, progress);
+    let _ = stop_heartbeat.send(());
+    let _ = heartbeat.join();
+    let export = export_result?;
     export.validate().map_err(|error| format!("source export validation failed: {error}"))?;
     serde_json::to_value(export).map_err(|error| format!("source export serialization failed: {error}"))
 }
@@ -455,10 +490,16 @@ fn normalized_messages(
         let member_names = conversation.get("participant_ids").and_then(Value::as_array).into_iter().flatten().filter_map(|id| {
             participant_names.get(id.as_str()?).cloned()
         }).collect::<Vec<_>>();
+        let last_activity = conversation.get("last_activity_unix_ms").and_then(Value::as_i64);
+        let activity_status = match last_activity {
+            Some(value) if value > 0 => "known",
+            Some(_) => "unknown",
+            None => "no_messages",
+        };
         conversations.insert(id.clone(), json!({
             "channel":"wxwork", "accountId":account_id, "sourceConversationId":id,
             "title":conversation.get("display_name"), "kind":kind,
-            "sourceMetadata":{"participantIds":conversation.get("participant_ids"),"participantNames":member_names,"accountDirectoryId":account_directory_id}
+            "sourceMetadata":{"participantIds":conversation.get("participant_ids"),"participantNames":member_names,"accountDirectoryId":account_directory_id,"activityStatus":activity_status,"lastTime":last_activity}
         }));
     }
     let mut messages_by_conversation = BTreeMap::<String, Vec<Value>>::new();

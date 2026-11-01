@@ -46,6 +46,9 @@ export function parseEscortDispatchTemplate(text: string | null | undefined): Es
 
   // 只认渠道订单号；「订单号」通常为 HYYD...，不能拿来匹配 source_order_no。
   let channelOrderNo = fields['渠道订单号'] || fields['渠道订单编号'] || ''
+  // Some clients flatten multiple labelled fields onto one line.
+  const nextField = channelOrderNo.search(/\s+[\p{L}\p{N}_]+\s*[：:]/u)
+  if (nextField >= 0) channelOrderNo = channelOrderNo.slice(0, nextField).trim()
   if (!channelOrderNo) {
     const m = text.match(/(?:渠道订单号|渠道订单编号)\s*[:：]\s*([a-zA-Z0-9]+)/i)
     if (m && m[1]) {

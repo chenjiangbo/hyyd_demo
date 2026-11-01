@@ -402,7 +402,7 @@ function proofFromNativeImage(image: NativeImageSummary): RegistrationProofField
   }
 }
 
-function parseNativeMatch(
+export function parseNativeMatch(
   content: string,
   applications: Set<string>,
   orderIdsByApplication: Map<string, Set<number>>,
@@ -421,7 +421,7 @@ function parseNativeMatch(
   const orderId = typeof parsed.orderId === 'number' && Number.isSafeInteger(parsed.orderId) ? parsed.orderId : null
   if (orderDecision === 'matched' && orderId === null) throw new Error('订单匹配 AI 判定订单 matched，但没有返回订单 ID')
   if (orderDecision !== 'matched' && orderId !== null) throw new Error('订单匹配 AI 未确定订单，却返回了订单 ID')
-  if ((applicationDecision !== 'matched' || knownApplicationNo !== null) && orderDecision === 'not_evaluated') {
+  if (applicationDecision !== 'matched' && orderDecision !== 'not_evaluated') {
     throw new Error('申领号尚未确定时，订单匹配结果必须为 not_evaluated')
   }
   if (orderId !== null && (!applicationNo || !orderIdsByApplication.get(applicationNo)?.has(orderId))) {
@@ -450,12 +450,12 @@ export async function matchNativeRegistrationProofToOrders(
   prisma: PrismaClient,
   imageDataUrl: string,
   image: NativeImageSummary,
-  options: { applicationNo: string | null; conversationId?: number }
+  options: { applicationNo: string | null }
 ): Promise<NativeRegistrationMatch> {
   const orders = await prisma.order.findMany({
     where: options.applicationNo
       ? { rawJson: { path: ['crmApplyNo'], equals: options.applicationNo } }
-      : undefined,
+      : { status: { not: '已完成' } },
     select: {
       id: true, sourceOrderNo: true, customerName: true, customerPhone: true,
       hospital: true, dept: true, doctor: true, status: true,
@@ -518,48 +518,22 @@ export async function matchNativeRegistrationProofToOrders(
     }
   }
 
-  const unlinkedConversation = options.conversationId && !options.applicationNo
-    ? await prisma.nativeChatMessage.findMany({
-        where: { conversationId: options.conversationId },
-        include: { conversation: { select: { channel: true } }, attachments: { orderBy: { id: 'asc' } } },
-        orderBy: [{ occurredAt: 'asc' }, { sourceItemIndex: 'asc' }, { id: 'asc' }]
-      })
-    : []
   const communications = await Promise.all(candidateApplicationNos.filter((appNo) => appRows.has(appNo)).map(async (appNo) => {
-    const [messages, calls] = await Promise.all([
-      prisma.message.findMany({
-        where: { applicationNo: appNo, channel: { in: ['wechat', 'wxwork'] } },
-        select: { id: true, senderName: true, senderType: true, kind: true, contentText: true, chatTime: true, sortTime: true, capturedAt: true },
-        orderBy: [{ sortTime: 'asc' }, { id: 'asc' }]
-      }),
+    const [calls, native] = await Promise.all([
       prisma.call.findMany({
         where: { applicationNo: appNo },
         select: { id: true, direction: true, startedAt: true, asrText: true },
         orderBy: [{ startedAt: 'asc' }, { id: 'asc' }]
+      }),
+      prisma.nativeChatMessage.findMany({
+        where: { applicationNo: appNo, applicationLinkStatus: 'matched' },
+        include: { conversation: { select: { channel: true } }, attachments: { orderBy: { id: 'asc' } } },
+        orderBy: [{ occurredAt: 'asc' }, { sourceItemIndex: 'asc' }, { id: 'asc' }]
       })
     ])
-    const native = await prisma.nativeChatMessage.findMany({
-      where: { conversation: { applicationNo: appNo, applicationLinkStatus: 'matched' } },
-      include: { conversation: { select: { channel: true } }, attachments: { orderBy: { id: 'asc' } } },
-      orderBy: [{ occurredAt: 'asc' }, { sourceItemIndex: 'asc' }, { id: 'asc' }]
-    })
     const rows = [
-      ...messages.map((m) => ({ time: m.sortTime ?? m.chatTime ?? m.capturedAt, source: '历史消息', sender: m.senderName ?? m.senderType, type: m.kind, content: m.contentText })),
       ...calls.filter((c) => c.asrText?.trim()).map((c) => ({ time: c.startedAt, source: '电话转写', sender: c.direction, type: '通话', content: c.asrText })),
       ...native.map((m) => ({
-        time: m.occurredAt,
-        source: m.conversation.channel,
-        sender: m.senderName ?? m.direction,
-        type: m.kind,
-        content: [m.text, ...m.attachments.map((attachment) => {
-          const metadata = record(attachment.sourceMetadata)
-          const analysis = record(metadata.imageAnalysis)
-          return analysis?.status === 'completed'
-            ? `图片：${String(analysis.imageType ?? '')}；${String(analysis.description ?? '')}；${String(analysis.visibleText ?? '')}`
-            : attachment.fileName ? `附件：${attachment.fileName}` : `附件：${attachment.kind}`
-        })].filter(Boolean).join('\n')
-      })),
-      ...unlinkedConversation.map((m) => ({
         time: m.occurredAt,
         source: m.conversation.channel,
         sender: m.senderName ?? m.direction,

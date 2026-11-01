@@ -137,3 +137,113 @@ export async function loadNativeChatAiBatch(
 
   return { messages, latestChangedAt }
 }
+
+/** Order-field AI reads only individually linked native messages and proof attachments. */
+export async function loadNativeChatFieldAiBatch(
+  prisma: PrismaClient,
+  applicationNo: string | null,
+  orderId: number
+): Promise<NativeChatAiBatch> {
+  const messageRows = await prisma.nativeChatMessage.findMany({
+    where: {
+      applicationLinkStatus: 'matched',
+      OR: [
+        ...(applicationNo ? [{ applicationNo, orderId: null }] : []),
+        { orderId }
+      ]
+    },
+    include: {
+      conversation: { select: { channel: true } },
+      attachments: { orderBy: { id: 'asc' } }
+    },
+    orderBy: [{ occurredAt: 'asc' }, { sourceItemIndex: 'asc' }, { id: 'asc' }]
+  })
+  const attachmentRows = await prisma.nativeChatAttachment.findMany({
+    where: {
+      applicationLinkStatus: 'matched',
+      kind: 'image',
+      OR: [
+        ...(applicationNo ? [{ applicationNo, orderId: null }] : []),
+        { orderId }
+      ],
+      sourceMetadata: { path: ['imageAnalysis', 'imageType'], equals: '挂号凭证' }
+    },
+    include: { message: { include: { conversation: { select: { channel: true } } } } },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }]
+  })
+
+  let latestChangedAt: Date | null = null
+  const messages: NativeChatAiMessage[] = []
+  const voucherAttachmentIds = new Set(attachmentRows.map((row) => row.id))
+  for (const row of messageRows) {
+    const changedAt = [row.observedAt, row.applicationLinkedAt, ...row.attachments.map((attachment) => attachment.updatedAt)]
+      .filter((value): value is Date => value !== null)
+      .reduce((latest, value) => value > latest ? value : latest, row.observedAt)
+    if (!latestChangedAt || changedAt > latestChangedAt) latestChangedAt = changedAt
+    const evidence = [row.text?.trim() || null]
+    for (const attachment of row.attachments) {
+      // A registration voucher is a separately linked business material. Never
+      // leak an unmatched voucher's OCR text into the containing message.
+      const metadata = metadataRecord(attachment.sourceMetadata)
+      const analysis = metadataRecord(metadata?.imageAnalysis)
+      if (attachment.kind === 'image' && analysis?.imageType === '挂号凭证') continue
+      if (voucherAttachmentIds.has(attachment.id)) continue
+      evidence.push(attachmentEvidence(attachment))
+    }
+    if (!evidence.some(Boolean)) evidence.push('（无文本或附件内容）')
+    messages.push({
+      id: row.id,
+      sourceRef: `原生消息#${row.id}`,
+      channel: row.conversation.channel,
+      senderName: row.senderName,
+      direction: row.direction,
+      messageKind: row.kind,
+      sourceTypeCode: row.sourceTypeCode,
+      sourceItemIndex: row.sourceItemIndex,
+      contentText: evidence.filter((value): value is string => Boolean(value)).join('\n'),
+      occurredAt: row.occurredAt,
+      changedAt
+    })
+  }
+
+  for (const attachment of attachmentRows) {
+    const changedAt = [attachment.updatedAt, attachment.applicationLinkedAt, attachment.message.observedAt]
+      .filter((value): value is Date => value !== null)
+      .reduce((latest, value) => value > latest ? value : latest, attachment.updatedAt)
+    if (!latestChangedAt || changedAt > latestChangedAt) latestChangedAt = changedAt
+    const analysis = metadataRecord(metadataRecord(attachment.sourceMetadata)?.imageAnalysis)
+    const fields = Array.isArray(analysis?.visibleFields)
+      ? analysis.visibleFields.map((value) => {
+        const field = metadataRecord(value)
+        return field && typeof field.label === 'string' && typeof field.value === 'string'
+          ? `${field.label}=${field.value}`
+          : null
+      }).filter((value): value is string => Boolean(value))
+      : []
+    const manager = metadataRecord(metadataRecord(analysis?.registrationMatch)?.managerResolution)
+    const contentText = [
+      '独立挂号凭证素材',
+      attachment.fileName ? `文件名=${attachment.fileName}` : null,
+      typeof analysis?.description === 'string' ? `图片描述=${analysis.description}` : null,
+      typeof analysis?.visibleText === 'string' ? `图片文字=${analysis.visibleText}` : null,
+      fields.length ? `识别字段=${fields.join('；')}` : null,
+      typeof manager?.applicationNo === 'string' ? `人工确认申领号=${manager.applicationNo}` : null,
+      typeof manager?.orderId === 'number' ? `人工确认订单=${manager.orderId}` : null
+    ].filter(Boolean).join('\n')
+    messages.push({
+      id: -2_000_000_000 - attachment.id,
+      sourceRef: `挂号凭证素材#${attachment.id}`,
+      channel: attachment.message.conversation.channel,
+      senderName: attachment.message.senderName,
+      direction: 'system',
+      messageKind: 'registration_proof',
+      sourceTypeCode: null,
+      sourceItemIndex: attachment.message.sourceItemIndex,
+      contentText,
+      occurredAt: attachment.message.occurredAt,
+      changedAt
+    })
+  }
+  messages.sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime() || a.id - b.id)
+  return { messages, latestChangedAt }
+}

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { Prisma, type PrismaClient } from '@prisma/client'
 import type { Client } from 'minio'
-import { getNativeChatWxgfPreviewUrl } from '../services/nativeChatWxgfPreview.js'
+import { getNativeChatWxgfPreviewUrl, removeNativeChatWxgfPreview } from '../services/nativeChatWxgfPreview.js'
 import {
   getNativeChatCollectionConfig,
   saveNativeChatCollectionConfig,
@@ -27,6 +27,11 @@ type AdminMessageRow = {
   source_metadata: Record<string, unknown> | null
   occurred_at: Date
   observed_at: Date
+  application_no: string | null
+  order_id: number | null
+  application_link_status: string
+  application_link_source: string | null
+  application_link_evidence: Record<string, unknown> | null
 }
 
 function encodeCursor(value: ConversationCursor | MessageCursor): string {
@@ -124,9 +129,6 @@ export function registerNativeChatCollectionAdminRoutes(
         FROM native_chat_conversations c
         JOIN employees e ON e.id = c.employee_id
        WHERE c.channel = ${channel}
-         AND EXISTS (
-         SELECT 1 FROM native_chat_messages m WHERE m.conversation_id = c.id
-       )
        ORDER BY e.name, c.employee_id, c.account_id
     `
     return reply.send({ data: accounts.map((account) => ({
@@ -134,6 +136,75 @@ export function registerNativeChatCollectionAdminRoutes(
       employeeName: account.employee_name,
       accountId: account.account_id
     })) })
+  })
+
+  fastify.post<{
+    Body: { channel?: unknown; employeeId?: unknown; accountId?: unknown }
+  }>('/api/v1/admin/native-chat-accounts/clear-messages', async (request, reply) => {
+    const { channel, employeeId, accountId } = request.body ?? {}
+    if (channel !== 'wechat' && channel !== 'wxwork') {
+      return reply.status(400).send({ error: '消息渠道无效' })
+    }
+    if (!Number.isSafeInteger(employeeId) || Number(employeeId) <= 0) {
+      return reply.status(400).send({ error: '员工选择无效' })
+    }
+    if (typeof accountId !== 'string' || !accountId.trim() || accountId.length > 200) {
+      return reply.status(400).send({ error: '采集账号无效' })
+    }
+
+    const scope = { channel, employeeId: Number(employeeId), accountId: accountId.trim() }
+    const [counts, storageRows] = await Promise.all([
+      prisma.$queryRaw<Array<{ attachment_count: bigint }>>`
+        SELECT COUNT(DISTINCT a.id)::bigint AS attachment_count
+          FROM native_chat_conversations c
+          LEFT JOIN native_chat_messages m ON m.conversation_id = c.id
+          LEFT JOIN native_chat_attachments a ON a.message_id = m.id
+         WHERE c.channel = ${scope.channel}
+           AND c.employee_id = ${scope.employeeId}
+           AND c.account_id = ${scope.accountId}
+      `,
+      prisma.$queryRaw<Array<{ id: number; storage_key: string; kind: string }>>`
+        SELECT a.id, a.storage_key, a.kind
+          FROM native_chat_attachments a
+          JOIN native_chat_messages m ON m.id = a.message_id
+          JOIN native_chat_conversations c ON c.id = m.conversation_id
+         WHERE c.channel = ${scope.channel}
+           AND c.employee_id = ${scope.employeeId}
+           AND c.account_id = ${scope.accountId}
+           AND a.storage_key IS NOT NULL
+      `
+    ])
+
+    const deletedMessages = await prisma.nativeChatMessage.deleteMany({
+      where: { conversation: { is: scope } }
+    })
+
+    let storageCleanupFailures = 0
+    for (let offset = 0; offset < storageRows.length; offset += 20) {
+      const batch = storageRows.slice(offset, offset + 20)
+      const results = await Promise.allSettled(batch.map(async (row) => {
+        await minioClient.removeObject(ATTACHMENT_BUCKET, row.storage_key)
+        if (row.kind === 'image') await removeNativeChatWxgfPreview(minioClient, row.id)
+      }))
+      storageCleanupFailures += results.filter((result) => result.status === 'rejected').length
+    }
+    if (storageCleanupFailures > 0) {
+      request.log.error({ ...scope, storageCleanupFailures }, 'Native chat account message records cleared, but some attachment objects could not be removed')
+    }
+
+    const count = counts[0]
+    request.log.info({
+      ...scope,
+      deletedMessages: deletedMessages.count,
+      deletedAttachments: safeCount(count?.attachment_count ?? 0n),
+      storageCleanupFailures
+    }, 'Native chat account messages cleared by admin')
+    return reply.send({ data: {
+      deletedMessages: deletedMessages.count,
+      deletedAttachments: safeCount(count?.attachment_count ?? 0n),
+      storageObjectsRemoved: storageRows.length - storageCleanupFailures,
+      storageCleanupFailures
+    } })
   })
 
   fastify.get<{
@@ -262,7 +333,8 @@ export function registerNativeChatCollectionAdminRoutes(
       prisma.$queryRaw<AdminMessageRow[]>`
         SELECT m.id, m.source_message_id, m.parent_source_message_id,
                m.source_item_index, m.direction, m.sender_id, m.sender_name,
-               m.kind, m.source_type_code, m.text, m.source_metadata, m.occurred_at, m.observed_at
+               m.kind, m.source_type_code, m.text, m.source_metadata, m.occurred_at, m.observed_at,
+               m.application_no, m.order_id, m.application_link_status, m.application_link_source, m.application_link_evidence
           FROM native_chat_messages m
          WHERE m.conversation_id = ${conversationId}
            AND (
@@ -283,7 +355,8 @@ export function registerNativeChatCollectionAdminRoutes(
       ? await prisma.$queryRaw<AdminMessageRow[]>`
           SELECT m.id, m.source_message_id, m.parent_source_message_id,
                  m.source_item_index, m.direction, m.sender_id, m.sender_name,
-                 m.kind, m.source_type_code, m.text, m.source_metadata, m.occurred_at, m.observed_at
+                 m.kind, m.source_type_code, m.text, m.source_metadata, m.occurred_at, m.observed_at,
+                 m.application_no, m.order_id, m.application_link_status, m.application_link_source, m.application_link_evidence
             FROM native_chat_messages m
            WHERE m.conversation_id = ${conversationId}
              AND m.parent_source_message_id IN (${Prisma.join(mergedParentIds)})
@@ -325,6 +398,11 @@ export function registerNativeChatCollectionAdminRoutes(
       sourceTypeCode: message.source_type_code,
       text: message.text,
       sourceMetadata: message.source_metadata,
+      applicationNo: message.application_no,
+      orderId: message.order_id,
+      applicationLinkStatus: message.application_link_status,
+      applicationLinkSource: message.application_link_source,
+      applicationLinkEvidence: message.application_link_evidence,
       occurredAt: message.occurred_at.toISOString(),
       observedAt: message.observed_at.toISOString(),
       attachments: (attachmentsByMessage.get(message.id) ?? []).map((attachment) => ({
@@ -335,6 +413,11 @@ export function registerNativeChatCollectionAdminRoutes(
         byteSize: attachment.byteSize?.toString() ?? null,
         state: attachment.state,
         sourceMetadata: attachment.sourceMetadata as Record<string, unknown> | null,
+        applicationNo: attachment.applicationNo,
+        orderId: attachment.orderId,
+        applicationLinkStatus: attachment.applicationLinkStatus,
+        applicationLinkSource: attachment.applicationLinkSource,
+        applicationLinkEvidence: attachment.applicationLinkEvidence as Record<string, unknown> | null,
         availableInStorage: attachment.state === 'available' && attachment.storageKey !== null
       }))
     })
@@ -364,6 +447,64 @@ export function registerNativeChatCollectionAdminRoutes(
         id: last.id
       }) : null
     } })
+  })
+
+  fastify.post<{
+    Params: { messageId: string }
+    Body: { applicationNo?: string; orderId?: number | null }
+  }>('/api/v1/admin/native-chat-messages/:messageId/resolve-business-link', async (request, reply) => {
+    const messageId = Number(request.params.messageId)
+    const applicationNo = typeof request.body?.applicationNo === 'string' ? request.body.applicationNo.trim() : ''
+    const orderId = request.body?.orderId == null ? null : Number(request.body.orderId)
+    if (!Number.isSafeInteger(messageId) || messageId <= 0 || !applicationNo) {
+      return reply.status(400).send({ error: '消息 ID 或申领号无效' })
+    }
+    if (orderId !== null && (!Number.isSafeInteger(orderId) || orderId <= 0)) {
+      return reply.status(400).send({ error: '订单 ID 无效' })
+    }
+    const message = await prisma.nativeChatMessage.findUnique({
+      where: { id: messageId },
+      select: { id: true, applicationNo: true, orderId: true, applicationLinkStatus: true, applicationLinkSource: true, applicationLinkEvidence: true }
+    })
+    if (!message) return reply.status(404).send({ error: '消息记录不存在' })
+    const matchingOrders = await prisma.$queryRaw<Array<{ id: number; application_no: string | null }>>`
+      SELECT id, raw_json->>'crmApplyNo' AS application_no
+        FROM orders
+       WHERE raw_json->>'crmApplyNo' = ${applicationNo}
+         ${orderId === null ? Prisma.empty : Prisma.sql`AND id = ${orderId}`}
+    `
+    if (orderId !== null && !matchingOrders.some((order) => order.id === orderId && order.application_no === applicationNo)) {
+      return reply.status(400).send({ error: '所选订单不属于该申领号' })
+    }
+    if (orderId === null && matchingOrders.length === 0) {
+      return reply.status(400).send({ error: '申领号未对应到系统订单' })
+    }
+    const evidence = {
+      status: 'manager_confirmed',
+      applicationNo,
+      orderId,
+      previous: {
+        applicationNo: message.applicationNo,
+        orderId: message.orderId,
+        status: message.applicationLinkStatus,
+        source: message.applicationLinkSource,
+        evidence: message.applicationLinkEvidence
+      },
+      confirmedAt: new Date().toISOString()
+    }
+    await prisma.nativeChatMessage.update({
+      where: { id: messageId },
+      data: {
+        applicationNo,
+        orderId,
+        applicationLinkStatus: 'matched',
+        applicationLinkSource: 'manager_confirmation',
+        applicationLinkEvidence: evidence,
+        applicationLinkedAt: new Date()
+      }
+    })
+    request.log.info({ event: 'native_chat_message_link_confirmed', messageId, applicationNo, orderId })
+    return reply.send({ data: { messageId, applicationNo, orderId, confirmed: true } })
   })
 
   fastify.get<{ Params: { attachmentId: string } }>(

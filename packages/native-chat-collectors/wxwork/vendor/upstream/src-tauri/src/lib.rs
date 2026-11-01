@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use archive_domain::{
     ArchiveBatchV1, ClientExportV1, CollectionScope, ConversationV1, EmployeeNoticeEvidence,
@@ -1125,6 +1125,28 @@ pub fn collect_local_export_selected_with_cursors_and_pending_at_root(
     conversation_rowid_cutoffs: &HashMap<String, i64>,
     pending_media_rowids: &HashMap<String, Vec<i64>>,
 ) -> Result<ClientExportV1, String> {
+    collect_local_export_selected_with_cursors_and_pending_at_root_with_progress(
+        include_media,
+        data_redaction,
+        selected_conversation_ids,
+        source_root,
+        conversation_cutoffs,
+        conversation_rowid_cutoffs,
+        pending_media_rowids,
+        Arc::new(|_, _, _| {}),
+    )
+}
+
+pub fn collect_local_export_selected_with_cursors_and_pending_at_root_with_progress(
+    include_media: bool,
+    data_redaction: bool,
+    selected_conversation_ids: &[String],
+    source_root: String,
+    conversation_cutoffs: &HashMap<String, i64>,
+    conversation_rowid_cutoffs: &HashMap<String, i64>,
+    pending_media_rowids: &HashMap<String, Vec<i64>>,
+    progress: wecom_archive_server::LocalCollectionProgressReporter,
+) -> Result<ClientExportV1, String> {
     if conversation_cutoffs.len() != selected_conversation_ids.len()
         || selected_conversation_ids.iter().any(|id| !conversation_cutoffs.contains_key(id))
         || conversation_rowid_cutoffs.len() != selected_conversation_ids.len()
@@ -1140,7 +1162,7 @@ pub fn collect_local_export_selected_with_cursors_and_pending_at_root(
         None,
         Some(selected_conversation_ids),
         Some(source_root),
-        std::sync::Arc::new(|_, _, _| {}),
+        progress,
         None,
         Some(conversation_cutoffs),
         Some(conversation_rowid_cutoffs),
@@ -2636,12 +2658,14 @@ fn build_message_query(
     ))
 }
 
-fn discover_message_conversation_ids(
+fn discover_message_conversation_activity(
     connection: &rusqlite::Connection,
     table: &str,
-) -> Result<std::collections::BTreeSet<String>, CommandError> {
+    time_column: &str,
+) -> Result<BTreeMap<String, i64>, CommandError> {
+    let time = quote_identifier(time_column);
     let query = format!(
-        "SELECT DISTINCT CAST({} AS TEXT) FROM {} WHERE {} IS NOT NULL AND trim(CAST({} AS TEXT)) <> '' ORDER BY 1",
+        "SELECT CAST({} AS TEXT), MAX(CASE WHEN CAST({time} AS INTEGER) > 0 THEN CAST({time} AS INTEGER) * CASE WHEN ABS(CAST({time} AS INTEGER)) < 100000000000 THEN 1000 WHEN ABS(CAST({time} AS INTEGER)) < 100000000000000 THEN 1 WHEN ABS(CAST({time} AS INTEGER)) < 100000000000000000 THEN 0.001 ELSE 0.000001 END ELSE NULL END), SUM(CASE WHEN {time} IS NULL OR CAST({time} AS INTEGER) <= 0 THEN 1 ELSE 0 END) FROM {} WHERE {} IS NOT NULL AND trim(CAST({} AS TEXT)) <> '' GROUP BY 1 ORDER BY 1",
         quote_identifier("conversation_id"),
         quote_identifier(table),
         quote_identifier("conversation_id"),
@@ -2654,16 +2678,19 @@ fn discover_message_conversation_ids(
         ))
     })?;
     let rows = statement
-        .query_map([], |row| Ok(sqlite_value_to_string(row.get_ref(0)?)))
+        .query_map([], |row| Ok((sqlite_value_to_string(row.get_ref(0)?), sqlite_value_to_i64(row.get_ref(1)?), row.get::<_, i64>(2)?)))
         .map_err(|_| {
             unsupported_source_schema_detail(format!(
                 "无法遍历 {table} 中的会话索引。{}",
                 source_schema_summary(connection)
             ))
         })?;
-    let mut conversation_ids = std::collections::BTreeSet::new();
+    let recent_cutoff_ms = SystemTime::now().duration_since(UNIX_EPOCH)
+        .map_err(|_| unsupported_source_schema_detail("系统时间早于 1970 年，无法判断会话最近消息时间。"))?
+        .as_millis().saturating_sub(30 * 24 * 60 * 60 * 1000) as i64;
+    let mut activity = BTreeMap::new();
     for row in rows {
-        let conversation_id = row.map_err(|_| {
+        let (conversation_id, last_time, invalid_count) = row.map_err(|_| {
             unsupported_source_schema_detail(format!(
                 "{table} 中的会话 ID 字段无法读取。{}",
                 source_schema_summary(connection)
@@ -2671,10 +2698,14 @@ fn discover_message_conversation_ids(
         })?;
         let conversation_id = conversation_id.trim();
         if !conversation_id.is_empty() {
-            conversation_ids.insert(conversation_id.to_owned());
+            // A valid recent message proves the conversation is active even when
+            // an unrelated old row has no usable time. Older/empty data remains
+            // unknown when invalid rows prevent establishing the true latest time.
+            let latest = last_time.unwrap_or(-1);
+            activity.insert(conversation_id.to_owned(), if invalid_count > 0 && latest < recent_cutoff_ms { -1 } else { latest });
         }
     }
-    Ok(conversation_ids)
+    Ok(activity)
 }
 
 fn read_snapshot_export_with_options(
@@ -2763,10 +2794,15 @@ fn read_snapshot_export_with_options(
             ))
         })?
         != 0;
-    let mut indexed_conversation_ids = std::collections::BTreeSet::new();
+    let mut indexed_conversation_activity = BTreeMap::<String, i64>::new();
+    let mut source_rows_processed = 0usize;
+    let mut last_source_progress = Instant::now();
     if has_normalized {
         if selected_conversation_ids.is_some() {
-            indexed_conversation_ids = discover_message_conversation_ids(&connection, "messages")?;
+            let activity_started = Instant::now();
+            report_collection_progress(progress, 60, "统计会话最近消息", "正在读取每个会话的最近消息时间。 ");
+            indexed_conversation_activity = discover_message_conversation_activity(&connection, "messages", "sent_at_unix_ms")?;
+            report_collection_progress(progress, 60, "会话最近消息统计完成", &format!("已检查 {} 个有本地消息的会话，耗时 {} 毫秒。", indexed_conversation_activity.len(), activity_started.elapsed().as_millis()));
         }
         if conversation_rowid_cutoffs.is_some() {
             return Err(unsupported_source_schema_detail(
@@ -2829,6 +2865,7 @@ fn read_snapshot_export_with_options(
                     "标准消息表的 payload_json 不是有效 JSON（{error}）"
                 ))
             })?;
+            let progress_conversation_id = conversation_id.clone();
             let mut message = normalize(
                 RawMessageRow {
                     source_instance_id: candidate.source_id.clone(),
@@ -2850,6 +2887,15 @@ fn read_snapshot_export_with_options(
             })?;
             ensure_media_reference(&mut message);
             ensure_merged_forward_media_refs(&mut message);
+            let media_reference_count = message.media.len();
+            if media_reference_count > 0 {
+                report_collection_progress(
+                    progress,
+                    66,
+                    "解析附件",
+                    &format!("正在解析会话 ID {progress_conversation_id} 的消息 {}，附件引用数 {media_reference_count}。", message.source_message_id),
+                );
+            }
             let resolved_blobs = resolve_media_metadata_with_local_paths(
                 candidate,
                 &media_resolver,
@@ -2859,8 +2905,26 @@ fn read_snapshot_export_with_options(
                 &[],
             )?;
             update_merged_forward_media_payload(&mut message);
+            if media_reference_count > 0 {
+                report_collection_progress(
+                    progress,
+                    66,
+                    "解析附件",
+                    &format!("已完成会话 ID {progress_conversation_id} 的消息附件解析。"),
+                );
+            }
             media_blobs.extend(resolved_blobs);
             messages.push(message);
+            source_rows_processed += 1;
+            if source_rows_processed % 500 == 0 || last_source_progress.elapsed() >= Duration::from_secs(10) {
+                report_collection_progress(
+                    progress,
+                    66,
+                    "解析消息",
+                    &format!("已读取并处理 {source_rows_processed} 条源消息，当前会话 ID：{progress_conversation_id}。"),
+                );
+                last_source_progress = Instant::now();
+            }
         }
     } else {
         let has_wecom = connection
@@ -2883,7 +2947,10 @@ fn read_snapshot_export_with_options(
             )));
         }
         if selected_conversation_ids.is_some() {
-            indexed_conversation_ids = discover_message_conversation_ids(&connection, "message_table")?;
+            let activity_started = Instant::now();
+            report_collection_progress(progress, 60, "统计会话最近消息", "正在读取每个会话的最近消息时间。 ");
+            indexed_conversation_activity = discover_message_conversation_activity(&connection, "message_table", "send_time")?;
+            report_collection_progress(progress, 60, "会话最近消息统计完成", &format!("已检查 {} 个有本地消息的会话，耗时 {} 毫秒。", indexed_conversation_activity.len(), activity_started.elapsed().as_millis()));
         }
         let source_cutoff = if let Some(cutoff) = since_unix_ms {
             let sample = connection
@@ -3012,6 +3079,7 @@ fn read_snapshot_export_with_options(
                     continue;
                 }
             }
+            let progress_conversation_id = conversation_id.clone();
             let mut payload = readable_message_payload(&raw_type, &content);
             if matches!(raw_type.trim(), "4" | "14" | "20" | "29" | "101" | "102") {
                 if !payload.is_object() { payload = serde_json::json!({}); }
@@ -3043,6 +3111,15 @@ fn read_snapshot_export_with_options(
             })?;
             ensure_media_reference(&mut message);
             ensure_merged_forward_media_refs(&mut message);
+            let media_reference_count = message.media.len();
+            if media_reference_count > 0 {
+                report_collection_progress(
+                    progress,
+                    66,
+                    "解析附件",
+                    &format!("正在解析会话 ID {progress_conversation_id} 的消息 {}，附件引用数 {media_reference_count}。", message.source_message_id),
+                );
+            }
             let resolved_blobs = resolve_media_metadata_with_local_paths(
                 candidate,
                 &media_resolver,
@@ -3052,8 +3129,26 @@ fn read_snapshot_export_with_options(
                 &local_paths,
             )?;
             update_merged_forward_media_payload(&mut message);
+            if media_reference_count > 0 {
+                report_collection_progress(
+                    progress,
+                    66,
+                    "解析附件",
+                    &format!("已完成会话 ID {progress_conversation_id} 的消息附件解析。"),
+                );
+            }
             media_blobs.extend(resolved_blobs);
             messages.push(message);
+            source_rows_processed += 1;
+            if source_rows_processed % 500 == 0 || last_source_progress.elapsed() >= Duration::from_secs(10) {
+                report_collection_progress(
+                    progress,
+                    66,
+                    "解析消息",
+                    &format!("已读取并处理 {source_rows_processed} 条源消息，当前会话 ID：{progress_conversation_id}。"),
+                );
+                last_source_progress = Instant::now();
+            }
         }
     }
 
@@ -3183,8 +3278,8 @@ fn read_snapshot_export_with_options(
     // the message table so chats missing a session metadata row can still be
     // matched against the server's title rules. Message bodies, senders, and
     // media remain behind the selected-conversation filter above.
-    for conversation_id in indexed_conversation_ids {
-        conversation_participants.entry(conversation_id).or_default();
+    for conversation_id in indexed_conversation_activity.keys() {
+        conversation_participants.entry(conversation_id.clone()).or_default();
     }
     // Conversation metadata is independent from the selected message rows.
     // Keep the full directory available even when the SQL message query is
@@ -3280,6 +3375,7 @@ fn read_snapshot_export_with_options(
                 metadata_name()
             };
             ConversationV1 {
+                last_activity_unix_ms: indexed_conversation_activity.get(&conversation_id).copied(),
                 conversation_id,
                 display_name,
                 conversation_type: Some(conversation_type.into()),
@@ -6121,6 +6217,23 @@ impl From<&SourceCandidate> for SafeSourceCandidate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_activity_finds_latest_message_and_reports_invalid_time() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE message_table (conversation_id TEXT, send_time INTEGER);\
+            INSERT INTO message_table VALUES ('old', 1700000000), ('recent', 1790000000),\
+            ('recent', 1790000001000), ('unknown', NULL);").unwrap();
+        let activity = discover_message_conversation_activity(&connection, "message_table", "send_time").unwrap();
+        assert_eq!(activity.get("old"), Some(&1_700_000_000_000));
+        assert_eq!(activity.get("recent"), Some(&1_790_000_001_000));
+        assert_eq!(activity.get("unknown"), Some(&-1));
+        assert!(!activity.contains_key("no-messages"));
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        connection.execute("INSERT INTO message_table VALUES ('recent-with-invalid', ?1), ('recent-with-invalid', NULL)", [now]).unwrap();
+        let activity = discover_message_conversation_activity(&connection, "message_table", "send_time").unwrap();
+        assert_eq!(activity.get("recent-with-invalid"), Some(&(now * 1000)));
+    }
 
     #[test]
     fn expired_schedule_waits_for_config_refresh_without_accessing_sources() {

@@ -1,4 +1,4 @@
-import type { PrismaClient } from '@prisma/client'
+import { Prisma, type PrismaClient } from '@prisma/client'
 import type * as Minio from 'minio'
 import { matchNativeRegistrationProofToOrders } from './registrationProofService.js'
 import { understandImage } from './imageUnderstanding.js'
@@ -99,11 +99,18 @@ async function getAttachment(prisma: PrismaClient, id: number) {
     state: string
     source_metadata: unknown
     application_no: string | null
+    order_id: number | null
     application_link_status: string
+    application_link_source: string | null
+    message_application_no: string | null
+    message_order_id: number | null
+    message_application_link_status: string
     employee_id: number
   }>>`
     SELECT a.id, a.message_id, m.conversation_id, a.kind, a.mime_type, a.storage_key, a.state, a.source_metadata,
-           c.application_no, c.application_link_status, c.employee_id
+           a.application_no, a.order_id, a.application_link_status, a.application_link_source,
+           m.application_no AS message_application_no, m.order_id AS message_order_id,
+           m.application_link_status AS message_application_link_status, c.employee_id
       FROM native_chat_attachments a
       JOIN native_chat_messages m ON m.id = a.message_id
       JOIN native_chat_conversations c ON c.id = m.conversation_id
@@ -178,8 +185,9 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
         dataUrl = imageDataUrl(attachment.mime_type, await streamToBuffer(stream))
       }
       const matching = await matchNativeRegistrationProofToOrders(prisma, dataUrl, analysis as unknown as NativeChatImageAnalysis, {
-        applicationNo: attachment.application_link_status === 'matched' ? attachment.application_no : null,
-        conversationId: attachment.conversation_id,
+        applicationNo: attachment.application_link_status === 'matched'
+          ? attachment.application_no
+          : attachment.message_application_link_status === 'matched' ? attachment.message_application_no : null,
       })
       const latest = await getAttachment(prisma, id)
       const latestMetadata = asRecord(latest?.source_metadata) ?? {}
@@ -187,22 +195,67 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
         console.info(`[native-chat:image] 附件 ${id} 在订单匹配期间被更新，丢弃旧图片的匹配结果`)
         return
       }
-      if (!attachment.application_no && matching.applicationDecision === 'matched' && matching.applicationNo) {
-        const changed = await prisma.$executeRaw`
-          UPDATE native_chat_conversations c
-             SET application_no = ${matching.applicationNo},
-                 application_link_status = 'matched',
-                 application_linked_at = NOW()
-            FROM native_chat_messages m
-           WHERE m.id = ${attachment.message_id}
-             AND c.id = m.conversation_id
-             AND c.application_no IS NULL
-        `
-        if (changed !== 1) {
-          const latest = await getAttachment(prisma, id)
-          if (latest?.application_no !== matching.applicationNo) {
-            throw new Error('会话申领号在图片分析期间被其他操作更新，请重新核对')
-          }
+      const matchedApplicationNo = matching.applicationDecision === 'matched' && matching.applicationNo
+        ? matching.applicationNo
+        : null
+      const matchedOrderId = matching.orderDecision === 'matched' && typeof matching.orderId === 'number'
+        ? matching.orderId
+        : null
+      const linkStatus = matchedApplicationNo ? 'matched'
+        : matching.applicationDecision === 'ambiguous' ? 'ambiguous' : 'unmatched'
+      const applicationConflict = Prisma.sql`(
+        application_link_status = 'matched' AND application_no IS NOT NULL AND (
+          (${matchedApplicationNo}::text IS NOT NULL AND application_no <> ${matchedApplicationNo})
+          OR (${matchedApplicationNo}::text = application_no AND ${matchedOrderId}::integer IS NOT NULL
+              AND order_id IS NOT NULL AND order_id <> ${matchedOrderId})
+        )
+      )`
+      const linkChanged = await prisma.$executeRaw`
+        UPDATE native_chat_attachments
+           SET application_no = CASE
+                 WHEN application_link_status = 'conflict' THEN NULL
+                 WHEN ${applicationConflict} THEN NULL
+                 WHEN application_link_source = 'manager_confirmation' THEN application_no
+                 WHEN application_link_status = 'matched' AND application_no IS NOT NULL
+                   AND ${matchedApplicationNo} IS NULL THEN application_no
+                 ELSE ${matchedApplicationNo} END,
+               order_id = CASE
+                 WHEN application_link_status = 'conflict' THEN NULL
+                 WHEN ${applicationConflict} THEN NULL
+                 WHEN application_link_source = 'manager_confirmation' THEN order_id
+                 WHEN application_link_status = 'matched' AND order_id IS NOT NULL
+                   AND ${matchedOrderId} IS NULL THEN order_id
+                 ELSE ${matchedOrderId} END,
+               application_link_status = CASE
+                 WHEN application_link_status = 'conflict' THEN 'conflict'
+                 WHEN ${applicationConflict} THEN 'conflict'
+                 WHEN application_link_source = 'manager_confirmation' THEN application_link_status
+                 WHEN application_link_status = 'matched' AND ${matchedApplicationNo} IS NULL THEN 'matched'
+                 ELSE ${linkStatus} END,
+               application_link_source = CASE
+                 WHEN application_link_source = 'manager_confirmation' THEN application_link_source
+                 WHEN application_link_status = 'matched' AND ${matchedApplicationNo} IS NULL THEN application_link_source
+                 ELSE 'registration_proof_ai' END,
+               application_link_evidence = CASE
+                 WHEN application_link_source = 'manager_confirmation' THEN application_link_evidence
+                 WHEN application_link_status = 'conflict'
+                 THEN jsonb_build_object('existing', application_link_evidence, 'incoming', ${JSON.stringify(matching)}::jsonb)
+                 WHEN ${applicationConflict}
+                 THEN jsonb_build_object('existing', application_link_evidence, 'incoming', ${JSON.stringify(matching)}::jsonb)
+                 WHEN application_link_status = 'matched' AND ${matchedApplicationNo} IS NULL THEN application_link_evidence
+                 ELSE ${JSON.stringify(matching)}::jsonb END,
+               application_linked_at = CASE
+                 WHEN application_link_source = 'manager_confirmation' THEN application_linked_at
+                 WHEN application_link_status = 'matched' AND ${matchedApplicationNo} IS NULL THEN application_linked_at
+                 ELSE NOW() END,
+               updated_at = NOW()
+         WHERE id = ${id}
+           AND application_link_source IS DISTINCT FROM 'manager_confirmation'
+      `
+      if (linkChanged !== 1) {
+        const current = await getAttachment(prisma, id)
+        if (current?.application_link_source !== 'manager_confirmation') {
+          throw new Error('挂号凭证素材关联没有写入附件记录')
         }
       }
       await writeImageAnalysis(prisma, id, { ...analysis, registrationMatch: {

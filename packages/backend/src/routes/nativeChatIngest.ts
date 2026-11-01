@@ -1,8 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import type { PrismaClient } from '@prisma/client'
 import type { NativeChatAttachment, NativeChatMessage } from '@huanyu/shared-types'
-import { resolveNativeChatApplicationLink } from '../services/nativeChatApplicationLink.js'
-import { getNativeChatCollectionConfig, matchNativeChatConversationRule } from '../services/nativeChatCollectionConfig.js'
+import { resolveNativeMessageBusinessLinks } from '../services/nativeChatMessageLink.js'
 
 type IngestBody = {
   conversation: {
@@ -137,57 +136,43 @@ function validateBody(input: unknown): IngestBody {
 
 export function registerNativeChatIngestRoutes(fastify: FastifyInstance, prisma: PrismaClient): void {
   fastify.post<{ Body: unknown }>('/api/v1/native-chat/ingest', async (request, reply) => {
+    const requestStart = Date.now()
     if (!request.employee) return reply.status(401).send({ error: '未登录或缺少工号' })
     let batch: IngestBody
-    let sourceMetadata: string | null
     try {
       batch = validateBody(request.body)
-      sourceMetadata = jsonValue(batch.conversation.sourceMetadata, 'conversation.sourceMetadata')
+      jsonValue(batch.conversation.sourceMetadata, 'conversation.sourceMetadata')
       for (const message of batch.messages) jsonValue(message.sourceMetadata, 'message.sourceMetadata')
     } catch (error) {
       return reply.status(400).send({ error: error instanceof Error ? error.message : '消息批次格式错误' })
     }
 
-    const config = await getNativeChatCollectionConfig(prisma)
-    const matchedRule = matchNativeChatConversationRule(config, batch.conversation)
-    if (!matchedRule) {
-      return reply.status(422).send({
-        error: '该会话没有命中后台启用的采集规则',
-        code: 'conversation_not_configured',
-        conversationId: batch.conversation.sourceConversationId
-      })
-    }
-
     const employeeId = request.employee.id
-    const applicationLink = await resolveNativeChatApplicationLink(prisma, employeeId, batch.conversation.title)
     const result = await prisma.$transaction(async (tx) => {
-      const conversations = await tx.$queryRaw<Array<{ id: number }>>`
-        INSERT INTO native_chat_conversations (
-          employee_id, channel, account_id, source_conversation_id, title,
-          conversation_kind, application_no, application_candidate, application_link_status,
-          source_metadata, first_observed_at, last_observed_at
-        ) VALUES (
-          ${employeeId}, ${batch.conversation.channel}, ${batch.conversation.accountId},
-          ${batch.conversation.sourceConversationId}, ${batch.conversation.title},
-          ${batch.conversation.kind}, ${applicationLink.applicationNo}, ${applicationLink.candidate}, ${applicationLink.status},
-          ${sourceMetadata}::jsonb, NOW(), NOW()
-        )
-        ON CONFLICT (employee_id, channel, account_id, source_conversation_id)
-        DO UPDATE SET title = EXCLUDED.title,
-                      conversation_kind = EXCLUDED.conversation_kind,
-                      application_no = EXCLUDED.application_no,
-                      application_candidate = EXCLUDED.application_candidate,
-                      application_link_status = EXCLUDED.application_link_status,
-                      application_linked_at = CASE
-                        WHEN EXCLUDED.application_no IS DISTINCT FROM native_chat_conversations.application_no
-                          OR EXCLUDED.application_link_status IS DISTINCT FROM native_chat_conversations.application_link_status
-                        THEN NOW() ELSE native_chat_conversations.application_linked_at END,
-                      source_metadata = EXCLUDED.source_metadata,
-                      last_observed_at = NOW()
-        RETURNING id
+      const existingConversation = await tx.$queryRaw<Array<{
+        id: number
+        application_no: string | null
+        application_candidate: string | null
+        application_link_status: 'matched' | 'no_candidate' | 'unmatched' | 'ambiguous' | 'name_mismatch' | 'conflict'
+      }>>`
+        SELECT id, application_no, application_candidate, application_link_status
+          FROM native_chat_conversations
+         WHERE employee_id = ${employeeId}
+           AND channel = ${batch.conversation.channel}
+           AND account_id = ${batch.conversation.accountId}
+           AND source_conversation_id = ${batch.conversation.sourceConversationId}
+         FOR UPDATE
       `
-      const conversationId = conversations[0]?.id
-      if (!conversationId) throw new Error('会话写入后未返回记录 ID')
+      const previousLink = existingConversation[0]
+      if (!previousLink) return null
+      const effectiveLink = {
+        applicationNo: previousLink.application_no,
+        candidate: previousLink.application_candidate,
+        status: previousLink.application_link_status
+      }
+      const messageLinks = await resolveNativeMessageBusinessLinks(tx, batch.messages, effectiveLink)
+      const conversationId = previousLink.id
+      await tx.$executeRaw`UPDATE native_chat_conversations SET last_observed_at = NOW() WHERE id = ${conversationId}`
 
       let inserted = 0
       let updated = 0
@@ -195,18 +180,25 @@ export function registerNativeChatIngestRoutes(fastify: FastifyInstance, prisma:
       const attachmentRefs: Array<{ messageSourceId: string; sourceAttachmentId: string; id: number }> = []
       for (const message of batch.messages) {
         const messageMetadata = jsonValue(message.sourceMetadata, 'message.sourceMetadata')
+        const businessLink = messageLinks.get(message.sourceMessageId)
+        if (!businessLink) throw new Error(`消息 ${message.sourceMessageId} 缺少业务关联解析结果`)
+        const businessEvidence = JSON.stringify(businessLink.evidence)
         const occurredAt = new Date(message.occurredAt)
         const observedAt = new Date(message.observedAt)
         const rows = await tx.$queryRaw<Array<{ id: number; inserted: boolean }>>`
           INSERT INTO native_chat_messages (
             conversation_id, source_message_id, parent_source_message_id, source_item_index,
             direction, sender_id, sender_name, kind, source_type_code, text,
-            occurred_at, observed_at, source_metadata
+            occurred_at, observed_at, source_metadata, application_no, order_id,
+            application_link_status, application_link_source, application_link_evidence, application_linked_at
           ) VALUES (
             ${conversationId}, ${message.sourceMessageId}, ${message.parentSourceMessageId ?? null},
             ${message.sourceItemIndex ?? null}, ${message.direction}, ${message.senderId ?? null},
             ${message.senderName ?? null}, ${message.kind}, ${message.sourceTypeCode ?? null},
-            ${message.text ?? null}, ${occurredAt}, ${observedAt}, ${messageMetadata}::jsonb
+            ${message.text ?? null}, ${occurredAt}, ${observedAt}, ${messageMetadata}::jsonb,
+            ${businessLink.applicationNo}, ${businessLink.orderId}, ${businessLink.status},
+            ${businessLink.source}, ${businessEvidence}::jsonb,
+            ${businessLink.status === 'matched' ? new Date() : null}
           )
           ON CONFLICT (conversation_id, source_message_id)
           DO UPDATE SET parent_source_message_id = EXCLUDED.parent_source_message_id,
@@ -219,7 +211,106 @@ export function registerNativeChatIngestRoutes(fastify: FastifyInstance, prisma:
                         text = EXCLUDED.text,
                         occurred_at = EXCLUDED.occurred_at,
                         observed_at = GREATEST(native_chat_messages.observed_at, EXCLUDED.observed_at),
-                        source_metadata = EXCLUDED.source_metadata
+                        source_metadata = EXCLUDED.source_metadata,
+                        application_no = CASE
+                          WHEN native_chat_messages.application_link_source = 'manager_confirmation'
+                          THEN native_chat_messages.application_no
+                          WHEN EXCLUDED.application_link_status = 'conflict' THEN NULL
+                          WHEN EXCLUDED.application_link_status = 'matched'
+                            AND native_chat_messages.application_link_status = 'matched'
+                            AND (native_chat_messages.application_no IS DISTINCT FROM EXCLUDED.application_no
+                              OR (native_chat_messages.order_id IS NOT NULL AND EXCLUDED.order_id IS NOT NULL
+                                  AND native_chat_messages.order_id <> EXCLUDED.order_id))
+                          THEN NULL
+                          WHEN EXCLUDED.application_link_status = 'matched'
+                            AND native_chat_messages.application_link_status IN ('unmatched', 'no_candidate', 'ambiguous', 'name_mismatch')
+                          THEN EXCLUDED.application_no
+                          ELSE native_chat_messages.application_no END,
+                        order_id = CASE
+                          WHEN native_chat_messages.application_link_source = 'manager_confirmation'
+                          THEN native_chat_messages.order_id
+                          WHEN EXCLUDED.application_link_status = 'conflict' THEN NULL
+                          WHEN EXCLUDED.application_link_status = 'matched'
+                            AND native_chat_messages.application_link_status = 'matched'
+                            AND (native_chat_messages.application_no IS DISTINCT FROM EXCLUDED.application_no
+                              OR (native_chat_messages.order_id IS NOT NULL AND EXCLUDED.order_id IS NOT NULL
+                                  AND native_chat_messages.order_id <> EXCLUDED.order_id))
+                          THEN NULL
+                          WHEN EXCLUDED.application_link_status = 'matched'
+                            AND native_chat_messages.application_link_status = 'matched'
+                            AND native_chat_messages.application_no = EXCLUDED.application_no
+                            AND native_chat_messages.order_id IS NULL AND EXCLUDED.order_id IS NOT NULL
+                          THEN EXCLUDED.order_id
+                          WHEN EXCLUDED.application_link_status = 'matched'
+                            AND native_chat_messages.application_link_status IN ('unmatched', 'no_candidate', 'ambiguous', 'name_mismatch')
+                          THEN EXCLUDED.order_id
+                          ELSE native_chat_messages.order_id END,
+                        application_link_status = CASE
+                          WHEN native_chat_messages.application_link_source = 'manager_confirmation'
+                          THEN native_chat_messages.application_link_status
+                          WHEN EXCLUDED.application_link_status = 'conflict' THEN 'conflict'
+                          WHEN EXCLUDED.application_link_status = 'matched'
+                            AND native_chat_messages.application_link_status = 'matched'
+                            AND (native_chat_messages.application_no IS DISTINCT FROM EXCLUDED.application_no
+                              OR (native_chat_messages.order_id IS NOT NULL AND EXCLUDED.order_id IS NOT NULL
+                                  AND native_chat_messages.order_id <> EXCLUDED.order_id))
+                          THEN 'conflict'
+                          WHEN native_chat_messages.application_link_status = 'conflict' THEN 'conflict'
+                          WHEN EXCLUDED.application_link_status = 'matched'
+                            AND native_chat_messages.application_link_status IN ('unmatched', 'no_candidate', 'ambiguous', 'name_mismatch')
+                          THEN 'matched'
+                          ELSE native_chat_messages.application_link_status END,
+                        application_link_source = CASE
+                          WHEN native_chat_messages.application_link_source = 'manager_confirmation'
+                          THEN native_chat_messages.application_link_source
+                          WHEN EXCLUDED.application_link_status = 'conflict' THEN EXCLUDED.application_link_source
+                          WHEN EXCLUDED.application_link_status = 'matched'
+                            AND native_chat_messages.application_link_status = 'matched'
+                            AND native_chat_messages.application_no = EXCLUDED.application_no
+                            AND native_chat_messages.order_id IS NULL AND EXCLUDED.order_id IS NOT NULL
+                          THEN EXCLUDED.application_link_source
+                          WHEN EXCLUDED.application_link_status = 'matched'
+                            AND native_chat_messages.application_link_status IN ('unmatched', 'no_candidate', 'ambiguous', 'name_mismatch')
+                          THEN EXCLUDED.application_link_source ELSE native_chat_messages.application_link_source END,
+                        application_link_evidence = CASE
+                          WHEN native_chat_messages.application_link_source = 'manager_confirmation'
+                          THEN native_chat_messages.application_link_evidence
+                          WHEN EXCLUDED.application_link_status = 'conflict'
+                          THEN jsonb_build_object('existing', native_chat_messages.application_link_evidence,
+                                                  'incoming', EXCLUDED.application_link_evidence)
+                          WHEN EXCLUDED.application_link_status = 'matched'
+                            AND native_chat_messages.application_link_status = 'matched'
+                            AND (native_chat_messages.application_no IS DISTINCT FROM EXCLUDED.application_no
+                              OR (native_chat_messages.order_id IS NOT NULL AND EXCLUDED.order_id IS NOT NULL
+                                  AND native_chat_messages.order_id <> EXCLUDED.order_id))
+                          THEN jsonb_build_object('existing', native_chat_messages.application_link_evidence,
+                                                  'incoming', EXCLUDED.application_link_evidence)
+                          WHEN EXCLUDED.application_link_status = 'matched'
+                            AND native_chat_messages.application_link_status = 'matched'
+                            AND native_chat_messages.application_no = EXCLUDED.application_no
+                            AND native_chat_messages.order_id IS NULL AND EXCLUDED.order_id IS NOT NULL
+                          THEN EXCLUDED.application_link_evidence
+                          WHEN EXCLUDED.application_link_status = 'matched'
+                            AND native_chat_messages.application_link_status IN ('unmatched', 'no_candidate', 'ambiguous', 'name_mismatch')
+                          THEN EXCLUDED.application_link_evidence ELSE native_chat_messages.application_link_evidence END,
+                        application_linked_at = CASE
+                          WHEN native_chat_messages.application_link_source = 'manager_confirmation'
+                          THEN native_chat_messages.application_linked_at
+                          WHEN EXCLUDED.application_link_status = 'conflict' THEN NOW()
+                          WHEN EXCLUDED.application_link_status = 'matched'
+                            AND native_chat_messages.application_link_status = 'matched'
+                            AND native_chat_messages.application_no = EXCLUDED.application_no
+                            AND native_chat_messages.order_id IS NULL AND EXCLUDED.order_id IS NOT NULL
+                          THEN NOW()
+                          WHEN EXCLUDED.application_link_status = 'matched'
+                            AND native_chat_messages.application_link_status IN ('unmatched', 'no_candidate', 'ambiguous', 'name_mismatch')
+                          THEN NOW()
+                          WHEN EXCLUDED.application_link_status = 'matched'
+                            AND native_chat_messages.application_link_status = 'matched'
+                            AND (native_chat_messages.application_no IS DISTINCT FROM EXCLUDED.application_no
+                              OR (native_chat_messages.order_id IS NOT NULL AND EXCLUDED.order_id IS NOT NULL
+                                  AND native_chat_messages.order_id <> EXCLUDED.order_id))
+                          THEN NOW() ELSE native_chat_messages.application_linked_at END
           RETURNING id, (xmax = 0) AS inserted
         `
         const row = rows[0]
@@ -302,9 +393,34 @@ export function registerNativeChatIngestRoutes(fastify: FastifyInstance, prisma:
           attachmentCount++
         }
       }
-      return { conversationId, inserted, updated, attachmentCount, attachmentRefs }
+      return { conversationId, inserted, updated, attachmentCount, attachmentRefs, messageLinks: [...messageLinks.values()] }
     })
 
-    return reply.send({ data: { ...result, ruleId: matchedRule.id, acknowledged: true } })
+    if (!result) return reply.status(409).send({
+      error: '会话目录尚未登记，请先同步会话目录',
+      code: 'conversation_not_registered',
+      conversationId: batch.conversation.sourceConversationId
+    })
+    const linkCounts = result.messageLinks.reduce((counts, link) => {
+      counts[link.status] = (counts[link.status] ?? 0) + 1
+      if (link.source) counts[link.source] = (counts[link.source] ?? 0) + 1
+      return counts
+    }, {} as Record<string, number>)
+    request.log.info({
+      event: 'native_chat_ingest_completed',
+      employeeId,
+      requestId: request.id,
+      channel: batch.conversation.channel,
+      accountId: batch.conversation.accountId,
+      sourceConversationId: batch.conversation.sourceConversationId,
+      receivedMessageCount: batch.messages.length,
+      insertedMessageCount: result.inserted,
+      updatedMessageCount: result.updated,
+      receivedAttachmentCount: result.attachmentCount,
+      ...Object.fromEntries(Object.entries(linkCounts).map(([key, value]) => [`messageLink_${key}`, value])),
+      elapsedMs: Date.now() - requestStart
+    })
+    const { messageLinks: _messageLinks, ...response } = result
+    return reply.send({ data: { ...response, acknowledged: true } })
   })
 }

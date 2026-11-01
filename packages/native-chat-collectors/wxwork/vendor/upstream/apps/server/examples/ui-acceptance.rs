@@ -48,12 +48,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }))?;
     let conversations = vec![
         ConversationV1 {
+                last_activity_unix_ms: None,
             conversation_id: "R:synthetic-project".into(),
             display_name: Some("合成项目讨论".into()),
             conversation_type: Some("group".into()),
             participant_ids: vec!["synthetic-member-a".into(), "synthetic-member-b".into()],
         },
         ConversationV1 {
+                last_activity_unix_ms: None,
             conversation_id: "R:synthetic-check".into(),
             display_name: Some("合成验收记录".into()),
             conversation_type: Some("group".into()),

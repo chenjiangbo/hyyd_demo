@@ -17,6 +17,9 @@
     "huanyu:backfill-channel-mappings": "tsx src/scripts/backfillHuanyuChannelMappings.ts",
     "huanyu:backfill-backup-order-no": "tsx src/scripts/backfillHuanyuBackupOrderNos.ts",
     "huanyu:backfill-order-amounts": "tsx src/scripts/backfillHuanyuOrderAmounts.ts",
+    "native-chat:backfill-business-links": "tsx src/scripts/backfillNativeChatBusinessLinks.ts",
+    "test:native-chat-application-link": "tsx src/services/nativeChatApplicationLink.test.ts",
+    "test:native-chat-link": "tsx src/services/nativeChatMessageLink.test.ts",
     "huanyu:repair-patient-contacts": "tsx src/scripts/repairHuanyuPatientContacts.ts",
     "test:master-data": "tsx scripts/test_master_data.ts"
   },

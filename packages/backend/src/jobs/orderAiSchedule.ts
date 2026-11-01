@@ -63,9 +63,10 @@ export function triggerOrderAiAnalysis(
   return task
 }
 
-async function processOrder(prisma: PrismaClient, minio: Minio.Client, orderId: number, trigger: string): Promise<void> {
+async function processOrder(prisma: PrismaClient, minio: Minio.Client, orderId: number, trigger: string): Promise<boolean> {
   const result = await triggerOrderAiAnalysis(prisma, minio, orderId)
   if (result && !result.skipped) console.log(`[order-ai:${trigger}] 订单 ${orderId} 字段与服务步骤分析完成`)
+  return Boolean(result && !result.skipped && result.fieldExtractionSucceeded)
 }
 
 /** ASR 转写文本成功落库后立即分析本单及同申领号下的其他订单。 */
@@ -104,51 +105,47 @@ async function runSilentCommunicationOrders(prisma: PrismaClient, minio: Minio.C
     FROM orders o
     WHERE (
       EXISTS (
-        SELECT 1 FROM messages m
-        WHERE (m.order_id = o.id OR (
-          o.raw_json->>'crmApplyNo' IS NOT NULL
-          AND m.application_no = o.raw_json->>'crmApplyNo'
-        ))
-          AND m.id > COALESCE(o.field_ai_last_msg_id, 0)
-          AND m.channel IN ('wechat', 'wxwork')
-          AND btrim(COALESCE(m.content_text, '')) <> ''
-      )
-      OR EXISTS (
         SELECT 1
-        FROM native_chat_conversations nc
-        JOIN native_chat_messages nm ON nm.conversation_id = nc.id
+        FROM native_chat_messages nm
         LEFT JOIN LATERAL (
-          SELECT MAX(a.updated_at) AS latest_attachment_at
+          SELECT MAX(GREATEST(a.updated_at, COALESCE(a.application_linked_at, 'epoch'::timestamp))) AS latest_attachment_at
           FROM native_chat_attachments a
           WHERE a.message_id = nm.id
         ) na ON TRUE
-        WHERE nc.application_link_status = 'matched'
-          AND o.raw_json->>'crmApplyNo' IS NOT NULL
-          AND nc.application_no = o.raw_json->>'crmApplyNo'
-          AND GREATEST(nm.observed_at, COALESCE(na.latest_attachment_at, nm.observed_at), COALESCE(nc.application_linked_at, 'epoch'::timestamp))
+        WHERE nm.application_link_status = 'matched'
+          AND (nm.order_id = o.id OR (nm.order_id IS NULL AND o.raw_json->>'crmApplyNo' IS NOT NULL AND nm.application_no = o.raw_json->>'crmApplyNo'))
+          AND GREATEST(nm.observed_at, COALESCE(nm.application_linked_at, 'epoch'::timestamp), COALESCE(na.latest_attachment_at, 'epoch'::timestamp))
+              > COALESCE(o.field_ai_last_native_at, 'epoch'::timestamp)
+      ) OR EXISTS (
+        SELECT 1
+        FROM native_chat_attachments a
+        JOIN native_chat_messages nm ON nm.id = a.message_id
+        WHERE a.application_link_status = 'matched'
+          AND a.kind = 'image'
+          AND a.source_metadata->'imageAnalysis'->>'imageType' = '挂号凭证'
+          AND (a.order_id = o.id OR (a.order_id IS NULL AND o.raw_json->>'crmApplyNo' IS NOT NULL AND a.application_no = o.raw_json->>'crmApplyNo'))
+          AND GREATEST(a.updated_at, COALESCE(a.application_linked_at, 'epoch'::timestamp), nm.observed_at)
               > COALESCE(o.field_ai_last_native_at, 'epoch'::timestamp)
       )
     )
     AND GREATEST(
       COALESCE((
-        SELECT MAX(m.captured_at) FROM messages m
-        WHERE (m.order_id = o.id OR (
-          o.raw_json->>'crmApplyNo' IS NOT NULL
-          AND m.application_no = o.raw_json->>'crmApplyNo'
-        )) AND m.channel IN ('wechat', 'wxwork')
-      ), 'epoch'::timestamp),
-      COALESCE((
-        SELECT MAX(GREATEST(nm.observed_at, COALESCE(na.latest_attachment_at, nm.observed_at), COALESCE(nc.application_linked_at, 'epoch'::timestamp)))
-        FROM native_chat_conversations nc
-        JOIN native_chat_messages nm ON nm.conversation_id = nc.id
+        SELECT MAX(GREATEST(nm.observed_at, COALESCE(nm.application_linked_at, 'epoch'::timestamp),
+                            COALESCE(na.latest_attachment_at, 'epoch'::timestamp)))
+        FROM native_chat_messages nm
         LEFT JOIN LATERAL (
-          SELECT MAX(a.updated_at) AS latest_attachment_at
+          SELECT MAX(GREATEST(a.updated_at, COALESCE(a.application_linked_at, 'epoch'::timestamp))) AS latest_attachment_at
           FROM native_chat_attachments a
           WHERE a.message_id = nm.id
         ) na ON TRUE
-        WHERE nc.application_link_status = 'matched'
-          AND o.raw_json->>'crmApplyNo' IS NOT NULL
-          AND nc.application_no = o.raw_json->>'crmApplyNo'
+        WHERE nm.application_link_status = 'matched'
+          AND (nm.order_id = o.id OR (nm.order_id IS NULL AND o.raw_json->>'crmApplyNo' IS NOT NULL AND nm.application_no = o.raw_json->>'crmApplyNo'))
+      ), 'epoch'::timestamp),
+      COALESCE((SELECT MAX(GREATEST(a.updated_at, COALESCE(a.application_linked_at, 'epoch'::timestamp)))
+        FROM native_chat_attachments a
+        WHERE a.application_link_status = 'matched' AND a.kind = 'image'
+          AND a.source_metadata->'imageAnalysis'->>'imageType' = '挂号凭证'
+          AND (a.order_id = o.id OR (a.order_id IS NULL AND o.raw_json->>'crmApplyNo' IS NOT NULL AND a.application_no = o.raw_json->>'crmApplyNo'))
       ), 'epoch'::timestamp)
     ) <= ${cutoff}
     ORDER BY o.id
@@ -157,8 +154,7 @@ async function runSilentCommunicationOrders(prisma: PrismaClient, minio: Minio.C
   let succeeded = 0
   for (const order of orders) {
     try {
-      await processOrder(prisma, minio, order.id, `communication-silence-${config.communicationSilenceMinutes}m`)
-      succeeded++
+      if (await processOrder(prisma, minio, order.id, `communication-silence-${config.communicationSilenceMinutes}m`)) succeeded++
     } catch (error) {
       console.error(`[order-ai:communication] 订单 ${order.id} 静默 ${config.communicationSilenceMinutes} 分钟分析失败：\n${describeTaskError(error)}`)
     }

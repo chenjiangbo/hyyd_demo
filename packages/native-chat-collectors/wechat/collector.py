@@ -56,6 +56,7 @@ class RepeatedErrorReporter:
         conversation_id: str | None,
         exc: Exception,
         source_message_id: str | None = None,
+        conversation_title: str | None = None,
     ) -> None:
         now = time.monotonic()
         message = str(exc)
@@ -69,6 +70,8 @@ class RepeatedErrorReporter:
             payload: dict[str, Any] = {"event": "error", "stage": stage, "message": detail}
             if conversation_id:
                 payload["sourceConversationId"] = conversation_id
+            if conversation_title:
+                payload["title"] = conversation_title
             if source_message_id:
                 payload["sourceMessageId"] = source_message_id
             emit(payload)
@@ -86,6 +89,8 @@ class RepeatedErrorReporter:
         payload = {"event": "error", "stage": stage, "message": detail, "repeatCount": repeat_count}
         if conversation_id:
             payload["sourceConversationId"] = conversation_id
+        if conversation_title:
+            payload["title"] = conversation_title
         if source_message_id:
             payload["sourceMessageId"] = source_message_id
         emit(payload)
@@ -313,7 +318,7 @@ def encode_message(
                         attempts = retry_state.aes_failure(attachment_source_id)
                         resolution_state = "error" if attempts >= 3 else "not_downloaded"
                         resolution_detail = "image_aes_key_unavailable_exhausted" if attempts >= 3 else "image_aes_key_unavailable"
-                        LOG.warning("Merged image remains unresolved sourceMessage=%s attachment=%s AESFailures=%s", sid, attachment_source_id, attempts)
+                        LOG.warning("Merged image remains unresolved conversation=%s title=%s sourceMessage=%s attachment=%s AESFailures=%s", username, db.get_nickname(username), sid, attachment_source_id, attempts)
                     except AmbiguousLocalFileError as exc:
                         local_path = None
                         resolution_state = "ambiguous"
@@ -413,7 +418,7 @@ def encode_message(
                         "aesFailureCount": attempts,
                         "terminal": terminal,
                     }
-                    LOG.warning("Image attachment remains unresolved sourceMessage=%s AESFailures=%s terminal=%s", sid, attempts, terminal)
+                    LOG.warning("Image attachment remains unresolved conversation=%s title=%s sourceMessage=%s AESFailures=%s terminal=%s", username, db.get_nickname(username), sid, attempts, terminal)
         elif kind == "file":
             source_row = media_reader._get_typed_message_row(username, int(msg["local_id"]), 49, shard=msg.get("shard"))
             if source_row is None:
@@ -424,7 +429,7 @@ def encode_message(
             except InvalidMessageFileXmlError as exc:
                 source_file_name, source_byte_size = None, None
                 message_xml_error = str(exc)
-                LOG.warning("File message XML metadata unavailable sourceMessage=%s; trying resource metadata", sid)
+                LOG.warning("File message XML metadata unavailable conversation=%s title=%s sourceMessage=%s; trying resource metadata", username, db.get_nickname(username), sid)
             try:
                 original_name, local_name = media_reader._file_names(source_row)
             except AmbiguousResourceMetadataError as exc:
@@ -471,7 +476,9 @@ def encode_message(
                         file_metadata["resolutionState"] = "size_mismatch"
                 if local_path is None:
                     LOG.warning(
-                        "File attachment remains pending sourceMessage=%s resolutionState=%s candidateCount=%s",
+                        "File attachment remains pending conversation=%s title=%s sourceMessage=%s resolutionState=%s candidateCount=%s",
+                        username,
+                        db.get_nickname(username),
                         sid,
                         file_metadata.get("resolutionState", "source_file_not_found"),
                         len(file_metadata.get("candidateFiles", [])),
@@ -760,6 +767,13 @@ def main() -> int:
             failed_source_message_id = None
             try:
                 is_initial = username in initial_states
+                conversation_title = db.get_nickname(username)
+                source_read_started = time.monotonic()
+                emit({
+                    "event": "source_read_started", "channel": "wechat", "accountId": account_id,
+                    "sourceConversationId": username, "title": conversation_title,
+                    "isInitialHistory": is_initial,
+                })
                 rows = (
                     db.get_recent_messages_for_initial_sync(username, limit=initial_states[username][1], cursor=cursor, cutoff_epoch=initial_states[username][0])
                     if is_initial
@@ -769,8 +783,10 @@ def main() -> int:
                     emit({
                         "event": "source_read_result", "channel": "wechat",
                         "sourceConversationId": username,
+                        "title": conversation_title,
                         "isInitialHistory": is_initial,
                         "sourceRowCount": len(rows),
+                        "elapsedMs": int((time.monotonic() - source_read_started) * 1000),
                     })
                 if not rows:
                     if is_initial:
@@ -790,6 +806,12 @@ def main() -> int:
                     continue
                 source_rows = rows
                 if rows and not STOP.is_set():
+                    encode_started = time.monotonic()
+                    emit({
+                        "event": "source_encode_started", "channel": "wechat", "accountId": account_id,
+                        "sourceConversationId": username, "title": conversation_title,
+                        "sourceRowCount": len(rows),
+                    })
                     last_row = source_rows[-1] if is_initial else rows[-1]
                     highest = int(last_row["sort_seq"])
                     shard = last_row.get("shard")
@@ -803,13 +825,47 @@ def main() -> int:
                     cursor_token = json.dumps(next_cursor, separators=(",", ":"))
                     seen_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
                     messages = []
-                    for row in rows:
+                    last_encode_progress = encode_started
+                    for row_index, row in enumerate(rows, start=1):
+                        row_kind = normalized_kind(row.get("local_type"), row.get("type"))
+                        if row_kind in {"image", "file", "video", "voice"}:
+                            emit({
+                                "event": "source_attachment_resolve_started", "channel": "wechat", "accountId": account_id,
+                                "sourceConversationId": username, "title": conversation_title,
+                                "rowIndex": row_index, "sourceRowCount": len(rows),
+                                "sourceMessageId": source_id(row), "kind": row_kind,
+                            })
+                        row_started = time.monotonic()
                         try:
                             messages.extend(encode_message(db, media_reader, account_id, username, row, seen_at, retry_state))
                         except Exception:
                             failed_source_message_id = source_id(row)
                             raise
+                        row_elapsed_ms = int((time.monotonic() - row_started) * 1000)
+                        if row_kind in {"image", "file", "video", "voice"}:
+                            emit({
+                                "event": "source_attachment_resolve_completed", "channel": "wechat", "accountId": account_id,
+                                "sourceConversationId": username, "title": conversation_title,
+                                "rowIndex": row_index, "sourceRowCount": len(rows),
+                                "sourceMessageId": source_id(row), "kind": row_kind,
+                                "elapsedMs": row_elapsed_ms,
+                            })
+                        if row_index % 25 == 0 or time.monotonic() - last_encode_progress >= 10:
+                            last_encode_progress = time.monotonic()
+                            emit({
+                                "event": "source_encode_progress", "channel": "wechat", "accountId": account_id,
+                                "sourceConversationId": username, "title": conversation_title,
+                                "processedRowCount": row_index, "sourceRowCount": len(rows),
+                                "currentSourceMessageId": source_id(row),
+                                "elapsedMs": int((last_encode_progress - encode_started) * 1000),
+                            })
                     failed_source_message_id = None
+                    emit({
+                        "event": "source_encode_completed", "channel": "wechat", "accountId": account_id,
+                        "sourceConversationId": username, "title": conversation_title,
+                        "sourceRowCount": len(rows), "normalizedMessageCount": len(messages),
+                        "elapsedMs": int((time.monotonic() - encode_started) * 1000),
+                    })
                     messages.sort(key=lambda message: (
                         message["occurredAt"],
                         message.get("sourceItemIndex") if message.get("sourceItemIndex") is not None else -1,
@@ -901,7 +957,7 @@ def main() -> int:
                         else:
                             raise ValueError(f"Unsupported collector command while awaiting batch acknowledgement: {command.get('type')}")
             except Exception as exc:
-                error_reporter.report("message_poll", username, exc, failed_source_message_id)
+                error_reporter.report("message_poll", username, exc, failed_source_message_id, db.get_nickname(username))
 
         now = time.monotonic()
         for username, source_message_ids in list(pending_media.items()):
@@ -927,7 +983,7 @@ def main() -> int:
                     media_inflight[username] = source_message_id
                     break
                 except Exception as exc:
-                    error_reporter.report("media_recheck", username, exc, source_message_id)
+                    error_reporter.report("media_recheck", username, exc, source_message_id, db.get_nickname(username))
         STOP.wait(1)
     return 0
 

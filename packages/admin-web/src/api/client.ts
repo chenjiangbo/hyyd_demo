@@ -261,6 +261,16 @@ export const adminApi = {
   nativeChatAccounts(channel: 'wechat' | 'wxwork') {
     return request<NativeChatAccount[]>(`/api/v1/admin/native-chat-accounts${qs({ channel })}`)
   },
+  clearNativeChatAccountMessages(data: { channel: 'wechat' | 'wxwork'; employeeId: number; accountId: string }) {
+    return request<{
+      deletedMessages: number
+      deletedAttachments: number
+      storageObjectsRemoved: number
+      storageCleanupFailures: number
+    }>('/api/v1/admin/native-chat-accounts/clear-messages', {
+      method: 'POST', body: JSON.stringify(data)
+    })
+  },
   nativeChatConversations(params: { cursor?: string; channel?: string; search?: string; employeeId?: number; accountId?: string }) {
     return request<{ items: NativeChatConversationSummary[]; nextCursor: string | null }>(
       `/api/v1/admin/native-chat-conversations${qs(params)}`
@@ -269,6 +279,12 @@ export const adminApi = {
   nativeChatMessages(conversationId: number, before?: string) {
     return request<NativeChatAdminMessagePage>(
       `/api/v1/admin/native-chat-conversations/${conversationId}/messages${qs({ before })}`
+    )
+  },
+  resolveNativeChatMessageBusinessLink(messageId: number, data: { applicationNo: string; orderId: number | null }) {
+    return request<{ messageId: number; applicationNo: string; orderId: number | null; confirmed: boolean }>(
+      `/api/v1/admin/native-chat-messages/${messageId}/resolve-business-link`,
+      { method: 'POST', body: JSON.stringify(data) }
     )
   },
   nativeChatAttachmentUrl(attachmentId: number) {

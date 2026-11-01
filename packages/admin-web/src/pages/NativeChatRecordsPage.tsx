@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { adminApi } from '../api/client'
 import type { NativeChatAdminMessage, NativeChatConversationSummary } from '../api/types'
 import { LoadMore } from '../components/LoadMore'
@@ -11,10 +11,24 @@ const channelName = (channel: string): string => channel === 'wxwork' ? '企微'
 
 function applicationLinkLabel(status: string, applicationNo: string | null): string {
   if (status === 'matched' && applicationNo) return `已关联申领号：${applicationNo}`
+  if (status === 'conflict') return '业务归属待核对'
   if (status === 'ambiguous') return '申领号候选有多个匹配，待核对'
   if (status === 'name_mismatch') return '候选与客户姓名不一致，待核对'
   if (status === 'unmatched') return '未找到对应申领号，待核对'
   return '会话标题未识别出申领号'
+}
+
+function messageBusinessLinkLabel(message: NativeChatAdminMessage): string | null {
+  const sourceName = message.applicationLinkSource === 'conversation_title'
+    ? '按会话名称'
+    : message.applicationLinkSource === 'dispatch_channel_order_no' ? '按派单中的渠道订单号' : null
+  if (message.applicationLinkStatus === 'matched' && message.applicationNo) {
+    return `关联申领号：${message.applicationNo}${message.orderId !== null ? ` · 订单记录 ${message.orderId}` : ''}${sourceName ? ` · ${sourceName}` : ''}`
+  }
+  if (message.applicationLinkStatus === 'conflict') return '业务归属待核对'
+  if (message.applicationLinkStatus === 'ambiguous') return '申领号对应多个业务记录，待核对'
+  if (message.applicationLinkStatus === 'unmatched') return '暂未关联申领号'
+  return null
 }
 const kindName = (kind: string): string => ({
   text: '文字', image: '图片', file: '文件', video: '视频', audio: '音频', voice: '语音',
@@ -175,12 +189,21 @@ export default function NativeChatRecordsPage(): React.JSX.Element {
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [lightbox, setLightbox] = useState<string | null>(null)
   const [videoPreview, setVideoPreview] = useState<string | null>(null)
+  const [clearMessagesResult, setClearMessagesResult] = useState<string | null>(null)
+  const queryClient = useQueryClient()
 
   const accounts = useQuery({
     queryKey: ['native-chat-record-accounts', channel],
     queryFn: () => adminApi.nativeChatAccounts(channel)
   })
   const selectedAccount = accounts.data?.find((account) => `${account.employeeId}\u001f${account.accountId}` === accountKey) ?? null
+  const clearAccountMessages = useMutation({
+    mutationFn: adminApi.clearNativeChatAccountMessages
+  })
+  const resolveMessageLink = useMutation({
+    mutationFn: (input: { messageId: number; applicationNo: string; orderId: number | null }) =>
+      adminApi.resolveNativeChatMessageBusinessLink(input.messageId, { applicationNo: input.applicationNo, orderId: input.orderId })
+  })
   const conversations = useInfiniteQuery({
     queryKey: ['native-chat-record-conversations', channel, selectedAccount?.employeeId, selectedAccount?.accountId, search],
     enabled: selectedAccount !== null,
@@ -238,6 +261,52 @@ export default function NativeChatRecordsPage(): React.JSX.Element {
       else window.open(url, '_blank', 'noopener,noreferrer')
     } catch (error) {
       window.alert(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function confirmMessageLink(message: NativeChatAdminMessage): Promise<void> {
+    const applicationNo = window.prompt('请输入要关联的申领号', message.applicationNo ?? '')?.trim()
+    if (!applicationNo) return
+    const orderInput = window.prompt('如已确定具体订单，输入订单记录 ID；只关联申领号请留空', message.orderId?.toString() ?? '')
+    if (orderInput === null) return
+    const orderId = orderInput.trim() ? Number(orderInput.trim()) : null
+    if (orderId !== null && (!Number.isSafeInteger(orderId) || orderId <= 0)) {
+      window.alert('订单记录 ID 必须是正整数')
+      return
+    }
+    try {
+      await resolveMessageLink.mutateAsync({ messageId: message.id, applicationNo, orderId })
+      await queryClient.invalidateQueries({ queryKey: ['native-chat-record-messages', selectedId] })
+      await queryClient.invalidateQueries({ queryKey: ['native-chat-record-conversations'] })
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function clearSelectedAccountMessages(): Promise<void> {
+    if (!selectedAccount) return
+    const accountLabel = `${channelName(channel)} · ${selectedAccount.employeeName} · ${selectedAccount.accountId}`
+    if (!window.confirm(`确定清除此账号已采集的全部消息和附件吗？\n\n${accountLabel}\n\n其他平台和账号的数据不会删除。此操作无法撤销。`)) return
+    setClearMessagesResult(null)
+    try {
+      const result = await clearAccountMessages.mutateAsync({
+        channel,
+        employeeId: selectedAccount.employeeId,
+        accountId: selectedAccount.accountId
+      })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['native-chat-record-accounts', channel] }),
+        queryClient.invalidateQueries({ queryKey: ['native-chat-record-conversations', channel] }),
+        queryClient.invalidateQueries({ queryKey: ['native-chat-record-messages'] })
+      ])
+      setSelectedId(null)
+      setAccountKey('')
+      const cleanupNote = result.storageCleanupFailures > 0
+        ? ` 对象存储中有 ${result.storageCleanupFailures} 个附件文件未能删除。`
+        : ''
+      setClearMessagesResult(`已清除 ${result.deletedMessages} 条消息、${result.deletedAttachments} 个附件。${cleanupNote}`)
+    } catch (error) {
+      setClearMessagesResult(`清除失败：${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -306,7 +375,20 @@ export default function NativeChatRecordsPage(): React.JSX.Element {
           <button className="rounded border border-line px-3 py-2 text-sm hover:bg-surface-2" type="submit">搜索</button>
         </form>
         <span className="text-xs text-fg-subtle">已加载 {conversationItems.length} 个会话</span>
+        {selectedAccount && (
+          <button
+            type="button"
+            className="rounded border border-danger/40 px-3 py-2 text-sm text-danger hover:bg-danger/10 disabled:opacity-50"
+            disabled={clearAccountMessages.isPending || accounts.isFetching || conversations.isFetching}
+            onClick={() => void clearSelectedAccountMessages()}
+          >{clearAccountMessages.isPending ? '正在清除…' : '清除此账号消息'}</button>
+        )}
       </div>
+      {clearMessagesResult && (
+        <div className={`rounded border px-3 py-2 text-sm ${clearMessagesResult.startsWith('清除失败') ? 'border-danger/40 text-danger' : 'border-line text-fg-muted'}`}>
+          {clearMessagesResult}
+        </div>
+      )}
 
       {accounts.isLoading ? <LoadingBlock /> : accounts.error ? (
         <ErrorBlock error={accounts.error} onRetry={() => void accounts.refetch()} />
@@ -375,7 +457,7 @@ export default function NativeChatRecordsPage(): React.JSX.Element {
                       onLoad={() => void messages.fetchNextPage()}
                     />
                     <div className="space-y-3 py-2">
-                      {messageItems.map((message) => <MessageCard key={message.id} message={message} onOpenAttachment={openAttachment} imageAiEnabled={aiAutomation.data?.imageAiEnabled} />)}
+                      {messageItems.map((message) => <MessageCard key={message.id} message={message} onOpenAttachment={openAttachment} onConfirmBusinessLink={confirmMessageLink} imageAiEnabled={aiAutomation.data?.imageAiEnabled} />)}
                     </div>
                   </div>
                 )}
@@ -409,11 +491,13 @@ export default function NativeChatRecordsPage(): React.JSX.Element {
 function MessageCard({
   message,
   onOpenAttachment,
+  onConfirmBusinessLink,
   imageAiEnabled,
   nested = false
 }: {
   message: NativeChatAdminMessage
   onOpenAttachment: (attachmentId: number, kind: string) => Promise<void>
+  onConfirmBusinessLink: (message: NativeChatAdminMessage) => Promise<void>
   imageAiEnabled: boolean | undefined
   nested?: boolean
 }): React.JSX.Element {
@@ -441,6 +525,14 @@ function MessageCard({
         {message.senderName && <span>发送人：{message.senderName}</span>}
         {nested && message.sourceItemIndex !== null && <span>第 {message.sourceItemIndex + 1} 项</span>}
       </div>
+      {(messageBusinessLinkLabel(message) || message.applicationLinkStatus !== 'matched') && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-fg-muted">
+          <span>{messageBusinessLinkLabel(message) ?? '业务归属待确认'}</span>
+          {message.applicationLinkStatus !== 'matched' && (
+            <button type="button" className="text-accent-strong underline" onClick={() => void onConfirmBusinessLink(message)}>确认消息归属</button>
+          )}
+        </div>
+      )}
       {merged ? (
         <div className="mt-2 text-sm font-medium">
           {message.children?.length ? `合并聊天记录（${message.children.length} 条内容）` : '合并聊天记录内容尚未解析'}
@@ -449,7 +541,7 @@ function MessageCard({
       {merged && message.children && message.children.length > 0 && (
         <div className="mt-3 space-y-2 border-l-2 border-line pl-3">
           {message.children.map((child) => (
-            <MessageCard key={child.id} message={child} onOpenAttachment={onOpenAttachment} imageAiEnabled={imageAiEnabled} nested />
+            <MessageCard key={child.id} message={child} onOpenAttachment={onOpenAttachment} onConfirmBusinessLink={onConfirmBusinessLink} imageAiEnabled={imageAiEnabled} nested />
           ))}
         </div>
       )}
@@ -458,6 +550,10 @@ function MessageCard({
           {message.attachments.map((attachment) => (
             <div key={attachment.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded bg-surface-2 px-3 py-2 text-xs">
               <span className="font-medium">{attachment.fileName || kindName(attachment.kind)}</span>
+              {attachment.applicationLinkStatus === 'matched' && attachment.applicationNo && (
+                <span className="text-accent-strong">独立素材 · {attachment.applicationNo}{attachment.orderId !== null ? ` · 订单记录 ${attachment.orderId}` : ''}</span>
+              )}
+              {attachment.applicationLinkStatus === 'conflict' && <span className="text-warning">素材归属待核对</span>}
               <span className={attachment.kind === 'image' && attachment.sourceMetadata?.nonThumbnailState !== 'available'
                 ? 'text-warning'
                 : attachment.availableInStorage ? 'text-success' : 'text-warning'}>

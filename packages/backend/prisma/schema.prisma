@@ -92,7 +92,7 @@ model Order {
   briefLastNativeAt       DateTime?                @map("brief_last_native_at")
   briefLastCallId         Int?                     @map("brief_last_call_id") // 上次处理到的最大 Call.id
   briefLastMaterialId     Int?                     @map("brief_last_material_id") // 上次处理到的最大 Material.id（手工补录）
-  // 字段/服务步骤分析的独立水位。无论一次分析成功还是失败都会推进，避免同一批素材被后台重复调用。
+  // 字段/服务步骤分析的独立水位。分析成功后推进；失败时保留未处理状态。
   // 旧 brief* 水位仍只服务旧版“AI 简报”页面，二者不得混用。
   fieldAiLastMsgId        Int?                     @map("field_ai_last_msg_id")
   fieldAiLastNativeAt     DateTime?                @map("field_ai_last_native_at")
@@ -309,11 +309,20 @@ model NativeChatMessage {
   occurredAt            DateTime                 @map("occurred_at")
   observedAt            DateTime                 @map("observed_at")
   sourceMetadata        Json?                    @map("source_metadata")
+  applicationNo         String?                  @map("application_no")
+  orderId               Int?                     @map("order_id")
+  applicationLinkStatus String                   @default("unmatched") @map("application_link_status")
+  applicationLinkSource String?                  @map("application_link_source")
+  applicationLinkEvidence Json?                  @map("application_link_evidence")
+  applicationLinkedAt   DateTime?                @map("application_linked_at")
   attachments           NativeChatAttachment[]
 
   @@unique([conversationId, sourceMessageId], map: "native_chat_messages_source_key")
   @@index([conversationId, occurredAt, sourceItemIndex], map: "native_chat_messages_timeline_idx")
   @@index([kind, occurredAt], map: "native_chat_messages_kind_time_idx")
+  @@index([applicationNo, occurredAt], map: "native_chat_messages_application_no_time_idx")
+  @@index([orderId, occurredAt], map: "native_chat_messages_order_id_time_idx")
+  @@index([applicationLinkStatus, applicationLinkedAt], map: "native_chat_messages_link_status_time_idx")
   @@map("native_chat_messages")
 }
 
@@ -332,11 +341,19 @@ model NativeChatAttachment {
   state            String
   storageKey       String?         @map("storage_key")
   sourceMetadata   Json?           @map("source_metadata")
+  applicationNo    String?         @map("application_no")
+  orderId          Int?            @map("order_id")
+  applicationLinkStatus String     @default("unmatched") @map("application_link_status")
+  applicationLinkSource String?    @map("application_link_source")
+  applicationLinkEvidence Json?    @map("application_link_evidence")
+  applicationLinkedAt DateTime?    @map("application_linked_at")
   createdAt        DateTime        @default(now()) @map("created_at")
   updatedAt        DateTime        @updatedAt @map("updated_at")
 
   @@index([messageId], map: "native_chat_attachments_message_idx")
   @@index([contentHash], map: "native_chat_attachments_hash_idx")
+  @@index([applicationNo, createdAt], map: "native_chat_attachments_application_no_created_idx")
+  @@index([orderId, createdAt], map: "native_chat_attachments_order_id_created_idx")
   @@unique([messageId, sourceAttachmentId], map: "native_chat_attachments_source_key")
   @@map("native_chat_attachments")
 }
