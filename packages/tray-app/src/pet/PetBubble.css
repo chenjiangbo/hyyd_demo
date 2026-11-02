@@ -127,7 +127,7 @@
 .pet-bubble__field input[aria-invalid='true'],
 .pet-bubble__field textarea[aria-invalid='true'],
 .pet-bubble__field select[aria-invalid='true'] { border-color: #c54b35; }
-.pet-bubble__field input[readonly] { background: #f8f3ee; cursor: default; }
+.pet-bubble__field input[readonly], .pet-bubble__field textarea[readonly] { background: #f8f3ee; cursor: default; }
 .pet-bubble__field small { grid-column: 2; color: #a17365; font-size: 11px; line-height: 1.35; }
 .pet-bubble__field-error { color: #b84631 !important; }
 .pet-bubble__search-select { position: relative; min-width: 0; }
@@ -141,8 +141,10 @@
 .pet-bubble__select-trigger:focus-visible { outline: 2px solid rgba(220, 103, 61, .25); border-color: #db704b; }
 .pet-bubble__select-chevron { flex: 0 0 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: translateY(-2px) rotate(45deg); }
 .pet-bubble__input-with-copy { display: flex; min-width: 0; gap: 3px; }
-.pet-bubble__input-with-copy input { flex: 1 1 0; width: 0; min-width: 0; }
+.pet-bubble__input-with-copy input, .pet-bubble__input-with-copy textarea { flex: 1 1 0; width: 0; min-width: 0; }
+.pet-bubble__input-with-copy textarea[name='groupName'] { field-sizing: content; resize: none; overflow: hidden; }
 .pet-bubble__input-with-copy button { flex: 0 0 30px; padding: 2px; border: 1px solid #e6cdbd; border-radius: 7px; background: #fff; color: #805246; font-size: 9px; cursor: pointer; }
+.pet-bubble__input-with-copy textarea + button { align-self: center; height: 27px; }
 .pet-bubble__input-with-copy button:disabled { opacity: .5; cursor: default; }
 .pet-bubble__input-with-copy button[title='选择日期和时间'] { flex-basis: 27px; font-size: 15px; }
 .pet-bubble__picker-dismiss { position: fixed; z-index: 30; inset: 0; }
@@ -234,10 +236,12 @@
 .pet-bubble--order-ai .pet-bubble__form-body { padding-right: 3px; }
 .pet-bubble--order-ai .pet-bubble__form-section { min-width: 0; margin: 0; padding: 3px 0 5px; border: 0; border-radius: 0; border-bottom: 1px solid #f1e2d9; }
 .pet-bubble--order-ai .pet-bubble__form-section legend { padding: 0 8px 0 0; color: #75402e; font-size: 13px; font-weight: 700; }
+.pet-bubble__order-number { margin-left: 10px; font-size: 12px; font-weight: 400; }
+.pet-bubble__order-number button { margin-left: 5px; padding: 2px 5px; border: 1px solid #e6cdbd; border-radius: 5px; background: #fff; color: #805246; font-size: 9px; cursor: pointer; }
 .pet-bubble--order-ai .pet-bubble__form-section .pet-bubble__fields { gap: 2px; }
 .pet-bubble--order-ai .pet-bubble__field { grid-template-columns: 88px minmax(0, 1fr); gap: 6px; color: #80675b; }
 .pet-bubble--order-ai .pet-bubble__field input, .pet-bubble--order-ai .pet-bubble__select-trigger { min-height: 26px; border-color: #eadbd1; background: #fff; }
-.pet-bubble--order-ai .pet-bubble__field input[readonly] { background: #f8f4f0; }
+.pet-bubble--order-ai .pet-bubble__field input[readonly], .pet-bubble--order-ai .pet-bubble__field textarea[readonly] { background: #f8f4f0; }
 .pet-bubble--order-ai .pet-bubble__field--empty input:not([readonly]), .pet-bubble--order-ai .pet-bubble__field--empty .pet-bubble__select-trigger { border-color: #eac8b3; background: #fffbf7; }
 .pet-bubble--order-ai .pet-bubble__escort-card { padding: 3px 6px; border: 1px solid #f0e2d9; border-radius: 8px; background: #fffdfa; }
 .pet-bubble--order-ai .pet-bubble__escort-card > header { padding: 0 0 1px; color: #8b5140; }

@@ -4195,7 +4195,25 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       documentNoStatus = 'unavailable'
       fastify.log.warn({ orderNo, error: error instanceof Error ? error.name : 'Error' }, '读取远程订单证件号失败')
     }
-    return reply.send({ data: { orderNo, fields, escortRecords, documentNo, documentNoStatus } })
+    const order = await prisma.order.findUnique({ where: { huanyuOrderNo: orderNo }, select: { poolEnteredAt: true, rawJson: true, detailJson: true, customerName: true } })
+    const raw = (order?.rawJson ?? {}) as Record<string, unknown>
+    const detail = (order?.detailJson ?? {}) as Record<string, unknown>
+    const rec = (detail.recommendations ?? {}) as Record<string, unknown>
+    const value = (key: string): string => String(rec[key] ?? '').trim() || String(raw[key] ?? '').trim()
+    const date = order?.poolEnteredAt ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(order.poolEnteredAt).replace(/-/g, '') : ''
+    const name = value('patientName') || order?.customerName || ''
+    const sex = value('sex')
+    const title = sex === '男' || sex === '1' ? '先生' : sex === '女' || sex === '2' ? '女士' : ''
+    const owner = value('insurBrhName')
+    const customerLevel = value('cusLevel').split(/[-－]/).pop()?.trim() ?? ''
+    const applicationNo = value('crmApplyNo')
+    const isStrickenCase = rec.isStrickenCase
+    const validName = name && !name.includes('*')
+    const groupName = isStrickenCase === true && date && owner && validName && title && applicationNo
+      ? `${date}${owner}${customerLevel}${name}${title}就医服务群${applicationNo}`
+      : isStrickenCase === false && validName && applicationNo.length >= 8
+        ? `${name}#${applicationNo.slice(-8)}` : ''
+    return reply.send({ data: { orderNo, fields, escortRecords, documentNo, documentNoStatus, groupName } })
   })
 
   // 浮动精灵一键填单：维表检查/确认沿用客户端规则，但订单只直接写远端 MySQL，不落本地快照。

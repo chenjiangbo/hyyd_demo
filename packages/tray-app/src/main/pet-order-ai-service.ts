@@ -23,7 +23,7 @@ export type PetOrderAiPanel = {
   text?: string
   title?: string
   description?: string
-  fields?: Array<{ id: string; label: string; type: 'text' | 'date' | 'datetime-local' | 'select'; value: string; placeholder: string; options?: Array<{ value: string; label: string }>; copyable?: boolean; readOnly?: boolean }>
+  fields?: Array<{ id: string; label: string; type: 'text' | 'textarea' | 'date' | 'datetime-local' | 'select'; value: string; placeholder: string; options?: Array<{ value: string; label: string }>; copyable?: boolean; readOnly?: boolean }>
   sections?: Array<{ id: string; title: string; fieldIds: string[]; repeatable?: boolean }>
   actions?: Array<{ id: string; label: string; tone?: 'primary' | 'secondary'; loading?: boolean }>
   confirmation?: { title: string; originalAddress?: string; creations: Array<{ key: string; type: string; name: string; parent?: string }>; review: MasterReviewItem[] }
@@ -395,6 +395,7 @@ export class PetOrderAiService {
         data?: {
           fields?: Record<string, string>
           documentNo?: string
+          groupName?: string
           documentNoStatus?: 'ok' | 'not_found' | 'unavailable'
           escortRecords?: Array<{ serviceDate?: string; escortName?: string; escortPhone?: string }>
         }
@@ -425,6 +426,7 @@ export class PetOrderAiService {
       const fields = [
         { id: 'orderNo', label: '订单号', type: 'text' as const, value: orderNo, placeholder: '', readOnly: true, copyable: true },
         { id: 'documentNo', label: '证件号码', type: 'text' as const, value: payload.data?.documentNo ?? '', placeholder: payload.data?.documentNoStatus === 'unavailable' ? '远程读取失败' : payload.data?.documentNoStatus === 'not_found' ? '远程订单不存在' : '暂无证件号码', readOnly: true, copyable: true },
+        { id: 'groupName', label: '名称复制', type: 'textarea' as const, value: payload.data?.groupName ?? '', placeholder: '订单信息不完整，无法生成群名称', readOnly: true, copyable: true },
         { id: 'orderStatus', label: '订单状态', type: 'select' as const, value: values.order_status ?? '', placeholder: '请选择订单状态', options: statusOptions.map((item) => ({ value: String(item.id ?? item.name ?? ''), label: String(item.name ?? item.id ?? '') })) },
         ...HOSPITAL_FIELDS.map(([id, label]) => ({
           id, label, type: 'text' as const, value: values[id === 'hospitalAddress' ? 'hospital_address' : id] ?? '', placeholder: `请输入${label}`
@@ -444,7 +446,7 @@ export class PetOrderAiService {
         description: '以下为订单的部分字段及 AI 建议值，核对或修改后可一键填单。',
         fields,
         sections: [
-          { id: 'order-info', title: '订单信息', fieldIds: ['orderNo', 'documentNo', 'orderStatus'] },
+          { id: 'order-info', title: '订单信息', fieldIds: ['groupName', 'documentNo', 'orderStatus'] },
           { id: 'hospital-info', title: '医院信息', fieldIds: ['hospital', 'hospitalAddress', 'department', 'doctor'] },
           { id: 'time-info', title: '时间信息', fieldIds: TIME_FIELDS.map(([fieldId]) => fieldId) },
           ...escortRecords.map((_, index) => {

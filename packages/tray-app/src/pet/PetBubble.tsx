@@ -355,7 +355,7 @@ function Field({ field, panel, onFieldChange, onLookup }: {
 
   let control: React.JSX.Element
   if (field.type === 'textarea') {
-    control = <textarea {...common} value={String(field.value)} rows={3} />
+    control = <div className="pet-bubble__input-with-copy"><textarea {...common} value={String(field.value)} rows={field.id === 'groupName' ? 1 : 3} />{field.copyable && <button type="button" title="复制" disabled={!String(field.value)} onClick={() => { void navigator.clipboard?.writeText(String(field.value)) }}>复制</button>}</div>
   } else if (field.type === 'select') {
     control = <SelectField field={field} onFieldChange={onFieldChange} />
   } else if (field.type === 'datetime-local') {
@@ -415,7 +415,7 @@ function FormFields({ panel, onFieldChange, onLookup, onAddEscortRecord, onRemov
   const orderSections = panel.sections.filter((section) => !section.repeatable)
   return <div className="pet-bubble__form-body">
     {orderSections.map((section) => <fieldset className={`pet-bubble__form-section pet-bubble__form-section--order pet-bubble__form-section--${section.id}`} key={section.id}>
-      <legend>{section.title}</legend>
+      <legend>{section.title}{section.id === 'order-info' && fieldsById.has('orderNo') && <span className="pet-bubble__order-number">{String(fieldsById.get('orderNo')?.value ?? '')}<button type="button" title="复制订单号" onClick={() => { void navigator.clipboard?.writeText(String(fieldsById.get('orderNo')?.value ?? '')) }}>复制</button></span>}</legend>
       <div className="pet-bubble__fields">{section.fieldIds.map((fieldId) => { const field = fieldsById.get(fieldId); return field ? <Field key={`${panel.id}:${field.id}`} field={field} panel={panel} onFieldChange={onFieldChange} onLookup={onLookup} /> : null })}</div>
     </fieldset>)}
     {escortSections.length > 0 && <fieldset className="pet-bubble__form-section pet-bubble__form-section--escort-cards">
@@ -460,11 +460,15 @@ export function PetBubble({ panel, skipEntranceAnimation, onAction, onSelectCand
   useEffect(() => {
     const element = bubbleRef.current
     if (!element || !onSizeChange) return
+    let lastWidth = 0
+    let lastHeight = 0
     const report = (): void => {
       // Layout尺寸不受弹出动画的 transform 缩放影响，避免窗口按动画中的临时尺寸裁掉底部按钮。
       const width = element.offsetWidth
       const height = element.offsetHeight
-      if (width > 0 && height > 0) {
+      if (width > 0 && height > 0 && (width !== lastWidth || height !== lastHeight)) {
+        lastWidth = width
+        lastHeight = height
         onSizeChange({ width, height })
       }
     }
@@ -472,7 +476,7 @@ export function PetBubble({ panel, skipEntranceAnimation, onAction, onSelectCand
     observer.observe(element)
     report()
     return () => observer.disconnect()
-  }, [onSizeChange, panel])
+  }, [onSizeChange])
 
   return (
     <section ref={bubbleRef} className={`pet-bubble pet-bubble--${panel.kind}${skipEntranceAnimation ? ' pet-bubble--no-entrance' : ''}${panel.kind === 'form' && panel.confirmation ? ' pet-bubble--master-review' : ''}${panel.kind === 'form' && !panel.confirmation && panel.id?.startsWith('order-ai:') ? ' pet-bubble--order-ai' : ''}`} style={panel.kind === 'form' ? ({

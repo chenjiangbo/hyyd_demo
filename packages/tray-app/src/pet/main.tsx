@@ -449,9 +449,9 @@ export function Pet(): React.JSX.Element {
     return () => window.clearTimeout(timer)
   }, [mode])
 
-  const resizeBubble = (size: { width: number; height: number }): void => {
+  const resizeBubble = useCallback((size: { width: number; height: number }): void => {
     void window.api.setPetBubbleSize(size).then((layout) => setBubbleSide(layout.bubbleSide))
-  }
+  }, [])
 
   const mobileStatusTitle = mobileStatus.state === 'online'
     ? `移动端最近有心跳${mobileStatus.lastSeenAt ? `：${new Date(mobileStatus.lastSeenAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' })}` : ''}`
