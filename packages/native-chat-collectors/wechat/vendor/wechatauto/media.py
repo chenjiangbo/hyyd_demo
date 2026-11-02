@@ -1207,9 +1207,31 @@ class MediaDownloader:
     # WXAM (wxgf) 解码：微信 4.x 普通图片的新存储格式，内部为 HEVC 裸流
     # ------------------------------------------------------------------
     def _extract_hevc(self, data: bytes) -> Optional[bytes]:
-        """从 wxgf 容器提取 HEVC Annex-B 裸流（自首个 NALU 起始码起）。"""
-        start = data.find(b"\x00\x00\x00\x01")
-        return data[start:] if start >= 0 else None
+        """Extract the dominant length-prefixed HEVC partition of a still WXGF image."""
+        if len(data) < 15 or data[:4] != b"wxgf" or data[4] >= len(data):
+            return None
+        for marker in (b"\x00\x00\x00\x01", b"\x00\x00\x01"):
+            parts = []
+            position = data[4]
+            while position < len(data):
+                offset = data.find(marker, position)
+                if offset < 0:
+                    break
+                if offset < 4:
+                    position = offset + 1
+                    continue
+                size = int.from_bytes(data[offset - 4:offset], "big")
+                if size <= 0 or offset + size > len(data):
+                    position = offset + 1
+                    continue
+                parts.append((offset, size))
+                position = offset + size
+            if parts:
+                offset, size = max(parts, key=lambda item: item[1])
+                if len(parts) > 1 and size / len(data) < 0.6:
+                    return None
+                return data[offset:offset + size]
+        return None
 
     @staticmethod
     def _ffmpeg_exe() -> Optional[str]:

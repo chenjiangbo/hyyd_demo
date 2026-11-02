@@ -790,7 +790,7 @@ def main() -> int:
                     })
                 if not rows:
                     if is_initial:
-                        latest = db.get_latest_message_cursor(username, username)
+                        latest = db.get_latest_message_cursor(username)
                         current_order = (cursor["sortSeq"], cursor["shard"], cursor["localId"])
                         latest_order = (latest["sortSeq"], latest["shard"], latest["localId"]) if latest else current_order
                         if latest and latest_order > current_order:

@@ -557,7 +557,9 @@ function MessageCard({
               <span className={attachment.kind === 'image' && attachment.sourceMetadata?.nonThumbnailState !== 'available'
                 ? 'text-warning'
                 : attachment.availableInStorage ? 'text-success' : 'text-warning'}>
-                {attachment.kind === 'image' && attachment.sourceMetadata?.nonThumbnailState === 'available'
+                {attachment.sourceMetadata?.resolutionState === 'upload_size_exceeded'
+                  ? '文件超过 30 MB，未上传'
+                  : attachment.kind === 'image' && attachment.sourceMetadata?.nonThumbnailState === 'available'
                   ? '高清图片已获取'
                   : attachment.kind === 'image' && attachment.sourceMetadata?.nonThumbnailState === 'pending' && attachment.sourceMetadata?.rendition === 'thumbnail'
                   ? '已采集缩略图，清晰图片待获取'

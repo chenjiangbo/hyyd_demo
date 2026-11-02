@@ -5,6 +5,9 @@ import { randomUUID } from 'crypto'
 import { app, shell } from 'electron'
 import type { NativeChatCollectionConfig, NativeChatCollectionRule, NativeChatMessage } from '@huanyu/shared-types'
 import { resolveWxworkContext, resolveWxworkContextAtRoot, type WxworkContext } from './wxwork-context'
+import { NativeChatReadLogThrottle } from './native-chat-read-log-throttle'
+import { applyAttachmentUploadLimit, MAX_ATTACHMENT_BYTES } from './native-chat-attachment-limit'
+import { reconcileConversationPendingMedia } from './native-chat-pending-media'
 
 type Channel = 'wechat' | 'wxwork'
 type Session = {
@@ -293,6 +296,7 @@ function wxworkCursorRowId(cursor: string): number {
 }
 
 export class NativeChatCollectorManager {
+  private readonly readLogThrottle = new NativeChatReadLogThrottle()
   private config: { backendUrl: string; employeeCode: string } | null = null
   private children = new Map<Channel, ChildProcessWithoutNullStreams>()
   private buffers = new Map<Channel, string>()
@@ -699,9 +703,14 @@ export class NativeChatCollectorManager {
         || event.event === 'source_attachment_resolve_started' || event.event === 'source_attachment_resolve_completed') {
         const session = this.sessions.get(cursorKey({ channel, accountId: event.accountId, sourceConversationId: event.sourceConversationId }))
         const { event: eventName, channel: _channel, ...fields } = event
+        const suppressed = eventName === 'source_read_started' && event.isInitialHistory === false
+          ? this.readLogThrottle.take(`started\u001f${channel}\u001f${event.accountId}\u001f${event.sourceConversationId}\u001f${event.isInitialHistory}`)
+          : 0
+        if (suppressed === null) continue
         this.logStructured(channel, eventName, {
           ...fields,
-          title: session?.title ?? event.title ?? null
+          title: session?.title ?? event.title ?? null,
+          ...(suppressed > 0 ? { suppressedCount: suppressed } : {})
         })
         continue
       }
@@ -1011,9 +1020,23 @@ export class NativeChatCollectorManager {
       if (!conversation) throw new Error('消息批次对应的会话尚未登记')
       const uploadFiles = new Map<string, string>()
       const replaceFiles = new Set<string>()
+      const skippedFiles = new Map<string, string>()
       const messages = expireOldPendingMedia(event.messages).map((message) => ({
         ...message,
-        attachments: message.attachments?.map((attachment) => {
+        attachments: message.attachments?.map((originalAttachment) => {
+          const attachment = applyAttachmentUploadLimit(originalAttachment)
+          if (attachment.sourceMetadata?.resolutionState === 'upload_size_exceeded') {
+            if (originalAttachment.localPath) skippedFiles.set(`${message.sourceMessageId}\u001f${attachment.sourceAttachmentId}`, originalAttachment.localPath)
+            this.logStructured(channel, 'attachment_upload_skipped', {
+              title: conversation.title,
+              sourceConversationId: event.sourceConversationId,
+              messageSourceId: message.sourceMessageId,
+              sourceAttachmentId: attachment.sourceAttachmentId,
+              fileName: attachment.fileName ?? null,
+              byteSize: attachment.byteSize ?? null,
+              reason: 'upload_size_exceeded'
+            })
+          }
           if (attachment.localPath) {
             if (!attachment.sourceAttachmentId?.trim()) throw new Error(`本地附件缺少来源 ID：${message.sourceMessageId}`)
             const attachmentKey = `${message.sourceMessageId}\u001f${attachment.sourceAttachmentId}`
@@ -1080,6 +1103,7 @@ export class NativeChatCollectorManager {
       }
       if (data.attachmentRefs.length !== expectedAttachmentKeys.size) throw new Error('服务端附件确认数量与消息附件数量不一致')
       const confirmedAttachmentKeys = new Set<string>()
+      const confirmedUploads = new Set<string>()
       for (const attachment of data.attachmentRefs) {
         const attachmentKey = `${attachment.messageSourceId}\u001f${attachment.sourceAttachmentId}`
         if (!expectedAttachmentKeys.has(attachmentKey)) throw new Error('服务端确认了本批次不存在的附件')
@@ -1100,7 +1124,8 @@ export class NativeChatCollectorManager {
               byteSize: uploadBytes,
               replaceExisting: replaceFiles.has(attachmentKey)
             })
-            await this.uploadAttachment(attachment.id, path, replaceFiles.has(attachmentKey))
+            const uploadResult = await this.uploadAttachment(attachment.id, path, replaceFiles.has(attachmentKey))
+            confirmedUploads.add(attachmentKey)
             this.logStructured(channel, 'message_attachment_upload_completed', {
               accountId: event.accountId,
               title: conversation.title,
@@ -1109,6 +1134,7 @@ export class NativeChatCollectorManager {
               messageSourceId: attachment.messageSourceId,
               sourceAttachmentId: attachment.sourceAttachmentId,
               byteSize: uploadBytes,
+              uploadResult,
               elapsedMs: Date.now() - uploadStartedAt
             })
           } catch (error) {
@@ -1130,8 +1156,9 @@ export class NativeChatCollectorManager {
       for (const attachmentKey of expectedAttachmentKeys) {
         if (!confirmedAttachmentKeys.has(attachmentKey)) throw new Error('服务端漏确认了一项消息附件')
       }
-      this.reconcilePendingMedia(key, messages)
+      this.reconcilePendingMedia(key, messages, confirmedUploads)
       this.persistPendingMedia()
+      this.cleanupUploadedFiles(channel, skippedFiles)
       if (event.event === 'media_batch') {
         this.cleanupUploadedFiles(channel, uploadFiles)
         this.send(channel, {
@@ -1528,27 +1555,8 @@ export class NativeChatCollectorManager {
     renameSync(temporary, this.discoveryProgressPath)
   }
 
-  private reconcilePendingMedia(conversationKey: string, messages: NativeChatMessage[]): void {
-    const conversation = this.pendingMedia[conversationKey] ?? {}
-    for (const message of messages) {
-      const rootMessageId = message.parentSourceMessageId ?? message.sourceMessageId
-      const pending = new Set(conversation[rootMessageId] ?? [])
-      for (const attachment of message.attachments ?? []) {
-        const attachmentId = attachment.sourceAttachmentId
-        if (!attachmentId) throw new Error(`附件缺少来源 ID：${message.sourceMessageId}`)
-        if (attachment.sourceMetadata?.terminal === true) {
-          pending.delete(attachmentId)
-          continue
-        }
-        const fullImagePending = attachment.kind === 'image' && attachment.sourceMetadata?.nonThumbnailState !== 'available'
-        if (fullImagePending) pending.add(attachmentId)
-        else if (attachment.localPath || attachment.state === 'available') pending.delete(attachmentId)
-        else if (attachment.state === 'not_downloaded') pending.add(attachmentId)
-        else if (attachment.state === 'ambiguous' || attachment.sourceMetadata?.resolutionState === 'invalid_resource_metadata') pending.add(attachmentId)
-      }
-      if (pending.size) conversation[rootMessageId] = [...pending].sort()
-      else delete conversation[rootMessageId]
-    }
+  private reconcilePendingMedia(conversationKey: string, messages: NativeChatMessage[], confirmedUploads: ReadonlySet<string>): void {
+    const conversation = reconcileConversationPendingMedia(this.pendingMedia[conversationKey] ?? {}, messages, confirmedUploads)
     if (Object.keys(conversation).length) this.pendingMedia[conversationKey] = conversation
     else delete this.pendingMedia[conversationKey]
   }
@@ -1589,15 +1597,16 @@ export class NativeChatCollectorManager {
     return this.request('POST', path, body, maxRetries, timeoutMs)
   }
 
-  private async uploadAttachment(id: number, path: string, replace = false): Promise<void> {
+  private async uploadAttachment(id: number, path: string, replace = false): Promise<'already_uploaded' | 'uploaded'> {
     let lastError: Error | null = null
     let stage = 'request_upload_url'
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         stage = 'request_upload_url'
+        if (statSync(path).size > MAX_ATTACHMENT_BYTES) throw new Error('附件大小超过 30 MB，无法上传')
         const response = await this.post(`/api/v1/native-chat/attachments/${id}/upload-url`, { replace }, 0)
         const target = response.data as { uploaded?: boolean; storageKey?: string; url?: string }
-        if (target.uploaded) return
+        if (target.uploaded) return 'already_uploaded'
         if (!target.url || !target.storageKey) throw new Error('服务端未返回附件上传地址')
         const fileSize = statSync(path).size
         const stream = createReadStream(path)
@@ -1617,7 +1626,7 @@ export class NativeChatCollectorManager {
         if (!putResponse.ok) throw new Error(`附件上传失败 HTTP ${putResponse.status}`)
         stage = 'complete_upload'
         await this.post(`/api/v1/native-chat/attachments/${id}/complete`, { storageKey: target.storageKey, replace }, 0)
-        return
+        return 'uploaded'
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         lastError = new Error(`附件 ${id} 阶段 ${stage} 失败：${message}`)
