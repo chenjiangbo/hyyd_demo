@@ -49,6 +49,7 @@ export interface NativeChatAttachmentSourceMetadata extends Record<string, unkno
     | 'invalid_resource_metadata'
     | 'local_record_video_not_matched'
     | 'resource_file_not_found'
+    | 'upload_size_exceeded'
     | 'retry_expired_30_days'
   imageAnalysis?: {
     status: 'pending' | 'processing' | 'retrying' | 'completed' | 'failed'

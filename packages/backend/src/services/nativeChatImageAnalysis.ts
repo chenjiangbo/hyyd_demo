@@ -3,6 +3,7 @@ import type * as Minio from 'minio'
 import { matchNativeRegistrationProofToOrders } from './registrationProofService.js'
 import { understandImage } from './imageUnderstanding.js'
 import { isImageAiEnabled } from './orderAiAutomationConfig.js'
+import { convertNativeChatWxgfToJpeg } from './nativeChatWxgfPreview.js'
 
 const BUCKET = 'materials'
 const WORKER_INTERVAL_MS = 15_000
@@ -144,7 +145,9 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
       try {
         const stream = await minio.getObject(BUCKET, attachment.storage_key)
         const buffer = await streamToBuffer(stream)
-        dataUrl = imageDataUrl(attachment.mime_type, buffer)
+        dataUrl = buffer.subarray(0, 4).toString('ascii') === 'wxgf'
+          ? imageDataUrl('image/jpeg', await convertNativeChatWxgfToJpeg(buffer))
+          : imageDataUrl(attachment.mime_type, buffer)
         const parsed = parseAnalysis(await understandImage(dataUrl), attempt)
         const latest = await getAttachment(prisma, id)
         const latestMetadata = asRecord(latest?.source_metadata) ?? {}
@@ -182,7 +185,10 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
     try {
       if (!dataUrl) {
         const stream = await minio.getObject(BUCKET, attachment.storage_key)
-        dataUrl = imageDataUrl(attachment.mime_type, await streamToBuffer(stream))
+        const buffer = await streamToBuffer(stream)
+        dataUrl = buffer.subarray(0, 4).toString('ascii') === 'wxgf'
+          ? imageDataUrl('image/jpeg', await convertNativeChatWxgfToJpeg(buffer))
+          : imageDataUrl(attachment.mime_type, buffer)
       }
       const matching = await matchNativeRegistrationProofToOrders(prisma, dataUrl, analysis as unknown as NativeChatImageAnalysis, {
         applicationNo: attachment.application_link_status === 'matched'

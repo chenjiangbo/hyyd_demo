@@ -1974,14 +1974,13 @@ class WeChatDB:
         rows, maps = got
         return [self._msg_row_to_dict(row, maps) for row in rows]
 
-    def get_latest_message_cursor(self, user: str, conversation_id: str) -> Optional[dict]:
+    def get_latest_message_cursor(self, user: str) -> Optional[dict]:
         """Return the latest source cursor for a conversation across all shards."""
         rows = self._run_msg_query(
             user,
             lambda tables: self._shard_rows(
                 tables,
-                "WHERE username = ?",
-                params=(conversation_id,),
+                "",
                 order_ext="ORDER BY sort_seq DESC, local_id DESC",
                 per_shard_limit=1,
             ),
