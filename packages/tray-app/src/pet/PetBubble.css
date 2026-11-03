@@ -73,8 +73,9 @@
   font-size: 12px;
   -webkit-app-region: no-drag;
 }
-.pet-bubble__action:hover { background: #fff3eb; }
+.pet-bubble__action:hover:not(:disabled) { background: #fff3eb; }
 .pet-bubble__action--primary { border-color: #d95432; color: #fff; background: #e3613b; }
+.pet-bubble__action--primary:hover:not(:disabled) { border-color: #b94325; background: #c94d2c; }
 .pet-bubble__action--danger { border-color: #df8b78; color: #a33d2b; }
 .pet-bubble__candidate-list { display: grid; gap: 6px; }
 .pet-bubble__candidate {
@@ -158,7 +159,7 @@
 .pet-bubble__calendar-grid > span, .pet-bubble__calendar-grid > button { display: grid; height: 26px; place-items: center; }
 .pet-bubble__calendar-grid > span { color: #9b766a; }
 .pet-bubble__calendar-grid > button.is-selected { color: #fff; background: #e3613b; }
-.pet-bubble__time-wheels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 8px 0; }
+.pet-bubble__time-wheels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin: 8px 0; }
 .pet-bubble__time-wheel { min-width: 0; text-align: center; }
 .pet-bubble__time-wheel > span { display: block; margin-bottom: 3px; color: #9b766a; }
 .pet-bubble__time-wheel > div { position: relative; height: 140px; overflow-y: auto; padding: 56px 2px; box-sizing: border-box; border: 1px solid #f0d9c9; border-radius: 7px; background: linear-gradient(to bottom, #fffdf9, #fff7f0); scroll-snap-type: y mandatory; scrollbar-width: thin; overscroll-behavior: contain; }
@@ -169,6 +170,7 @@
 .pet-bubble__datetime-picker footer { justify-content: flex-end; }
 .pet-bubble__datetime-picker footer button { padding: 4px 9px; border: 1px solid #e6cdbd; }
 .pet-bubble__datetime-picker footer button:last-child { border-color: #d95432; color: #fff; background: #e3613b; }
+.pet-bubble__datetime-picker footer button:last-child:hover:not(:disabled) { border-color: #b94325; background: #c94d2c; }
 .pet-bubble__datetime-picker footer button:disabled { opacity: .5; cursor: default; }
 .pet-bubble__submit-message { margin: 2px 0 0; font-size: 12px; }
 .pet-bubble__submit-message--success { color: #24865f; }
@@ -271,3 +273,8 @@
 .pet-bubble--master-review .pet-bubble__actions { justify-content: flex-end; margin-top: 6px; }
 .pet-bubble--master-review .pet-bubble__action--primary { min-width: 100px; font-size: 13px; font-weight: 600; }
 .pet-bubble--master-review .pet-bubble__master-address button:disabled { opacity: .6; cursor: default; text-decoration: none; }
+
+.pet-bubble__close { position: absolute; top: 5px; right: 7px; z-index: 2; width: 26px; height: 26px; padding: 0; border: 1px solid #d4aa98; border-radius: 50%; background: #fff5ee; color: #854631; font-size: 22px; line-height: 22px; cursor: pointer; }
+.pet-bubble__close:hover { border-color: #b95437; background: #f7dfd3; color: #713622; }
+.pet-bubble__close:focus-visible { outline: 2px solid #b95437; outline-offset: 2px; }
+.pet-bubble { padding-right: 36px; }

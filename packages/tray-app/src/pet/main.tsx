@@ -511,6 +511,7 @@ export function Pet(): React.JSX.Element {
       </div>
       {expanded && panel !== null && <PetBubble
         panel={panel}
+        onClose={() => { if (businessPanelVisible && businessPanel) void window.api.hidePetPanel(); setMode('idle'); setSpeaking(false) }}
         skipEntranceAnimation={panelResumed && panel === businessPanel}
         onSelectCandidate={selectCandidate}
         onSelectApplication={selectImageApplication}

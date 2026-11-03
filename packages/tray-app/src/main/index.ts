@@ -113,7 +113,7 @@ function resumePetPanel(id: string): void {
 
 function ensurePetPanelVisible(id: string): void {
   if (!isAuthenticated || petPanelSuspended || pendingPetPanel?.id !== id) return
-  showPetWindow()
+  if (!petWindow || petWindow.isDestroyed() || !petWindow.isVisible()) showPetWindow()
 }
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'])

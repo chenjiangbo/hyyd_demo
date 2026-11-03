@@ -116,6 +116,7 @@ interface PetBubbleProps {
   panel: PetPanel
   skipEntranceAnimation?: boolean
   onAction?: (actionId: string) => void
+  onClose?: () => void
   onSelectCandidate?: (orderId: number) => void
   onFieldChange?: PetFieldChange
   onLookup?: (kind: PetLookupKind, query: string, parent: { hospitalId?: string; departmentId?: string; currentId?: string }) => Promise<PetLookupOption[]>
@@ -213,7 +214,7 @@ function DateTimeField({ field, onFieldChange }: { field: PetField; onFieldChang
   const [open, setOpen] = useState(false)
   const [month, setMonth] = useState(() => new Date())
   const [draftDate, setDraftDate] = useState('')
-  const [time, setTime] = useState({ hour: '00', minute: '00', second: '00' })
+  const [time, setTime] = useState({ hour: '00', minute: '00' })
   const anchor = useRef<HTMLButtonElement>(null)
   const raw = String(field.value)
   const display = raw.replace('T', ' ')
@@ -224,8 +225,8 @@ function DateTimeField({ field, onFieldChange }: { field: PetField; onFieldChang
     setMonth(match ? new Date(Number(match[1]), Number(match[2]) - 1, 1) : new Date(now.getFullYear(), now.getMonth(), 1))
     setDraftDate(match ? `${match[1]}-${match[2]}-${match[3]}` : `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`)
     setTime(match
-      ? { hour: match[4], minute: match[5], second: match[6] ?? '00' }
-      : { hour: pad(now.getHours()), minute: pad(now.getMinutes()), second: pad(now.getSeconds()) })
+      ? { hour: match[4], minute: match[5] }
+      : { hour: pad(now.getHours()), minute: pad(now.getMinutes()) })
     setOpen(true)
   }
   const rect = anchor.current?.getBoundingClientRect()
@@ -249,9 +250,8 @@ function DateTimeField({ field, onFieldChange }: { field: PetField; onFieldChang
     if (!draftDate) return
     const hour = Number(time.hour)
     const minute = Number(time.minute)
-    const second = Number(time.second)
-    if (hour > 23 || minute > 59 || second > 59) return
-    onFieldChange?.(field.id, `${draftDate}T${pad(hour)}:${pad(minute)}:${pad(second)}`)
+    if (hour > 23 || minute > 59) return
+    onFieldChange?.(field.id, `${draftDate}T${pad(hour)}:${pad(minute)}:00`)
     setOpen(false)
   }
   return <div className="pet-bubble__input-with-copy">
@@ -264,7 +264,7 @@ function DateTimeField({ field, onFieldChange }: { field: PetField; onFieldChang
       const date = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(seconds))
       if (date.getFullYear() !== Number(year) || date.getMonth() + 1 !== Number(month) || date.getDate() !== Number(day) || date.getHours() !== Number(hour) || date.getMinutes() !== Number(minute) || date.getSeconds() !== Number(seconds)) return
       setOpen(false)
-      onFieldChange?.(field.id, `${year}-${month}-${day}T${hour}:${minute}:${seconds}`)
+      onFieldChange?.(field.id, `${year}-${month}-${day}T${hour}:${minute}:00`)
     }} aria-label={field.label} aria-invalid={Boolean(field.error)} />
     <button ref={anchor} className="pet-bubble__calendar-icon" type="button" title="选择日期和时间" aria-label={`选择${field.label}`} aria-haspopup="dialog" aria-expanded={open} onClick={openPicker}>▦</button></div>
     {raw && <button type="button" title="复制" onClick={() => { void navigator.clipboard?.writeText(display) }}>复制</button>}
@@ -276,8 +276,8 @@ function DateTimeField({ field, onFieldChange }: { field: PetField; onFieldChang
           const date = `${month.getFullYear()}-${pad(month.getMonth() + 1)}-${pad(index + 1)}`
           return <button key={date} type="button" className={draftDate === date ? 'is-selected' : ''} onClick={() => setDraftDate(date)}>{index + 1}</button>
         })}</div>
-        <div className="pet-bubble__time-wheels"><TimeWheel label="时" value={time.hour} count={24} onChange={(value) => setPart('hour', value)} /><TimeWheel label="分" value={time.minute} count={60} onChange={(value) => setPart('minute', value)} /><TimeWheel label="秒" value={time.second} count={60} onChange={(value) => setPart('second', value)} /></div>
-        <footer><button type="button" onClick={() => { onFieldChange?.(field.id, ''); setOpen(false) }}>清空</button><button type="button" onClick={() => { const now = new Date(); onFieldChange?.(field.id, `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`); setOpen(false) }}>现在</button><button type="button" disabled={!draftDate || Number(time.hour) > 23 || Number(time.minute) > 59 || Number(time.second) > 59} onClick={apply}>确定</button></footer>
+        <div className="pet-bubble__time-wheels"><TimeWheel label="时" value={time.hour} count={24} onChange={(value) => setPart('hour', value)} /><TimeWheel label="分" value={time.minute} count={60} onChange={(value) => setPart('minute', value)} /></div>
+        <footer><button type="button" onClick={() => { onFieldChange?.(field.id, ''); setOpen(false) }}>清空</button><button type="button" onClick={() => { const now = new Date(); onFieldChange?.(field.id, `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}:00`); setOpen(false) }}>现在</button><button type="button" disabled={!draftDate || Number(time.hour) > 23 || Number(time.minute) > 59} onClick={apply}>确定</button></footer>
       </div>
     </>, document.body)}
   </div>
@@ -454,7 +454,7 @@ function MasterReview({ items, addressValue, onFieldChange }: { items: MasterRev
   </div>
 }
 
-export function PetBubble({ panel, skipEntranceAnimation, onAction, onSelectCandidate, onSelectApplication, onResolveImageOrder, onDiscardImageMatch, onFieldChange, onLookup, onSizeChange, onAddEscortRecord, onRemoveEscortRecord }: PetBubbleProps): React.JSX.Element {
+export function PetBubble({ panel, skipEntranceAnimation, onAction, onClose, onSelectCandidate, onSelectApplication, onResolveImageOrder, onDiscardImageMatch, onFieldChange, onLookup, onSizeChange, onAddEscortRecord, onRemoveEscortRecord }: PetBubbleProps): React.JSX.Element {
   const bubbleRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
@@ -484,6 +484,7 @@ export function PetBubble({ panel, skipEntranceAnimation, onAction, onSelectCand
       '--pet-form-body-max-height': `${Math.max(140, window.screen.availHeight - 230)}px`
     } as React.CSSProperties) : undefined} role="status" aria-live="polite">
       <span className="pet-bubble__tail" aria-hidden="true" />
+      <button className="pet-bubble__close" type="button" aria-label="关闭面板" title="关闭" onClick={onClose}>×</button>
       {panel.kind === 'speech' && <><p className="pet-bubble__text">{panel.text}</p><Actions actions={panel.actions ?? []} onAction={onAction} /></>}
       {panel.kind === 'progress' && <><p className="pet-bubble__text">{panel.text}</p>{panel.progress !== undefined && <div className="pet-bubble__progress" aria-label={`处理进度 ${panel.progress}%`}><span style={{ width: `${Math.max(0, Math.min(100, panel.progress))}%` }} /></div>}</>}
       {panel.kind === 'error' && <><p className="pet-bubble__text">{panel.text}</p><Actions actions={panel.actions ?? []} onAction={onAction} /></>}
