@@ -417,6 +417,7 @@ export async function analyzeOrderFields(
           sourceRef: message.sourceRef,
           channel: message.channel,
           senderName: message.senderName,
+          senderId: message.senderId,
           direction: message.direction,
           messageKind: message.messageKind,
           sourceTypeCode: message.sourceTypeCode,

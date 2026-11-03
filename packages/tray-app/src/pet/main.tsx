@@ -36,6 +36,8 @@ export function Pet(): React.JSX.Element {
   const [message, setMessage] = useState('把图片拖给我吧')
   const [candidates, setCandidates] = useState<Candidate[]>([])
   const [nativeImageMatch, setNativeImageMatch] = useState<NativeImageMatch | null>(null)
+  const activeImageMatch = useRef<NativeImageMatch | null>(null)
+  const imageMatchQueue = useRef<NativeImageMatch[]>([])
   const [selectedApplicationNo, setSelectedApplicationNo] = useState<string | null>(null)
   const [speaking, setSpeaking] = useState(false)
   const [bubbleSide, setBubbleSide] = useState<'left' | 'right'>('left')
@@ -57,6 +59,29 @@ export function Pet(): React.JSX.Element {
     }
   }
 
+  const displayImageMatch = (match: NativeImageMatch): void => {
+    activeImageMatch.current = match
+    setNativeImageMatch(match)
+    setSelectedApplicationNo(match.applicationNo)
+    setCandidates([])
+    setMode('candidates')
+    announce('我识别到一张挂号凭证，请确认申领号和订单', true)
+  }
+  const enqueueImageMatch = (match: NativeImageMatch): void => {
+    const key = (value: NativeImageMatch): string => value.source === 'drop' ? 'drop' : `chat:${value.attachmentId}`
+    if (activeImageMatch.current && key(activeImageMatch.current) === key(match)) return
+    if (imageMatchQueue.current.some((item) => key(item) === key(match))) return
+    if (activeImageMatch.current) imageMatchQueue.current.push(match)
+    else displayImageMatch(match)
+  }
+  const finishImageMatch = (): void => {
+    activeImageMatch.current = null
+    setNativeImageMatch(null)
+    setSelectedApplicationNo(null)
+    const next = imageMatchQueue.current.shift()
+    if (next) displayImageMatch(next)
+  }
+
   useEffect(() => {
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const eyes = document.querySelector<SVGElement>('.pet-avatar__eyes')
@@ -70,24 +95,21 @@ export function Pet(): React.JSX.Element {
     })
     const unsubscribe = window.api.onPetStatus((status) => {
       petDebug('status', { state: status.state, hasMessage: Boolean(status.message), candidateCount: status.candidates?.length ?? 0 })
+      if (status.imageMatch) {
+        enqueueImageMatch(status.imageMatch as NativeImageMatch)
+        return
+      }
+      if (activeImageMatch.current) return
       setMode(status.state)
       announce(status.message, status.state === 'done' || status.state === 'unknown' || status.state === 'candidates')
       setCandidates((status.candidates ?? []) as Candidate[])
-      if (status.imageMatch) {
-        setNativeImageMatch(status.imageMatch as NativeImageMatch)
-        setSelectedApplicationNo(status.imageMatch.applicationNo ?? null)
-      }
       if (status.state === 'done' || status.state === 'unknown') {
         setNativeImageMatch(null)
         setSelectedApplicationNo(null)
       }
     })
     const unsubscribeImageMatch = window.api.onPetImageMatch((match) => {
-      setNativeImageMatch(match)
-      setSelectedApplicationNo(match.applicationNo)
-      setCandidates([])
-      setMode('candidates')
-      announce('我识别到一张挂号凭证，请确认申领号和订单', true)
+      enqueueImageMatch(match)
     })
     const onDragEnter = (event: DragEvent): void => {
       petDebug('dragenter', { types: Array.from(event.dataTransfer?.types ?? []) })
@@ -172,13 +194,18 @@ export function Pet(): React.JSX.Element {
         window.clearTimeout(receivingTimer.current)
         receivingTimer.current = null
       }
+      if (result.imageMatch) {
+        enqueueImageMatch(result.imageMatch as NativeImageMatch)
+        if (activeImageMatch.current) setMode('candidates')
+        return
+      }
+      if (activeImageMatch.current) {
+        setMode('candidates')
+        return
+      }
       setMode(result.state)
       announce(result.message, result.state === 'done' || result.state === 'unknown' || result.state === 'candidates')
       setCandidates((result.candidates ?? []) as Candidate[])
-      if (result.imageMatch) {
-        setNativeImageMatch(result.imageMatch as NativeImageMatch)
-        setSelectedApplicationNo(result.imageMatch.applicationNo ?? null)
-      }
     }
     window.addEventListener('dragenter', onDragEnter, true)
     window.addEventListener('dragover', onDragOver, true)
@@ -401,10 +428,9 @@ export function Pet(): React.JSX.Element {
       setMode('working')
       announce('正在把图片保存到你选定的订单…')
       void window.api.petSelectOrder(orderId, applicationNo).then((result) => {
-        setNativeImageMatch(null)
-        setSelectedApplicationNo(null)
         setMode(result.state)
         announce(result.message, true)
+        finishImageMatch()
       }).catch((error: unknown) => {
         setMode('candidates')
         announce(error instanceof Error ? error.message : '图片保存失败', true)
@@ -415,10 +441,9 @@ export function Pet(): React.JSX.Element {
     setMode('working')
     announce('正在保存匹配结果…')
     void window.api.resolveNativeImageMatch({ attachmentId: match.attachmentId, applicationNo, orderId }).then((result) => {
-      setNativeImageMatch(null)
-      setSelectedApplicationNo(null)
       setMode('done')
       announce(result.message, true)
+      finishImageMatch()
     }).catch((error: unknown) => {
       setMode('unknown')
       announce(error instanceof Error ? error.message : '保存匹配结果失败', true)
@@ -427,10 +452,9 @@ export function Pet(): React.JSX.Element {
 
   const discardImageMatch = (): void => {
     void window.api.petDiscardPendingImage().then(() => {
-      setNativeImageMatch(null)
-      setSelectedApplicationNo(null)
       setMode('idle')
       announce('这张图片已放弃，可以继续处理其他图片。')
+      finishImageMatch()
     }).catch((error: unknown) => {
       setMode('candidates')
       announce(error instanceof Error ? error.message : '放弃图片失败', true)

@@ -25,6 +25,7 @@ export interface NativeChatCollectionConfig {
 
 export interface OrderAiAutomationConfig {
   imageAiEnabled: boolean
+  imageAiAnalysisStartAt: string
   communicationSilenceMinutes: number
   updatedAt: string | null
   callTrigger: string

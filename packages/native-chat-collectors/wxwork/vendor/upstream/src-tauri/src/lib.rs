@@ -521,6 +521,25 @@ fn best_image_candidates(paths: impl IntoIterator<Item = PathBuf>, expected_size
     candidates
 }
 
+/// Message-linked image paths can include a thumbnail and a larger image.
+/// Prefer the uniquely largest file only when all paths come from that row.
+fn prefer_largest_message_image(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
+    if paths.len() < 2 { return Ok(paths); }
+    let mut sizes = Vec::with_capacity(paths.len());
+    for path in &paths {
+        let size = fs::metadata(path).map_err(|error| format!("读取企微图片候选失败：{} ({error})", path.display()))?.len();
+        sizes.push(size);
+    }
+    let largest = sizes.iter().copied().max().unwrap_or(0);
+    let mut largest_paths = paths.iter().zip(sizes.iter()).filter(|(_, size)| **size == largest);
+    let selected = largest_paths.next().map(|(path, _)| path.clone());
+    if largest_paths.next().is_none() {
+        Ok(selected.into_iter().collect())
+    } else {
+        Ok(paths)
+    }
+}
+
 fn downloaded_name_rank(expected: &str, actual: &str) -> Option<(u64, u8)> {
     let expected = expected.rsplit(|character| character == '/' || character == '\\').next()?.to_lowercase();
     let actual = actual.rsplit(|character| character == '/' || character == '\\').next()?.to_lowercase();
@@ -5436,7 +5455,12 @@ fn resolve_media_metadata_with_local_paths(
             file_candidates.retain(|path| file_signature_matches(path, media.original_name.as_deref(), media.mime_type.as_deref()));
         }
         let file_candidates = if media_is_image {
-            best_image_candidates(file_candidates, media.size_bytes)
+            let images = best_image_candidates(file_candidates, media.size_bytes);
+            if has_row_paths {
+                prefer_largest_message_image(images).map_err(|error| CommandError {
+                    code: "MEDIA_CANDIDATE_CHECK_FAILED", message: error, recoverable: true,
+                })?
+            } else { images }
         } else {
             file_candidates
         };
@@ -6217,6 +6241,20 @@ impl From<&SourceCandidate> for SafeSourceCandidate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn message_image_candidates_prefer_unique_largest_and_preserve_ties() {
+        let root = std::env::temp_dir().join(format!("wxwork-image-size-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let small = root.join("small.jpg");
+        let large = root.join("large.jpg");
+        fs::write(&small, [1_u8; 4]).unwrap();
+        fs::write(&large, [2_u8; 10]).unwrap();
+        assert_eq!(prefer_largest_message_image(vec![small.clone(), large.clone()]).unwrap(), vec![large.clone()]);
+        fs::write(&small, [3_u8; 10]).unwrap();
+        assert_eq!(prefer_largest_message_image(vec![small.clone(), large.clone()]).unwrap(), vec![small, large]);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn directory_activity_finds_latest_message_and_reports_invalid_time() {

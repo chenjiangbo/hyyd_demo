@@ -2,8 +2,9 @@ import { Prisma, type PrismaClient } from '@prisma/client'
 import type * as Minio from 'minio'
 import { matchNativeRegistrationProofToOrders } from './registrationProofService.js'
 import { understandImage } from './imageUnderstanding.js'
-import { isImageAiEnabled } from './orderAiAutomationConfig.js'
+import { getNativeChatImageAnalysisStartAt, isImageAiEnabled, nativeChatStoredBeijingTimeIsEligible } from './orderAiAutomationConfig.js'
 import { convertNativeChatWxgfToJpeg } from './nativeChatWxgfPreview.js'
+import { triggerOrderAiAnalysis } from '../jobs/orderAiSchedule.js'
 
 const BUCKET = 'materials'
 const WORKER_INTERVAL_MS = 15_000
@@ -107,14 +108,27 @@ async function getAttachment(prisma: PrismaClient, id: number) {
     message_order_id: number | null
     message_application_link_status: string
     employee_id: number
+    received_at: Date | null
   }>>`
     SELECT a.id, a.message_id, m.conversation_id, a.kind, a.mime_type, a.storage_key, a.state, a.source_metadata,
            a.application_no, a.order_id, a.application_link_status, a.application_link_source,
            m.application_no AS message_application_no, m.order_id AS message_order_id,
-           m.application_link_status AS message_application_link_status, c.employee_id
+           m.application_link_status AS message_application_link_status, c.employee_id, root.occurred_at AS received_at
       FROM native_chat_attachments a
       JOIN native_chat_messages m ON m.id = a.message_id
       JOIN native_chat_conversations c ON c.id = m.conversation_id
+      LEFT JOIN LATERAL (
+        WITH RECURSIVE ancestors AS (
+          SELECT m.conversation_id, m.source_message_id, m.parent_source_message_id, m.occurred_at, ARRAY[m.id] AS visited
+          UNION ALL
+          SELECT p.conversation_id, p.source_message_id, p.parent_source_message_id, p.occurred_at, ancestors.visited || p.id
+            FROM ancestors
+            JOIN native_chat_messages p ON p.conversation_id = ancestors.conversation_id
+              AND p.source_message_id = ancestors.parent_source_message_id
+           WHERE NOT p.id = ANY(ancestors.visited)
+        )
+        SELECT occurred_at FROM ancestors WHERE parent_source_message_id IS NULL
+      ) root ON TRUE
      WHERE a.id = ${id}
   `
   return rows[0] ?? null
@@ -129,6 +143,9 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
     if (!await isImageAiEnabled(prisma)) return
     const attachment = await getAttachment(prisma, id)
     if (!attachment || attachment.kind !== 'image' || attachment.state !== 'available' || !attachment.storage_key) return
+    if (!attachment.received_at) throw new Error(`图片附件 ${id} 的合并消息未找到，无法判断发送时间`)
+    const startAt = await getNativeChatImageAnalysisStartAt(prisma)
+    if (!nativeChatStoredBeijingTimeIsEligible(attachment.received_at, startAt)) return
     const metadata = asRecord(attachment.source_metadata) ?? {}
     if (metadata.rendition !== 'non_thumbnail') return
     let analysis = asRecord(metadata.imageAnalysis)
@@ -195,6 +212,9 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
           ? attachment.application_no
           : attachment.message_application_link_status === 'matched' ? attachment.message_application_no : null,
       })
+      if (matching.candidateApplicationCount === 0) {
+        console.warn(`[native-chat:image] 挂号凭证 ${id} 未找到申领号和订单候选：${matching.reason}`)
+      }
       const latest = await getAttachment(prisma, id)
       const latestMetadata = asRecord(latest?.source_metadata) ?? {}
       if (!latest || latest.storage_key !== attachment.storage_key || latestMetadata.content_hash !== metadata.content_hash) {
@@ -267,6 +287,12 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
       await writeImageAnalysis(prisma, id, { ...analysis, registrationMatch: {
         ...matching, status: 'completed', attemptCount: matchAttempt, completedAt: new Date().toISOString()
       } }, true)
+      const linked = await getAttachment(prisma, id)
+      if (linked?.application_link_status === 'matched' && linked.application_no && linked.order_id !== null) {
+        void triggerOrderAiAnalysis(prisma, minio, linked.order_id).catch((error) => {
+          console.error(`[native-chat:image] 挂号凭证 ${id} 触发订单字段分析失败：`, error)
+        })
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       await writeImageAnalysis(prisma, id, { ...analysis, registrationMatch: {
@@ -288,23 +314,38 @@ async function recoverAvailableImages(prisma: PrismaClient, minio: Minio.Client)
   workerTicking = true
   try {
     if (!await isImageAiEnabled(prisma)) return
+    const startAt = await getNativeChatImageAnalysisStartAt(prisma)
     const rows = await prisma.$queryRaw<Array<{ id: number }>>`
-      SELECT id
-        FROM native_chat_attachments
-       WHERE kind = 'image'
-         AND state = 'available'
-         AND storage_key IS NOT NULL
-         AND source_metadata->>'rendition' = 'non_thumbnail'
+      SELECT a.id
+        FROM native_chat_attachments a
+        JOIN native_chat_messages m ON m.id = a.message_id
+        LEFT JOIN LATERAL (
+          WITH RECURSIVE ancestors AS (
+            SELECT m.conversation_id, m.source_message_id, m.parent_source_message_id, m.occurred_at, ARRAY[m.id] AS visited
+            UNION ALL
+            SELECT p.conversation_id, p.source_message_id, p.parent_source_message_id, p.occurred_at, ancestors.visited || p.id
+              FROM ancestors
+              JOIN native_chat_messages p ON p.conversation_id = ancestors.conversation_id
+                AND p.source_message_id = ancestors.parent_source_message_id
+             WHERE NOT p.id = ANY(ancestors.visited)
+          )
+          SELECT occurred_at FROM ancestors WHERE parent_source_message_id IS NULL
+        ) root ON TRUE
+       WHERE a.kind = 'image'
+         AND a.state = 'available'
+         AND a.storage_key IS NOT NULL
+         AND a.source_metadata->>'rendition' = 'non_thumbnail'
+         AND (root.occurred_at IS NULL OR root.occurred_at >= (${startAt}::timestamptz AT TIME ZONE 'Asia/Shanghai'))
          AND (
-           source_metadata->'imageAnalysis' IS NULL
-           OR source_metadata->'imageAnalysis'->>'status' IN ('retrying', 'pending')
+           a.source_metadata->'imageAnalysis' IS NULL
+           OR a.source_metadata->'imageAnalysis'->>'status' IN ('retrying', 'pending')
            OR (
-             source_metadata->'imageAnalysis'->>'status' = 'completed'
-             AND source_metadata->'imageAnalysis'->>'imageType' = '挂号凭证'
-             AND COALESCE(source_metadata->'imageAnalysis'->'registrationMatch'->>'status', 'pending') IN ('pending', 'retrying')
+             a.source_metadata->'imageAnalysis'->>'status' = 'completed'
+             AND a.source_metadata->'imageAnalysis'->>'imageType' = '挂号凭证'
+             AND COALESCE(a.source_metadata->'imageAnalysis'->'registrationMatch'->>'status', 'pending') IN ('pending', 'retrying')
            )
          )
-       ORDER BY id
+       ORDER BY a.id
     `
     for (const row of rows) {
       try {

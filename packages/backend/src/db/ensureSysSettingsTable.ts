@@ -31,6 +31,12 @@ const INIT_ORDER_AI_AUTOMATION_CONFIG_SQL = `
   ON CONFLICT (key) DO NOTHING;
 `
 
+const INIT_NATIVE_CHAT_IMAGE_ANALYSIS_START_SQL = `
+  INSERT INTO sys_settings (key, value, updated_at)
+  VALUES ('native_chat_image_analysis_start', '{"startAt":"2026-11-02T12:00:00.000Z"}'::jsonb, NOW())
+  ON CONFLICT (key) DO NOTHING;
+`
+
 export async function ensureSysSettingsTable(
   prisma: PrismaClient,
   logger?: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string, err?: unknown) => void }
@@ -39,6 +45,7 @@ export async function ensureSysSettingsTable(
     await prisma.$executeRawUnsafe(CREATE_TABLE_SQL)
     await prisma.$executeRawUnsafe(INIT_ALIYUN_SMS_CONFIG_SQL)
     await prisma.$executeRawUnsafe(INIT_ORDER_AI_AUTOMATION_CONFIG_SQL)
+    await prisma.$executeRawUnsafe(INIT_NATIVE_CHAT_IMAGE_ANALYSIS_START_SQL)
     logger?.info('系统设置表 (sys_settings) 结构与默认值校验完成')
   } catch (err) {
     logger?.error('创建/校验 sys_settings 系统设置表失败:', err)

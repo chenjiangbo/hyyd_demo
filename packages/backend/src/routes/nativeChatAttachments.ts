@@ -3,6 +3,7 @@ import type { PrismaClient } from '@prisma/client'
 import type { Client } from 'minio'
 import { removeNativeChatWxgfPreview } from '../services/nativeChatWxgfPreview.js'
 import { notifyNativeChatImageReady } from '../services/nativeChatImageAnalysis.js'
+import { triggerOrderAiAnalysis } from '../jobs/orderAiSchedule.js'
 
 const BUCKET = 'materials'
 
@@ -110,6 +111,7 @@ export function registerNativeChatAttachmentRoutes(
          AND a.source_metadata->'imageAnalysis'->>'imageType' = '挂号凭证'
          AND a.source_metadata->'imageAnalysis'->'registrationMatch'->>'status' = 'completed'
          AND a.source_metadata->'imageAnalysis'->'registrationMatch'->'managerResolution' IS NULL
+         AND jsonb_array_length(COALESCE(a.source_metadata->'imageAnalysis'->'registrationMatch'->'candidateApplications', '[]'::jsonb)) > 0
          AND (
            a.source_metadata->'imageAnalysis'->'registrationMatch'->>'applicationDecision' <> 'matched'
            OR a.source_metadata->'imageAnalysis'->'registrationMatch'->>'orderDecision' <> 'matched'
@@ -156,6 +158,7 @@ export function registerNativeChatAttachmentRoutes(
     const applicationNo = typeof request.body?.applicationNo === 'string' ? request.body.applicationNo.trim() : ''
     const orderId = request.body?.orderId == null ? null : Number(request.body.orderId)
     if (!Number.isSafeInteger(id) || id <= 0 || !applicationNo) return reply.status(400).send({ error: '图片或申领号无效' })
+    if (orderId === null) return reply.status(400).send({ error: '请选择订单' })
     if (orderId !== null && (!Number.isSafeInteger(orderId) || orderId <= 0)) return reply.status(400).send({ error: '订单 ID 无效' })
     const attachment = await readAttachment(prisma, id, request.employee.id)
     if (!attachment || !attachment.storage_key) return reply.status(404).send({ error: '图片附件不存在' })
@@ -208,6 +211,11 @@ export function registerNativeChatAttachmentRoutes(
          WHERE id = ${id}
       `
     })
+    if (orderId !== null) {
+      void triggerOrderAiAnalysis(prisma, minioClient, orderId).catch((error) => {
+        fastify.log.error({ err: error, attachmentId: id, orderId }, '人工确认挂号凭证后触发订单字段分析失败')
+      })
+    }
     return reply.send({ data: { attachmentId: id, applicationNo, orderId, confirmed: true } })
   })
 }

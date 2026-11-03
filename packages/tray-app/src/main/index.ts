@@ -352,6 +352,8 @@ function createPetWindow(): void {
       pendingPetOrderReminder = null
     }
     for (const match of pendingPetImageMatches.values()) petWindow.webContents.send('pet:image-match', match)
+    const pendingIntake = petIntake.getPendingStatus()
+    if (pendingIntake) petWindow.webContents.send('pet:status', pendingIntake)
   })
   petWindow.once('ready-to-show', () => {
     const display = screen.getPrimaryDisplay()
@@ -840,6 +842,8 @@ if (!gotLock) {
       (_e, cfg: { backendUrl: string; employeeCode: string }) => {
         materialSync.setConfig(cfg)
         petIntake.setConfig(cfg)
+        const pendingIntake = petIntake.getPendingStatus()
+        if (pendingIntake && petWindow && !petWindow.isDestroyed() && !petWindow.webContents.isLoading()) petWindow.webContents.send('pet:status', pendingIntake)
         petOrderAi.setConfig(cfg)
         materialSync.kick()
         return { ok: true }

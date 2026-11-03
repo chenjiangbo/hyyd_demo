@@ -5,6 +5,7 @@ export type NativeChatAiMessage = {
   sourceRef: string
   channel: string
   senderName: string | null
+  senderId: string | null
   direction: string
   messageKind: string
   sourceTypeCode: string | null
@@ -32,6 +33,15 @@ function metadataRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null
+}
+
+function senderIdentity(channel: string, senderId: string | null, sourceMetadata: unknown): string | null {
+  if (channel !== 'wechat') return senderId
+  const metadata = metadataRecord(sourceMetadata)
+  const username = typeof metadata?.senderUsername === 'string' ? metadata.senderUsername.trim() : ''
+  if (username) return username
+  const shard = typeof metadata?.shard === 'string' ? metadata.shard.trim() : ''
+  return senderId && shard ? `${shard}:${senderId}` : senderId
 }
 
 function imageAnalysisLabel(sourceMetadata: unknown): string | null {
@@ -125,6 +135,7 @@ export async function loadNativeChatAiBatch(
       sourceRef: `原生消息#${row.id}`,
       channel: row.conversation.channel,
       senderName: row.senderName,
+      senderId: senderIdentity(row.conversation.channel, row.senderId, row.sourceMetadata),
       direction: row.direction,
       messageKind: row.kind,
       sourceTypeCode: row.sourceTypeCode,
@@ -162,10 +173,7 @@ export async function loadNativeChatFieldAiBatch(
     where: {
       applicationLinkStatus: 'matched',
       kind: 'image',
-      OR: [
-        ...(applicationNo ? [{ applicationNo, orderId: null }] : []),
-        { orderId }
-      ],
+      orderId,
       sourceMetadata: { path: ['imageAnalysis', 'imageType'], equals: '挂号凭证' }
     },
     include: { message: { include: { conversation: { select: { channel: true } } } } },
@@ -196,6 +204,7 @@ export async function loadNativeChatFieldAiBatch(
       sourceRef: `原生消息#${row.id}`,
       channel: row.conversation.channel,
       senderName: row.senderName,
+      senderId: senderIdentity(row.conversation.channel, row.senderId, row.sourceMetadata),
       direction: row.direction,
       messageKind: row.kind,
       sourceTypeCode: row.sourceTypeCode,
@@ -235,6 +244,7 @@ export async function loadNativeChatFieldAiBatch(
       sourceRef: `挂号凭证素材#${attachment.id}`,
       channel: attachment.message.conversation.channel,
       senderName: attachment.message.senderName,
+      senderId: senderIdentity(attachment.message.conversation.channel, attachment.message.senderId, attachment.message.sourceMetadata),
       direction: 'system',
       messageKind: 'registration_proof',
       sourceTypeCode: null,

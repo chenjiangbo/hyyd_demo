@@ -227,6 +227,12 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const adminApi = {
+  imageAnalysisRecords(cursor?: string) {
+    return request<{ items: Array<{ id: number; source: 'wechat' | 'wxwork' | 'pet'; employee_name: string; title: string | null; occurred_at: string; state: string; image_available: boolean; received_time_unknown: boolean; image_rendition: string | null; full_image_state: string | null; image_analysis: Record<string, unknown> | null; registration_match: Record<string, unknown> | null; error: string | null; order_id: number | null }>; nextCursor: string | null; total: number }>(`/api/v1/admin/image-analysis-records${qs({ cursor })}`)
+  },
+  petImageAnalysisRecordUrl(recordId: number) {
+    return request<{ url: string }>(`/api/v1/admin/image-analysis-records/pet/${recordId}/url`)
+  },
   // ───── 鉴权 ─────
   login(password: string) {
     return request<{ ok: boolean }>('/api/v1/admin/login', {

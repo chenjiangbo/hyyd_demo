@@ -318,19 +318,19 @@ class MediaDownloader:
         """取一张 V2 图片的密文首块，作为密钥反测试样"""
         if self._key_probe is not None:
             return self._key_probe
-        if dat_path is None:
-            base = os.path.join(self.db.account_dir, "msg", "attach")
-            hits = glob.glob(os.path.join(base, "*", "*", "Img", "*.dat"))
-            if not hits:
-                return b""
-            dat_path = hits[0]
-        with open(dat_path, "rb") as f:
-            head = f.read(32)
-        if head[:6] == V2_MAGIC:
-            self._key_probe = head[15:31]
-        else:
-            self._key_probe = head[V1_HEADER_SZ: V1_HEADER_SZ + 16]
-        return self._key_probe
+        paths = [dat_path] if dat_path else glob.iglob(os.path.join(self.db.account_dir, "msg", "attach", "*", "*", "Img", "*.dat"))
+        for path in paths:
+            with open(path, "rb") as f:
+                head = f.read(31)
+            if len(head) >= 31 and head[:6] == V2_MAGIC:
+                self._key_probe = head[15:31]
+                return self._key_probe
+        return b""
+
+    def _hyyd_timing_event(self, stage: str, started: float, **fields) -> None:
+        callback = getattr(self, '_hyyd_timing', None)
+        if callback:
+            callback(stage, int((time.monotonic() - started) * 1000), fields)
 
     def _validate_key(self, aes_key: str) -> bool:
         """用真实密文首块反测密钥是否有效"""
@@ -526,11 +526,7 @@ class MediaDownloader:
         if found or not monitor:
             return found
 
-        print(
-            "未在微信进程内存中找到图片 AES 密钥。\n"
-            "请现在打开微信，进入任意聊天，点击一张图片查看大图，\n"
-            f"本程序将在 {monitor_timeout:.0f} 秒内自动捕获密钥..."
-        )
+        wxlog.warning("未在微信进程内存中找到图片密钥，将继续尝试获取")
         start = time.time()
         while time.time() - start < monitor_timeout:
             time.sleep(2.0)
@@ -562,7 +558,9 @@ class MediaDownloader:
             dat = self._dbg_last_dat()
             xor_key = self._derive_xor_key(dat) if dat else 0x88
         # 2) AES: cfgDword 派生优先
+        started = time.monotonic()
         derived = self._derive_cfg_key()
+        self._hyyd_timing_event('image_key_config', started, found=bool(derived), configAvailable=bool(self._cfg_dword or getattr(self.db, 'cfg_dword', None)))
         if derived:
             self._xor_key = xor_key = derived[1]
             self._img_key = (derived[0], derived[1])
@@ -620,13 +618,22 @@ class MediaDownloader:
         if self._img_key and self._validate_key(self._img_key[0]):
             return self._img_key[0]
         # 尝试cfgDword派生
+        started = time.monotonic()
         derived = self._derive_cfg_key()
+        self._hyyd_timing_event('image_key_config', started, found=bool(derived), configAvailable=bool(self._cfg_dword or getattr(self.db, 'cfg_dword', None)))
         if derived:
             return derived[0]
+        started = time.monotonic()
         cached = self._load_persisted_key()
+        self._hyyd_timing_event('image_key_cache', started, found=bool(cached), cacheFilePresent=os.path.isfile(self._key_store()))
         if cached:
             return cached
-        key = self._scan_aes_key(monitor=True)
+        started = time.monotonic()
+        self._hyyd_timing_event('image_key_memory_scan_started', started)
+        try:
+            key = self._scan_aes_key(monitor=True)
+        finally:
+            self._hyyd_timing_event('image_key_memory_scan', started)
         if key:
             self._persist_key(key)
         return key
@@ -637,8 +644,14 @@ class MediaDownloader:
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
         aes_size, xor_size = struct.unpack_from("<LL", data, 6)
+        if self._key_probe is None and len(data) >= 31:
+            self._key_probe = data[15:31]
         if xor_key is None:
-            xor_key = self._install_xor_key()
+            started = time.monotonic()
+            try:
+                xor_key = self._install_xor_key()
+            finally:
+                self._hyyd_timing_event('image_xor_preparation', started)
         if aes_key is None:
             aes_key = self._resolve_aes_key()
             if not aes_key:
@@ -1371,7 +1384,11 @@ class MediaDownloader:
         md5 = self._img_md5(row)
         if not md5:
             return None
-        files = self._image_files(user, md5)
+        started = time.monotonic()
+        try:
+            files = self._image_files(user, md5)
+        finally:
+            self._hyyd_timing_event('image_local_file_lookup', started, sourceConversationId=user, localId=local_id)
         if not files:
             return None
         mid_sz = (files.get('mid') or (0, 0))[1]

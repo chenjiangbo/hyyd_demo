@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs'
 import { extname, join } from 'path'
 import { randomUUID } from 'crypto'
 import type { NativeChatImageMatchApplication, PetDropImageMatch } from '@huanyu/shared-types'
@@ -21,7 +21,8 @@ export type PetIntakeResult =
   | { state: 'done' | 'unknown'; message: string }
   | { state: 'candidates'; message: string; candidates?: Candidate[]; imageMatch?: PetDropImageMatch }
 
-type PendingIntake = { path: string; mimeType: string; base64: string; imageMatch: PetDropImageMatch }
+type IntakeImage = { imageType: string; typeDescription: string; description: string; visibleText: string; visibleFields: Array<{ label: string; value: string }> }
+type PendingIntake = { path: string; mimeType: string; base64: string; imageMatch: PetDropImageMatch; image: IntakeImage; analysisRecordId: number }
 
 const EXT_MIME: Record<string, string> = {
   '.png': 'image/png',
@@ -46,6 +47,20 @@ export class PetIntakeService {
     const employeeCode = config.employeeCode.trim()
     if (!backendUrl || !employeeCode) throw new Error('浮动精灵缺少后台地址或员工登录信息')
     this.config = { backendUrl, employeeCode }
+    this.pending = null
+    for (const name of readdirSync(this.inboxDir).filter((file) => file.endsWith('.pending.json'))) {
+      const saved = JSON.parse(readFileSync(join(this.inboxDir, name), 'utf8')) as { backendUrl: string; employeeCode: string; path: string; mimeType: string; imageMatch: PetDropImageMatch; image: IntakeImage; analysisRecordId: number }
+      if (saved.backendUrl !== backendUrl || saved.employeeCode !== employeeCode) continue
+      if (this.pending) throw new Error('存在多张待确认的拖入图片，请检查客户端日志')
+      if (!existsSync(saved.path)) throw new Error('待确认的挂号凭证图片不存在')
+      if (!Number.isSafeInteger(saved.analysisRecordId)) throw new Error('待确认图片缺少识别记录编号')
+      const base64 = readFileSync(saved.path).toString('base64')
+      this.pending = { ...saved, base64, imageMatch: { ...saved.imageMatch, imageUrl: `data:${saved.mimeType};base64,${base64}` } }
+    }
+  }
+
+  getPendingStatus(): PetIntakeResult | null {
+    return this.pending ? { state: 'candidates', message: '请确认挂号凭证的申领号和订单。', imageMatch: this.pending.imageMatch } : null
   }
 
   async processFile(sourcePath: string): Promise<PetIntakeResult> {
@@ -62,6 +77,7 @@ export class PetIntakeService {
     copyFileSync(sourcePath, stagedPath)
     const base64 = readFileSync(stagedPath).toString('base64')
     let response: {
+      analysisRecordId: number
       image: {
         imageType: string
         typeDescription: string
@@ -86,6 +102,7 @@ export class PetIntakeService {
     }
 
     const image = response.image
+    if (!Number.isSafeInteger(response.analysisRecordId) || response.analysisRecordId <= 0) throw new Error('后台没有返回图片识别记录编号')
     if (image.imageType !== '挂号凭证') {
       this.removeStaged(stagedPath)
       const description = [image.typeDescription, image.description, image.visibleText].filter(Boolean).join('；')
@@ -100,6 +117,16 @@ export class PetIntakeService {
     }
 
     const match = response.registrationMatch
+    if (match.candidateApplications.length === 0) {
+      writeFileSync(`${stagedPath}.json`, JSON.stringify({ image, analysisRecordId: response.analysisRecordId, reason: match.reason, recordedAt: new Date().toISOString() }), 'utf8')
+      console.warn(`[pet] 挂号凭证未找到候选，图片和识别结果保留在 ${stagedPath}：${match.reason}`)
+      return { state: 'done', message: '暂未找到对应订单，已记录这张挂号凭证。' }
+    }
+    if (match.applicationDecision === 'matched' && match.applicationNo && match.orderDecision === 'matched' && match.orderId !== null) {
+      await this.uploadMaterial(match.orderId, mimeType, base64, image, response.analysisRecordId, match.applicationNo)
+      this.removeStaged(stagedPath)
+      return { state: 'done', message: '挂号凭证已关联到对应订单。' }
+    }
     const imageMatch: PetDropImageMatch = {
       source: 'drop',
       imageUrl: `data:${mimeType};base64,${base64}`,
@@ -118,7 +145,8 @@ export class PetIntakeService {
       orderDecision: match.orderDecision,
       reason: match.reason
     }
-    this.pending = { path: stagedPath, mimeType, base64, imageMatch }
+    writeFileSync(`${stagedPath}.pending.json`, JSON.stringify({ ...this.config, path: stagedPath, mimeType, imageMatch: { ...imageMatch, imageUrl: '' }, image, analysisRecordId: response.analysisRecordId }), 'utf8')
+    this.pending = { path: stagedPath, mimeType, base64, imageMatch, image, analysisRecordId: response.analysisRecordId }
     return {
       state: 'candidates',
       message: match.candidateApplications.length > 0
@@ -139,7 +167,7 @@ export class PetIntakeService {
     if (!application || !application.orders.some((candidate) => candidate.orderId === orderId)) {
       throw new Error('选择的订单不属于本次确认的申领号')
     }
-    await this.uploadMaterial(orderId, pending.mimeType, pending.base64)
+    await this.uploadMaterial(orderId, pending.mimeType, pending.base64, pending.image, pending.analysisRecordId, confirmedApplicationNo)
     this.removeStaged(pending.path)
     this.pending = null
     return { state: 'done', message: '好啦，图片已经保存到你确认的订单了' }
@@ -151,17 +179,20 @@ export class PetIntakeService {
     this.pending = null
   }
 
-  private async uploadMaterial(orderId: number, mimeType: string, base64: string): Promise<void> {
+  private async uploadMaterial(orderId: number, mimeType: string, base64: string, image: IntakeImage, analysisRecordId: number, applicationNo: string): Promise<void> {
     await this.post(`/api/v1/orders/${orderId}/materials`, {
       type: 'image',
       clientUuid: randomUUID(),
       mimeType,
-      base64
+      base64,
+      imageAnalysis: image,
+      analysisRecordId,
+      applicationNo
     })
   }
 
   private removeStaged(path: string): void {
-    try { rmSync(path, { force: true }) } catch (error) { console.error('[pet] 删除暂存图片失败', error) }
+    try { rmSync(`${path}.pending.json`, { force: true }); rmSync(path, { force: true }) } catch (error) { console.error('[pet] 删除暂存图片失败', error) }
   }
 
   private async post<T = unknown>(path: string, body: unknown): Promise<T> {

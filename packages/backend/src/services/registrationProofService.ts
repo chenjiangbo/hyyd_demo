@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@prisma/client'
 import { visionChat } from '../llm/gatewayClient.js'
+import { selectRegistrationProofScores } from './registrationProofConfidence.js'
 
 export type RegistrationProofFields = {
   isRegistrationProof: boolean
@@ -511,10 +512,23 @@ export async function matchNativeRegistrationProofToOrders(
 
   if (candidates.length === 0) {
     return {
-      applicationDecision: 'no_match', applicationNo: null, applicationEvidence: [],
-      orderDecision: 'not_evaluated', orderId: null, orderEvidence: [], alternatives: [],
+      applicationDecision: options.applicationNo ? 'matched' : 'no_match', applicationNo: options.applicationNo,
+      applicationEvidence: options.applicationNo ? ['原会话已关联该申领号'] : [],
+      orderDecision: options.applicationNo ? 'ambiguous' : 'not_evaluated', orderId: null, orderEvidence: [], alternatives: [],
       reason: options.applicationNo ? '已关联申领号下未找到订单数据' : '图片可见信息未检索到申领号候选',
       candidateApplicationCount: 0, candidateOrderCount: 0, candidateApplications: []
+    }
+  }
+
+  if (candidates.length === 1 && candidates[0].orders.length === 1) {
+    const candidate = candidates[0]
+    return {
+      applicationDecision: 'matched', applicationNo: candidate.applicationNo,
+      applicationEvidence: options.applicationNo ? ['原会话已关联该申领号'] : candidate.programEvidence,
+      orderDecision: 'matched', orderId: candidate.orders[0].orderId,
+      orderEvidence: candidate.orders[0].programMatchedFields,
+      alternatives: [], reason: '程序找到唯一申领号和订单',
+      candidateApplicationCount: 1, candidateOrderCount: 1, candidateApplications: candidates
     }
   }
 
@@ -574,22 +588,43 @@ export async function matchNativeRegistrationProofToOrders(
     `这些申领号的相关沟通时间线：${JSON.stringify(communications)}`
   ].join('\n\n')
   const response = await visionChat(
-    options.applicationNo ? NATIVE_LINKED_APPLICATION_ORDER_PROMPT : NATIVE_APPLICATION_ORDER_PROMPT,
+    [
+      '你是医疗服务业务匹配助手。比较挂号凭证和输入的所有申领号及订单，逐个给出 0 到 100 的匹配置信度和图片或业务证据。',
+      ...NATIVE_APPLICATION_ORDER_PROMPT.split('\n').slice(1, 4),
+      '申领号只有一个时其归属已由程序确定；否则分别评估所有申领号。无论申领号是否确定，都必须评估每个申领号下的每张订单。',
+      '只能使用输入提供的信息，不能编造证据、遗漏或增加候选。图片里的医院登记号不是业务申领号或订单号。',
+      '仅返回 JSON：{"applications":[{"applicationNo":"申领号","confidence":92,"evidence":["依据"],"orders":[{"orderId":123,"confidence":92,"evidence":["依据"]}]}],"reason":"说明"}。'
+    ].join('\n'),
     userPrompt,
     imageDataUrl,
     { temperature: 0 }
   )
-  const orderIdsByApplication = new Map(candidates.map((candidate) => [candidate.applicationNo, new Set(candidate.orders.map((order) => order.orderId))]))
-  const parsed = parseNativeMatch(
-    response.content,
-    new Set(candidates.map((candidate) => candidate.applicationNo)),
-    orderIdsByApplication,
-    options.applicationNo
-  )
+  const modelResult = parseJsonObject(response.content)
+  const selected = selectRegistrationProofScores(modelResult, candidates)
+  const parsed = {
+    applicationDecision: selected.application ? 'matched' as const : 'ambiguous' as const,
+    applicationNo: selected.application?.applicationNo ?? null,
+    applicationEvidence: selected.application?.evidence ?? [],
+    orderDecision: !selected.application ? 'not_evaluated' as const : selected.order ? 'matched' as const : 'ambiguous' as const,
+    orderId: selected.order?.orderId ?? null,
+    orderEvidence: selected.order?.evidence ?? [],
+    alternatives: selected.scored.map((candidate) => `${candidate.applicationNo}: ${candidate.confidence}%`),
+    reason: text(modelResult.reason) ?? ''
+  }
   return {
     ...parsed,
     candidateApplicationCount: candidates.length,
     candidateOrderCount: candidates.reduce((total, candidate) => total + candidate.orders.length, 0),
-    candidateApplications: candidates
+    candidateApplications: candidates.map((candidate) => {
+      const scored = selected.scored.find((item) => item.applicationNo === candidate.applicationNo)!
+      return {
+        ...candidate,
+        confidence: scored.confidence,
+        orders: candidate.orders.map((order) => ({
+          ...order,
+          confidence: scored.orders.find((item) => item.orderId === order.orderId)!.confidence
+        }))
+      }
+    })
   }
 }

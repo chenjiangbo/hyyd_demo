@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { Prisma, type PrismaClient } from '@prisma/client'
 import type { Client } from 'minio'
 import { getNativeChatWxgfPreviewUrl, removeNativeChatWxgfPreview } from '../services/nativeChatWxgfPreview.js'
+import { getNativeChatImageAnalysisStartAt } from '../services/orderAiAutomationConfig.js'
 import {
   getNativeChatCollectionConfig,
   saveNativeChatCollectionConfig,
@@ -76,6 +77,77 @@ export function registerNativeChatCollectionAdminRoutes(
   minioClient: Client,
   minioPublicClient: Client
 ): void {
+  fastify.get<{ Querystring: { cursor?: string } }>('/api/v1/admin/image-analysis-records', async (request, reply) => {
+    let cursor: { time: string; source: string; id: number } | null = null
+    if (request.query.cursor) {
+      try {
+        cursor = JSON.parse(Buffer.from(request.query.cursor, 'base64url').toString('utf8')) as { time: string; source: string; id: number }
+        if (!cursor || !Number.isFinite(Date.parse(cursor.time)) || !['wechat', 'wxwork', 'pet'].includes(cursor.source) || !Number.isSafeInteger(cursor.id) || cursor.id <= 0) throw new Error('invalid')
+      } catch { return reply.status(400).send({ error: '分页游标无效' }) }
+    }
+    const startAt = await getNativeChatImageAnalysisStartAt(prisma)
+    const records = Prisma.sql`
+      WITH image_records AS (
+        SELECT a.id, c.channel AS source, e.name AS employee_name, c.title,
+               m.occurred_at, a.state, a.source_metadata->'imageAnalysis' AS image_analysis,
+               a.source_metadata->'imageAnalysis'->'registrationMatch' AS registration_match,
+               NULL::text AS error, a.order_id,
+               (a.state = 'available' AND a.storage_key IS NOT NULL) AS image_available,
+               (root.occurred_at IS NULL) AS received_time_unknown,
+               a.source_metadata->>'rendition' AS image_rendition,
+               a.source_metadata->>'nonThumbnailState' AS full_image_state
+          FROM native_chat_attachments a
+          JOIN native_chat_messages m ON m.id = a.message_id
+          JOIN native_chat_conversations c ON c.id = m.conversation_id
+          JOIN employees e ON e.id = c.employee_id
+          LEFT JOIN LATERAL (
+            WITH RECURSIVE ancestors AS (
+              SELECT m.conversation_id, m.source_message_id, m.parent_source_message_id, m.occurred_at, ARRAY[m.id] AS visited
+              UNION ALL
+              SELECT p.conversation_id, p.source_message_id, p.parent_source_message_id, p.occurred_at, ancestors.visited || p.id
+                FROM ancestors
+                JOIN native_chat_messages p ON p.conversation_id = ancestors.conversation_id
+                  AND p.source_message_id = ancestors.parent_source_message_id
+               WHERE NOT p.id = ANY(ancestors.visited)
+            )
+            SELECT occurred_at FROM ancestors WHERE parent_source_message_id IS NULL
+          ) root ON TRUE
+         WHERE a.kind = 'image'
+           AND (root.occurred_at IS NULL OR root.occurred_at >= (${startAt}::timestamptz AT TIME ZONE 'Asia/Shanghai'))
+        UNION ALL
+        SELECT p.id, 'pet'::text, e.name, NULL::text, p.created_at, p.status,
+               p.image_analysis, p.registration_match, p.error, p.order_id, (p.image_storage_key IS NOT NULL), false, NULL::text, NULL::text
+          FROM pet_image_analysis_records p JOIN employees e ON e.id = p.employee_id
+         WHERE p.created_at >= (${startAt}::timestamptz AT TIME ZONE 'Asia/Shanghai')
+      )
+    `
+    const [rows, counts] = await prisma.$transaction([
+      prisma.$queryRaw<Array<{ id: number; source: string; employee_name: string; title: string | null; occurred_at: Date; state: string; image_analysis: unknown; registration_match: unknown; error: string | null; order_id: number | null; image_available: boolean; received_time_unknown: boolean }>>(Prisma.sql`
+        ${records}
+        SELECT * FROM image_records
+        ${cursor ? Prisma.sql`WHERE occurred_at < ${new Date(cursor.time)}::timestamp OR (occurred_at = ${new Date(cursor.time)}::timestamp AND (source > ${cursor.source} OR (source = ${cursor.source} AND id < ${cursor.id})))` : Prisma.empty}
+        ORDER BY occurred_at DESC, source ASC, id DESC LIMIT ${PAGE_SIZE + 1}
+      `),
+      prisma.$queryRaw<Array<{ total: bigint }>>(Prisma.sql`${records} SELECT COUNT(*)::bigint AS total FROM image_records`)
+    ], { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead })
+    const items = rows.slice(0, PAGE_SIZE)
+    const last = items.at(-1)
+    const nextCursor = rows.length > PAGE_SIZE && last ? Buffer.from(JSON.stringify({ time: last.occurred_at.toISOString(), source: last.source, id: last.id })).toString('base64url') : null
+    return reply.send({ data: { items, nextCursor, total: safeCount(counts[0]?.total ?? 0n) } })
+  })
+
+  fastify.get<{ Params: { recordId: string } }>('/api/v1/admin/image-analysis-records/pet/:recordId/url', async (request, reply) => {
+    const id = Number(request.params.recordId)
+    if (!Number.isSafeInteger(id) || id <= 0) return reply.status(400).send({ error: '图片记录无效' })
+    const rows = await prisma.$queryRaw<Array<{ image_storage_key: string | null }>>`
+      SELECT image_storage_key FROM pet_image_analysis_records WHERE id = ${id}
+    `
+    if (!rows[0]) return reply.status(404).send({ error: '图片记录不存在' })
+    if (!rows[0].image_storage_key) return reply.status(404).send({ error: '这条记录没有保存原图' })
+    const url = await minioPublicClient.presignedGetObject(ATTACHMENT_BUCKET, rows[0].image_storage_key, 60 * 60)
+    return reply.send({ data: { url } })
+  })
+
   fastify.get('/api/v1/admin/native-chat-collection-config', async (_request, reply) => {
     return reply.send({ data: await getNativeChatCollectionConfig(prisma) })
   })

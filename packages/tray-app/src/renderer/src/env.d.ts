@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 import type { NativeChatPendingImageMatch } from '@huanyu/shared-types'
 
+declare global {
 interface CaptureSidecarStatus {
   enabled: boolean
   running: boolean
@@ -152,7 +153,6 @@ interface MaterialSyncCounts {
   pendingDelete: number
 }
 
-declare global {
 interface Window {
   api?: {
     showWindow: () => void

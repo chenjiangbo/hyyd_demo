@@ -15,6 +15,7 @@ import { parseTaikangPoolEnteredAt } from '../taikangPoolTime.js'
 import { extractKeyInfo, type KeyInfoMessage, type KeyInfoContext } from '../llm/keyInfoService.js'
 import { structureMessages, type StructInput } from '../lib/messageStructure.js'
 import { triggerOrderAiAnalysis } from '../jobs/orderAiSchedule.js'
+import { storePetAnalysisImage } from '../services/petImageAnalysisStorage.js'
 import { getRecordingPlaybackInfo } from '../audioTranscode.js'
 import { ensureBOrderFormInstance } from '../bOrderForms.js'
 import { saveCallAsBOrderCommunication } from '../callCommunicationRecord.js'
@@ -4509,7 +4510,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       const windowMs = 10 * 60_000
       const candidates = await prisma.call.findMany({
         where: {
-          employeeId: request.employee.id,
+          employeeId: request.employee!.id,
           startedAt: {
             gte: new Date(startedAtMillis - windowMs),
             lte: new Date(startedAtMillis + windowMs)
@@ -5204,14 +5205,23 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     if (!/^image\/(png|jpe?g|webp|bmp|gif)$/i.test(mimeType)) {
       return reply.status(400).send({ error: '当前只支持图片文件' })
     }
+    const [record] = await prisma.$queryRaw<Array<{ id: number }>>`
+      INSERT INTO pet_image_analysis_records (employee_id, status)
+      VALUES (${request.employee.id}, 'recognizing') RETURNING id
+    `
     try {
+      await storePetAnalysisImage(prisma, minioClient, request.employee.id, record.id, Buffer.from(base64, 'base64'), mimeType,
+        (cleanupError) => request.log.error(cleanupError, '浮动精灵图片清理失败'))
       const image = await understandImage(`data:${mimeType};base64,${base64}`)
+      await prisma.$executeRaw`UPDATE pet_image_analysis_records SET image_analysis = ${JSON.stringify(image)}::jsonb, status = ${image.imageType === '挂号凭证' ? 'matching' : 'completed'}, updated_at = NOW() WHERE id = ${record.id}`
       const registrationMatch = image.imageType === '挂号凭证'
         ? await matchNativeRegistrationProofToOrders(prisma, `data:${mimeType};base64,${base64}`, image, { applicationNo: null })
         : null
-      return reply.send({ data: { image, registrationMatch } })
+      if (registrationMatch) await prisma.$executeRaw`UPDATE pet_image_analysis_records SET registration_match = ${JSON.stringify(registrationMatch)}::jsonb, status = 'completed', updated_at = NOW() WHERE id = ${record.id}`
+      return reply.send({ data: { image, registrationMatch, analysisRecordId: record.id } })
     } catch (error: any) {
       request.log.error(error, '浮动精灵图片识别或挂号匹配失败')
+      await prisma.$executeRaw`UPDATE pet_image_analysis_records SET status = 'failed', error = ${error?.message || String(error)}, updated_at = NOW() WHERE id = ${record.id}`
       return reply.status(502).send({ error: `图片识别或挂号匹配失败：${error?.message || String(error)}` })
     }
   })
@@ -5224,11 +5234,14 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       textContent?: string
       mimeType?: string
       base64?: string // image 时必填，无 data URL 前缀
+      imageAnalysis?: { imageType: string; typeDescription: string; description: string; visibleText: string; visibleFields: Array<{ label: string; value: string }> }
+      analysisRecordId?: number
+      applicationNo?: string
     }
   }>('/api/v1/orders/:id/materials', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
     const orderId = parseInt(request.params.id, 10)
-    const { type, clientUuid, textContent, mimeType, base64 } = request.body || ({} as any)
+    const { type, clientUuid, textContent, mimeType, base64, imageAnalysis, analysisRecordId, applicationNo } = request.body || ({} as any)
     if (!Number.isFinite(orderId)) return reply.status(400).send({ error: 'orderId 非法' })
     if (!clientUuid) return reply.status(400).send({ error: 'clientUuid 必填' })
     if (type !== 'text' && type !== 'image')
@@ -5236,6 +5249,14 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     if (type === 'text' && !textContent) return reply.status(400).send({ error: '文本不能为空' })
     if (type === 'image' && (!base64 || !mimeType))
       return reply.status(400).send({ error: '图片需要 base64 + mimeType' })
+    if (imageAnalysis && (type !== 'image' || imageAnalysis.imageType !== '挂号凭证' ||
+      !Array.isArray(imageAnalysis.visibleFields) ||
+      imageAnalysis.visibleFields.some((field) => typeof field.label !== 'string' || typeof field.value !== 'string') ||
+      [imageAnalysis.typeDescription, imageAnalysis.description, imageAnalysis.visibleText].some((value) => typeof value !== 'string'))) {
+      return reply.status(400).send({ error: '图片识别结果格式无效' })
+    }
+    if (analysisRecordId !== undefined && (!Number.isSafeInteger(analysisRecordId) || analysisRecordId <= 0)) return reply.status(400).send({ error: '图片识别记录无效' })
+    if (analysisRecordId !== undefined && (typeof applicationNo !== 'string' || !applicationNo.trim())) return reply.status(400).send({ error: '图片所属申领号无效' })
 
     const order = await prisma.order.findUnique({ where: { id: orderId } })
     if (!order) return reply.status(404).send({ error: '订单不存在' })
@@ -5263,7 +5284,8 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     }
 
     try {
-      const created = await prisma.material.upsert({
+      const created = await prisma.$transaction(async (tx) => {
+        const material = await tx.material.upsert({
         where: {
           orderId_clientUuid: { orderId, clientUuid }
         },
@@ -5272,21 +5294,42 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
         },
         create: {
           orderId,
-          employeeId: request.employee.id,
+          employeeId: request.employee!.id,
           type,
           textContent: type === 'text' ? textContent! : null,
           mimeType: type === 'image' ? mimeType! : null,
           minioBucket,
           minioKey,
           byteSize,
+          aiImageKind: imageAnalysis?.imageType ?? null,
+          aiImageText: imageAnalysis ? [imageAnalysis.typeDescription, imageAnalysis.description, imageAnalysis.visibleText, ...imageAnalysis.visibleFields.map((field) => `${field.label}：${field.value}`)].filter(Boolean).join('\n') : null,
+          aiImageProcessedAt: imageAnalysis ? new Date() : null,
           clientUuid
         }
+        })
+        if (analysisRecordId !== undefined) {
+          const linked = await tx.$executeRaw`
+            UPDATE pet_image_analysis_records SET order_id = ${orderId},
+              registration_match = jsonb_set(COALESCE(registration_match, '{}'::jsonb), '{confirmedSelection}', ${JSON.stringify({ applicationNo: applicationNo?.trim(), orderId })}::jsonb, true), updated_at = NOW()
+            WHERE id = ${analysisRecordId} AND employee_id = ${request.employee!.id}
+              AND EXISTS (SELECT 1 FROM jsonb_array_elements(registration_match->'candidateApplications') AS candidate
+                CROSS JOIN LATERAL jsonb_array_elements(candidate->'orders') AS candidate_order
+                WHERE candidate->>'applicationNo' = ${applicationNo?.trim()} AND candidate_order->>'orderId' = ${String(orderId)})
+          `
+          if (linked !== 1) throw new Error('图片识别记录不存在或不属于当前员工')
+        }
+        return material
       })
       // 推送给在线管理后台，让仪表盘/素材流水实时刷新
       broadcastAdmin({
         type: 'material_created',
         payload: { employeeId: request.employee.id, orderId, materialType: type }
       })
+      if (imageAnalysis) {
+        void triggerOrderAiAnalysis(prisma, minioClient, orderId).catch((error) => {
+          fastify.log.error(error, `挂号凭证触发订单分析失败：订单 ${orderId}`)
+        })
+      }
       return reply.send({ data: { id: created.id, createdAt: created.createdAt } })
     } catch (e: any) {
       fastify.log.error('保存素材失败: ' + e.message)

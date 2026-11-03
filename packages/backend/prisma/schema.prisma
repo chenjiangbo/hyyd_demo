@@ -481,3 +481,20 @@ model AiSummary {
   @@index([callId])
   @@map("ai_summaries")
 }
+
+model PetImageAnalysisRecord {
+  id                Int      @id @default(autoincrement())
+  employeeId        Int      @map("employee_id")
+  status            String
+  imageAnalysis     Json?    @map("image_analysis")
+  registrationMatch Json?    @map("registration_match")
+  imageStorageKey   String?  @map("image_storage_key")
+  imageMimeType     String?  @map("image_mime_type")
+  error             String?
+  orderId           Int?     @map("order_id")
+  createdAt         DateTime @default(now()) @db.Timestamp(3) @map("created_at")
+  updatedAt         DateTime @default(now()) @db.Timestamp(3) @map("updated_at")
+
+  @@index([createdAt(sort: Desc), id(sort: Desc)], map: "pet_image_analysis_records_created_idx")
+  @@map("pet_image_analysis_records")
+}

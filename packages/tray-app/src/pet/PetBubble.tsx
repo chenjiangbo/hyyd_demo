@@ -12,6 +12,7 @@ export interface Candidate {
 }
 
 export interface ImageMatchOrder {
+  confidence?: number
   orderId: number
   sourceOrderNo: string
   customerName: string
@@ -24,6 +25,7 @@ export interface ImageMatchOrder {
 }
 
 export interface ImageMatchApplication {
+  confidence?: number
   applicationNo: string
   programEvidence: string[]
   orders: ImageMatchOrder[]
@@ -386,16 +388,8 @@ function Field({ field, panel, onFieldChange, onLookup }: {
       </div>, document.body)}
     </div>
   } else {
-    control = <div className="pet-bubble__input-with-copy"><input {...common} type={field.type} step={field.type === 'datetime-local' ? '1' : undefined} value={String(field.value)} onPaste={field.type === 'datetime-local' ? (event) => {
-      const text = event.clipboardData.getData('text').trim()
-      const compact = text.match(/^(\d{4})(\d{2})(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?$/)
-      const standard = text.match(/^(\d{4})[-/.]?(\d{1,2})[-/.]?(\d{1,2})[T\s]+(\d{1,2}):(\d{1,2})(?::(\d{2}))?$/)
-      const match = compact ?? standard
-      if (!match) return
-      event.preventDefault()
-      onFieldChange?.(field.id, `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}T${match[4].padStart(2, '0')}:${match[5].padStart(2, '0')}:${match[6] ?? '00'}`)
-    } : undefined} />
-      {(field.copyable || field.type === 'datetime-local') && <button type="button" title="复制" disabled={!String(field.value)} onClick={() => { const value = field.type === 'datetime-local' ? String(field.value).replace('T', ' ') : String(field.value); void navigator.clipboard?.writeText(value) }}>复制</button>}
+    control = <div className="pet-bubble__input-with-copy"><input {...common} type={field.type} value={String(field.value)} />
+      {field.copyable && <button type="button" title="复制" disabled={!String(field.value)} onClick={() => { void navigator.clipboard?.writeText(String(field.value)) }}>复制</button>}
     </div>
   }
 
@@ -505,7 +499,7 @@ export function PetBubble({ panel, skipEntranceAnimation, onAction, onClose, onS
             return <button className="pet-bubble__candidate" key={application.applicationNo} type="button" onClick={() => onSelectApplication?.(application.applicationNo)}>
               <strong>{application.applicationNo === panel.match.recommendedApplicationNo ? 'AI 建议 · ' : ''}{first?.customerName || '客户姓名待确认'}</strong>
               <span>{first ? [first.serviceType, first.hospital, first.department].filter(Boolean).join(' · ') : '申领号下暂无订单资料'}</span>
-              <small>{application.applicationNo} · 共 {application.orders.length} 张订单</small>
+              <small>{application.applicationNo} · 共 {application.orders.length} 张订单{typeof application.confidence === 'number' ? ` · AI 匹配度 ${application.confidence}%` : ''}</small>
             </button>
           })}</div>}
         </> : <>
@@ -513,9 +507,8 @@ export function PetBubble({ panel, skipEntranceAnimation, onAction, onClose, onS
           <div className="pet-bubble__candidate-list">{(panel.match.candidateApplications.find((application) => application.applicationNo === panel.selectedApplicationNo)?.orders ?? []).map((order) => <button className="pet-bubble__candidate" key={order.orderId} type="button" onClick={() => onResolveImageOrder?.(panel.selectedApplicationNo!, order.orderId)}>
             <strong>{order.orderId === panel.match.recommendedOrderId ? 'AI 建议 · ' : ''}{order.customerName || '客户姓名待确认'} · {order.serviceType || '服务订单'}</strong>
             <span>{[order.hospital, order.department, order.doctor].filter(Boolean).join(' · ') || '医院和科室待确认'}</span>
-            <small>{order.appointmentDate || order.status || order.sourceOrderNo}</small>
+            <small>{order.appointmentDate || order.status || order.sourceOrderNo}{typeof order.confidence === 'number' ? ` · AI 匹配度 ${order.confidence}%` : ''}</small>
           </button>)}</div>
-          {panel.match.source !== 'drop' && <Actions actions={[{ id: 'application-only', label: '先只关联申领号', tone: 'secondary' }]} onAction={() => onResolveImageOrder?.(panel.selectedApplicationNo!, null)} />}
           {panel.match.reason && <p className="pet-bubble__description">AI 判断依据：{panel.match.reason}</p>}
         </>}
         {panel.match.source === 'drop' && <button type="button" className="pet-bubble__action pet-bubble__action--secondary" onClick={onDiscardImageMatch}>放弃这张图片</button>}

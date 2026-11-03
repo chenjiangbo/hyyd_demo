@@ -112,6 +112,7 @@ export interface NativeChatAttachment {
 }
 
 export interface NativeChatImageMatchOrder {
+  confidence?: number
   orderId: number
   sourceOrderNo: string
   customerName: string
@@ -125,6 +126,7 @@ export interface NativeChatImageMatchOrder {
 }
 
 export interface NativeChatImageMatchApplication {
+  confidence?: number
   applicationNo: string
   programEvidence: string[]
   orders: NativeChatImageMatchOrder[]
