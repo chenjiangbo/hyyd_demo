@@ -17,6 +17,9 @@ test('Beijing database clock time switches exactly at 20:00', () => {
 })
 
 test('existing image AI switch remains independently configurable', () => {
-  assert.equal(validateOrderAiAutomationConfig({ imageAiEnabled: false, communicationSilenceMinutes: 5 }).imageAiEnabled, false)
-  assert.equal(validateOrderAiAutomationConfig({ imageAiEnabled: true, communicationSilenceMinutes: 5 }).imageAiEnabled, true)
+  assert.equal(validateOrderAiAutomationConfig({ imageAiEnabled: false, communicationSilenceMinutes: 5, textAnalysisModel: 'qwen-plus', imageAnalysisModel: 'qwen3-vl-plus', textAnalysisProvider: 'dashscope' }).imageAiEnabled, false)
+  assert.equal(validateOrderAiAutomationConfig({ imageAiEnabled: true, communicationSilenceMinutes: 5, textAnalysisModel: 'qwen3.7-plus', imageAnalysisModel: 'qwen3-vl-plus', textAnalysisProvider: 'dashscope' }).textAnalysisModel, 'qwen3.7-plus')
+  assert.throws(() => validateOrderAiAutomationConfig({ imageAiEnabled: true, communicationSilenceMinutes: 5, textAnalysisModel: '', imageAnalysisModel: 'qwen3-vl-plus', textAnalysisProvider: 'dashscope' }))
+  assert.equal(validateOrderAiAutomationConfig({ imageAiEnabled: true, communicationSilenceMinutes: 5, textAnalysisModel: 'deepseek-flash', imageAnalysisModel: 'qwen3-vl-plus', textAnalysisProvider: 'deepseek' }).textAnalysisProvider, 'deepseek')
+  assert.throws(() => validateOrderAiAutomationConfig({ imageAiEnabled: true, communicationSilenceMinutes: 5, textAnalysisModel: 'qwen-plus', imageAnalysisModel: 'qwen3-vl-plus', textAnalysisProvider: 'deepseek' }))
 })

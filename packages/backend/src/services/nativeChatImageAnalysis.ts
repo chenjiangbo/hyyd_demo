@@ -2,30 +2,22 @@ import { Prisma, type PrismaClient } from '@prisma/client'
 import type * as Minio from 'minio'
 import { matchNativeRegistrationProofToOrders } from './registrationProofService.js'
 import { understandImage } from './imageUnderstanding.js'
-import { getNativeChatImageAnalysisStartAt, isImageAiEnabled, nativeChatStoredBeijingTimeIsEligible } from './orderAiAutomationConfig.js'
+import { getNativeChatImageAnalysisStartAt, getOrderAiAutomationConfig, isImageAiEnabled, nativeChatStoredBeijingTimeIsEligible } from './orderAiAutomationConfig.js'
 import { convertNativeChatWxgfToJpeg } from './nativeChatWxgfPreview.js'
 import { triggerOrderAiAnalysis } from '../jobs/orderAiSchedule.js'
 
 const BUCKET = 'materials'
 const WORKER_INTERVAL_MS = 15_000
 const PROMPT_VERSION = 'image-understanding-v1'
-const MAX_ATTEMPTS = 2
+export const MAX_IMAGE_ANALYSIS_ATTEMPTS = 2
+const MAX_ATTEMPTS = MAX_IMAGE_ANALYSIS_ATTEMPTS
 const MAX_CONCURRENT_ANALYSIS = 2
 const activeAttachments = new Set<number>()
 let concurrentAnalysisCount = 0
 let workerTimer: ReturnType<typeof setInterval> | null = null
 let workerTicking = false
 
-export type NativeImageType =
-  | '挂号凭证'
-  | '出行订单'
-  | '导航截图'
-  | '医院小程序'
-  | '医院公众号'
-  | '缴费或检查材料'
-  | '聊天截图'
-  | '其他'
-  | '无法判断'
+export type NativeImageType = string
 
 export type NativeChatImageAnalysis = {
   status: 'completed'
@@ -73,12 +65,15 @@ async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   return Buffer.concat(chunks)
 }
 
-function imageDataUrl(mimeType: string | null, buffer: Buffer): string {
-  const supported = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/bmp', 'image/gif'])
-  const normalized = mimeType?.trim().toLowerCase()
-  if (!normalized || !supported.has(normalized)) throw new Error(`不支持的图片格式：${mimeType || '未提供 MIME 类型'}`)
-  const canonical = normalized === 'image/jpg' ? 'image/jpeg' : normalized
-  return `data:${canonical};base64,${buffer.toString('base64')}`
+export function imageDataUrl(mimeType: string | null, buffer: Buffer): string {
+  let actual: string | undefined
+  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) actual = 'image/png'
+  else if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) actual = 'image/jpeg'
+  else if (buffer.subarray(0, 6).toString('ascii') === 'GIF87a' || buffer.subarray(0, 6).toString('ascii') === 'GIF89a') actual = 'image/gif'
+  else if (buffer.subarray(0, 2).toString('ascii') === 'BM') actual = 'image/bmp'
+  else if (buffer.length >= 12 && buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') actual = 'image/webp'
+  if (!actual) throw new Error(`无法识别图片文件格式（记录的 MIME 类型：${mimeType || '未提供'}）`)
+  return `data:${actual};base64,${buffer.toString('base64')}`
 }
 
 async function writeImageAnalysis(prisma: PrismaClient, id: number, value: Record<string, unknown>, bumpUpdatedAt: boolean): Promise<void> {
@@ -156,16 +151,21 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
       if (attemptCount >= MAX_ATTEMPTS) return
       const attempt = attemptCount + 1
       if (!await isImageAiEnabled(prisma)) return
-      await writeImageAnalysis(prisma, id, {
-        status: 'processing', attemptCount: attempt, promptVersion: PROMPT_VERSION, startedAt: new Date().toISOString()
-      }, false)
+      const imageAttempts = Array.isArray(analysis?.imageAttempts) ? [...analysis.imageAttempts] : []
+      let currentImage: Record<string, unknown> = { ...analysis, imageAttempts, status: 'processing', attemptCount: attempt, promptVersion: PROMPT_VERSION, startedAt: new Date().toISOString() }
+      await writeImageAnalysis(prisma, id, currentImage, false)
       try {
         const stream = await minio.getObject(BUCKET, attachment.storage_key)
         const buffer = await streamToBuffer(stream)
         dataUrl = buffer.subarray(0, 4).toString('ascii') === 'wxgf'
           ? imageDataUrl('image/jpeg', await convertNativeChatWxgfToJpeg(buffer))
           : imageDataUrl(attachment.mime_type, buffer)
-        const parsed = parseAnalysis(await understandImage(dataUrl), attempt)
+        const { imageAnalysisModel } = await getOrderAiAutomationConfig(prisma)
+        const parsed = parseAnalysis(await understandImage(dataUrl, imageAnalysisModel, async (response) => {
+          imageAttempts.push({ attempt, response: response.content, model: response.model })
+          currentImage = { ...currentImage, imageAttempts }
+          await writeImageAnalysis(prisma, id, currentImage, false)
+        }), attempt)
         const latest = await getAttachment(prisma, id)
         const latestMetadata = asRecord(latest?.source_metadata) ?? {}
         if (!latest || latest.storage_key !== attachment.storage_key
@@ -173,12 +173,12 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
           console.info(`[native-chat:image] 附件 ${id} 在识别期间被更新，丢弃旧图片的识别结果`)
           return
         }
-        await writeImageAnalysis(prisma, id, parsed, true)
-        analysis = parsed as unknown as Record<string, unknown>
+        analysis = { ...parsed, imageAttempts }
+        await writeImageAnalysis(prisma, id, analysis, true)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         await writeImageAnalysis(prisma, id, {
-          status: attempt < MAX_ATTEMPTS ? 'retrying' : 'failed',
+          ...currentImage, status: attempt < MAX_ATTEMPTS ? 'retrying' : 'failed',
           attemptCount: attempt,
           promptVersion: PROMPT_VERSION,
           error: message,
@@ -195,8 +195,10 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
     const matchAttemptCount = typeof priorMatch?.attemptCount === 'number' ? priorMatch.attemptCount : 0
     if (matchAttemptCount >= MAX_ATTEMPTS) return
     const matchAttempt = matchAttemptCount + 1
+    const matchAttempts = Array.isArray(priorMatch?.attempts) ? [...priorMatch.attempts] : []
+    let matchTrace: Record<string, unknown> | null = null
     const currentAnalysis = { ...analysis, registrationMatch: {
-      status: 'processing', attemptCount: matchAttempt, startedAt: new Date().toISOString()
+      ...priorMatch, attempts: matchAttempts, status: 'processing', attemptCount: matchAttempt, startedAt: new Date().toISOString()
     } }
     await writeImageAnalysis(prisma, id, currentAnalysis, false)
     try {
@@ -211,6 +213,12 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
         applicationNo: attachment.application_link_status === 'matched'
           ? attachment.application_no
           : attachment.message_application_link_status === 'matched' ? attachment.message_application_no : null,
+        onAiTrace: async (trace) => {
+          if (matchTrace) matchAttempts.pop()
+          matchTrace = { attempt: matchAttempt, ...trace }
+          matchAttempts.push(matchTrace)
+          await writeImageAnalysis(prisma, id, { ...analysis, registrationMatch: { ...currentAnalysis.registrationMatch, attempts: matchAttempts } }, false)
+        }
       })
       if (matching.candidateApplicationCount === 0) {
         console.warn(`[native-chat:image] 挂号凭证 ${id} 未找到申领号和订单候选：${matching.reason}`)
@@ -243,24 +251,24 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
                  WHEN ${applicationConflict} THEN NULL
                  WHEN application_link_source = 'manager_confirmation' THEN application_no
                  WHEN application_link_status = 'matched' AND application_no IS NOT NULL
-                   AND ${matchedApplicationNo} IS NULL THEN application_no
+                   AND ${matchedApplicationNo}::text IS NULL THEN application_no
                  ELSE ${matchedApplicationNo} END,
                order_id = CASE
                  WHEN application_link_status = 'conflict' THEN NULL
                  WHEN ${applicationConflict} THEN NULL
                  WHEN application_link_source = 'manager_confirmation' THEN order_id
                  WHEN application_link_status = 'matched' AND order_id IS NOT NULL
-                   AND ${matchedOrderId} IS NULL THEN order_id
+                   AND ${matchedOrderId}::integer IS NULL THEN order_id
                  ELSE ${matchedOrderId} END,
                application_link_status = CASE
                  WHEN application_link_status = 'conflict' THEN 'conflict'
                  WHEN ${applicationConflict} THEN 'conflict'
                  WHEN application_link_source = 'manager_confirmation' THEN application_link_status
-                 WHEN application_link_status = 'matched' AND ${matchedApplicationNo} IS NULL THEN 'matched'
+                 WHEN application_link_status = 'matched' AND ${matchedApplicationNo}::text IS NULL THEN 'matched'
                  ELSE ${linkStatus} END,
                application_link_source = CASE
                  WHEN application_link_source = 'manager_confirmation' THEN application_link_source
-                 WHEN application_link_status = 'matched' AND ${matchedApplicationNo} IS NULL THEN application_link_source
+                 WHEN application_link_status = 'matched' AND ${matchedApplicationNo}::text IS NULL THEN application_link_source
                  ELSE 'registration_proof_ai' END,
                application_link_evidence = CASE
                  WHEN application_link_source = 'manager_confirmation' THEN application_link_evidence
@@ -268,11 +276,11 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
                  THEN jsonb_build_object('existing', application_link_evidence, 'incoming', ${JSON.stringify(matching)}::jsonb)
                  WHEN ${applicationConflict}
                  THEN jsonb_build_object('existing', application_link_evidence, 'incoming', ${JSON.stringify(matching)}::jsonb)
-                 WHEN application_link_status = 'matched' AND ${matchedApplicationNo} IS NULL THEN application_link_evidence
+                 WHEN application_link_status = 'matched' AND ${matchedApplicationNo}::text IS NULL THEN application_link_evidence
                  ELSE ${JSON.stringify(matching)}::jsonb END,
                application_linked_at = CASE
                  WHEN application_link_source = 'manager_confirmation' THEN application_linked_at
-                 WHEN application_link_status = 'matched' AND ${matchedApplicationNo} IS NULL THEN application_linked_at
+                 WHEN application_link_status = 'matched' AND ${matchedApplicationNo}::text IS NULL THEN application_linked_at
                  ELSE NOW() END,
                updated_at = NOW()
          WHERE id = ${id}
@@ -285,7 +293,7 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
         }
       }
       await writeImageAnalysis(prisma, id, { ...analysis, registrationMatch: {
-        ...matching, status: 'completed', attemptCount: matchAttempt, completedAt: new Date().toISOString()
+        ...matching, attempts: matchAttempts, status: 'completed', attemptCount: matchAttempt, completedAt: new Date().toISOString()
       } }, true)
       const linked = await getAttachment(prisma, id)
       if (linked?.application_link_status === 'matched' && linked.application_no && linked.order_id !== null) {
@@ -296,7 +304,7 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       await writeImageAnalysis(prisma, id, { ...analysis, registrationMatch: {
-        status: matchAttempt < MAX_ATTEMPTS ? 'retrying' : 'failed',
+        ...currentAnalysis.registrationMatch, attempts: matchAttempts, status: matchAttempt < MAX_ATTEMPTS ? 'retrying' : 'failed',
         attemptCount: matchAttempt,
         error: message,
         lastAttemptAt: new Date().toISOString()

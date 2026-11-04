@@ -59,9 +59,13 @@ const api = {
   showPetReminder: (data: { key: string; message: string }): void => ipcRenderer.send('pet:order-reminder', data),
   getPathForFile: (file: File): string => webUtils.getPathForFile(file),
   petDropFiles: (paths: string[]) => ipcRenderer.invoke('pet:drop-files', paths),
-  petSelectOrder: (orderId: number, applicationNo?: string) => ipcRenderer.invoke('pet:select-order', { orderId, applicationNo }),
+  petSelectOrder: (orderId: number, applicationNo?: string, manualSelection = false) => ipcRenderer.invoke('pet:select-order', { orderId, applicationNo, manualSelection }),
   petDiscardPendingImage: () => ipcRenderer.invoke('pet:discard-pending-image'),
-  resolveNativeImageMatch: (payload: { attachmentId: number; applicationNo: string; orderId: number | null }) => ipcRenderer.invoke('pet:resolve-native-image-match', payload),
+  petPickOtherOrder: () => ipcRenderer.invoke('pet:pick-other-order'),
+  petSearchOrders: (payload: { page: number; query?: string; applicationNo?: string }) => ipcRenderer.invoke('pet:order-picker-search', payload),
+  petFinishOrderPicker: (selection: { applicationNo: string; orderId: number } | null) => ipcRenderer.send('pet:order-picker-finish', selection),
+  dismissNativeImageMatch: (attachmentId: number) => ipcRenderer.invoke('pet:dismiss-native-image-match', attachmentId),
+  resolveNativeImageMatch: (payload: { attachmentId: number; applicationNo: string; orderId: number | null; manualSelection?: boolean }) => ipcRenderer.invoke('pet:resolve-native-image-match', payload),
   onPetImageMatch: (cb: (match: NativeChatPendingImageMatch) => void): (() => void) => {
     const listener = (_e: unknown, match: NativeChatPendingImageMatch): void => cb(match)
     ipcRenderer.on('pet:image-match', listener)

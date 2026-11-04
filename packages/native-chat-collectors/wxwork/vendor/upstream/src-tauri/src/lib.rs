@@ -3099,6 +3099,16 @@ fn read_snapshot_export_with_options(
                 }
             }
             let progress_conversation_id = conversation_id.clone();
+            if raw_type.trim() == "16" {
+                let diagnostic = serde_json::json!({
+                    "sourceConversationId": conversation_id,
+                    "sourceMessageId": source_message_id,
+                    "sourceTypeCode": raw_type,
+                    "contentHex": hex::encode(&content),
+                    "localExtraContentHex": hex::encode(&local_extra),
+                });
+                report_collection_progress(progress, 66, "voice_raw", &diagnostic.to_string());
+            }
             let mut payload = readable_message_payload(&raw_type, &content);
             if matches!(raw_type.trim(), "4" | "14" | "20" | "29" | "101" | "102") {
                 if !payload.is_object() { payload = serde_json::json!({}); }

@@ -260,8 +260,10 @@ fn read_export(include_media: bool, selected: &[String], source_root: &str, time
     let progress_state = std::sync::Arc::new(std::sync::Mutex::new((0u8, String::from("开始读取"), String::from("正在读取企微数据源。"))));
     let callback_state = progress_state.clone();
     let progress: wecom_archive_server::LocalCollectionProgressReporter = std::sync::Arc::new(move |percent, stage, detail| {
-        if let Ok(mut state) = callback_state.lock() {
-            *state = (percent, stage.to_owned(), detail.to_owned());
+        if stage != "voice_raw" {
+            if let Ok(mut state) = callback_state.lock() {
+                *state = (percent, stage.to_owned(), detail.to_owned());
+            }
         }
         let _ = emit(&json!({
             "event": "source_scan_progress",

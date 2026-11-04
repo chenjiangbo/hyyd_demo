@@ -227,11 +227,17 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const adminApi = {
-  imageAnalysisRecords(cursor?: string) {
-    return request<{ items: Array<{ id: number; source: 'wechat' | 'wxwork' | 'pet'; employee_name: string; title: string | null; occurred_at: string; state: string; image_available: boolean; received_time_unknown: boolean; image_rendition: string | null; full_image_state: string | null; image_analysis: Record<string, unknown> | null; registration_match: Record<string, unknown> | null; error: string | null; order_id: number | null }>; nextCursor: string | null; total: number }>(`/api/v1/admin/image-analysis-records${qs({ cursor })}`)
+  imageAnalysisRecords(cursor?: string, filter?: 'all' | 'awaiting' | 'waiting_image') {
+    return request<{ items: Array<{ id: number; source: 'wechat' | 'wxwork' | 'pet'; employee_name: string; title: string | null; occurred_at: string; state: string; image_available: boolean; received_time_unknown: boolean; image_rendition: string | null; full_image_state: string | null; image_analysis: Record<string, unknown> | null; registration_match: Record<string, unknown> | null; error: string | null; order_id: number | null }>; nextCursor: string | null; total: number; awaitingAi: number; filteredTotal: number }>(`/api/v1/admin/image-analysis-records${qs({ cursor, filter })}`)
   },
   petImageAnalysisRecordUrl(recordId: number) {
     return request<{ url: string }>(`/api/v1/admin/image-analysis-records/pet/${recordId}/url`)
+  },
+  imageAnalysisTests(source: 'wechat' | 'wxwork' | 'pet', id: number) {
+    return request<Array<{ id: string; status: string; result: Record<string, unknown>; created_at: string }>>(`/api/v1/admin/image-analysis-records/${source}/${id}/tests`)
+  },
+  runImageAnalysisTest(source: 'wechat' | 'wxwork' | 'pet', id: number) {
+    return request<{ id: string; status: string; result: Record<string, unknown> }>(`/api/v1/admin/image-analysis-records/${source}/${id}/tests`, { method: 'POST', body: '{}' })
   },
   // ───── 鉴权 ─────
   login(password: string) {
@@ -299,7 +305,7 @@ export const adminApi = {
   orderAiAutomationConfig() {
     return request<OrderAiAutomationConfig>('/api/v1/admin/ai-schedule-config')
   },
-  saveOrderAiAutomationConfig(data: Pick<OrderAiAutomationConfig, 'imageAiEnabled' | 'communicationSilenceMinutes'>) {
+  saveOrderAiAutomationConfig(data: Pick<OrderAiAutomationConfig, 'imageAiEnabled' | 'communicationSilenceMinutes' | 'textAnalysisModel' | 'textAnalysisProvider' | 'imageAnalysisModel'>) {
     return request<OrderAiAutomationConfig & { message: string }>('/api/v1/admin/ai-schedule-config', {
       method: 'PUT', body: JSON.stringify(data)
     })

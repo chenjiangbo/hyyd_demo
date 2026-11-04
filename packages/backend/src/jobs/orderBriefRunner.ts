@@ -20,6 +20,7 @@ import { applyOrderWorkflowEvent } from '../workflow/serviceWorkflow.js'
 import { findHuanyuOrderNosOnMysqlByChannelOrderNo } from '../huanyuMysqlPush.js'
 import { parseShanghaiDateTime } from '../time/shanghaiTime.js'
 import { loadNativeChatAiBatch, loadNativeChatFieldAiBatch } from '../services/nativeChatAiAdapter.js'
+import { getOrderAiAutomationConfig } from '../services/orderAiAutomationConfig.js'
 
 async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = []
@@ -206,6 +207,7 @@ async function createRunningAnalysisRun(
     maxMessageId: number
     maxCallId: number
     maxMaterialId: number
+    model: string
   }
 ): Promise<bigint> {
   const rows = await prisma.$queryRaw<Array<{ id: bigint }>>`
@@ -213,7 +215,7 @@ async function createRunningAnalysisRun(
       order_id, application_no, model, prompt_version, status,
       source_message_max_id, source_call_max_id, source_material_max_id
     ) VALUES (
-      ${input.orderId}, ${input.applicationNo}, ${String(process.env.HYYD_LLM_MODEL ?? 'qwen-plus').slice(0, 100)}, ${ORDER_AI_FIELD_PROMPT_VERSION}, 'running',
+      ${input.orderId}, ${input.applicationNo}, ${input.model}, ${ORDER_AI_FIELD_PROMPT_VERSION}, 'running',
       ${input.maxMessageId}, ${input.maxCallId}, ${input.maxMaterialId}
     ) RETURNING id
   `
@@ -397,9 +399,12 @@ export async function analyzeOrderFields(
     for (const orderNo of linked) huanyuOrders.push({ orderNo, serviceType: applicationOrder.service_type, bOrderNo: applicationOrder.source_order_no })
   }
   const bFormSaved = await loadBFormSavedValues(prisma, orderId)
-  runId = await createRunningAnalysisRun(prisma, { orderId, applicationNo, maxMessageId, maxCallId, maxMaterialId })
+  const { textAnalysisModel, textAnalysisProvider } = await getOrderAiAutomationConfig(prisma)
+  runId = await createRunningAnalysisRun(prisma, { orderId, applicationNo, maxMessageId, maxCallId, maxMaterialId, model: textAnalysisModel })
 
     const extraction = await extractOrderServiceFields({
+      model: textAnalysisModel,
+      provider: textAnalysisProvider,
       orderId,
       applicationNo,
       serviceType: String(raw.serviceType ?? raw.itemName ?? '').trim() || '未识别服务',
@@ -486,7 +491,7 @@ export async function analyzeOrderFields(
     return { skipped: false, model: extraction.model, fieldExtractionSucceeded: true }
   } catch (error) {
     const errorMessage = describeError(error)
-    console.error(`[order-ai-field] orderId=${orderId} runId=${runId} status=failed materialMaxId=${maxMaterialId} messageMaxId=${maxMessageId} callMaxId=${maxCallId} model=${String(process.env.HYYD_LLM_MODEL ?? 'qwen-plus')} promptVersion=${ORDER_AI_FIELD_PROMPT_VERSION}\n${errorMessage}`)
+    console.error(`[order-ai-field] orderId=${orderId} runId=${runId} status=failed materialMaxId=${maxMaterialId} messageMaxId=${maxMessageId} callMaxId=${maxCallId} promptVersion=${ORDER_AI_FIELD_PROMPT_VERSION}\n${errorMessage}`)
     try {
       if (runId !== null) await failRunningAnalysisRun(prisma, runId, errorMessage)
     } catch (runError) {
@@ -658,7 +663,10 @@ export async function refreshOrderBrief(
     } catch (error) {
       console.warn(`[order-ai] 订单 ${orderId} 读取 B 端正式表单值失败:`, (error as Error).message)
     }
+    const textConfig = await getOrderAiAutomationConfig(prisma)
     const extraction = await extractOrderServiceFields({
+      model: textConfig.textAnalysisModel,
+      provider: textConfig.textAnalysisProvider,
       orderId,
       applicationNo,
       serviceType: String(raw.serviceType ?? raw.itemName ?? '').trim() || '未识别服务',

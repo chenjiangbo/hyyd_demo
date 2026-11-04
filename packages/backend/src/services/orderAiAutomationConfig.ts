@@ -5,15 +5,22 @@ const SETTING_KEY = 'order_ai_automation_config'
 export type OrderAiAutomationConfig = {
   imageAiEnabled: boolean
   communicationSilenceMinutes: number
+  textAnalysisModel: string
+  textAnalysisProvider: 'dashscope' | 'deepseek'
+  imageAnalysisModel: string
   imageAiAnalysisStartAt: string
   updatedAt: string | null
 }
 
-export function validateOrderAiAutomationConfig(input: unknown): Pick<OrderAiAutomationConfig, 'imageAiEnabled' | 'communicationSilenceMinutes'> {
+export function validateOrderAiAutomationConfig(input: unknown): Pick<OrderAiAutomationConfig, 'imageAiEnabled' | 'communicationSilenceMinutes' | 'textAnalysisModel' | 'textAnalysisProvider' | 'imageAnalysisModel'> {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new Error('AI 自动分析配置必须是对象')
   }
   const value = input as Record<string, unknown>
+  if (value.textAnalysisProvider !== 'dashscope' && value.textAnalysisProvider !== 'deepseek') throw new Error('请选择文本分析服务商')
+  if (typeof value.textAnalysisModel !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/.test(value.textAnalysisModel)) throw new Error('请填写有效的文本分析模型名称')
+  if (value.textAnalysisProvider === 'deepseek' && !value.textAnalysisModel.startsWith('deepseek-')) throw new Error('请填写 DeepSeek 模型名称，例如 deepseek-flash')
+  if (typeof value.imageAnalysisModel !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/.test(value.imageAnalysisModel)) throw new Error('请填写有效的图片识别模型名称')
   if (typeof value.imageAiEnabled !== 'boolean') throw new Error('图片 AI 分析开关值无效')
   if (!Number.isInteger(value.communicationSilenceMinutes)
     || Number(value.communicationSilenceMinutes) < 1
@@ -22,6 +29,9 @@ export function validateOrderAiAutomationConfig(input: unknown): Pick<OrderAiAut
   }
   return {
     imageAiEnabled: value.imageAiEnabled,
+    textAnalysisModel: value.textAnalysisModel,
+    textAnalysisProvider: value.textAnalysisProvider,
+    imageAnalysisModel: value.imageAnalysisModel,
     communicationSilenceMinutes: Number(value.communicationSilenceMinutes)
   }
 }

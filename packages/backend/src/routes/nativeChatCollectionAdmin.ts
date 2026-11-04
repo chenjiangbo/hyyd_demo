@@ -1,8 +1,11 @@
 import type { FastifyInstance } from 'fastify'
 import { Prisma, type PrismaClient } from '@prisma/client'
 import type { Client } from 'minio'
-import { getNativeChatWxgfPreviewUrl, removeNativeChatWxgfPreview } from '../services/nativeChatWxgfPreview.js'
-import { getNativeChatImageAnalysisStartAt } from '../services/orderAiAutomationConfig.js'
+import { convertNativeChatWxgfToJpeg, getNativeChatWxgfPreviewUrl, removeNativeChatWxgfPreview } from '../services/nativeChatWxgfPreview.js'
+import { getNativeChatImageAnalysisStartAt, getOrderAiAutomationConfig } from '../services/orderAiAutomationConfig.js'
+import { imageDataUrl, MAX_IMAGE_ANALYSIS_ATTEMPTS } from '../services/nativeChatImageAnalysis.js'
+import { understandImage } from '../services/imageUnderstanding.js'
+import { matchNativeRegistrationProofToOrders } from '../services/registrationProofService.js'
 import {
   getNativeChatCollectionConfig,
   saveNativeChatCollectionConfig,
@@ -77,7 +80,72 @@ export function registerNativeChatCollectionAdminRoutes(
   minioClient: Client,
   minioPublicClient: Client
 ): void {
-  fastify.get<{ Querystring: { cursor?: string } }>('/api/v1/admin/image-analysis-records', async (request, reply) => {
+  fastify.get<{ Params: { source: string; id: string } }>('/api/v1/admin/image-analysis-records/:source/:id/tests', async (request, reply) => {
+    const { source } = request.params
+    const id = Number(request.params.id)
+    if (!['wechat', 'wxwork', 'pet'].includes(source) || !Number.isSafeInteger(id) || id <= 0) return reply.status(400).send({ error: '图片记录无效' })
+    const rows = await prisma.$queryRaw<Array<{ id: bigint; status: string; result: unknown; created_at: Date }>>`
+      SELECT id, status, result, created_at FROM image_analysis_test_runs WHERE source = ${source} AND source_id = ${id} ORDER BY id DESC
+    `
+    return reply.send({ data: rows.map((row) => ({ ...row, id: String(row.id) })) })
+  })
+
+  fastify.post<{ Params: { source: string; id: string } }>('/api/v1/admin/image-analysis-records/:source/:id/tests', async (request, reply) => {
+    const { source } = request.params
+    const id = Number(request.params.id)
+    if (!['wechat', 'wxwork', 'pet'].includes(source) || !Number.isSafeInteger(id) || id <= 0) return reply.status(400).send({ error: '图片记录无效' })
+    const rows = source === 'pet'
+      ? await prisma.$queryRaw<Array<{ storage_key: string | null; mime_type: string | null; application_no: string | null }>>`
+          SELECT image_storage_key AS storage_key, image_mime_type AS mime_type, NULL::text AS application_no FROM pet_image_analysis_records WHERE id = ${id}`
+      : await prisma.$queryRaw<Array<{ storage_key: string | null; mime_type: string | null; application_no: string | null }>>`
+          SELECT a.storage_key, a.mime_type,
+                 CASE WHEN a.application_link_status = 'matched' THEN a.application_no
+                      WHEN m.application_link_status = 'matched' THEN m.application_no ELSE NULL END AS application_no
+            FROM native_chat_attachments a JOIN native_chat_messages m ON m.id = a.message_id
+            JOIN native_chat_conversations c ON c.id = m.conversation_id
+           WHERE a.id = ${id} AND c.channel = ${source} AND a.kind = 'image' AND a.state = 'available'`
+    if (!rows[0]) return reply.status(404).send({ error: '图片记录不存在' })
+    if (!rows[0].storage_key) return reply.status(409).send({ error: '图片尚未取得，暂时无法测试' })
+    const [run] = await prisma.$queryRaw<Array<{ id: bigint }>>`
+      INSERT INTO image_analysis_test_runs (source, source_id, status) VALUES (${source}, ${id}, 'running') RETURNING id`
+    let result: Record<string, unknown> = { image: null, imageResponse: null, match: null, matchTrace: null }
+    const save = async (status: 'running' | 'completed' | 'failed') => {
+      await prisma.$executeRaw`UPDATE image_analysis_test_runs SET status = ${status}, result = ${JSON.stringify(result)}::jsonb, updated_at = NOW() WHERE id = ${run.id}`
+    }
+    try {
+      const stream = await minioClient.getObject(ATTACHMENT_BUCKET, rows[0].storage_key)
+      const chunks: Buffer[] = []
+      for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+      const buffer = Buffer.concat(chunks)
+      const dataUrl = buffer.subarray(0, 4).toString('ascii') === 'wxgf'
+        ? imageDataUrl('image/jpeg', await convertNativeChatWxgfToJpeg(buffer))
+        : imageDataUrl(rows[0].mime_type, buffer)
+      const { imageAnalysisModel } = await getOrderAiAutomationConfig(prisma)
+      const image = await understandImage(dataUrl, imageAnalysisModel, async (response) => {
+        result = { ...result, imageResponse: response }
+        await save('running')
+      })
+      result = { ...result, image }
+      await save('running')
+      if (image.imageType === '挂号凭证') {
+        const match = await matchNativeRegistrationProofToOrders(prisma, '', image, {
+          applicationNo: rows[0].application_no,
+          onAiTrace: async (trace) => { result = { ...result, matchTrace: trace }; await save('running') }
+        })
+        result = { ...result, match }
+      }
+      await save('completed')
+      return reply.send({ data: { id: String(run.id), status: 'completed', result } })
+    } catch (error) {
+      result = { ...result, error: error instanceof Error ? error.message : String(error) }
+      await save('failed')
+      return reply.send({ data: { id: String(run.id), status: 'failed', result } })
+    }
+  })
+
+  fastify.get<{ Querystring: { cursor?: string; filter?: string } }>('/api/v1/admin/image-analysis-records', async (request, reply) => {
+    const filter = request.query.filter ?? 'all'
+    if (!['all', 'awaiting', 'waiting_image'].includes(filter)) return reply.status(400).send({ error: '图片记录筛选条件无效' })
     let cursor: { time: string; source: string; id: number } | null = null
     if (request.query.cursor) {
       try {
@@ -90,12 +158,26 @@ export function registerNativeChatCollectionAdminRoutes(
       WITH image_records AS (
         SELECT a.id, c.channel AS source, e.name AS employee_name, c.title,
                m.occurred_at, a.state, a.source_metadata->'imageAnalysis' AS image_analysis,
-               a.source_metadata->'imageAnalysis'->'registrationMatch' AS registration_match,
+               CASE WHEN a.application_link_source = 'manager_confirmation'
+                 THEN COALESCE(a.source_metadata->'imageAnalysis'->'registrationMatch', '{}'::jsonb)
+                      || jsonb_build_object('managerResolution', a.application_link_evidence)
+                 ELSE a.source_metadata->'imageAnalysis'->'registrationMatch' END AS registration_match,
                NULL::text AS error, a.order_id,
                (a.state = 'available' AND a.storage_key IS NOT NULL) AS image_available,
                (root.occurred_at IS NULL) AS received_time_unknown,
                a.source_metadata->>'rendition' AS image_rendition,
-               a.source_metadata->>'nonThumbnailState' AS full_image_state
+               a.source_metadata->>'nonThumbnailState' AS full_image_state,
+               (a.state = 'available' AND a.storage_key IS NOT NULL
+                AND a.source_metadata->>'rendition' = 'non_thumbnail'
+                AND root.occurred_at IS NOT NULL
+                AND (a.source_metadata->'imageAnalysis' IS NULL
+                     OR a.source_metadata->'imageAnalysis'->>'status' IN ('pending', 'retrying'))
+                AND CASE WHEN jsonb_typeof(a.source_metadata->'imageAnalysis'->'attemptCount') = 'number'
+                     THEN (a.source_metadata->'imageAnalysis'->>'attemptCount')::numeric < ${MAX_IMAGE_ANALYSIS_ATTEMPTS}
+                     ELSE TRUE END) AS awaiting_ai,
+               (COALESCE(a.source_metadata->'imageAnalysis'->>'status', '') <> 'completed'
+                AND (a.state <> 'available' OR a.storage_key IS NULL
+                     OR COALESCE(a.source_metadata->>'rendition', '') <> 'non_thumbnail')) AS waiting_image
           FROM native_chat_attachments a
           JOIN native_chat_messages m ON m.id = a.message_id
           JOIN native_chat_conversations c ON c.id = m.conversation_id
@@ -116,24 +198,26 @@ export function registerNativeChatCollectionAdminRoutes(
            AND (root.occurred_at IS NULL OR root.occurred_at >= (${startAt}::timestamptz AT TIME ZONE 'Asia/Shanghai'))
         UNION ALL
         SELECT p.id, 'pet'::text, e.name, NULL::text, p.created_at, p.status,
-               p.image_analysis, p.registration_match, p.error, p.order_id, (p.image_storage_key IS NOT NULL), false, NULL::text, NULL::text
+               p.image_analysis, p.registration_match, p.error, p.order_id, (p.image_storage_key IS NOT NULL), false, NULL::text, NULL::text, false, false
           FROM pet_image_analysis_records p JOIN employees e ON e.id = p.employee_id
          WHERE p.created_at >= (${startAt}::timestamptz AT TIME ZONE 'Asia/Shanghai')
       )
     `
+    const filterCondition = filter === 'awaiting' ? Prisma.sql`awaiting_ai` : filter === 'waiting_image' ? Prisma.sql`waiting_image` : Prisma.sql`TRUE`
     const [rows, counts] = await prisma.$transaction([
       prisma.$queryRaw<Array<{ id: number; source: string; employee_name: string; title: string | null; occurred_at: Date; state: string; image_analysis: unknown; registration_match: unknown; error: string | null; order_id: number | null; image_available: boolean; received_time_unknown: boolean }>>(Prisma.sql`
         ${records}
         SELECT * FROM image_records
-        ${cursor ? Prisma.sql`WHERE occurred_at < ${new Date(cursor.time)}::timestamp OR (occurred_at = ${new Date(cursor.time)}::timestamp AND (source > ${cursor.source} OR (source = ${cursor.source} AND id < ${cursor.id})))` : Prisma.empty}
+        WHERE ${filterCondition}
+        ${cursor ? Prisma.sql`AND (occurred_at < ${new Date(cursor.time)}::timestamp OR (occurred_at = ${new Date(cursor.time)}::timestamp AND (source > ${cursor.source} OR (source = ${cursor.source} AND id < ${cursor.id}))))` : Prisma.empty}
         ORDER BY occurred_at DESC, source ASC, id DESC LIMIT ${PAGE_SIZE + 1}
       `),
-      prisma.$queryRaw<Array<{ total: bigint }>>(Prisma.sql`${records} SELECT COUNT(*)::bigint AS total FROM image_records`)
+      prisma.$queryRaw<Array<{ total: bigint; awaiting_ai: bigint; filtered_total: bigint }>>(Prisma.sql`${records} SELECT COUNT(*)::bigint AS total, COUNT(*) FILTER (WHERE awaiting_ai)::bigint AS awaiting_ai, COUNT(*) FILTER (WHERE ${filterCondition})::bigint AS filtered_total FROM image_records`)
     ], { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead })
     const items = rows.slice(0, PAGE_SIZE)
     const last = items.at(-1)
     const nextCursor = rows.length > PAGE_SIZE && last ? Buffer.from(JSON.stringify({ time: last.occurred_at.toISOString(), source: last.source, id: last.id })).toString('base64url') : null
-    return reply.send({ data: { items, nextCursor, total: safeCount(counts[0]?.total ?? 0n) } })
+    return reply.send({ data: { items, nextCursor, total: safeCount(counts[0]?.total ?? 0n), awaitingAi: safeCount(counts[0]?.awaiting_ai ?? 0n), filteredTotal: safeCount(counts[0]?.filtered_total ?? 0n) } })
   })
 
   fastify.get<{ Params: { recordId: string } }>('/api/v1/admin/image-analysis-records/pet/:recordId/url', async (request, reply) => {

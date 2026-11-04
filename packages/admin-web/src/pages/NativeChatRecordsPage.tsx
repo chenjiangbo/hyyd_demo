@@ -152,6 +152,9 @@ function ImageAnalysisLog({
   const visibleText = typeof analysis.visibleText === 'string' ? analysis.visibleText : null
   const error = typeof analysis.error === 'string' ? analysis.error : null
   const match = asRecord(analysis.registrationMatch)
+  const managerResolution = asRecord(match?.managerResolution)
+  const notApplicable = managerResolution?.status === 'manager_not_applicable'
+  const managerConfirmed = managerResolution?.status === 'manager_confirmed'
   const matchStatus = typeof match?.status === 'string' ? match.status : null
   const matchStatusLabel = matchStatus ? ({
     pending: '等待申领号和订单匹配',
@@ -160,11 +163,11 @@ function ImageAnalysisLog({
     failed: '申领号或订单匹配失败',
     completed: '匹配分析完成'
   } as Record<string, string>)[matchStatus] ?? `匹配状态：${matchStatus}` : null
-  const effectiveMatchStatusLabel = enabled === false && (matchStatus === 'pending' || matchStatus === 'retrying')
+  const effectiveMatchStatusLabel = notApplicable ? '已放弃关联' : managerConfirmed ? '已确认订单' : enabled === false && (matchStatus === 'pending' || matchStatus === 'retrying')
     ? '已暂停（图片 AI 当前关闭）'
     : matchStatusLabel
-  const applicationNo = typeof match?.applicationNo === 'string' ? match.applicationNo : null
-  const orderId = typeof match?.orderId === 'number' ? match.orderId : null
+  const applicationNo = notApplicable ? null : managerConfirmed && typeof managerResolution?.applicationNo === 'string' ? managerResolution.applicationNo : typeof match?.applicationNo === 'string' ? match.applicationNo : null
+  const orderId = notApplicable ? null : managerConfirmed && typeof managerResolution?.orderId === 'number' ? managerResolution.orderId : typeof match?.orderId === 'number' ? match.orderId : null
   const matchReason = typeof match?.reason === 'string' ? match.reason : null
   const matchError = typeof match?.error === 'string' ? match.error : null
   const visibleFields = Array.isArray(analysis.visibleFields) ? analysis.visibleFields.map(asRecord).filter((field): field is Record<string, unknown> => field !== null) : []
@@ -179,7 +182,7 @@ function ImageAnalysisLog({
       {error && <div className="whitespace-pre-wrap break-words text-danger">识别错误：{error}</div>}
       {effectiveMatchStatusLabel && <div className="font-medium text-fg">挂号归属：{effectiveMatchStatusLabel}</div>}
       {applicationNo && <div className="text-fg-muted">申领号：{applicationNo}</div>}
-      {orderId !== null && <div className="text-fg-muted">建议订单 ID：{orderId}</div>}
+      {orderId !== null && <div className="text-fg-muted">{managerConfirmed ? '已确认订单 ID' : '建议订单 ID'}：{orderId}</div>}
       {matchReason && <div className="whitespace-pre-wrap break-words text-fg-muted">匹配说明：{matchReason}</div>}
       {matchError && <div className="whitespace-pre-wrap break-words text-danger">匹配错误：{matchError}</div>}
       {candidates.length > 0 && <details className="text-fg-muted"><summary className="cursor-pointer">查看申领号和订单候选（{candidates.length}）</summary>{candidates.map((candidate, index) => {

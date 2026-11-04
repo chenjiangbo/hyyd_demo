@@ -29,10 +29,13 @@ app.setAppUserModelId('com.huanyu.trayapp')
 
 let mainWindow: BrowserWindow | null = null
 let petWindow: BrowserWindow | null = null
+let imageOrderPicker: BrowserWindow | null = null
+let finishImageOrderPicker: ((value: { applicationNo: string; orderId: number } | null) => void) | null = null
 let tray: Tray | null = null
 let isQuitting = false
 let closePromptInFlight = false
 let isAuthenticated = false
+let traySession: { employeeCode: string; backendUrl: string } | null = null
 let pendingPetCollectorNotice: { state: 'warning' | 'done'; message: string } | null = null
 let pendingPetMobileStatus: PetMobileStatus | null = null
 let pendingPetMobileReminder: string | null = null
@@ -369,6 +372,27 @@ function createPetWindow(): void {
   }
 }
 
+function openImageOrderPicker(): Promise<{ applicationNo: string; orderId: number } | null> {
+  if (!petWindow || petWindow.isDestroyed() || !isAuthenticated || !traySession) throw new Error('请先登录客户端')
+  if (imageOrderPicker && !imageOrderPicker.isDestroyed()) throw new Error('订单选择窗口已打开')
+  const owner = petWindow
+  const area = screen.getDisplayMatching(owner.getBounds()).workArea
+  const picker = new BrowserWindow({
+    parent: owner, modal: true, show: false, width: Math.min(850, area.width), height: Math.min(720, area.height),
+    minWidth: Math.min(520, area.width), minHeight: Math.min(380, area.height), title: '选择订单',
+    alwaysOnTop: true, webPreferences: { preload: join(__dirname, '../preload/index.js'), sandbox: false }
+  })
+  imageOrderPicker = picker
+  picker.setMenuBarVisibility(false)
+  picker.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  picker.once('ready-to-show', () => picker.show())
+  const result = new Promise<{ applicationNo: string; orderId: number } | null>((resolve) => { finishImageOrderPicker = resolve })
+  picker.on('closed', () => { imageOrderPicker = null; finishImageOrderPicker?.(null); finishImageOrderPicker = null })
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) void picker.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/pet.html?orderPicker=1`)
+  else void picker.loadFile(join(__dirname, '../renderer/pet.html'), { query: { orderPicker: '1' } })
+  return result
+}
+
 function resizePetWindow(expanded: boolean, bubbleSize?: { width: number; height: number }): { bubbleSide: PetBubbleSide } {
   if (!petWindow || petWindow.isDestroyed()) throw new Error('浮动精灵窗口尚未创建')
   if (bubbleSize) lastPetBubbleSize = bubbleSize
@@ -538,7 +562,10 @@ function updateCollectorTrayStatus(status: NativeChatCollectorHealth): void {
       pendingPetCollectorNotice = null
     }
   }
-  tray.setToolTip(`寰宇医道 · 微信采集${collectorStateLabel(status.wechat.state)} · 企微采集${collectorStateLabel(status.wxwork.state)}`)
+  const identity = isAuthenticated && traySession
+    ? `员工账号：${traySession.employeeCode}\n后台：${traySession.backendUrl}`
+    : isAuthenticated ? '员工账号：正在获取' : '未登录'
+  tray.setToolTip(`${identity}\n微信采集：${collectorStateLabel(status.wechat.state)} · 企微采集：${collectorStateLabel(status.wxwork.state)}`)
   const contextMenu = Menu.buildFromTemplate([
     { label: '显示浮动精灵', click: showPetWindow },
     { label: '切换服务器', click: switchServer },
@@ -590,7 +617,12 @@ if (!gotLock) {
     ipcMain.on('window:hide', () => mainWindow?.hide())
     ipcMain.on('session:set-authenticated', (_e, value: unknown) => {
       isAuthenticated = value === true
-      if (!isAuthenticated) petOrderAi.setConfig({ backendUrl: '', employeeCode: '' })
+      if (!isAuthenticated) {
+        imageOrderPicker?.close()
+        traySession = null
+        petOrderAi.setConfig({ backendUrl: '', employeeCode: '' })
+      }
+      updateCollectorTrayStatus(nativeChatCollectors.getHealth())
     })
     ipcMain.on('window:minimize', () => mainWindow?.minimize())
     ipcMain.on('window:maximize-toggle', () => {
@@ -716,25 +748,55 @@ if (!gotLock) {
     })
     ipcMain.handle('pet:select-order', async (_e, payload: unknown): Promise<PetIntakeResult> => {
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('订单确认内容无效')
-      const value = payload as { orderId?: unknown; applicationNo?: unknown }
+      const value = payload as { orderId?: unknown; applicationNo?: unknown; manualSelection?: unknown }
       if (typeof value.orderId !== 'number' || !Number.isSafeInteger(value.orderId)
         || !(value.applicationNo === undefined || (typeof value.applicationNo === 'string' && value.applicationNo.trim()))) throw new Error('订单确认信息不完整')
-      const result = await petIntake.selectOrder(value.orderId, typeof value.applicationNo === 'string' ? value.applicationNo.trim() : undefined)
+      const result = await petIntake.selectOrder(value.orderId, typeof value.applicationNo === 'string' ? value.applicationNo.trim() : undefined, value.manualSelection === true)
       petWindow?.webContents.send('pet:status', result)
       return result
     })
-    ipcMain.handle('pet:discard-pending-image', (): void => {
-      petIntake.discardPending()
+    ipcMain.handle('pet:discard-pending-image', async (): Promise<void> => {
+      const next = await petIntake.discardPending()
+      if (next) petWindow?.webContents.send('pet:status', next)
+    })
+    ipcMain.handle('pet:pick-other-order', (event) => {
+      if (!petWindow || event.sender !== petWindow.webContents) throw new Error('无权打开订单选择窗口')
+      return openImageOrderPicker()
+    })
+    ipcMain.handle('pet:order-picker-search', async (event, payload: unknown) => {
+      if (!imageOrderPicker || event.sender !== imageOrderPicker.webContents || !isAuthenticated || !traySession) throw new Error('请重新登录后选择订单')
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('订单查询参数无效')
+      const input = payload as { page?: unknown; query?: unknown; applicationNo?: unknown }
+      if (!Number.isSafeInteger(input.page) || (input.page as number) < 1 || (input.query !== undefined && typeof input.query !== 'string') || (input.applicationNo !== undefined && typeof input.applicationNo !== 'string')) throw new Error('订单查询参数无效')
+      const params = new URLSearchParams({ page: String(input.page), pageSize: '50' })
+      if (typeof input.query === 'string' && input.query.trim()) params.set('query', input.query.trim())
+      if (typeof input.applicationNo === 'string' && input.applicationNo.trim()) params.set('applicationNo', input.applicationNo.trim())
+      const response = await fetch(`${traySession.backendUrl}/api/v1/orders?${params}`, { headers: { 'X-Employee-Code': traySession.employeeCode }, signal: AbortSignal.timeout(30_000) })
+      if (!response.ok) throw new Error(`订单加载失败（${response.status}）`)
+      return await response.json()
+    })
+    ipcMain.on('pet:order-picker-finish', (event, value: unknown) => {
+      if (!imageOrderPicker || event.sender !== imageOrderPicker.webContents) return
+      if (value !== null && (!value || typeof value !== 'object' || !Number.isSafeInteger((value as { orderId?: unknown }).orderId) || typeof (value as { applicationNo?: unknown }).applicationNo !== 'string' || !(value as { applicationNo: string }).applicationNo.trim())) return
+      const finish = finishImageOrderPicker
+      finishImageOrderPicker = null
+      finish?.(value as { applicationNo: string; orderId: number } | null)
+      imageOrderPicker.close()
+    })
+    ipcMain.handle('pet:dismiss-native-image-match', async (_e, attachmentId: unknown) => {
+      if (typeof attachmentId !== 'number' || !Number.isSafeInteger(attachmentId) || attachmentId <= 0) throw new Error('图片编号无效')
+      await nativeChatCollectors.dismissImageMatch(attachmentId)
+      pendingPetImageMatches.delete(attachmentId)
     })
     ipcMain.handle('pet:resolve-native-image-match', async (_e, payload: unknown) => {
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('图片匹配确认内容无效')
-      const value = payload as { attachmentId?: unknown; applicationNo?: unknown; orderId?: unknown }
+      const value = payload as { attachmentId?: unknown; applicationNo?: unknown; orderId?: unknown; manualSelection?: unknown }
       if (typeof value.attachmentId !== 'number' || !Number.isSafeInteger(value.attachmentId)
         || typeof value.applicationNo !== 'string' || !value.applicationNo.trim()
         || !(value.orderId === null || value.orderId === undefined || (typeof value.orderId === 'number' && Number.isSafeInteger(value.orderId)))) {
         throw new Error('图片匹配确认字段无效')
       }
-      await nativeChatCollectors.resolveImageMatch(value.attachmentId, value.applicationNo, value.orderId == null ? null : value.orderId)
+      await nativeChatCollectors.resolveImageMatch(value.attachmentId, value.applicationNo, value.orderId == null ? null : value.orderId, value.manualSelection === true)
       pendingPetImageMatches.delete(value.attachmentId)
       const result = { state: 'done' as const, message: value.orderId == null ? '图片已关联到申领号' : '图片已关联到对应订单' }
       petWindow?.webContents.send('pet:status', result)
@@ -852,7 +914,11 @@ if (!gotLock) {
     ipcMain.handle(
       'capture:set-config',
       (_e, cfg: { backendUrl: string; employeeCode: string }) => {
+        const nextSession = { backendUrl: cfg.backendUrl.trim().replace(/\/$/, ''), employeeCode: cfg.employeeCode.trim() }
         nativeChatCollectors.setConfig(cfg)
+        if (traySession && (traySession.backendUrl !== nextSession.backendUrl || traySession.employeeCode !== nextSession.employeeCode)) imageOrderPicker?.close()
+        traySession = nextSession
+        updateCollectorTrayStatus(nativeChatCollectors.getHealth())
         return { ok: true }
       }
     )

@@ -8,6 +8,7 @@ import { resolveWxworkContext, resolveWxworkContextAtRoot, type WxworkContext } 
 import { NativeChatReadLogThrottle } from './native-chat-read-log-throttle'
 import { applyAttachmentUploadLimit, MAX_ATTACHMENT_BYTES } from './native-chat-attachment-limit'
 import { reconcileConversationPendingMedia } from './native-chat-pending-media'
+import { IMAGE_MATCH_CONFIRMATION_ENABLED } from './image-match-confirmation-policy'
 
 type Channel = 'wechat' | 'wxwork'
 type Session = {
@@ -95,7 +96,7 @@ const DISCOVERY_FULL_SYNC_MS = 5 * 60_000
 const CURSOR_FILE = 'native-chat-cursors.json'
 const INITIAL_HISTORY_PAGE_SIZE = 200
 const INITIAL_HISTORY_DAYS = 30
-const MEDIA_RETRY_MAX_AGE_MS = 30 * 24 * 60 * 60_000
+const MEDIA_RETRY_MAX_AGE_MS = 7 * 24 * 60 * 60_000
 const PENDING_MEDIA_FILE = 'native-chat-pending-media.json'
 const SUBSCRIPTIONS_FILE = 'native-chat-subscriptions.json'
 const COLLECTION_RULES_FILE = 'native-chat-collection-rules.json'
@@ -178,7 +179,7 @@ function expireOldPendingMedia(messages: NativeChatMessage[]): NativeChatMessage
         if (!waitingAttachments.includes(attachment)) return attachment
         const sourceMetadata = {
           ...(attachment.sourceMetadata ?? {}),
-          resolutionState: 'retry_expired_30_days' as const,
+          resolutionState: 'retry_expired_7_days' as const,
           terminal: true,
           ...(attachment.kind === 'image' ? { nonThumbnailState: 'expired' as const } : {})
         }
@@ -339,7 +340,7 @@ export class NativeChatCollectorManager {
   private activityIssues = new Map<Channel, string[]>()
   private cachedCollectionConfig: NativeChatCollectionConfig | null = null
 
-  constructor() {
+  constructor(private readonly imageMatchConfirmationEnabled = IMAGE_MATCH_CONFIRMATION_ENABLED) {
     this.cursors = parseCursorFile(this.cursorPath)
     this.initialHistoryState = parseInitialHistoryState(this.initialHistoryPath)
     this.pendingMedia = parsePendingMediaFile(this.pendingMediaPath)
@@ -444,16 +445,21 @@ export class NativeChatCollectorManager {
 
   setImageMatchListener(listener: (match: NativePendingImageMatch) => void): void {
     this.imageMatchListener = listener
-    for (const match of this.pendingImageMatches.values()) listener(match)
+    if (this.imageMatchConfirmationEnabled) for (const match of this.pendingImageMatches.values()) listener(match)
   }
 
-  async resolveImageMatch(attachmentId: number, applicationNo: string, orderId: number | null): Promise<void> {
-    await this.post(`/api/v1/native-chat/attachments/${attachmentId}/resolve-image-match`, { applicationNo, orderId })
+  async resolveImageMatch(attachmentId: number, applicationNo: string, orderId: number | null, manualSelection = false): Promise<void> {
+    await this.post(`/api/v1/native-chat/attachments/${attachmentId}/resolve-image-match`, { applicationNo, orderId, manualSelection })
+    this.pendingImageMatches.delete(attachmentId)
+  }
+
+  async dismissImageMatch(attachmentId: number): Promise<void> {
+    await this.post(`/api/v1/native-chat/attachments/${attachmentId}/dismiss-image-match`, {})
     this.pendingImageMatches.delete(attachmentId)
   }
 
   private async refreshPendingImageMatches(): Promise<void> {
-    if (!this.config || this.stopping) return
+    if (!this.imageMatchConfirmationEnabled || !this.config || this.stopping) return
     try {
       const response = await this.get('/api/v1/native-chat/pending-image-matches')
       const items = response.data as NativePendingImageMatch[]
@@ -490,6 +496,40 @@ export class NativeChatCollectorManager {
   private logStructured(channel: Channel | 'app', event: string, fields: Record<string, unknown>): void {
     mkdirSync(app.getPath('userData'), { recursive: true })
     appendFileSync(this.logPath, `${JSON.stringify({ at: new Date().toISOString(), channel, event, ...fields })}\n`, 'utf8')
+  }
+
+  private logSpawnFailure(channel: Channel, executable: string, args: string[], error: unknown): void {
+    const detail = error && typeof error === 'object' ? error as NodeJS.ErrnoException & {
+      spawnargs?: string[]
+    } : null
+    let executableStat: { size: number; mtime: string } | null = null
+    try {
+      const stat = statSync(executable)
+      executableStat = { size: stat.size, mtime: stat.mtime.toISOString() }
+    } catch {
+      // The structured record below reports the missing/unreadable executable explicitly.
+    }
+    this.logStructured(channel, 'spawn_failed', {
+      error: {
+        name: detail?.name ?? typeof error,
+        message: detail?.message ?? String(error),
+        code: detail?.code ?? null,
+        errno: detail?.errno ?? null,
+        syscall: detail?.syscall ?? null,
+        path: detail?.path ?? null,
+        spawnargs: detail?.spawnargs ?? null
+      },
+      executable,
+      executableExists: existsSync(executable),
+      executableStat,
+      requestedArgs: args,
+      platform: process.platform,
+      architecture: process.arch,
+      packaged: app.isPackaged,
+      appVersion: app.getVersion(),
+      resourcesPath: process.resourcesPath,
+      workingDirectory: process.cwd()
+    })
   }
 
   private setHealth(channel: Channel, state: CollectorHealthState, detail: string): void {
@@ -567,7 +607,7 @@ export class NativeChatCollectorManager {
         })
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        this.log(channel, 'spawn_failed', message)
+        this.logSpawnFailure(channel, executable, args, error)
         this.setHealth(channel, 'error', `采集程序启动失败：${message}`)
         throw error
       }
@@ -592,7 +632,7 @@ export class NativeChatCollectorManager {
         }
       })
       child.on('error', (error) => {
-        this.log(channel, 'spawn_error', error.message)
+        this.logSpawnFailure(channel, executable, args, error)
         this.setHealth(channel, 'error', `采集程序启动失败：${error.message}`)
       })
       child.on('exit', (code, signal) => {

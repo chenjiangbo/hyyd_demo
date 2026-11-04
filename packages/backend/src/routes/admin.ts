@@ -391,6 +391,9 @@ export function registerAdminRoutes(
       } catch (error) {
         return reply.status(400).send({ error: error instanceof Error ? error.message : 'AI 自动分析配置无效' })
       }
+      if (input.textAnalysisProvider === 'deepseek' && !process.env.DEEPSEEK_API_KEY?.trim()) {
+        return reply.status(400).send({ error: 'DeepSeek 服务尚未配置密钥' })
+      }
       const config = await saveOrderAiAutomationConfig(prisma, input)
       return reply.send({ data: { ...config, message: 'AI 自动分析配置已保存' } })
     })

@@ -454,6 +454,8 @@ function normalizeEvents(raw: unknown, huanyuOrderNos: Set<string>): WorkflowAna
 }
 
 export async function extractOrderServiceFields(input: {
+  model: string
+  provider: 'dashscope' | 'deepseek'
   orderId: number
   applicationNo: string | null
   serviceType: string
@@ -488,7 +490,7 @@ export async function extractOrderServiceFields(input: {
     `【当前已保存正式值，仅用于判断变更，不得照搬】${JSON.stringify(input.currentValues)}`,
     `【申请号下沟通时间线】\n${sourceTimeline || '（无可分析的企微、微信或已转写通话）'}`
   ].join('\n\n')
-  const result = await chat([{ role: 'system', content: system }, { role: 'user', content: user }], { temperature: 0, maxTokens: 10000 })
+  const result = await chat([{ role: 'system', content: system }, { role: 'user', content: user }], { temperature: 0, maxTokens: 10000, model: input.model, provider: input.provider })
   const parsed = parseObject(result.content)
   return {
     candidates: normalizeCandidates(parsed.field_candidates, allowedMap, new Set((input.huanyuOrders ?? []).map((order) => order.orderNo))),

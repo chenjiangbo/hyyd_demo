@@ -154,9 +154,13 @@ declare global {
       showPetReminder: (data: { key: string; message: string }) => void
       getPathForFile: (file: File) => string
       petDropFiles: (paths: string[]) => Promise<{ state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[]; imageMatch?: PetDropImageMatch }>
-      petSelectOrder: (orderId: number, applicationNo?: string) => Promise<{ state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[]; imageMatch?: PetDropImageMatch }>
+      petSelectOrder: (orderId: number, applicationNo?: string, manualSelection?: boolean) => Promise<{ state: 'done' | 'unknown' | 'candidates'; message: string; candidates?: unknown[]; imageMatch?: PetDropImageMatch }>
       petDiscardPendingImage: () => Promise<void>
-      resolveNativeImageMatch: (payload: { attachmentId: number; applicationNo: string; orderId: number | null }) => Promise<{ state: 'done'; message: string }>
+      petPickOtherOrder: () => Promise<{ applicationNo: string; orderId: number } | null>
+      petSearchOrders: (payload: { page: number; query?: string; applicationNo?: string }) => Promise<unknown>
+      petFinishOrderPicker: (selection: { applicationNo: string; orderId: number } | null) => void
+      dismissNativeImageMatch: (attachmentId: number) => Promise<void>
+      resolveNativeImageMatch: (payload: { attachmentId: number; applicationNo: string; orderId: number | null; manualSelection?: boolean }) => Promise<{ state: 'done'; message: string }>
       onPetImageMatch: (cb: (match: NativeChatPendingImageMatch) => void) => () => void
       onPetStatus: (cb: (status: { state: 'done' | 'unknown' | 'candidates' | 'warning'; message: string; candidates?: unknown[]; imageMatch?: PetDropImageMatch }) => void) => () => void
       getWindowPreferences: () => Promise<{ closeBehavior: 'ask' | 'minimize' | 'quit' }>

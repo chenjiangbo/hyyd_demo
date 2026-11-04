@@ -125,6 +125,8 @@ interface PetBubbleProps {
   onSelectApplication?: (applicationNo: string) => void
   onResolveImageOrder?: (applicationNo: string, orderId: number | null) => void
   onDiscardImageMatch?: () => void
+  onPickOtherImageOrder?: () => void
+  imageMatchError?: string | null
   onSizeChange?: (size: { width: number; height: number }) => void
   onAddEscortRecord?: () => void
   onRemoveEscortRecord?: (sectionId: string) => void
@@ -448,7 +450,7 @@ function MasterReview({ items, addressValue, onFieldChange }: { items: MasterRev
   </div>
 }
 
-export function PetBubble({ panel, skipEntranceAnimation, onAction, onClose, onSelectCandidate, onSelectApplication, onResolveImageOrder, onDiscardImageMatch, onFieldChange, onLookup, onSizeChange, onAddEscortRecord, onRemoveEscortRecord }: PetBubbleProps): React.JSX.Element {
+export function PetBubble({ panel, skipEntranceAnimation, onAction, onClose, onSelectCandidate, onSelectApplication, onResolveImageOrder, onDiscardImageMatch, onPickOtherImageOrder, imageMatchError, onFieldChange, onLookup, onSizeChange, onAddEscortRecord, onRemoveEscortRecord }: PetBubbleProps): React.JSX.Element {
   const bubbleRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
@@ -476,6 +478,9 @@ export function PetBubble({ panel, skipEntranceAnimation, onAction, onClose, onS
     <section ref={bubbleRef} className={`pet-bubble pet-bubble--${panel.kind}${skipEntranceAnimation ? ' pet-bubble--no-entrance' : ''}${panel.kind === 'form' && panel.confirmation ? ' pet-bubble--master-review' : ''}${panel.kind === 'form' && !panel.confirmation && panel.id?.startsWith('order-ai:') ? ' pet-bubble--order-ai' : ''}`} style={panel.kind === 'form' ? ({
       maxHeight: `${Math.max(240, window.screen.availHeight - 54)}px`,
       '--pet-form-body-max-height': `${Math.max(140, window.screen.availHeight - 230)}px`
+    } as React.CSSProperties) : panel.kind === 'image-match' ? ({
+      maxWidth: `${Math.max(160, window.screen.availWidth - 120)}px`,
+      maxHeight: `${Math.max(160, window.screen.availHeight - 90)}px`
     } as React.CSSProperties) : undefined} role="status" aria-live="polite">
       <span className="pet-bubble__tail" aria-hidden="true" />
       <button className="pet-bubble__close" type="button" aria-label="关闭面板" title="关闭" onClick={onClose}>×</button>
@@ -511,7 +516,11 @@ export function PetBubble({ panel, skipEntranceAnimation, onAction, onClose, onS
           </button>)}</div>
           {panel.match.reason && <p className="pet-bubble__description">AI 判断依据：{panel.match.reason}</p>}
         </>}
-        {panel.match.source === 'drop' && <button type="button" className="pet-bubble__action pet-bubble__action--secondary" onClick={onDiscardImageMatch}>放弃这张图片</button>}
+        {imageMatchError && <p className="pet-bubble__submit-message pet-bubble__submit-message--error" role="alert">{imageMatchError}</p>}
+        <div className="pet-bubble__actions">
+          <button type="button" className="pet-bubble__action pet-bubble__action--secondary" onClick={onPickOtherImageOrder}>哪个都不是，选择其他订单</button>
+          <button type="button" className="pet-bubble__action pet-bubble__action--secondary" onClick={onDiscardImageMatch}>放弃关联</button>
+        </div>
       </>}
     </section>
   )

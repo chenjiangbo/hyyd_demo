@@ -3,7 +3,7 @@ import { adminApi } from '../api/client'
 import type { OrderAiAutomationConfig } from '../api/types'
 import { Card, ErrorBlock, LoadingBlock, PageHeader } from '../components/ui'
 
-type EditableConfig = Pick<OrderAiAutomationConfig, 'imageAiEnabled' | 'communicationSilenceMinutes'>
+type EditableConfig = Pick<OrderAiAutomationConfig, 'imageAiEnabled' | 'communicationSilenceMinutes' | 'textAnalysisModel' | 'textAnalysisProvider' | 'imageAnalysisModel'>
 
 export default function AiScheduleConfigPage(): React.JSX.Element {
   const [config, setConfig] = useState<OrderAiAutomationConfig | null>(null)
@@ -18,6 +18,9 @@ export default function AiScheduleConfigPage(): React.JSX.Element {
       const value = await adminApi.orderAiAutomationConfig()
       setConfig(value)
       setDraft({
+        textAnalysisModel: value.textAnalysisModel,
+        textAnalysisProvider: value.textAnalysisProvider,
+        imageAnalysisModel: value.imageAnalysisModel,
         imageAiEnabled: value.imageAiEnabled,
         communicationSilenceMinutes: value.communicationSilenceMinutes
       })
@@ -41,6 +44,9 @@ export default function AiScheduleConfigPage(): React.JSX.Element {
       const value = await adminApi.saveOrderAiAutomationConfig(draft)
       setConfig(value)
       setDraft({
+        textAnalysisModel: value.textAnalysisModel,
+        textAnalysisProvider: value.textAnalysisProvider,
+        imageAnalysisModel: value.imageAnalysisModel,
         imageAiEnabled: value.imageAiEnabled,
         communicationSilenceMinutes: value.communicationSilenceMinutes
       })
@@ -77,6 +83,19 @@ export default function AiScheduleConfigPage(): React.JSX.Element {
       {saved && <div role="status" className="rounded border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">配置已保存并生效。</div>}
 
       <Card className="space-y-5 p-5">
+        <section>
+          <h2 className="text-base font-semibold text-fg">订单分析模型</h2>
+          <label className="mt-4 flex max-w-xl items-center gap-3 text-sm text-fg"><span>服务商</span><select className="rounded border border-line bg-surface px-3 py-2" value={draft.textAnalysisProvider} onChange={(event) => { setSaved(false); setDraft({ ...draft, textAnalysisProvider: event.target.value as EditableConfig['textAnalysisProvider'] }) }}><option value="dashscope">阿里云百炼</option><option value="deepseek">DeepSeek</option></select></label>
+          <label className="mt-4 flex max-w-xl items-center gap-3 text-sm text-fg">
+            <span>模型名称</span>
+            <input className="w-72 rounded border border-line bg-surface px-3 py-2" value={draft.textAnalysisModel} onChange={(event) => { setSaved(false); setDraft({ ...draft, textAnalysisModel: event.target.value }) }} />
+          </label>
+          <p className="mt-2 text-sm text-fg-muted">用于订单字段提取和挂号凭证归属分析。</p>
+        </section>
+        <section className="border-t border-line pt-5">
+          <h2 className="text-base font-semibold text-fg">图片识别模型</h2>
+          <label className="mt-4 flex max-w-xl items-center gap-3 text-sm text-fg"><span>模型名称</span><input className="w-72 rounded border border-line bg-surface px-3 py-2" value={draft.imageAnalysisModel} onChange={(event) => { setSaved(false); setDraft({ ...draft, imageAnalysisModel: event.target.value }) }} /></label>
+        </section>
         <section className="flex items-start justify-between gap-5">
           <div>
             <h2 className="text-base font-semibold text-fg">图片 AI 分析</h2>

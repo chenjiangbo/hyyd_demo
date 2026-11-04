@@ -24,6 +24,28 @@ _DATATYPE_NAMES = {
 }
 
 
+def parse_reference_message(content: Any) -> Optional[str]:
+    """Return the reply and quoted text for an app-message reference card."""
+    if not isinstance(content, str) or '<refermsg' not in content.lower():
+        return None
+    try:
+        root = ET.fromstring(_GROUP_SENDER_PREFIX.sub('', content, count=1))
+    except (ET.ParseError, ValueError):
+        return None
+    app = root.find('.//appmsg')
+    if app is None or app.findtext('type') != '57':
+        return None
+    reference = app.find('refermsg')
+    if reference is None:
+        return None
+    title = (app.findtext('title') or '').strip()
+    quoted = (reference.findtext('content') or '').strip()
+    sender = (reference.findtext('displayname') or '').strip()
+    if not title and not quoted:
+        return None
+    return '\n'.join(part for part in (title, f"引用{f'（{sender}）' if sender else ''}：{quoted}" if quoted else '') if part)
+
+
 def parse_pat_message(content: Any) -> Optional[str]:
     """Recognize WeChat's type 62 pat card without treating it as a file."""
     if not isinstance(content, str) or "<patinfo" not in content.lower():

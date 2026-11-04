@@ -12,7 +12,7 @@ async function run(): Promise<void> {
     'CREATE TABLE employees (id integer PRIMARY KEY, name text NOT NULL)',
     'CREATE TABLE native_chat_conversations (id integer PRIMARY KEY, employee_id integer NOT NULL, channel text NOT NULL, title text)',
     'CREATE TABLE native_chat_messages (id integer PRIMARY KEY, conversation_id integer NOT NULL, source_message_id text NOT NULL, parent_source_message_id text, occurred_at timestamp NOT NULL)',
-    'CREATE TABLE native_chat_attachments (id integer PRIMARY KEY, message_id integer NOT NULL, kind text NOT NULL, state text NOT NULL, storage_key text, source_metadata jsonb, order_id integer)',
+    'CREATE TABLE native_chat_attachments (id integer PRIMARY KEY, message_id integer NOT NULL, kind text NOT NULL, state text NOT NULL, storage_key text, source_metadata jsonb, order_id integer, application_link_source text, application_link_evidence jsonb)',
     'CREATE TABLE pet_image_analysis_records (id integer PRIMARY KEY, employee_id integer NOT NULL, status text NOT NULL, image_analysis jsonb, registration_match jsonb, error text, order_id integer, created_at timestamp NOT NULL, image_storage_key text, image_mime_type text, updated_at timestamp NOT NULL DEFAULT NOW())',
     `INSERT INTO sys_settings VALUES ('native_chat_image_analysis_start', '{"startAt":"2026-11-02T12:00:00.000Z"}')`,
     "INSERT INTO employees VALUES (1, '测试员工')",
@@ -25,16 +25,23 @@ async function run(): Promise<void> {
       (5,1,'new-parent',NULL,'2026-11-03 00:00:00'),
       (6,1,'child-old','new-parent','2026-10-01 00:00:00')`,
     `INSERT INTO native_chat_attachments VALUES
-      (1,1,'image','available','before',NULL,NULL),
-      (2,2,'image','available','after',NULL,NULL),
-      (3,4,'image','available','old-parent-child',NULL,NULL),
-      (4,6,'image','not_downloaded',NULL,NULL,NULL)`,
+      (1,1,'image','available','before',NULL,NULL,NULL,NULL),
+      (2,2,'image','available','after',NULL,NULL,NULL,NULL),
+      (3,4,'image','available','old-parent-child',NULL,NULL,NULL,NULL),
+      (4,6,'image','not_downloaded',NULL,NULL,NULL,NULL,NULL)`,
     `INSERT INTO pet_image_analysis_records (id,employee_id,status,image_analysis,registration_match,error,order_id,created_at,image_storage_key,image_mime_type) VALUES
       (1,1,'completed','{}',NULL,NULL,NULL,'2026-11-03 00:00:00','pet-image-analysis/1/1','image/png'),
       (2,1,'completed','{}',NULL,NULL,NULL,'2026-11-03 00:00:01',NULL,NULL),
       (3,1,'completed','{}',NULL,NULL,NULL,'2026-11-02 19:00:00',NULL,NULL)`,
     `INSERT INTO native_chat_messages SELECT 100+n,1,'extra-'||n,NULL,'2026-11-03 01:00:00'::timestamp + n * interval '1 second' FROM generate_series(1,52) AS n`,
-    `INSERT INTO native_chat_attachments SELECT 100+n,100+n,'image','available','extra-'||n,NULL,NULL FROM generate_series(1,52) AS n`
+    `INSERT INTO native_chat_attachments SELECT 100+n,100+n,'image','available','extra-'||n,NULL,NULL,NULL,NULL FROM generate_series(1,52) AS n`,
+    `UPDATE native_chat_attachments SET source_metadata = '{"rendition":"non_thumbnail"}' WHERE id = 101`,
+    `UPDATE native_chat_attachments SET source_metadata = '{"rendition":"non_thumbnail","imageAnalysis":{"status":"retrying","attemptCount":1}}' WHERE id = 102`,
+    `UPDATE native_chat_attachments SET source_metadata = '{"rendition":"non_thumbnail","imageAnalysis":{"status":"retrying","attemptCount":2}}' WHERE id = 103`,
+    `UPDATE native_chat_attachments SET source_metadata = '{"rendition":"non_thumbnail","imageAnalysis":{"status":"completed"}}' WHERE id = 104`,
+    `UPDATE native_chat_attachments SET source_metadata = '{"rendition":"thumbnail"}' WHERE id = 105`,
+    `UPDATE native_chat_attachments SET state = 'not_downloaded', source_metadata = '{"rendition":"non_thumbnail"}' WHERE id = 106`,
+    `UPDATE native_chat_attachments SET application_link_source = 'manager_confirmation', application_link_evidence = '{"status":"manager_not_applicable"}' WHERE id = 107`
   ]
   try {
     for (const statement of statements) await prisma.$executeRawUnsafe(statement)
@@ -54,19 +61,40 @@ async function run(): Promise<void> {
     assert.equal(first.statusCode, 200, first.body)
     const page = first.json().data
     assert.equal(page.total, 56)
+    assert.equal(page.awaitingAi, 2)
     assert.equal(page.items.length, 50)
     assert.ok(page.nextCursor)
     const second = await app.inject({ method: 'GET', url: `/api/v1/admin/image-analysis-records?cursor=${page.nextCursor}` })
     assert.equal(second.statusCode, 200, second.body)
     assert.equal(second.json().data.total, 56)
+    assert.equal(second.json().data.awaitingAi, 2)
     const all = [...page.items, ...second.json().data.items]
     assert.equal(all.length, 56)
     assert.equal(new Set(all.map((r: { source: string; id: number }) => `${r.source}:${r.id}`)).size, 56)
     assert.equal(all.some((r: { source: string; id: number }) => r.source === 'wechat' && r.id === 1), false)
     assert.equal(all.some((r: { source: string; id: number }) => r.source === 'wechat' && r.id === 3), false)
     assert.equal(all.find((r: { source: string; id: number }) => r.source === 'wechat' && r.id === 4).image_available, false)
+    assert.equal(all.find((r: { source: string; id: number }) => r.source === 'wechat' && r.id === 107).registration_match.managerResolution.status, 'manager_not_applicable')
     assert.equal(all.find((r: { source: string; id: number }) => r.source === 'pet' && r.id === 1).image_available, true)
     assert.equal(all.find((r: { source: string; id: number }) => r.source === 'pet' && r.id === 2).image_available, false)
+    const awaiting = await app.inject({ method: 'GET', url: '/api/v1/admin/image-analysis-records?filter=awaiting' })
+    assert.equal(awaiting.statusCode, 200, awaiting.body)
+    assert.equal(awaiting.json().data.filteredTotal, 2)
+    assert.deepEqual(awaiting.json().data.items.map((r: { id: number }) => r.id).sort(), [101, 102])
+    const waitingFirst = await app.inject({ method: 'GET', url: '/api/v1/admin/image-analysis-records?filter=waiting_image' })
+    assert.equal(waitingFirst.statusCode, 200, waitingFirst.body)
+    const waitingData = waitingFirst.json().data
+    const waitingAll = [...waitingData.items]
+    if (waitingData.nextCursor) {
+      const waitingSecond = await app.inject({ method: 'GET', url: `/api/v1/admin/image-analysis-records?filter=waiting_image&cursor=${waitingData.nextCursor}` })
+      assert.equal(waitingSecond.statusCode, 200, waitingSecond.body)
+      waitingAll.push(...waitingSecond.json().data.items)
+    }
+    assert.equal(waitingAll.length, waitingData.filteredTotal)
+    assert.equal(waitingAll.some((r: { id: number }) => r.id === 101 || r.id === 102), false)
+    assert.equal(waitingAll.some((r: { id: number }) => r.id === 105), true)
+    assert.equal(waitingAll.some((r: { id: number }) => r.id === 106), true)
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/admin/image-analysis-records?filter=invalid' })).statusCode, 400)
     const petUrl = await app.inject({ method: 'GET', url: '/api/v1/admin/image-analysis-records/pet/1/url' })
     assert.equal(petUrl.statusCode, 200)
     assert.match(petUrl.json().data.url, /pet-image-analysis\/1\/1/)

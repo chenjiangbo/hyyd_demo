@@ -25,7 +25,7 @@ const INIT_ORDER_AI_AUTOMATION_CONFIG_SQL = `
   INSERT INTO sys_settings (key, value, updated_at)
   VALUES (
     'order_ai_automation_config',
-    '{"imageAiEnabled": false, "communicationSilenceMinutes": 5}'::jsonb,
+    '{"imageAiEnabled": false, "communicationSilenceMinutes": 5, "textAnalysisModel": "qwen-plus", "textAnalysisProvider": "dashscope", "imageAnalysisModel": "qwen3-vl-plus"}'::jsonb,
     NOW()
   )
   ON CONFLICT (key) DO NOTHING;

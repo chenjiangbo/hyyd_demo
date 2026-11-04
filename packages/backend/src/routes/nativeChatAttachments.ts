@@ -38,7 +38,8 @@ export function registerNativeChatAttachmentRoutes(
   fastify: FastifyInstance,
   prisma: PrismaClient,
   minioClient: Client,
-  minioPublicClient: Client
+  minioPublicClient: Client,
+  triggerAnalysis: typeof triggerOrderAiAnalysis = triggerOrderAiAnalysis
 ): void {
   fastify.post<{ Params: { id: string }; Body: { replace?: boolean } }>(
     '/api/v1/native-chat/attachments/:id/upload-url',
@@ -108,6 +109,7 @@ export function registerNativeChatAttachmentRoutes(
        WHERE c.employee_id = ${request.employee.id}
          AND a.kind = 'image'
          AND a.storage_key IS NOT NULL
+         AND a.application_link_source IS DISTINCT FROM 'manager_confirmation'
          AND a.source_metadata->'imageAnalysis'->>'imageType' = '挂号凭证'
          AND a.source_metadata->'imageAnalysis'->'registrationMatch'->>'status' = 'completed'
          AND a.source_metadata->'imageAnalysis'->'registrationMatch'->'managerResolution' IS NULL
@@ -149,9 +151,42 @@ export function registerNativeChatAttachmentRoutes(
     return reply.send({ data: items })
   })
 
+  fastify.post<{ Params: { id: string } }>('/api/v1/native-chat/attachments/:id/dismiss-image-match', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录或缺少工号' })
+    const id = Number(request.params.id)
+    if (!Number.isSafeInteger(id) || id <= 0) return reply.status(400).send({ error: '图片编号无效' })
+    const attachment = await readAttachment(prisma, id, request.employee.id)
+    if (!attachment || !attachment.storage_key) return reply.status(404).send({ error: '图片附件不存在' })
+    const source = attachment.source_metadata && typeof attachment.source_metadata === 'object' && !Array.isArray(attachment.source_metadata)
+      ? attachment.source_metadata as Record<string, unknown> : {}
+    const analysis = source.imageAnalysis && typeof source.imageAnalysis === 'object' && !Array.isArray(source.imageAnalysis)
+      ? source.imageAnalysis as Record<string, unknown> : {}
+    if (analysis.imageType !== '挂号凭证' || !analysis.registrationMatch || typeof analysis.registrationMatch !== 'object') {
+      return reply.status(409).send({ error: '图片没有待确认的挂号凭证匹配结果' })
+    }
+    const previousMatch = analysis.registrationMatch as Record<string, unknown>
+    if (previousMatch.managerResolution) {
+      const previousResolution = previousMatch.managerResolution as Record<string, unknown>
+      if (previousResolution.status === 'manager_not_applicable') return reply.send({ data: { attachmentId: id, confirmed: true } })
+      return reply.status(409).send({ error: '该图片已经确认归属，请刷新后重试' })
+    }
+    const resolution = { status: 'manager_not_applicable', confirmedByEmployeeId: request.employee.id, confirmedAt: new Date().toISOString(),
+      previous: { applicationNo: attachment.application_no, orderId: attachment.order_id, status: attachment.application_link_status, source: attachment.application_link_source, evidence: attachment.application_link_evidence } }
+    const updated = await prisma.$executeRaw`
+      UPDATE native_chat_attachments
+         SET application_no = NULL, order_id = NULL, application_link_status = 'unmatched',
+             application_link_source = 'manager_confirmation', application_link_evidence = ${JSON.stringify(resolution)}::jsonb,
+             application_linked_at = NOW(), source_metadata = jsonb_set(COALESCE(source_metadata, '{}'::jsonb),
+               '{imageAnalysis,registrationMatch,managerResolution}', ${JSON.stringify(resolution)}::jsonb, true), updated_at = NOW()
+       WHERE id = ${id} AND source_metadata->'imageAnalysis'->'registrationMatch'->'managerResolution' IS NULL
+    `
+    if (updated !== 1) return reply.status(409).send({ error: '该图片的确认状态已发生变化，请刷新后重试' })
+    return reply.send({ data: { attachmentId: id, confirmed: true } })
+  })
+
   fastify.post<{
     Params: { id: string }
-    Body: { applicationNo?: string; orderId?: number | null }
+    Body: { applicationNo?: string; orderId?: number | null; manualSelection?: boolean }
   }>('/api/v1/native-chat/attachments/:id/resolve-image-match', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录或缺少工号' })
     const id = Number(request.params.id)
@@ -171,18 +206,35 @@ export function registerNativeChatAttachmentRoutes(
     const match = analysis.registrationMatch && typeof analysis.registrationMatch === 'object' && !Array.isArray(analysis.registrationMatch)
       ? analysis.registrationMatch as Record<string, unknown>
       : {}
-    const candidates = Array.isArray(match.candidateApplications) ? match.candidateApplications as Array<Record<string, unknown>> : []
-    const selected = candidates.find((candidate) => candidate.applicationNo === applicationNo)
-    if (!selected) return reply.status(400).send({ error: '申领号不在本次识别候选中' })
-    const candidateOrders = Array.isArray(selected.orders) ? selected.orders as Array<Record<string, unknown>> : []
-    if (orderId !== null && !candidateOrders.some((candidate) => Number(candidate.orderId) === orderId)) {
-      return reply.status(400).send({ error: '订单不属于所选申领号' })
+    if (analysis.imageType !== '挂号凭证' || match.status !== 'completed') return reply.status(409).send({ error: '图片没有待确认的挂号凭证匹配结果' })
+    if (match.managerResolution) {
+      const previous = match.managerResolution as Record<string, unknown>
+      if (previous.status === 'manager_confirmed' && previous.applicationNo === applicationNo && previous.orderId === orderId) {
+        return reply.send({ data: { attachmentId: id, applicationNo, orderId, confirmed: true } })
+      }
+      return reply.status(409).send({ error: '该图片已经确认归属，请刷新后重试' })
     }
-    await prisma.$transaction(async (tx) => {
+    const candidates = Array.isArray(match.candidateApplications) ? match.candidateApplications as Array<Record<string, unknown>> : []
+    if (request.body?.manualSelection === true) {
+      const order = await prisma.order.findUnique({ where: { id: orderId }, select: { assignedEmployeeId: true, rawJson: true } })
+      const raw = order?.rawJson && typeof order.rawJson === 'object' && !Array.isArray(order.rawJson) ? order.rawJson as Record<string, unknown> : {}
+      if (!order || order.assignedEmployeeId !== request.employee.id || typeof raw.crmApplyNo !== 'string' || raw.crmApplyNo.trim() !== applicationNo) {
+        return reply.status(400).send({ error: '订单不属于当前员工或所选申领号' })
+      }
+    } else {
+      const selected = candidates.find((candidate) => candidate.applicationNo === applicationNo)
+      if (!selected) return reply.status(400).send({ error: '申领号不在本次识别候选中' })
+      const candidateOrders = Array.isArray(selected.orders) ? selected.orders as Array<Record<string, unknown>> : []
+      if (!candidateOrders.some((candidate) => Number(candidate.orderId) === orderId)) {
+        return reply.status(400).send({ error: '订单不属于所选申领号' })
+      }
+    }
+    const updated = await prisma.$transaction(async (tx) => {
       const resolution = {
         status: 'manager_confirmed',
         applicationNo,
         orderId,
+        selectionSource: request.body?.manualSelection === true ? 'order_list' : 'candidate',
         previous: {
           applicationNo: attachment.application_no,
           orderId: attachment.order_id,
@@ -193,7 +245,7 @@ export function registerNativeChatAttachmentRoutes(
         confirmedByEmployeeId: request.employee!.id,
         confirmedAt: new Date().toISOString()
       }
-      await tx.$executeRaw`
+      return await tx.$executeRaw`
         UPDATE native_chat_attachments
            SET application_no = ${applicationNo},
                order_id = ${orderId},
@@ -208,11 +260,12 @@ export function registerNativeChatAttachmentRoutes(
              true
            ),
            updated_at = NOW()
-         WHERE id = ${id}
+         WHERE id = ${id} AND source_metadata->'imageAnalysis'->'registrationMatch'->'managerResolution' IS NULL
       `
     })
+    if (updated !== 1) return reply.status(409).send({ error: '该图片的确认状态已发生变化，请刷新后重试' })
     if (orderId !== null) {
-      void triggerOrderAiAnalysis(prisma, minioClient, orderId).catch((error) => {
+      void triggerAnalysis(prisma, minioClient, orderId).catch((error) => {
         fastify.log.error({ err: error, attachmentId: id, orderId }, '人工确认挂号凭证后触发订单字段分析失败')
       })
     }

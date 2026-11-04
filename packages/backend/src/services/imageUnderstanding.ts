@@ -1,8 +1,6 @@
 import { visionChat } from '../llm/gatewayClient.js'
 
-export type UnderstoodImageType =
-  | '挂号凭证' | '出行订单' | '导航截图' | '医院小程序' | '医院公众号'
-  | '缴费或检查材料' | '聊天截图' | '其他' | '无法判断'
+export type UnderstoodImageType = string
 
 export type UnderstoodImage = {
   imageType: UnderstoodImageType
@@ -21,13 +19,10 @@ export const IMAGE_UNDERSTANDING_PROMPT = [
   '如果是导航截图，请说明这是导航页面，并整理可见的起点、目的地、路线和距离等内容。',
   '如果是小程序或公众号页面，请描述可辨认的小程序或公众号名称、页面内容和可见文字；不要推断客户打开页面的意图。',
   '如果是滴滴等出行订单，请整理图片中可见的订单文字和字段，包括但不限于订单状态、时间、起点、终点、公里数、价格和联系电话。仅记录看得见的内容，不要从页面类型推断行程已经完成。',
-  '所有图片都要给出主要类型和简短、客观的内容描述。无法判断类型时，类型写“无法判断”，并说明图片中仍能看清的内容。',
-  '只返回 JSON：{"imageType":"挂号凭证|出行订单|导航截图|医院小程序|医院公众号|缴费或检查材料|聊天截图|其他|无法判断","typeDescription":"...","description":"...","visibleText":"...","visibleFields":[{"label":"...","value":"..."}]}。visibleFields 只列图片实际显示且可读的字段，不要补不存在的字段。'
+  'imageType 必须填写图片的具体类型，不限于以上示例。例如住院病人卡片写“住院病人卡片”，滴滴订单截图写“滴滴打车订单截图”，不要将已能辨认的具体类型笼统写成“其他”。如果是挂号凭证，imageType 必须准确写“挂号凭证”，以便关联订单。确实无法判断时写“无法判断”。',
+  '所有图片都要给出简短、客观的内容描述，并整理可辨认的文字。',
+  '只返回 JSON：{"imageType":"图片的具体类型","typeDescription":"...","description":"...","visibleText":"...","visibleFields":[{"label":"...","value":"..."}]}。visibleFields 必须是由 label 和 value 字符串组成的对象数组，只列图片实际显示且可读的字段，不要补不存在的字段。'
 ].join('\n')
-
-const ALLOWED_IMAGE_TYPES = new Set<UnderstoodImageType>([
-  '挂号凭证', '出行订单', '导航截图', '医院小程序', '医院公众号', '缴费或检查材料', '聊天截图', '其他', '无法判断'
-])
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
@@ -38,22 +33,15 @@ function requiredString(value: unknown, name: string): string {
   return value.trim()
 }
 
-export async function understandImage(imageDataUrl: string): Promise<UnderstoodImage> {
-  const response = await visionChat(
-    '你是寰宇医疗服务的图片内容识别助手。严格按用户指令识别图片并返回规定 JSON。',
-    IMAGE_UNDERSTANDING_PROMPT,
-    imageDataUrl,
-    { temperature: 0 }
-  )
-  const cleaned = response.content.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim()
+export function parseUnderstoodImage(content: string, model: string): UnderstoodImage {
+  const cleaned = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim()
   const start = cleaned.indexOf('{')
   const end = cleaned.lastIndexOf('}')
   if (start < 0 || end <= start) throw new Error('图片识别模型没有返回 JSON 对象')
   const parsed = asRecord(JSON.parse(cleaned.slice(start, end + 1)))
   if (!parsed) throw new Error('图片识别模型返回的 JSON 结构无效')
-  if (typeof parsed.imageType !== 'string' || !ALLOWED_IMAGE_TYPES.has(parsed.imageType as UnderstoodImageType)) {
-    throw new Error('图片识别结果 imageType 不在允许类型内')
-  }
+  const imageType = requiredString(parsed.imageType, 'imageType')
+  if (!imageType) throw new Error('图片识别结果 imageType 不能为空')
   if (!Array.isArray(parsed.visibleFields)) throw new Error('图片识别结果 visibleFields 必须是数组')
   const visibleFields = parsed.visibleFields.map((value, index) => {
     const field = asRecord(value)
@@ -61,11 +49,22 @@ export async function understandImage(imageDataUrl: string): Promise<UnderstoodI
     return { label: requiredString(field.label, `visibleFields[${index}].label`), value: requiredString(field.value, `visibleFields[${index}].value`) }
   })
   return {
-    imageType: parsed.imageType as UnderstoodImageType,
+    imageType,
     typeDescription: requiredString(parsed.typeDescription, 'typeDescription'),
     description: requiredString(parsed.description, 'description'),
     visibleText: requiredString(parsed.visibleText, 'visibleText'),
     visibleFields,
-    model: response.model
+    model
   }
+}
+
+export async function understandImage(imageDataUrl: string, model: string, onResponse?: (response: { content: string; model: string }) => Promise<void>): Promise<UnderstoodImage> {
+  const response = await visionChat(
+    '你是寰宇医疗服务的图片内容识别助手。严格按用户指令识别图片并返回规定 JSON。',
+    IMAGE_UNDERSTANDING_PROMPT,
+    imageDataUrl,
+    { model, temperature: 0 }
+  )
+  if (onResponse) await onResponse({ content: response.content, model: response.model })
+  return parseUnderstoodImage(response.content, response.model)
 }

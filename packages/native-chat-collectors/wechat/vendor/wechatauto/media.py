@@ -49,6 +49,7 @@ import xml.etree.ElementTree as ET
 from typing import List, Optional, Tuple
 from wechatauto.records import parse_merged_forward
 from wechatauto.logger import wxlog
+from async_image_key import ImageProbeMismatch
 
 V1_MAGIC = b"\x07\x08\x05\x56\x02\x05"
 V2_MAGIC = b"\x07\x08\x56\x32\x08\x07"
@@ -299,7 +300,7 @@ class MediaDownloader:
             ("%d" % cfg_dword + wxid).encode("utf-8")).hexdigest()[:16]
         return aes_key, xor_key
 
-    def _derive_cfg_key(self) -> Optional[Tuple[str, int]]:
+    def _derive_cfg_key(self, probe: Optional[bytes] = None) -> Optional[Tuple[str, int]]:
         """cfgDword 派生并验证; 优先显式注入, 否则用 db.cfg_dword(自动提取)。"""
         cfg_dword = self._cfg_dword
         if cfg_dword is None:
@@ -307,7 +308,7 @@ class MediaDownloader:
         if not cfg_dword:
             return None
         aes_key, xor_key = self.derive_image_keys(cfg_dword, self.db.wxid)
-        if self._validate_key(aes_key):
+        if self._validate_key(aes_key, probe):
             return aes_key, xor_key
         return None
 
@@ -316,7 +317,7 @@ class MediaDownloader:
     # ------------------------------------------------------------------
     def _probe_ct(self, dat_path: Optional[str] = None) -> bytes:
         """取一张 V2 图片的密文首块，作为密钥反测试样"""
-        if self._key_probe is not None:
+        if dat_path is None and self._key_probe is not None:
             return self._key_probe
         paths = [dat_path] if dat_path else glob.iglob(os.path.join(self.db.account_dir, "msg", "attach", "*", "*", "Img", "*.dat"))
         for path in paths:
@@ -332,9 +333,10 @@ class MediaDownloader:
         if callback:
             callback(stage, int((time.monotonic() - started) * 1000), fields)
 
-    def _validate_key(self, aes_key: str) -> bool:
+    def _validate_key(self, aes_key: str, probe: Optional[bytes] = None) -> bool:
         """用真实密文首块反测密钥是否有效"""
-        probe = self._probe_ct()
+        if probe is None:
+            probe = self._probe_ct()
         if not probe:
             return False
         try:
@@ -347,14 +349,14 @@ class MediaDownloader:
     def _key_store(self) -> str:
         return os.path.join(self.db.workdir, "image_keys.json")
 
-    def _load_persisted_key(self) -> Optional[str]:
+    def _load_persisted_key(self, probe: Optional[bytes] = None) -> Optional[str]:
         try:
             with open(self._key_store(), "r", encoding="utf-8") as f:
                 saved = json.load(f)
             key = saved.get(self.db.account)
         except (OSError, ValueError, json.JSONDecodeError):
             return None
-        if key and self._validate_key(key):
+        if key and self._validate_key(key, probe):
             return key
         return None
 
@@ -429,7 +431,7 @@ class MediaDownloader:
 
         return 0x88
 
-    def _install_xor_key(self) -> int:
+    def _install_xor_key(self, probe: Optional[bytes] = None) -> int:
         """账号级单字节 XOR 密钥：cfgDword 低字节(权威) → 缩略图统计 → 0x88。
 
         缓存到 ``self._xor_key``。逐文件猜尾部只作兜底，因为带页脚的容器
@@ -437,7 +439,7 @@ class MediaDownloader:
         """
         if self._xor_key is not None:
             return self._xor_key
-        derived = self._derive_cfg_key()
+        derived = self._derive_cfg_key(probe)
         if derived:
             self._xor_key = derived[1]
         else:
@@ -447,7 +449,8 @@ class MediaDownloader:
         return self._xor_key
 
     def _scan_aes_key(self, monitor: bool = False,
-                      monitor_timeout: float = 120.0) -> Optional[str]:
+                      monitor_timeout: float = 120.0,
+                      probe: Optional[bytes] = None) -> Optional[str]:
         """扫描 Weixin.exe 内存穷举候选密钥, AES-ECB 解密探针验证。
 
         候选两类模式(YARA 思路):
@@ -455,7 +458,8 @@ class MediaDownloader:
           每候选取前 16 字节作 AES-128 key 解密探针, 明文为 JPEG SOI 命中;
         - UTF-16LE: 字母数字与 0x00 交错形式。
         """
-        probe = self._probe_ct()
+        if probe is None:
+            probe = self._probe_ct()
         if not probe:
             return None
         pids = self.db._find_weixin_pids()
@@ -611,27 +615,27 @@ class MediaDownloader:
                 return out
         raise ValueError("无法识别的图片加密格式: %s" % dat_path)
 
-    def _resolve_aes_key(self) -> Optional[str]:
+    def _resolve_aes_key(self, probe: Optional[bytes] = None) -> Optional[str]:
         """统一密钥解析：显式注入 → cfgDword派生 → 本地缓存 → 内存扫描"""
-        if self._image_key and self._validate_key(self._image_key):
+        if self._image_key and self._validate_key(self._image_key, probe):
             return self._image_key
-        if self._img_key and self._validate_key(self._img_key[0]):
+        if self._img_key and self._validate_key(self._img_key[0], probe):
             return self._img_key[0]
         # 尝试cfgDword派生
         started = time.monotonic()
-        derived = self._derive_cfg_key()
+        derived = self._derive_cfg_key(probe)
         self._hyyd_timing_event('image_key_config', started, found=bool(derived), configAvailable=bool(self._cfg_dword or getattr(self.db, 'cfg_dword', None)))
         if derived:
             return derived[0]
         started = time.monotonic()
-        cached = self._load_persisted_key()
+        cached = self._load_persisted_key(probe)
         self._hyyd_timing_event('image_key_cache', started, found=bool(cached), cacheFilePresent=os.path.isfile(self._key_store()))
         if cached:
             return cached
         started = time.monotonic()
         self._hyyd_timing_event('image_key_memory_scan_started', started)
         try:
-            key = self._scan_aes_key(monitor=True)
+            key = self._scan_aes_key(monitor=True, probe=probe)
         finally:
             self._hyyd_timing_event('image_key_memory_scan', started)
         if key:
@@ -643,24 +647,27 @@ class MediaDownloader:
                     strip_footer: bool = True) -> bytes:
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+        if len(data) < 31:
+            raise ImageProbeMismatch("V2 图片密文首块不完整")
+        probe = data[15:31]
         aes_size, xor_size = struct.unpack_from("<LL", data, 6)
-        if self._key_probe is None and len(data) >= 31:
-            self._key_probe = data[15:31]
+        aes_blk = aligned_aes_block_size(aes_size)
+        if 15 + aes_blk + xor_size > len(data):
+            raise ImageProbeMismatch("V2 图片文件尚未完整写入")
         if xor_key is None:
             started = time.monotonic()
             try:
-                xor_key = self._install_xor_key()
+                xor_key = self._install_xor_key(probe)
             finally:
                 self._hyyd_timing_event('image_xor_preparation', started)
         if aes_key is None:
-            aes_key = self._resolve_aes_key()
+            aes_key = self._resolve_aes_key(probe)
             if not aes_key:
                 raise ImageAesKeyUnavailableError(
                     "无法获取图片 AES 密钥：请保持微信登录，并先在微信聊天中"
                     "打开（点击查看大图）任意一张图片，再重试 detect_image_key()；"
                     "或通过 MediaDownloader(image_key='...') 手动传入密钥。"
                 )
-        aes_blk = aligned_aes_block_size(aes_size)
         off = 15
         aes_data = data[off: off + aes_blk]
         off += aes_blk
