@@ -7,6 +7,7 @@ import {
   type HuanyuChannelProductOption
 } from './db/remoteDictionary.js'
 import { findTaikangHuanyuChannelMapping, taikangBusinessKeyOf } from './taikangHuanyuChannelMapping.js'
+import { taikangServiceProductName } from './taikangServiceProduct.js'
 import { createHuanyuOrderOnMysql } from './huanyuMysqlPush.js'
 import { formatShanghaiDateTime } from './time/shanghaiTime.js'
 
@@ -189,7 +190,7 @@ function productNames(raw: JsonRecord): string[] {
     field(raw, 'serviceName'),
     field(raw, 'itemName')
   ]
-  return [...new Set(names.filter((name): name is string => Boolean(name)))]
+  return [...new Set(names.filter((name): name is string => Boolean(name)).map(taikangServiceProductName))]
 }
 
 /**

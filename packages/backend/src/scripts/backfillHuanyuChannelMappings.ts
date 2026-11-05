@@ -11,6 +11,7 @@ import {
 } from '../db/remoteDictionary.js'
 import { ensureTaikangHuanyuChannelMappingTable } from '../db/ensureTaikangHuanyuChannelMappingTable.js'
 import { createShanghaiPrismaClient } from '../db/shanghaiPrisma.js'
+import { taikangServiceProductName } from '../taikangServiceProduct.js'
 import {
   findTaikangHuanyuChannelMapping,
   taikangBusinessKeyOf,
@@ -92,7 +93,7 @@ function productNames(raw: JsonRecord): string[] {
     field(raw, 'serviceItemName'),
     field(raw, 'serviceName'),
     field(raw, 'itemName')
-  ].filter((name): name is string => Boolean(name)))]
+  ].filter((name): name is string => Boolean(name)).map(taikangServiceProductName))]
 }
 
 function timestampTag(): string {
