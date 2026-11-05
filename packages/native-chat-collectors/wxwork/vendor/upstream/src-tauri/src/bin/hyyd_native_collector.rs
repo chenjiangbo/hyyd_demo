@@ -13,9 +13,21 @@ use uuid::Uuid;
 use wecom_archive_desktop::collect_local_export_selected_with_cursors_and_pending_at_root_with_progress;
 
 const PAGE_SIZE: usize = 200;
+// 每次完整读取一小批会话，全部轮询一遍后才等待下一轮。
+const CONVERSATIONS_PER_SCAN: usize = 10;
 const FULL_SCAN_INTERVAL: Duration = Duration::from_secs(120);
 const PENDING_MEDIA_RESCAN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const MEDIA_UPDATE_WINDOW_MS: i64 = 5 * 60 * 1000;
+
+fn next_conversation_batch(selected: &HashSet<String>, after: Option<&str>) -> (Vec<String>, bool) {
+    let mut ids = selected.iter().cloned().collect::<Vec<_>>();
+    ids.sort();
+    if ids.is_empty() { return (ids, true); }
+    let mut start = after.map_or(0, |last| ids.partition_point(|id| id.as_str() <= last));
+    if start == ids.len() { start = 0; }
+    let end = (start + CONVERSATIONS_PER_SCAN).min(ids.len());
+    (ids[start..end].to_vec(), end == ids.len())
+}
 
 fn emit(value: &Value) -> Result<(), String> {
     let mut stdout = io::stdout().lock();
@@ -248,8 +260,10 @@ fn read_export(include_media: bool, selected: &[String], source_root: &str, time
     let progress_state = std::sync::Arc::new(std::sync::Mutex::new((0u8, String::from("开始读取"), String::from("正在读取企微数据源。"))));
     let callback_state = progress_state.clone();
     let progress: wecom_archive_server::LocalCollectionProgressReporter = std::sync::Arc::new(move |percent, stage, detail| {
-        if let Ok(mut state) = callback_state.lock() {
-            *state = (percent, stage.to_owned(), detail.to_owned());
+        if stage != "voice_raw" {
+            if let Ok(mut state) = callback_state.lock() {
+                *state = (percent, stage.to_owned(), detail.to_owned());
+            }
         }
         let _ = emit(&json!({
             "event": "source_scan_progress",
@@ -517,7 +531,8 @@ fn normalized_messages(
                 "channel":"wxwork", "accountId":account_id, "sourceConversationId":conversation_id,
                 "sourceMessageId":source_id, "parentSourceMessageId":Value::Null, "sourceItemIndex":Value::Null,
                 "direction":message_direction(message, account_directory_id),
-                "senderId":message.get("sender_id"), "senderName":Value::Null,
+                "senderId":message.get("sender_id"),
+                "senderName":message.get("sender_id").and_then(Value::as_str).and_then(|id| participant_names.get(id)),
                 "kind":kind, "sourceTypeCode":raw_type,
                 "text":message.get("body_text"), "occurredAt":message.get("sent_at"),
                 "observedAt":export.get("generated_at"), "sourceMetadata":raw_payload,
@@ -594,7 +609,8 @@ fn run() -> Result<(), String> {
     let mut checkpoint_inflight = HashMap::<String, i64>::new();
     let mut fingerprints = HashMap::<String, String>::new();
     let mut last_scan = Instant::now() - FULL_SCAN_INTERVAL;
-    let mut last_pending_media_scan = Instant::now() - PENDING_MEDIA_RESCAN_INTERVAL;
+    let mut last_pending_media_scan = HashMap::<String, Instant>::new();
+    let mut last_scanned_conversation: Option<String> = None;
     let mut ready_sent = false;
     let mut should_stop = false;
 
@@ -658,9 +674,9 @@ fn run() -> Result<(), String> {
         if (!ready_sent && last_scan.elapsed() >= Duration::from_secs(30))
             || (ready_sent && last_scan.elapsed() >= FULL_SCAN_INTERVAL)
         {
-            let mut selected_ids = selected.iter().cloned().collect::<Vec<_>>();
-            selected_ids.sort();
-            let conversation_rowid_cutoffs = selected.iter()
+            let (selected_ids, round_complete) = next_conversation_batch(&selected, last_scanned_conversation.as_deref());
+            let batch_selected = selected_ids.iter().cloned().collect::<HashSet<_>>();
+            let conversation_rowid_cutoffs = batch_selected.iter()
                 .map(|conversation_id| {
                     watermarks.get(conversation_id)
                         .copied()
@@ -669,22 +685,22 @@ fn run() -> Result<(), String> {
                 })
                 .collect::<Result<HashMap<_, _>, _>>()?;
             let scan_time = chrono::Utc::now().timestamp_millis().saturating_sub(MEDIA_UPDATE_WINDOW_MS);
-            let conversation_time_cutoffs = selected.iter().map(|conversation_id| (
+            let conversation_time_cutoffs = batch_selected.iter().map(|conversation_id| (
                 conversation_id.clone(), initial_cutoffs.get(conversation_id).copied().unwrap_or(scan_time)
             )).collect::<HashMap<_, _>>();
-            let pending_media_rows = if last_pending_media_scan.elapsed() >= PENDING_MEDIA_RESCAN_INTERVAL {
-                pending_media.iter().map(|(conversation, row_ids)| (conversation.clone(), row_ids.iter().copied().collect::<Vec<_>>())).collect::<HashMap<_, _>>()
-            } else {
-                HashMap::new()
-            };
+            let pending_media_rows = pending_media.iter()
+                .filter(|(conversation, _)| batch_selected.contains(*conversation)
+                    && last_pending_media_scan.get(*conversation).is_none_or(|last| last.elapsed() >= PENDING_MEDIA_RESCAN_INTERVAL))
+                .map(|(conversation, row_ids)| (conversation.clone(), row_ids.iter().copied().collect::<Vec<_>>()))
+                .collect::<HashMap<_, _>>();
             let initial_conversations = initial_cutoffs.iter()
-                .filter(|(conversation_id, _)| !checkpoint_inflight.contains_key(*conversation_id))
+                .filter(|(conversation_id, _)| batch_selected.contains(*conversation_id) && !checkpoint_inflight.contains_key(*conversation_id))
                 .map(|(conversation_id, cutoff)| (conversation_id.clone(), *cutoff))
                 .collect::<HashMap<_, _>>();
             let scan_started = Instant::now();
-            emit(&json!({"event":"source_scan_progress","channel":"wxwork","stage":"source_read_started","selectedConversationCount":selected.len(),"initialHistoryConversationCount":initial_conversations.len(),"pendingMediaConversationCount":pending_media_rows.len()}))?;
+            emit(&json!({"event":"source_scan_progress","channel":"wxwork","stage":"source_read_started","selectedConversationCount":selected.len(),"batchConversationCount":selected_ids.len(),"batchConversationIds":selected_ids,"roundComplete":round_complete,"initialHistoryConversationCount":initial_conversations.len(),"pendingMediaConversationCount":pending_media_rows.len()}))?;
             let mut export = match read_export(
-                !selected.is_empty(), &selected_ids, &args.source_root,
+                !batch_selected.is_empty(), &selected_ids, &args.source_root,
                 &conversation_time_cutoffs, &conversation_rowid_cutoffs, &pending_media_rows,
             ) {
                 Ok(export) => export,
@@ -695,19 +711,22 @@ fn run() -> Result<(), String> {
                     continue;
                 }
             };
-            let source_message_count = exported_message_count(&export, &selected);
+            let source_message_count = exported_message_count(&export, &batch_selected);
             emit(&json!({"event":"source_scan_progress","channel":"wxwork","stage":"source_read_completed","sourceMessageCount":source_message_count,"elapsedMs":scan_started.elapsed().as_millis()}))?;
             let initial_maximum_row_ids = filter_initial_history(&mut export, &initial_conversations)?;
-            let filtered_source_message_count = exported_message_count(&export, &selected);
+            let filtered_source_message_count = exported_message_count(&export, &batch_selected);
             emit(&json!({"event":"source_scan_progress","channel":"wxwork","stage":"history_filter_completed","sourceMessageCount":source_message_count,"messageCountAfterHistoryLimit":filtered_source_message_count,"elapsedMs":scan_started.elapsed().as_millis()}))?;
-            if !pending_media_rows.is_empty() { last_pending_media_scan = Instant::now(); }
+            for conversation_id in pending_media_rows.keys() {
+                last_pending_media_scan.insert(conversation_id.clone(), Instant::now());
+            }
+            last_pending_media_scan.retain(|conversation_id, _| selected.contains(conversation_id));
             let scan_id = Uuid::new_v4().to_string();
-            let needed_media = referenced_media_hashes(&export, &selected);
+            let needed_media = referenced_media_hashes(&export, &batch_selected);
             let media = media_files(&export, &args.media_dir, &scan_id, &needed_media)?;
             emit(&json!({"event":"source_scan_progress","channel":"wxwork","stage":"media_staging_completed","mediaReferenceCount":needed_media.len(),"localMediaFileCount":media.len(),"elapsedMs":scan_started.elapsed().as_millis()}))?;
             let (sessions, messages) = normalized_messages(
                 &export,
-                &selected,
+                &batch_selected,
                 &media,
                 &args.account_directory_id,
             )?;
@@ -723,7 +742,8 @@ fn run() -> Result<(), String> {
             } else {
                 emit(&json!({"event":"sessions","sessions":sessions}))?;
             }
-            for conversation_id in selected.clone() {
+            for conversation_id in selected_ids.iter().cloned() {
+                if !selected.contains(&conversation_id) { continue; }
                 if checkpoint_inflight.contains_key(&conversation_id) { continue; }
                 let initial_maximum_row_id = initial_maximum_row_ids.get(&conversation_id).copied();
                 let rows = messages.get(&conversation_id).map(Vec::as_slice).unwrap_or(&[]);
@@ -858,9 +878,58 @@ fn run() -> Result<(), String> {
                 let _ = fs::remove_file(path);
             }
                 let _ = fs::remove_dir(args.media_dir.join(&scan_id));
-            last_scan = Instant::now();
+            last_scanned_conversation = selected_ids.last().cloned();
+            last_scan = if round_complete { Instant::now() } else { Instant::now() - FULL_SCAN_INTERVAL };
         }
         thread::sleep(Duration::from_millis(250));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod scan_batch_tests {
+    use super::*;
+
+    #[test]
+    fn sender_name_comes_from_matching_participant_id() {
+        let export = json!({
+            "generated_at": "2026-11-03T00:00:00Z",
+            "participants": [{"participant_id":"sender-1", "display_name":"张三"}],
+            "conversations": [{"conversation_id":"room-1", "conversation_type":"group", "participant_ids":["sender-1"]}],
+            "batches": [{"source_instance_id":"account", "messages":[
+                {"conversation_id":"room-1", "source_message_id":"msg-1", "sender_id":"sender-1", "message_type":"text", "sent_at":"2026-11-03T00:00:00Z"},
+                {"conversation_id":"room-1", "source_message_id":"msg-2", "sender_id":"unknown", "message_type":"text", "sent_at":"2026-11-03T00:00:00Z"}
+            ]}]
+        });
+        let selected = ["room-1".to_owned()].into_iter().collect::<HashSet<_>>();
+        let (_, messages) = normalized_messages(&export, &selected, &HashMap::new(), "account").unwrap();
+        assert_eq!(messages["room-1"][0]["senderName"], "张三");
+        assert!(messages["room-1"][1]["senderName"].is_null());
+    }
+
+    #[test]
+    fn covers_every_conversation_before_restarting() {
+        let selected = (0..23).map(|n| format!("session-{n:02}")).collect::<HashSet<_>>();
+        let mut after = None;
+        let mut seen = Vec::new();
+        loop {
+            let (batch, complete) = next_conversation_batch(&selected, after.as_deref());
+            assert!(batch.len() <= CONVERSATIONS_PER_SCAN);
+            after = batch.last().cloned();
+            seen.extend(batch);
+            if complete { break; }
+        }
+        assert_eq!(seen.len(), 23);
+        assert_eq!(seen.iter().cloned().collect::<HashSet<_>>(), selected);
+        let (next, _) = next_conversation_batch(&selected, after.as_deref());
+        assert_eq!(next.first().map(String::as_str), Some("session-00"));
+    }
+
+    #[test]
+    fn handles_empty_and_changed_subscriptions() {
+        assert_eq!(next_conversation_batch(&HashSet::new(), None), (Vec::new(), true));
+        let selected = ["b", "c", "d"].into_iter().map(str::to_owned).collect::<HashSet<_>>();
+        assert_eq!(next_conversation_batch(&selected, Some("b")).0, vec!["c", "d"]);
+        assert_eq!(next_conversation_batch(&selected, Some("z")).0, vec!["b", "c", "d"]);
+    }
 }

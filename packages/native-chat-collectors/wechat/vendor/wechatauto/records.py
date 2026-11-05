@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 
 _MAX_RECORD_XML_BYTES = 8 * 1024 * 1024
+_GROUP_SENDER_PREFIX = re.compile(r"^[A-Za-z0-9_@.\-]+:\r?\n(?=\s*<)")
 _DATATYPE_NAMES = {
     "1": "text",
     "2": "image",
@@ -21,6 +22,71 @@ _DATATYPE_NAMES = {
     # datatype values are evidenced.
     "8": "file",
 }
+
+
+def parse_reference_message(content: Any) -> Optional[str]:
+    """Return the reply and quoted text for an app-message reference card."""
+    if not isinstance(content, str) or '<refermsg' not in content.lower():
+        return None
+    try:
+        root = ET.fromstring(_GROUP_SENDER_PREFIX.sub('', content, count=1))
+    except (ET.ParseError, ValueError):
+        return None
+    app = root.find('.//appmsg')
+    if app is None or app.findtext('type') != '57':
+        return None
+    reference = app.find('refermsg')
+    if reference is None:
+        return None
+    title = (app.findtext('title') or '').strip()
+    quoted = (reference.findtext('content') or '').strip()
+    sender = (reference.findtext('displayname') or '').strip()
+    if not title and not quoted:
+        return None
+    return '\n'.join(part for part in (title, f"引用{f'（{sender}）' if sender else ''}：{quoted}" if quoted else '') if part)
+
+
+def parse_pat_message(content: Any) -> Optional[str]:
+    """Recognize WeChat's type 62 pat card without treating it as a file."""
+    if not isinstance(content, str) or "<patinfo" not in content.lower():
+        return None
+    try:
+        root = ET.fromstring(content)
+    except (ET.ParseError, ValueError):
+        return None
+    app = root.find(".//appmsg")
+    if app is None or app.findtext("type") != "62" or app.find("patinfo") is None:
+        return None
+    return (app.findtext("title") or "").strip() or "拍了拍"
+
+
+def diagnose_merged_forward(content: Any) -> str:
+    """Report the failing XML stage without logging message contents."""
+    if not isinstance(content, str) or not content.strip():
+        return "empty_or_non_text_content"
+    content = _GROUP_SENDER_PREFIX.sub("", content, count=1)
+    try:
+        outer = ET.fromstring(content)
+    except (ET.ParseError, ValueError) as exc:
+        return f"outer_xml_invalid: {exc}"
+    record = outer.find(".//recorditem")
+    if record is None:
+        return "recorditem_missing"
+    embedded = (record.text or "").strip()
+    if embedded:
+        try:
+            root = ET.fromstring(embedded)
+        except (ET.ParseError, ValueError) as exc:
+            return f"embedded_xml_invalid: {exc}"
+    else:
+        root = record
+    if root.tag != "recordinfo":
+        root = root.find(".//recordinfo")
+    if root is None:
+        return "recordinfo_missing"
+    if root.find("./datalist") is None:
+        return "datalist_missing"
+    return "source_reread_failed_or_content_differs"
 
 
 def parse_merged_forward(content: Any, parent: Optional[dict] = None) -> Optional[dict]:
@@ -39,6 +105,7 @@ def parse_merged_forward(content: Any, parent: Optional[dict] = None) -> Optiona
     if len(content.encode("utf-8", "replace")) > _MAX_RECORD_XML_BYTES:
         raise ValueError("merged forward XML exceeds the supported parse size")
 
+    content = _GROUP_SENDER_PREFIX.sub("", content, count=1)
     try:
         outer = ET.fromstring(content)
     except (ET.ParseError, ValueError):
@@ -113,6 +180,7 @@ def parse_merged_forward(content: Any, parent: Optional[dict] = None) -> Optiona
     record_fields = _element_fields(record_root)
     return {
         "parent": dict(parent or {}),
+        "app_message_type": _outer_text(outer, "appmsg/type"),
         "title": _first(record_fields, "title") or _outer_text(outer, "appmsg/title"),
         "description": _first(record_fields, "desc") or _outer_text(outer, "appmsg/des"),
         "items": items,

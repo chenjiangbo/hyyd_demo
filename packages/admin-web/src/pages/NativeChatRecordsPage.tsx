@@ -112,14 +112,21 @@ function AttachmentMatchCandidates({ sourceMetadata }: { sourceMetadata: Record<
 
 function ImageAnalysisLog({
   attachment,
-  enabled
+  enabled,
+  receivedAt,
+  analysisStartAt
 }: {
   attachment: NativeChatAdminMessage['attachments'][number]
   enabled: boolean | undefined
+  receivedAt: string
+  analysisStartAt: string | undefined
 }): React.JSX.Element | null {
   if (attachment.kind !== 'image') return null
   const source = asRecord(attachment.sourceMetadata)
   const analysis = asRecord(source?.imageAnalysis)
+  if (analysisStartAt && Date.parse(receivedAt) < Date.parse(analysisStartAt) + 8 * 60 * 60 * 1000 && analysis?.status !== 'completed') {
+    return <div className="mt-2 rounded border border-line px-3 py-2 text-xs text-fg-muted">图片 AI：上线前图片，未自动分析</div>
+  }
   if (!analysis) {
     const text = enabled === false
       ? '图片 AI 当前已关闭，尚未分析'
@@ -145,6 +152,9 @@ function ImageAnalysisLog({
   const visibleText = typeof analysis.visibleText === 'string' ? analysis.visibleText : null
   const error = typeof analysis.error === 'string' ? analysis.error : null
   const match = asRecord(analysis.registrationMatch)
+  const managerResolution = asRecord(match?.managerResolution)
+  const notApplicable = managerResolution?.status === 'manager_not_applicable'
+  const managerConfirmed = managerResolution?.status === 'manager_confirmed'
   const matchStatus = typeof match?.status === 'string' ? match.status : null
   const matchStatusLabel = matchStatus ? ({
     pending: '等待申领号和订单匹配',
@@ -153,25 +163,32 @@ function ImageAnalysisLog({
     failed: '申领号或订单匹配失败',
     completed: '匹配分析完成'
   } as Record<string, string>)[matchStatus] ?? `匹配状态：${matchStatus}` : null
-  const effectiveMatchStatusLabel = enabled === false && (matchStatus === 'pending' || matchStatus === 'retrying')
+  const effectiveMatchStatusLabel = notApplicable ? '已放弃关联' : managerConfirmed ? '已确认订单' : enabled === false && (matchStatus === 'pending' || matchStatus === 'retrying')
     ? '已暂停（图片 AI 当前关闭）'
     : matchStatusLabel
-  const applicationNo = typeof match?.applicationNo === 'string' ? match.applicationNo : null
-  const orderId = typeof match?.orderId === 'number' ? match.orderId : null
+  const applicationNo = notApplicable ? null : managerConfirmed && typeof managerResolution?.applicationNo === 'string' ? managerResolution.applicationNo : typeof match?.applicationNo === 'string' ? match.applicationNo : null
+  const orderId = notApplicable ? null : managerConfirmed && typeof managerResolution?.orderId === 'number' ? managerResolution.orderId : typeof match?.orderId === 'number' ? match.orderId : null
   const matchReason = typeof match?.reason === 'string' ? match.reason : null
   const matchError = typeof match?.error === 'string' ? match.error : null
+  const visibleFields = Array.isArray(analysis.visibleFields) ? analysis.visibleFields.map(asRecord).filter((field): field is Record<string, unknown> => field !== null) : []
+  const candidates = Array.isArray(match?.candidateApplications) ? match.candidateApplications.map(asRecord).filter((item): item is Record<string, unknown> => item !== null) : []
 
   return (
     <div className="basis-full mt-2 space-y-1 rounded border border-accent/20 bg-accent-soft/30 px-3 py-2 text-xs">
       <div className="font-medium text-fg">图片 AI：{effectiveStatusLabel}{imageType ? ` · ${imageType}` : ''}</div>
       {description && <div className="whitespace-pre-wrap break-words text-fg-muted">{description}</div>}
       {visibleText && <details className="text-fg-muted"><summary className="cursor-pointer">查看图片识别文字</summary><div className="mt-1 whitespace-pre-wrap break-words">{visibleText}</div></details>}
+      {visibleFields.length > 0 && <details className="text-fg-muted"><summary className="cursor-pointer">查看识别字段</summary>{visibleFields.map((field, index) => <div key={index} className="break-words">{String(field.label ?? '')}：{String(field.value ?? '')}</div>)}</details>}
       {error && <div className="whitespace-pre-wrap break-words text-danger">识别错误：{error}</div>}
       {effectiveMatchStatusLabel && <div className="font-medium text-fg">挂号归属：{effectiveMatchStatusLabel}</div>}
       {applicationNo && <div className="text-fg-muted">申领号：{applicationNo}</div>}
-      {orderId !== null && <div className="text-fg-muted">建议订单 ID：{orderId}</div>}
+      {orderId !== null && <div className="text-fg-muted">{managerConfirmed ? '已确认订单 ID' : '建议订单 ID'}：{orderId}</div>}
       {matchReason && <div className="whitespace-pre-wrap break-words text-fg-muted">匹配说明：{matchReason}</div>}
       {matchError && <div className="whitespace-pre-wrap break-words text-danger">匹配错误：{matchError}</div>}
+      {candidates.length > 0 && <details className="text-fg-muted"><summary className="cursor-pointer">查看申领号和订单候选（{candidates.length}）</summary>{candidates.map((candidate, index) => {
+        const orders = Array.isArray(candidate.orders) ? candidate.orders.map(asRecord).filter((item): item is Record<string, unknown> => item !== null) : []
+        return <div className="mt-2 break-words" key={index}><div>申领号：{String(candidate.applicationNo ?? '')}{typeof candidate.confidence === 'number' ? ` · AI 匹配度 ${candidate.confidence}%` : ''}</div>{orders.map((order, orderIndex) => <div key={orderIndex}>订单：{String(order.sourceOrderNo || order.orderId || '')}{typeof order.confidence === 'number' ? ` · AI 匹配度 ${order.confidence}%` : ''}</div>)}</div>
+      })}</details>}
       {!match && imageType === '挂号凭证' && status === 'completed' && (
         <div className="text-fg-muted">{enabled === false
           ? '图片已识别为挂号凭证；图片 AI 当前已关闭，尚未分析申领号和订单归属。'
@@ -457,7 +474,7 @@ export default function NativeChatRecordsPage(): React.JSX.Element {
                       onLoad={() => void messages.fetchNextPage()}
                     />
                     <div className="space-y-3 py-2">
-                      {messageItems.map((message) => <MessageCard key={message.id} message={message} onOpenAttachment={openAttachment} onConfirmBusinessLink={confirmMessageLink} imageAiEnabled={aiAutomation.data?.imageAiEnabled} />)}
+                      {messageItems.map((message) => <MessageCard key={message.id} message={message} onOpenAttachment={openAttachment} onConfirmBusinessLink={confirmMessageLink} imageAiEnabled={aiAutomation.data?.imageAiEnabled} imageAiAnalysisStartAt={aiAutomation.data?.imageAiAnalysisStartAt} />)}
                     </div>
                   </div>
                 )}
@@ -493,15 +510,20 @@ function MessageCard({
   onOpenAttachment,
   onConfirmBusinessLink,
   imageAiEnabled,
+  imageAiAnalysisStartAt,
+  rootReceivedAt,
   nested = false
 }: {
   message: NativeChatAdminMessage
   onOpenAttachment: (attachmentId: number, kind: string) => Promise<void>
   onConfirmBusinessLink: (message: NativeChatAdminMessage) => Promise<void>
   imageAiEnabled: boolean | undefined
+  imageAiAnalysisStartAt: string | undefined
+  rootReceivedAt?: string
   nested?: boolean
 }): React.JSX.Element {
   const merged = message.kind === 'merged'
+  const wechatNote = merged && message.sourceMetadata?.wechatAppMessageType === '24'
   const [rawStructureExpanded, setRawStructureExpanded] = useState(false)
   const rawStructure = {
     sourceTypeCode: message.sourceTypeCode,
@@ -521,7 +543,7 @@ function MessageCard({
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-fg-subtle">
         <span>{fmtTimeFull(message.occurredAt)}</span>
         {!nested && <span className="rounded bg-surface-2 px-1.5 py-0.5">{directionName(message.direction)}</span>}
-        <span className="rounded bg-surface-2 px-1.5 py-0.5">{kindName(message.kind)}</span>
+        <span className="rounded bg-surface-2 px-1.5 py-0.5">{wechatNote ? '微信笔记' : kindName(message.kind)}</span>
         {message.senderName && <span>发送人：{message.senderName}</span>}
         {nested && message.sourceItemIndex !== null && <span>第 {message.sourceItemIndex + 1} 项</span>}
       </div>
@@ -535,13 +557,15 @@ function MessageCard({
       )}
       {merged ? (
         <div className="mt-2 text-sm font-medium">
-          {message.children?.length ? `合并聊天记录（${message.children.length} 条内容）` : '合并聊天记录内容尚未解析'}
+          {message.children?.length
+            ? `${wechatNote ? '微信笔记' : '合并聊天记录'}（${message.children.length} 条内容）`
+            : `${wechatNote ? '微信笔记' : '合并聊天记录'}内容尚未解析`}
         </div>
       ) : message.text && <div className="mt-2 whitespace-pre-wrap break-words text-sm">{message.text}</div>}
       {merged && message.children && message.children.length > 0 && (
         <div className="mt-3 space-y-2 border-l-2 border-line pl-3">
           {message.children.map((child) => (
-            <MessageCard key={child.id} message={child} onOpenAttachment={onOpenAttachment} onConfirmBusinessLink={onConfirmBusinessLink} imageAiEnabled={imageAiEnabled} nested />
+            <MessageCard key={child.id} message={child} onOpenAttachment={onOpenAttachment} onConfirmBusinessLink={onConfirmBusinessLink} imageAiEnabled={imageAiEnabled} imageAiAnalysisStartAt={imageAiAnalysisStartAt} rootReceivedAt={rootReceivedAt ?? message.occurredAt} nested />
           ))}
         </div>
       )}
@@ -591,7 +615,7 @@ function MessageCard({
                   onClick={() => void onOpenAttachment(attachment.id, attachment.kind)}
                 >{attachment.kind === 'image' ? '查看图片' : attachment.kind === 'video' ? '播放视频' : '打开文件'}</button>
               )}
-              <ImageAnalysisLog attachment={attachment} enabled={imageAiEnabled} />
+              <ImageAnalysisLog attachment={attachment} enabled={imageAiEnabled} receivedAt={rootReceivedAt ?? message.occurredAt} analysisStartAt={imageAiAnalysisStartAt} />
             </div>
           ))}
         </div>

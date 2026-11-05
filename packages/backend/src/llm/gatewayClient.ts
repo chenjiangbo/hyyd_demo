@@ -20,6 +20,7 @@ export interface ChatMessage {
 }
 
 export interface ChatOptions {
+  provider?: 'dashscope' | 'deepseek'
   model?: string
   stream?: false          // 本客户端只实现非流式，流式请用 chatStream
   maxTokens?: number
@@ -69,7 +70,7 @@ export async function chat(
   messages: ChatMessage[],
   options: ChatOptions = {}
 ): Promise<ChatResult> {
-  const apiKey = getDashscopeApiKey()
+  const apiKey = options.provider === 'deepseek' ? requiredAiConfig(process.env.DEEPSEEK_API_KEY, 'DEEPSEEK_API_KEY') : getDashscopeApiKey()
   // 默认 qwen-plus（当前 DASHSCOPE key 已开通、可用）。
   // ⚠️ qwen-max-latest 这个 key 暂无权限(403)。想用旗舰/推理模型：先在百炼控制台「模型广场」开通，
   //    再设环境变量 HYYD_LLM_MODEL=<型号>（如 qwen-max-latest / qwen3-235b-a22b / qwq-plus），无需改代码。
@@ -87,7 +88,7 @@ export async function chat(
     body.search_options = { forced_search: true }
   }
 
-  const res = await fetch(getLlmChatEndpoint(), {
+  const res = await fetch(options.provider === 'deepseek' ? 'https://api.deepseek.com/chat/completions' : getLlmChatEndpoint(), {
     method: 'POST',
     headers: {
       'Content-Type':  'application/json',
@@ -99,7 +100,7 @@ export async function chat(
 
   if (!res.ok) {
     const text = await res.text().catch(() => '(no body)')
-    throw new Error(`百炼返回错误 ${res.status}: ${text}`)
+    throw new Error(`${options.provider === 'deepseek' ? 'DeepSeek' : '百炼'}返回错误 ${res.status}: ${text}`)
   }
 
   const json = await res.json() as any

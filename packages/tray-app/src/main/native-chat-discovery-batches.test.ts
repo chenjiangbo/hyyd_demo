@@ -28,6 +28,13 @@ async function run(): Promise<void> {
     assert.notEqual(discoveryFingerprint(old), discoveryFingerprint(recent), 'new activity must make a dormant session discoverable again')
     assert.equal(sessionActivity({ ...baseSession, sourceMetadata: { activityStatus: 'no_messages' } }, now), 'inactive')
     assert.equal(sessionActivity({ ...baseSession, sourceMetadata: { activityStatus: 'unknown' } }, now), 'unknown')
+    for (const lastTime of [null, undefined, 0, '0', '']) {
+      const empty = { ...baseSession, sourceMetadata: { lastTime } }
+      assert.equal(sessionActivity(empty, now), 'inactive')
+      assert.notEqual(discoveryFingerprint(empty), discoveryFingerprint(recent), 'new messages must reactivate an empty conversation')
+    }
+    assert.equal(sessionActivity({ ...baseSession, sourceMetadata: { lastTime: 'invalid' } }, now), 'unknown')
+    assert.equal(sessionActivity({ ...baseSession, channel: 'wxwork', sourceMetadata: { lastTime: null } }, now), 'unknown')
     const manager = new NativeChatCollectorManager() as unknown as {
       request: (...args: unknown[]) => Promise<unknown>
       logStructured: (...args: unknown[]) => void

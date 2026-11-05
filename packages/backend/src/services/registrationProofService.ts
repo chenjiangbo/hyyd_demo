@@ -1,5 +1,7 @@
 import type { PrismaClient } from '@prisma/client'
-import { visionChat } from '../llm/gatewayClient.js'
+import { chat, visionChat } from '../llm/gatewayClient.js'
+import { getOrderAiAutomationConfig } from './orderAiAutomationConfig.js'
+import { selectRegistrationProofScores } from './registrationProofConfidence.js'
 
 export type RegistrationProofFields = {
   isRegistrationProof: boolean
@@ -160,14 +162,6 @@ function dateMatches(orderDate: string | null, proofDate: string | null): boolea
   const a = orderDate.replace(/年|月/g, '-').replace(/日/g, '').replace(/\//g, '-')
   const b = proofDate.replace(/年|月/g, '-').replace(/日/g, '').replace(/\//g, '-')
   return compact(a) === compact(b) || a.includes(b) || b.includes(a)
-}
-
-function businessDateTime(value: Date): string {
-  return value.toLocaleString('sv-SE', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
-  })
 }
 
 function parseJsonObject(content: string): Record<string, unknown> {
@@ -450,7 +444,7 @@ export async function matchNativeRegistrationProofToOrders(
   prisma: PrismaClient,
   imageDataUrl: string,
   image: NativeImageSummary,
-  options: { applicationNo: string | null }
+  options: { applicationNo: string | null; onAiTrace?: (trace: { systemPrompt: string; userPrompt: string; imageIncluded: false; requestedModel: string; provider: string; response?: string; model?: string }) => Promise<void> }
 ): Promise<NativeRegistrationMatch> {
   const orders = await prisma.order.findMany({
     where: options.applicationNo
@@ -511,53 +505,32 @@ export async function matchNativeRegistrationProofToOrders(
 
   if (candidates.length === 0) {
     return {
-      applicationDecision: 'no_match', applicationNo: null, applicationEvidence: [],
-      orderDecision: 'not_evaluated', orderId: null, orderEvidence: [], alternatives: [],
+      applicationDecision: options.applicationNo ? 'matched' : 'no_match', applicationNo: options.applicationNo,
+      applicationEvidence: options.applicationNo ? ['原会话已关联该申领号'] : [],
+      orderDecision: options.applicationNo ? 'ambiguous' : 'not_evaluated', orderId: null, orderEvidence: [], alternatives: [],
       reason: options.applicationNo ? '已关联申领号下未找到订单数据' : '图片可见信息未检索到申领号候选',
       candidateApplicationCount: 0, candidateOrderCount: 0, candidateApplications: []
     }
   }
 
-  const communications = await Promise.all(candidateApplicationNos.filter((appNo) => appRows.has(appNo)).map(async (appNo) => {
-    const [calls, native] = await Promise.all([
-      prisma.call.findMany({
-        where: { applicationNo: appNo },
-        select: { id: true, direction: true, startedAt: true, asrText: true },
-        orderBy: [{ startedAt: 'asc' }, { id: 'asc' }]
-      }),
-      prisma.nativeChatMessage.findMany({
-        where: { applicationNo: appNo, applicationLinkStatus: 'matched' },
-        include: { conversation: { select: { channel: true } }, attachments: { orderBy: { id: 'asc' } } },
-        orderBy: [{ occurredAt: 'asc' }, { sourceItemIndex: 'asc' }, { id: 'asc' }]
-      })
-    ])
-    const rows = [
-      ...calls.filter((c) => c.asrText?.trim()).map((c) => ({ time: c.startedAt, source: '电话转写', sender: c.direction, type: '通话', content: c.asrText })),
-      ...native.map((m) => ({
-        time: m.occurredAt,
-        source: m.conversation.channel,
-        sender: m.senderName ?? m.direction,
-        type: m.kind,
-        content: [m.text, ...m.attachments.map((attachment) => {
-          const metadata = record(attachment.sourceMetadata)
-          const analysis = record(metadata.imageAnalysis)
-          return analysis?.status === 'completed'
-            ? `图片：${String(analysis.imageType ?? '')}；${String(analysis.description ?? '')}；${String(analysis.visibleText ?? '')}`
-            : attachment.fileName ? `附件：${attachment.fileName}` : `附件：${attachment.kind}`
-        })].filter(Boolean).join('\n')
-      }))
-    ].sort((a, b) => a.time.getTime() - b.time.getTime())
+  if (candidates.length === 1 && candidates[0].orders.length === 1) {
+    const candidate = candidates[0]
     return {
-      applicationNo: appNo,
-      communications: rows.map((row) => ({ ...row, time: businessDateTime(row.time) }))
+      applicationDecision: 'matched', applicationNo: candidate.applicationNo,
+      applicationEvidence: options.applicationNo ? ['原会话已关联该申领号'] : candidate.programEvidence,
+      orderDecision: 'matched', orderId: candidate.orders[0].orderId,
+      orderEvidence: candidate.orders[0].programMatchedFields,
+      alternatives: [], reason: '程序找到唯一申领号和订单',
+      candidateApplicationCount: 1, candidateOrderCount: 1, candidateApplications: candidates
     }
-  }))
+  }
 
   const modelCandidates = candidates.map((candidate) => ({
     applicationNo: candidate.applicationNo,
     programEvidence: candidate.programEvidence,
     orders: candidate.orders.map((order) => ({
       orderId: order.orderId,
+      sourceOrderNo: order.sourceOrderNo,
       customerName: order.customerName,
       serviceType: order.serviceType,
       hospital: order.hospital,
@@ -569,27 +542,52 @@ export async function matchNativeRegistrationProofToOrders(
     }))
   }))
   const userPrompt = [
-    `挂号凭证图片识别结果：${JSON.stringify(image)}`,
-    `程序检索到的申领号及其全部订单：${JSON.stringify(modelCandidates)}`,
-    `这些申领号的相关沟通时间线：${JSON.stringify(communications)}`
+    `挂号凭证图片识别结果：${JSON.stringify({ description: image.description, visibleText: image.visibleText, visibleFields: image.visibleFields })}`,
+    `程序检索到的申领号及其全部订单：${JSON.stringify(modelCandidates)}`
   ].join('\n\n')
-  const response = await visionChat(
-    options.applicationNo ? NATIVE_LINKED_APPLICATION_ORDER_PROMPT : NATIVE_APPLICATION_ORDER_PROMPT,
-    userPrompt,
-    imageDataUrl,
-    { temperature: 0 }
-  )
-  const orderIdsByApplication = new Map(candidates.map((candidate) => [candidate.applicationNo, new Set(candidate.orders.map((order) => order.orderId))]))
-  const parsed = parseNativeMatch(
-    response.content,
-    new Set(candidates.map((candidate) => candidate.applicationNo)),
-    orderIdsByApplication,
-    options.applicationNo
-  )
+  const systemPrompt = [
+      '你是医疗服务业务匹配助手。根据提供的挂号凭证识别内容、候选申领号和订单资料，判断凭证属于哪个申领号和订单。',
+      '申领号代表一次客户服务申请；同一申领号下可能有多个服务订单。姓名可以帮助判断客户，但不能单独确定同一客户的具体订单。',
+      '只使用输入中明确提供的凭证内容和订单资料。订单资料为空不代表与凭证一致，不得把凭证上的内容当作订单字段，也不得推断未提供的事实。',
+      '凭证中的医院登记号、就诊序号、医院订单号不是业务申领号或寰宇订单号；除非候选订单明确提供相同业务编号，否则不要用这些号码进行匹配。',
+      '逐个评估每个申领号和它下面每张订单，给出 0 到 100 的匹配置信度，并说明来自凭证或订单资料的支持或反对事实。',
+      candidates.length === 1
+        ? '程序已确定唯一候选申领号；请评估该申领号下的每张订单。'
+        : '申领号尚未确定；请分别评估每个申领号，并评估各申领号下的每张订单。',
+      '证据不足时应给出符合证据的低分，不得编造事实。不能遗漏、增加或更改输入中的任何申领号和订单。',
+      '仅返回 JSON：{"applications":[{"applicationNo":"申领号","confidence":92,"evidence":["依据"],"orders":[{"orderId":123,"confidence":92,"evidence":["依据"]}]}],"reason":"说明"}。'
+    ].join('\n')
+  const { textAnalysisModel, textAnalysisProvider } = await getOrderAiAutomationConfig(prisma)
+  const trace = { systemPrompt, userPrompt, imageIncluded: false as const, requestedModel: textAnalysisModel, provider: textAnalysisProvider }
+  if (options.onAiTrace) await options.onAiTrace(trace)
+  const response = await chat([{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], { temperature: 0, model: textAnalysisModel, provider: textAnalysisProvider })
+  if (options.onAiTrace) await options.onAiTrace({ ...trace, response: response.content, model: response.model })
+  const modelResult = parseJsonObject(response.content)
+  const selected = selectRegistrationProofScores(modelResult, candidates)
+  const parsed = {
+    applicationDecision: selected.application ? 'matched' as const : 'ambiguous' as const,
+    applicationNo: selected.application?.applicationNo ?? null,
+    applicationEvidence: selected.application?.evidence ?? [],
+    orderDecision: !selected.application ? 'not_evaluated' as const : selected.order ? 'matched' as const : 'ambiguous' as const,
+    orderId: selected.order?.orderId ?? null,
+    orderEvidence: selected.order?.evidence ?? [],
+    alternatives: selected.scored.map((candidate) => `${candidate.applicationNo}: ${candidate.confidence}%`),
+    reason: text(modelResult.reason) ?? ''
+  }
   return {
     ...parsed,
     candidateApplicationCount: candidates.length,
     candidateOrderCount: candidates.reduce((total, candidate) => total + candidate.orders.length, 0),
-    candidateApplications: candidates
+    candidateApplications: candidates.map((candidate) => {
+      const scored = selected.scored.find((item) => item.applicationNo === candidate.applicationNo)!
+      return {
+        ...candidate,
+        confidence: scored.confidence,
+        orders: candidate.orders.map((order) => ({
+          ...order,
+          confidence: scored.orders.find((item) => item.orderId === order.orderId)!.confidence
+        }))
+      }
+    })
   }
 }

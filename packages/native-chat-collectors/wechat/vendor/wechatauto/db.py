@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import ctypes
+import copy
 import glob
 import hashlib
 import hmac as hmac_mod
@@ -517,6 +518,10 @@ class WeChatDB:
         )
         self.keys_file = keys_file or os.path.join(self.workdir, "keys.json")
         self._keys: Dict[str, bytes] = {}
+        self._pending_key_reads: Dict[str, str] = {}
+        self._next_key_read_retry = 0.0
+        self._key_read_retry_result = queue.Queue(maxsize=1)
+        self._key_read_retry_running = False
         self._db_files = self._collect_db_files()
         self.master_key: Optional[str] = None
         self.cfg_dword: Optional[int] = None
@@ -1106,6 +1111,21 @@ class WeChatDB:
                 pids.append(int(parts[1]))
         return pids
 
+    def _read_key_page_for_scan(self, path: str, rel: str, unreadable: set):
+        if rel in unreadable:
+            return None
+        try:
+            with open(path, "rb") as stream:
+                page = stream.read(PAGE_SZ)
+            if len(page) < PAGE_SZ:
+                raise OSError(f"数据库文件头不完整：读取 {len(page)}/{PAGE_SZ} 字节")
+            return page
+        except OSError as exc:
+            unreadable.add(rel)
+            self._pending_key_reads[rel] = str(exc)
+            wxlog.warning("微信数据库暂时无法读取，其他数据库继续扫描，将重试：数据库=%s 错误=%s", rel, exc)
+            return None
+
     def _extract_keys_pid(self, pid: int, tested: set) -> Dict[str, bytes]:
         h = _k32.OpenProcess(0x0010 | 0x0400, False, pid)
         if not h:
@@ -1124,6 +1144,7 @@ class WeChatDB:
                 for addr in needles
             ]
             keys: Dict[str, bytes] = {}
+            unreadable_this_scan = set()
             for pair in pairs:
                 for qaddr in self._find_bytes(h, read, pair):
                     node = read(qaddr - 0x10, 0x50)
@@ -1173,14 +1194,19 @@ class WeChatDB:
                                 salt_choices.append(explicit)
                             for salt_opt in salt_choices:
                                 for rel, path, _ in self._db_files:
-                                    if rel in keys:
+                                    if rel in keys or rel in unreadable_this_scan:
                                         continue
-                                    with open(path, "rb") as f:
-                                        page1 = f.read(PAGE_SZ)
+                                    page1 = self._read_key_page_for_scan(path, rel, unreadable_this_scan)
+                                    if page1 is None:
+                                        continue
                                     if _verify_enc_key(cand, page1, salt=salt_opt):
                                         # 显式 salt 通过 → 存 key+salt（明文头模式）；
                                         # 文件头 salt 通过 → 存裸 key
                                         keys[rel] = cand + (salt_opt or b"")
+                                        if rel in self._pending_key_reads:
+                                            self._pending_key_reads.pop(rel, None)
+                                            if not getattr(self, '_key_retry_snapshot', False):
+                                                wxlog.warning("微信数据库已恢复读取并验证密钥：数据库=%s", rel)
                                         break
         finally:
             _k32.CloseHandle(h)
@@ -1607,12 +1633,54 @@ class WeChatDB:
             if re.match(r"^message[\\/]message_\d+\.db$", rel.replace(os.sep, "/"))
         )
 
-    def _refresh_db_files(self) -> None:
-        """重扫磁盘上的 db 文件；发现新文件时补提取其密钥，避免旧缓存漏掉新分片。
+    def retry_pending_key_reads(self) -> None:
+        """Retry unreadable databases in a worker; apply its result on the collector thread."""
+        if self._key_read_retry_running:
+            try:
+                account, recovered, error = self._key_read_retry_result.get_nowait()
+            except queue.Empty:
+                return
+            self._key_read_retry_running = False
+            if error:
+                wxlog.warning("重试微信数据库密钥失败：%s", error)
+            elif account == self.account:
+                for rel, key in recovered.items():
+                    if rel not in self._pending_key_reads:
+                        continue
+                    previous = self._keys.get(rel)
+                    self._keys[rel] = key
+                    if self._key_works(rel):
+                        self._pending_key_reads.pop(rel, None)
+                        wxlog.warning("微信数据库已恢复读取并验证密钥：数据库=%s", rel)
+                    elif previous is None:
+                        self._keys.pop(rel, None)
+                    else:
+                        self._keys[rel] = previous
+                self._save_keys()
+                self.unkeyed = [rel for rel, _, _ in self._db_files if not self._key_works(rel)]
+            if self._pending_key_reads:
+                wxlog.warning("微信数据库仍等待恢复：%s", ", ".join(sorted(self._pending_key_reads)))
+        if not self._pending_key_reads or time.monotonic() < self._next_key_read_retry:
+            return
+        self._next_key_read_retry = time.monotonic() + 60
+        snapshot = copy.copy(self)
+        snapshot._keys = dict(self._keys)
+        snapshot._db_files = list(self._db_files)
+        snapshot._pending_key_reads = dict(self._pending_key_reads)
+        snapshot._key_retry_snapshot = True
+        result_queue = self._key_read_retry_result
+        def scan():
+            try:
+                result_queue.put((snapshot.account, snapshot.extract_keys(), None))
+            except Exception as exc:
+                result_queue.put((snapshot.account, {}, str(exc)))
+        self._key_read_retry_running = True
+        wxlog.warning("正在后台重试微信数据库：%s", ", ".join(sorted(self._pending_key_reads)))
+        threading.Thread(target=scan, name="wechat-db-key-retry", daemon=True).start()
 
-        性能：仅当 message 目录下的文件清单有变化（新增 message_5.db 等）或首次
-        调用时才做全量重扫，否则直接复用 __init__ 时的扫描结果。
-        """
+    def _refresh_db_files(self) -> None:
+        """重扫数据库清单，并在新增分片时补提取密钥。"""
+        self.retry_pending_key_reads()
         msg_dir = os.path.join(self.account_dir, "db_storage", "message")
         try:
             cur = sorted(
@@ -1689,7 +1757,8 @@ class WeChatDB:
         """
         conns = []
         try:
-            conns = [self._open(rel) for rel in self._message_dbs()]
+            for rel in self._message_dbs():
+                conns.append(self._open(rel))
             found = self._find_msg_tables(user, conns)
         except sqlite3.DatabaseError as exc:
             for c in conns:

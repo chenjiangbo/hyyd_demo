@@ -28,6 +28,7 @@ import TaikangFormSessionsPage from './pages/TaikangFormSessionsPage'
 import TaikangFormSessionPage from './pages/TaikangFormSessionPage'
 import NativeChatCollectionConfigPage from './pages/NativeChatCollectionConfigPage'
 import NativeChatRecordsPage from './pages/NativeChatRecordsPage'
+import ImageAnalysisRecordsPage from './pages/ImageAnalysisRecordsPage'
 
 export default function App(): React.JSX.Element {
   const { status } = useAuth()
@@ -61,6 +62,7 @@ export default function App(): React.JSX.Element {
         <Route path="taikang-form-sessions/:id" element={<TaikangFormSessionPage />} />
         <Route path="native-chat-collection" element={<NativeChatCollectionConfigPage />} />
         <Route path="native-chat-records" element={<NativeChatRecordsPage />} />
+        <Route path="image-analysis-records" element={<ImageAnalysisRecordsPage />} />
         <Route path="unmatched-refs" element={<UnmatchedRefsPage />} />
         <Route path="health" element={<HealthPage />} />
         <Route path="settings" element={<SettingsPage />} />

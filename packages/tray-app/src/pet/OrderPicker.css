@@ -1,0 +1,15 @@
+.order-picker { display: flex; flex-direction: column; height: 100vh; padding: 20px 24px; background: #fffaf6; color: #492f28; font: 14px 'Microsoft YaHei', sans-serif; }
+.order-picker h1 { margin: 0 0 14px; font-size: 20px; }
+.order-picker button { cursor: pointer; border: 1px solid #d7b8a8; border-radius: 6px; background: white; padding: 7px 12px; color: #593529; }
+.order-picker button:disabled { cursor: default; opacity: .5; }
+.order-picker__search { display: flex; gap: 8px; margin-bottom: 12px; }
+.order-picker__search input { flex: 1; min-width: 0; border: 1px solid #d7b8a8; border-radius: 6px; padding: 8px; }
+.order-picker__list { flex: 1; min-height: 0; overflow-y: auto; }
+.order-picker__group { margin-bottom: 8px; border: 1px solid #ead7cc; border-radius: 8px; }
+.order-picker__application { width: 100%; text-align: left; border: 0 !important; background: #fff4ec !important; overflow-wrap: anywhere; }
+.order-picker__orders { padding: 4px 10px; }
+.order-picker__order { display: flex; align-items: flex-start; gap: 10px; padding: 9px 3px; border-bottom: 1px solid #f0e4dc; line-height: 1.55; overflow-wrap: anywhere; }
+.order-picker__order:last-child { border: 0; }
+.order-picker__footer { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 12px; }
+.order-picker__footer span { flex: 1; }
+.order-picker__error { color: #aa3027; }

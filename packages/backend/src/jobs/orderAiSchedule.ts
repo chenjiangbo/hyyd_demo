@@ -107,12 +107,16 @@ async function runSilentCommunicationOrders(prisma: PrismaClient, minio: Minio.C
       EXISTS (
         SELECT 1
         FROM native_chat_messages nm
+        JOIN native_chat_conversations nc ON nc.id = nm.conversation_id
         LEFT JOIN LATERAL (
           SELECT MAX(GREATEST(a.updated_at, COALESCE(a.application_linked_at, 'epoch'::timestamp))) AS latest_attachment_at
           FROM native_chat_attachments a
           WHERE a.message_id = nm.id
         ) na ON TRUE
-        WHERE nm.application_link_status = 'matched'
+        WHERE nc.application_link_status = 'matched'
+          AND nc.application_no IS NOT NULL
+          AND nm.application_link_status = 'matched'
+          AND nm.application_no = nc.application_no
           AND (nm.order_id = o.id OR (nm.order_id IS NULL AND o.raw_json->>'crmApplyNo' IS NOT NULL AND nm.application_no = o.raw_json->>'crmApplyNo'))
           AND GREATEST(nm.observed_at, COALESCE(nm.application_linked_at, 'epoch'::timestamp), COALESCE(na.latest_attachment_at, 'epoch'::timestamp))
               > COALESCE(o.field_ai_last_native_at, 'epoch'::timestamp)
@@ -123,7 +127,7 @@ async function runSilentCommunicationOrders(prisma: PrismaClient, minio: Minio.C
         WHERE a.application_link_status = 'matched'
           AND a.kind = 'image'
           AND a.source_metadata->'imageAnalysis'->>'imageType' = '挂号凭证'
-          AND (a.order_id = o.id OR (a.order_id IS NULL AND o.raw_json->>'crmApplyNo' IS NOT NULL AND a.application_no = o.raw_json->>'crmApplyNo'))
+          AND a.order_id = o.id
           AND GREATEST(a.updated_at, COALESCE(a.application_linked_at, 'epoch'::timestamp), nm.observed_at)
               > COALESCE(o.field_ai_last_native_at, 'epoch'::timestamp)
       )
@@ -133,19 +137,23 @@ async function runSilentCommunicationOrders(prisma: PrismaClient, minio: Minio.C
         SELECT MAX(GREATEST(nm.observed_at, COALESCE(nm.application_linked_at, 'epoch'::timestamp),
                             COALESCE(na.latest_attachment_at, 'epoch'::timestamp)))
         FROM native_chat_messages nm
+        JOIN native_chat_conversations nc ON nc.id = nm.conversation_id
         LEFT JOIN LATERAL (
           SELECT MAX(GREATEST(a.updated_at, COALESCE(a.application_linked_at, 'epoch'::timestamp))) AS latest_attachment_at
           FROM native_chat_attachments a
           WHERE a.message_id = nm.id
         ) na ON TRUE
-        WHERE nm.application_link_status = 'matched'
+        WHERE nc.application_link_status = 'matched'
+          AND nc.application_no IS NOT NULL
+          AND nm.application_link_status = 'matched'
+          AND nm.application_no = nc.application_no
           AND (nm.order_id = o.id OR (nm.order_id IS NULL AND o.raw_json->>'crmApplyNo' IS NOT NULL AND nm.application_no = o.raw_json->>'crmApplyNo'))
       ), 'epoch'::timestamp),
       COALESCE((SELECT MAX(GREATEST(a.updated_at, COALESCE(a.application_linked_at, 'epoch'::timestamp)))
         FROM native_chat_attachments a
         WHERE a.application_link_status = 'matched' AND a.kind = 'image'
           AND a.source_metadata->'imageAnalysis'->>'imageType' = '挂号凭证'
-          AND (a.order_id = o.id OR (a.order_id IS NULL AND o.raw_json->>'crmApplyNo' IS NOT NULL AND a.application_no = o.raw_json->>'crmApplyNo'))
+          AND a.order_id = o.id
       ), 'epoch'::timestamp)
     ) <= ${cutoff}
     ORDER BY o.id

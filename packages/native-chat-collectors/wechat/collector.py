@@ -19,12 +19,13 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from async_image_key import AsyncImageKeyResolver, ImageKeyPending, ImageProbeMismatch
 
 VENDOR_ROOT = Path(__file__).resolve().parent / "vendor"
 sys.path.insert(0, str(VENDOR_ROOT))
 
 from wechatauto.db import WeChatDB  # noqa: E402
-from wechatauto.records import normalize_message_type_code  # noqa: E402
+from wechatauto.records import diagnose_merged_forward, normalize_message_type_code, parse_pat_message, parse_reference_message  # noqa: E402
 from wechatauto.media import (  # noqa: E402
     AmbiguousLocalFileError,
     AmbiguousResourceMetadataError,
@@ -39,6 +40,7 @@ logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(asctime)s %
 LOG = logging.getLogger("hyyd.wechat.collector")
 COMMANDS: queue.Queue[dict[str, Any]] = queue.Queue()
 STOP = threading.Event()
+EMIT_LOCK = threading.Lock()
 MEDIA_RECHECK_INTERVAL_SECONDS = 300
 INITIAL_HISTORY_PAGE_SIZE = 200
 ERROR_SUMMARY_INTERVAL_SECONDS = 60
@@ -112,6 +114,7 @@ class MediaRetryState:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.counts: dict[str, int] = {}
+        self.failure_generations: dict[str, int] = {}
         if path.exists():
             value = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(value, dict) or any(
@@ -121,13 +124,18 @@ class MediaRetryState:
                 raise ValueError("微信图片密钥重试状态文件格式无效")
             self.counts = value
 
-    def aes_failure(self, attachment_id: str) -> int:
+    def aes_failure(self, attachment_id: str, generation: int | None = None) -> int:
+        if generation is not None and self.failure_generations.get(attachment_id) == generation:
+            return self.counts.get(attachment_id, 0)
+        if generation is not None:
+            self.failure_generations[attachment_id] = generation
         count = self.counts.get(attachment_id, 0) + 1
         self.counts[attachment_id] = count
         self._save()
         return count
 
     def clear(self, attachment_id: str) -> None:
+        self.failure_generations.pop(attachment_id, None)
         if self.counts.pop(attachment_id, None) is not None:
             self._save()
 
@@ -146,8 +154,9 @@ def retry_state_path_from_args() -> Path:
 
 def emit(value: dict[str, Any]) -> None:
     payload = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
-    sys.stdout.buffer.write(payload)
-    sys.stdout.buffer.flush()
+    with EMIT_LOCK:
+        sys.stdout.buffer.write(payload)
+        sys.stdout.buffer.flush()
 
 
 def read_commands() -> None:
@@ -245,15 +254,39 @@ def encode_message(
         content = db._friendly_content(content, db._msg_type_name(raw_code))
     elif not isinstance(content, str):
         content = str(content) if content is not None else None
+    raw_content = content
     forward = None
     if kind == "file":
-        forward = db.get_merged_forward(username, int(msg["local_id"]), shard=msg.get("shard"))
-        if forward is None and content and ("<recorditem" in content.lower() or "<recordinfo" in content.lower()):
-            raise RuntimeError(f"Merged forward parse failed: {sid}")
-        if forward is not None:
-            kind = "merged"
+        pat_title = parse_pat_message(content)
+        reference_text = parse_reference_message(content)
+        if reference_text is not None:
+            kind, content = "text", reference_text
+        elif pat_title is not None:
+            kind, content = "system", pat_title
+        else:
+            is_forward = bool(content and ("<recorditem" in content.lower() or "<recordinfo" in content.lower()))
+            try:
+                forward = db.get_merged_forward(username, int(msg["local_id"]), shard=msg.get("shard"))
+            except ValueError as exc:
+                if not is_forward:
+                    raise
+                emit({"event": "merged_message_parse_failed", "channel": "wechat", "accountId": account_id,
+                      "sourceConversationId": username, "title": db.get_nickname(username),
+                      "sourceMessageId": sid, "reason": str(exc), "rawContent": content})
+                LOG.warning("Skipping unparseable merged message conversation=%s sourceMessage=%s reason=%s", username, sid, exc)
+                return []
+            if forward is None and is_forward:
+                reason = diagnose_merged_forward(content)
+                emit({"event": "merged_message_parse_failed", "channel": "wechat", "accountId": account_id,
+                      "sourceConversationId": username, "title": db.get_nickname(username),
+                      "sourceMessageId": sid, "reason": reason, "rawContent": content})
+                LOG.warning("Skipping unparseable merged message conversation=%s sourceMessage=%s reason=%s", username, sid, reason)
+                return []
+            if forward is not None:
+                kind = "merged"
     sender_id = str(msg["sender_id"]) if msg.get("sender_id") is not None else None
     sender_username = str(msg.get("sender_username") or "")
+    sender_name = (db.nickname_map().get(sender_username) or sender_username) if sender_username else None
     if kind == "system":
         direction = "system"
     elif sender_username:
@@ -264,12 +297,14 @@ def encode_message(
         "channel": "wechat", "accountId": account_id,
         "sourceConversationId": username, "sourceMessageId": sid,
         "direction": direction, "senderId": sender_id,
-        "senderName": msg.get("sender_username") or None,
+        "senderName": sender_name,
         "kind": kind, "sourceTypeCode": str(raw_code) if raw_code is not None else str(msg.get("type") or "unknown"),
         "text": content, "occurredAt": utc_time(msg.get("create_time")),
         "observedAt": observed_at, "sourceMetadata": {
             "sortSeq": msg.get("sort_seq"), "serverId": msg.get("server_id"),
-            "shard": msg.get("shard"), "sourceTypeName": msg.get("type")
+            "shard": msg.get("shard"), "sourceTypeName": msg.get("type"), "senderUsername": sender_username or None,
+            **({"wechatAppMessageType": forward.get("app_message_type")} if forward and forward.get("app_message_type") else {}),
+            **({"rawContent": raw_content} if raw_content != content else {})
         }, "attachments": []
     }
     output = [base]
@@ -300,7 +335,7 @@ def encode_message(
                 if media_expired:
                     local_path = None
                     resolution_state = "not_found"
-                    resolution_detail = "retry_expired_30_days"
+                    resolution_detail = "retry_expired_7_days"
                     if item_type == "image":
                         retry_state.clear(attachment_source_id)
                 else:
@@ -313,9 +348,18 @@ def encode_message(
                             local_path = media_reader.download_merged_forward_video(username, item, save_dir=str(message_media_dir))
                         else:
                             local_path = find_merged_forward_file(db, media_reader, username, item, str(message_media_dir))
+                    except ImageKeyPending:
+                        local_path = None
+                        resolution_state = 'not_downloaded'
+                        resolution_detail = 'image_aes_key_pending'
+                    except ImageProbeMismatch:
+                        local_path = None
+                        resolution_state = 'not_downloaded'
+                        resolution_detail = 'image_probe_unverified'
+                        LOG.warning('Merged image cannot be validated; will retry conversation=%s sourceMessage=%s attachment=%s', username, sid, attachment_source_id)
                     except ImageAesKeyUnavailableError as exc:
                         local_path = None
-                        attempts = retry_state.aes_failure(attachment_source_id)
+                        attempts = retry_state.aes_failure(attachment_source_id, media_reader._hyyd_key_resolver.failure_generation)
                         resolution_state = "error" if attempts >= 3 else "not_downloaded"
                         resolution_detail = "image_aes_key_unavailable_exhausted" if attempts >= 3 else "image_aes_key_unavailable"
                         LOG.warning("Merged image remains unresolved conversation=%s title=%s sourceMessage=%s attachment=%s AESFailures=%s", username, db.get_nickname(username), sid, attachment_source_id, attempts)
@@ -354,7 +398,8 @@ def encode_message(
                     attachment[0]["sourceMetadata"] = {
                         "rendition": rendition,
                         "nonThumbnailState": "expired" if media_expired else full_state,
-                        **({"resolutionState": resolution_detail, "terminal": True} if media_expired or resolution_state == "error" else {}),
+                        **({"resolutionState": resolution_detail} if resolution_detail else {}),
+                        **({"terminal": True} if media_expired or resolution_state == "error" else {}),
                         **({"aesFailureCount": attempts} if not media_expired and resolution_detail and resolution_detail.startswith("image_aes_key_unavailable") else {}),
                     }
                 if item_type == "file" and resolution_state:
@@ -400,16 +445,25 @@ def encode_message(
             if media_expired:
                 local_path = None
                 file_resolution_state = "not_found"
-                file_metadata = {"resolutionState": "retry_expired_30_days", "terminal": True}
+                file_metadata = {"resolutionState": "retry_expired_7_days", "terminal": True}
                 retry_state.clear(attachment_source_id)
             else:
                 try:
                     local_path = media_reader.download_image(username, int(msg["local_id"]), save_dir=str(message_media_dir), tier="best", shard=msg.get("shard"))
                     if local_path:
                         retry_state.clear(attachment_source_id)
+                except ImageKeyPending:
+                    local_path = None
+                    file_resolution_state = 'not_downloaded'
+                    file_metadata = {"rendition": "missing", "nonThumbnailState": "pending", "resolutionState": "image_aes_key_pending"}
+                except ImageProbeMismatch:
+                    local_path = None
+                    file_resolution_state = 'not_downloaded'
+                    file_metadata = {"rendition": "missing", "nonThumbnailState": "pending", "resolutionState": "image_probe_unverified"}
+                    LOG.warning('Image cannot be validated; will retry conversation=%s sourceMessage=%s', username, sid)
                 except ImageAesKeyUnavailableError as exc:
                     local_path = None
-                    attempts = retry_state.aes_failure(attachment_source_id)
+                    attempts = retry_state.aes_failure(attachment_source_id, media_reader._hyyd_key_resolver.failure_generation)
                     terminal = attempts >= 3
                     file_resolution_state = "error" if terminal else "not_downloaded"
                     file_metadata = {
@@ -487,14 +541,14 @@ def encode_message(
                 file_resolution_state = "not_found"
                 file_metadata = {
                     **(file_metadata or {}),
-                    "resolutionState": "retry_expired_30_days",
+                    "resolutionState": "retry_expired_7_days",
                     "terminal": True,
                 }
         elif kind == "video":
             if media_expired:
                 local_path = None
                 file_resolution_state = "not_found"
-                file_metadata = {"resolutionState": "retry_expired_30_days", "terminal": True}
+                file_metadata = {"resolutionState": "retry_expired_7_days", "terminal": True}
             else:
                 local_path = media_reader.download_video(username, int(msg["local_id"]), save_dir=str(message_media_dir), shard=msg.get("shard"))
         else:
@@ -549,7 +603,7 @@ def recheck_media_message(
                 raise ValueError(f"Pending media message has an invalid source timestamp: {source_message_id}") from exc
     else:
         raise ValueError(f"Pending media message has no valid source timestamp: {source_message_id}")
-    media_expired = time.time() - source_epoch >= 30 * 24 * 60 * 60
+    media_expired = time.time() - source_epoch >= 7 * 24 * 60 * 60
     rows = encode_message(db, media_reader, account_id, username, row, observed_at, retry_state, media_expired)
     return [
         message for message in rows
@@ -598,6 +652,36 @@ def find_merged_forward_file(db: WeChatDB, media_reader: MediaDownloader, userna
     return str(destination)
 
 
+def wait_for_initial_sessions(db: WeChatDB, stop: threading.Event):
+    startup_errors = RepeatedErrorReporter()
+    while not stop.is_set():
+        db.retry_pending_key_reads()
+        try:
+            return db.get_sessions(limit=None)
+        except Exception as exc:
+            startup_errors.report("session_startup", None, exc)
+            stop.wait(5)
+    return None
+
+
+def apply_media_ack(command, pending_media, media_inflight, media_last_checked):
+    conversation_id = str(command.get("sourceConversationId") or "")
+    source_message_id = str(command.get("sourceMessageId") or "")
+    pending_ids = command.get("pendingAttachmentIds")
+    if not conversation_id or not source_message_id or not isinstance(pending_ids, list) or any(not isinstance(item, str) or not item for item in pending_ids):
+        raise ValueError("media_ack is missing a valid conversation, message, or attachment list")
+    if media_inflight.get(conversation_id) != source_message_id:
+        raise ValueError("media_ack does not match the pending media batch")
+    if pending_ids:
+        pending_media.setdefault(conversation_id, set()).add(source_message_id)
+    else:
+        pending_media.get(conversation_id, set()).discard(source_message_id)
+        media_last_checked.pop((conversation_id, source_message_id), None)
+        if conversation_id in pending_media and not pending_media[conversation_id]:
+            del pending_media[conversation_id]
+    del media_inflight[conversation_id]
+
+
 def main() -> int:
     try:
         retry_state = MediaRetryState(retry_state_path_from_args())
@@ -606,10 +690,19 @@ def main() -> int:
         emit({"event": "fatal", "message": str(exc)})
         return 1
     account_id = db.wxid
-    sessions = db.get_sessions(limit=None)
+    threading.Thread(target=read_commands, name="wechat-command-reader", daemon=True).start()
+    sessions = wait_for_initial_sessions(db, STOP)
+    if sessions is None:
+        return 0
     media_output = Path(tempfile.gettempdir()) / "hyyd-native-chat" / "wechat" / str(os.getpid())
     media_output.mkdir(parents=True, exist_ok=True)
     media_reader = MediaDownloader(db, save_dir=str(media_output))
+    media_reader._hyyd_timing = lambda stage, elapsed, fields: emit({
+        "event": "image_resolution_timing", "channel": "wechat", "accountId": account_id,
+        "stage": stage, "elapsedMs": elapsed, **fields,
+    })
+    media_reader._hyyd_key_resolver = AsyncImageKeyResolver(media_reader._resolve_aes_key, validate=media_reader._validate_key)
+    media_reader._resolve_aes_key = media_reader._hyyd_key_resolver.resolve
     observed_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     emit({
         "event": "ready", "channel": "wechat", "accountId": account_id,
@@ -621,7 +714,6 @@ def main() -> int:
             "sourceMetadata": {"lastTime": item.get("last_time")}
         } for item in sessions]
     })
-    threading.Thread(target=read_commands, name="wechat-command-reader", daemon=True).start()
     selected: dict[str, dict[str, Any]] = {}
     initial_states: dict[str, tuple[float, int]] = {}
     initial_processed: dict[str, int] = {}
@@ -719,21 +811,7 @@ def main() -> int:
                     initial_processed.pop(conversation_id, None)
                     checkpoint_inflight.discard(conversation_id)
                 elif command.get("type") == "media_ack":
-                    conversation_id = str(command.get("sourceConversationId") or "")
-                    source_message_id = str(command.get("sourceMessageId") or "")
-                    pending_ids = command.get("pendingAttachmentIds")
-                    if not conversation_id or not source_message_id or not isinstance(pending_ids, list) or any(not isinstance(item, str) or not item for item in pending_ids):
-                        raise ValueError("media_ack is missing a valid conversation, message, or attachment list")
-                    if media_inflight.get(conversation_id) != source_message_id:
-                        raise ValueError("media_ack does not match the pending media batch")
-                    if pending_ids:
-                        pending_media.setdefault(conversation_id, set()).add(source_message_id)
-                    else:
-                        pending_media.get(conversation_id, set()).discard(source_message_id)
-                        media_last_checked.pop((conversation_id, source_message_id), None)
-                        if conversation_id in pending_media and not pending_media[conversation_id]:
-                            del pending_media[conversation_id]
-                    del media_inflight[conversation_id]
+                    apply_media_ack(command, pending_media, media_inflight, media_last_checked)
                 elif command.get("type") == "stop":
                     STOP.set()
                 else:
@@ -745,6 +823,7 @@ def main() -> int:
             STOP.set()
 
         now = time.monotonic()
+        db.retry_pending_key_reads()
         if now - last_sessions_refresh >= 60:
             try:
                 latest = db.get_sessions(limit=None)
@@ -901,6 +980,8 @@ def main() -> int:
                                 pending_media.pop(username, None)
                             error_reporter.clear_conversation(username, "message_poll")
                             break
+                        elif command.get("type") == "media_ack":
+                            apply_media_ack(command, pending_media, media_inflight, media_last_checked)
                         elif command.get("type") == "subscribe":
                             # Do not replace the active cursor while a batch is awaiting durable acknowledgement.
                             pending = command.get("conversations")

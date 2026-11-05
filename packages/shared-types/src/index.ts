@@ -51,6 +51,7 @@ export interface NativeChatAttachmentSourceMetadata extends Record<string, unkno
     | 'resource_file_not_found'
     | 'upload_size_exceeded'
     | 'retry_expired_30_days'
+    | 'retry_expired_7_days'
   imageAnalysis?: {
     status: 'pending' | 'processing' | 'retrying' | 'completed' | 'failed'
     imageType?: string | null
@@ -112,6 +113,7 @@ export interface NativeChatAttachment {
 }
 
 export interface NativeChatImageMatchOrder {
+  confidence?: number
   orderId: number
   sourceOrderNo: string
   customerName: string
@@ -125,6 +127,7 @@ export interface NativeChatImageMatchOrder {
 }
 
 export interface NativeChatImageMatchApplication {
+  confidence?: number
   applicationNo: string
   programEvidence: string[]
   orders: NativeChatImageMatchOrder[]

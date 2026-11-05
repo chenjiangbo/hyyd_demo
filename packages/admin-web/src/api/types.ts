@@ -24,7 +24,11 @@ export interface NativeChatCollectionConfig {
 }
 
 export interface OrderAiAutomationConfig {
+  textAnalysisModel: string
+  textAnalysisProvider: 'dashscope' | 'deepseek'
+  imageAnalysisModel: string
   imageAiEnabled: boolean
+  imageAiAnalysisStartAt: string
   communicationSilenceMinutes: number
   updatedAt: string | null
   callTrigger: string

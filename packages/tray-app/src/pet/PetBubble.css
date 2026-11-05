@@ -40,7 +40,7 @@
 .pet-bubble--form { top: 28px; width: 380px; max-width: calc(100vw - 24px); max-height: 900px; overflow: visible; animation: pet-bubble-throw-left 260ms cubic-bezier(.16, 1, .3, 1) both; }
 .pet-expanded.pet-bubble-left .pet-bubble--form { transform-origin: right bottom; }
 .pet-expanded.pet-bubble-right .pet-bubble--form { transform-origin: left bottom; animation-name: pet-bubble-throw-right; }
-.pet-bubble--image-match { top: 28px; max-height: min(70vh, 620px); overflow-y: auto; }
+.pet-bubble--image-match { top: 28px; width: 360px; min-width: 0; overflow-x: hidden; overflow-y: auto; }
 .pet-bubble--form.pet-bubble--no-entrance { animation: none; }
 .pet-bubble--error { border-color: rgba(223, 127, 72, .9); }
 .pet-bubble--error .pet-bubble__tail { border-color: rgba(223, 127, 72, .9); }
@@ -77,10 +77,12 @@
 .pet-bubble__action--primary { border-color: #d95432; color: #fff; background: #e3613b; }
 .pet-bubble__action--primary:hover:not(:disabled) { border-color: #b94325; background: #c94d2c; }
 .pet-bubble__action--danger { border-color: #df8b78; color: #a33d2b; }
-.pet-bubble__candidate-list { display: grid; gap: 6px; }
+.pet-bubble__candidate-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; min-width: 0; }
 .pet-bubble__candidate {
   display: flex;
   width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
   flex-direction: column;
   gap: 2px;
   padding: 8px 9px;

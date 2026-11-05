@@ -102,10 +102,10 @@ fn classify(raw_type: &str, payload: &Value) -> MessageType {
         "0" | "1" | "2" | "text" => MessageType::Text,
         // WeCom 5.0.13 external-contact conversations use 101 for images.
         "3" | "14" | "29" | "101" | "image" | "img" => MessageType::Image,
-        "34" | "voice" | "audio" => MessageType::Audio,
+        "16" | "34" | "voice" | "audio" => MessageType::Audio,
         "43" | "video" => MessageType::Video,
         // WeCom 5.0.13 external-contact conversations use 102 for files.
-        "15" | "16" | "20" | "102" | "49:file" | "file" | "attachment" => MessageType::File,
+        "15" | "20" | "102" | "49:file" | "file" | "attachment" => MessageType::File,
         "13" | "49:link" | "link" | "url" => MessageType::Link,
         "49:quote" | "reply" | "quote" => MessageType::Reply,
         "38" | "40" | "501" | "503" | "671" | "10000" | "1001" | "1002" | "1004" | "1006"
@@ -213,6 +213,17 @@ mod tests {
             raw_type: raw_type.into(),
             payload,
             recalled: false,
+        }
+    }
+
+    #[test]
+    fn wecom_type_16_is_audio_and_file_types_remain_files() {
+        let voice = normalize(row("16", json!({"media_path": "cdc8c22d316eb36762477e7472d5015d"})), Uuid::nil()).unwrap();
+        assert_eq!(voice.message_type, MessageType::Audio);
+        assert_eq!(voice.media.len(), 1);
+        for code in ["15", "20", "102"] {
+            let file = normalize(row(code, json!({"media_path": "document.docx"})), Uuid::nil()).unwrap();
+            assert_eq!(file.message_type, MessageType::File);
         }
     }
 

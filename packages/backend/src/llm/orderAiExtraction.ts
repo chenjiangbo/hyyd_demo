@@ -9,6 +9,7 @@ export type OrderAiSourceMessage = {
   sourceRef?: string
   channel: string
   senderName: string | null
+  senderId?: string | null
   direction?: string
   messageKind?: string
   sourceTypeCode?: string | null
@@ -236,7 +237,8 @@ function timeline(messages: OrderAiSourceMessage[], calls: OrderAiSourceCall[]):
         m.sourceItemIndex != null ? `合并序号=${m.sourceItemIndex}` : null
       ].filter((value): value is string => Boolean(value)).join('；')
       const sender = m.senderName?.trim() ? `发送人=${m.senderName.trim()}` : null
-      const header = [m.channel, metadata, sender].filter(Boolean).join('；')
+      const senderId = m.senderId?.trim() ? `发送人ID=${m.senderId.trim()}` : null
+      const header = [m.channel, metadata, sender, senderId].filter(Boolean).join('；')
       return { at: m.occurredAt, line: `[${m.sourceRef ?? `消息#${m.id}`} ${fmt(m.occurredAt)} ${header}] ${m.contentText.replace(/\s+/g, ' ').trim()}` }
     }),
     ...calls.filter((c) => (c.asrText ?? '').trim()).map((c) => ({ at: c.startedAt, line: `[通话#${c.id} ${fmt(c.startedAt)} ${c.direction === 'out' ? '去电' : '来电'}] ${(c.asrText ?? '').replace(/\s+/g, ' ').trim()}` }))
@@ -452,6 +454,8 @@ function normalizeEvents(raw: unknown, huanyuOrderNos: Set<string>): WorkflowAna
 }
 
 export async function extractOrderServiceFields(input: {
+  model: string
+  provider: 'dashscope' | 'deepseek'
   orderId: number
   applicationNo: string | null
   serviceType: string
@@ -486,7 +490,7 @@ export async function extractOrderServiceFields(input: {
     `【当前已保存正式值，仅用于判断变更，不得照搬】${JSON.stringify(input.currentValues)}`,
     `【申请号下沟通时间线】\n${sourceTimeline || '（无可分析的企微、微信或已转写通话）'}`
   ].join('\n\n')
-  const result = await chat([{ role: 'system', content: system }, { role: 'user', content: user }], { temperature: 0, maxTokens: 10000 })
+  const result = await chat([{ role: 'system', content: system }, { role: 'user', content: user }], { temperature: 0, maxTokens: 10000, model: input.model, provider: input.provider })
   const parsed = parseObject(result.content)
   return {
     candidates: normalizeCandidates(parsed.field_candidates, allowedMap, new Set((input.huanyuOrders ?? []).map((order) => order.orderNo))),
