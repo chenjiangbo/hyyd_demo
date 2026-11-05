@@ -137,7 +137,7 @@ function Actions({ actions, onAction }: { actions: PetAction[]; onAction?: (acti
   return (
     <div className="pet-bubble__actions">
       {actions.map((action) => (
-        <button key={action.id} className={`pet-bubble__action pet-bubble__action--${action.tone ?? 'secondary'}`} type="button" disabled={action.disabled || action.loading} onClick={() => onAction?.(action.id)}>
+        <button key={action.id} className={`pet-bubble__action pet-bubble__action--${action.tone ?? 'secondary'}${action.loading ? ' pet-bubble__action--loading' : ''}`} type="button" disabled={action.disabled || action.loading} onClick={() => onAction?.(action.id)}>
           {action.loading ? '处理中…' : action.label}
         </button>
       ))}

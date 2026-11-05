@@ -77,6 +77,9 @@
 .pet-bubble__action--primary { border-color: #d95432; color: #fff; background: #e3613b; }
 .pet-bubble__action--primary:hover:not(:disabled) { border-color: #b94325; background: #c94d2c; }
 .pet-bubble__action--danger { border-color: #df8b78; color: #a33d2b; }
+.pet-bubble__action--loading::before { content: ''; display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -2px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: pet-action-spin 0.8s linear infinite; }
+@keyframes pet-action-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .pet-bubble__action--loading::before { animation: none; } }
 .pet-bubble__candidate-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; min-width: 0; }
 .pet-bubble__candidate {
   display: flex;

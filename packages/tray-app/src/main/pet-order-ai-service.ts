@@ -112,7 +112,7 @@ export class PetOrderAiService {
           }
           if ((body.event === 'refresh-failed' || body.event === 'refresh-complete') && this.active?.token === body.token && this.active.orderNo === body.orderNo && this.active.tabId === body.tabId && this.currentPanel?.kind === 'form') {
             const failed = body.event === 'refresh-failed'
-            this.currentPanel = { ...this.currentPanel, submitState: failed ? 'error' : 'success', submitMessage: failed ? '远程订单已更新，但自动刷新失败。请返回列表重新打开订单查看最新数据。' : '填单成功' }
+            this.currentPanel = { ...this.currentPanel, submitState: failed ? 'error' : 'success', submitMessage: failed ? '远程订单已更新，但自动刷新失败。请返回列表重新打开订单查看最新数据。' : '填单成功', actions: [{ id: 'one-click-fill', label: '一键填单', tone: 'primary' }] }
             this.updatePanel(this.currentPanel.id, this.currentPanel)
           }
           const refresh = body.event === 'open'
@@ -177,6 +177,7 @@ export class PetOrderAiService {
   async handlePanelAction(panelId: string, actionId: string, values: Record<string, unknown> = {}): Promise<void> {
     const active = this.active
     if (!active || panelId !== `order-ai:${active.token}` || this.currentPanel?.kind !== 'form') return
+    if (this.currentPanel.submitState === 'submitting') return
     if (actionId === 'cancel-master-create') {
       for (const item of this.currentPanel.confirmation?.review ?? []) {
         this.masterDraft[item.key] = Object.fromEntries(item.fields.map((field) => [field.id, typeof values[`master:${item.key}:${field.id}`] === 'string' ? values[`master:${item.key}:${field.id}`] as string : field.value]))
@@ -248,7 +249,7 @@ export class PetOrderAiService {
         return
       }
     }
-    this.currentPanel = { ...this.currentPanel, submitState: 'submitting', submitMessage: '正在填单...', actions: [] }
+    this.currentPanel = { ...this.currentPanel, submitState: 'submitting', submitMessage: '正在填单，请稍候…', actions: [{ id: actionId, label: '一键填单', tone: 'primary', loading: true }] }
     this.updatePanel(panelId, this.currentPanel)
     try {
       const response = await fetch(`${config.backendUrl}/api/v1/pet/huanyu-order-update`, {
@@ -280,14 +281,14 @@ export class PetOrderAiService {
         throw new Error(payload.error || `订单更新失败（${response.status}）`)
       } else {
         active.refreshPending = true
-        this.currentPanel = { ...this.currentPanel, confirmation: undefined, submitState: 'success',
-          submitMessage: '填单成功',
-          actions: [{ id: 'one-click-fill', label: '一键填单', tone: 'primary' }] }
+        this.currentPanel = { ...this.currentPanel, confirmation: undefined, submitState: 'submitting',
+          submitMessage: '填单完成，正在刷新页面…',
+          actions: [{ id: 'one-click-fill', label: '一键填单', tone: 'primary', loading: true }] }
         const pendingPanel = this.currentPanel
         setTimeout(() => {
           if (this.active !== active || this.currentPanel !== pendingPanel) return
           active.refreshPending = false
-          this.currentPanel = { ...this.currentPanel, submitState: 'error', submitMessage: '远程订单已更新，但自动刷新超时。请返回列表重新打开订单查看最新数据。' }
+          this.currentPanel = { ...this.currentPanel, submitState: 'error', submitMessage: '远程订单已更新，但自动刷新超时。请返回列表重新打开订单查看最新数据。', actions: [{ id: 'one-click-fill', label: '一键填单', tone: 'primary' }] }
           this.updatePanel(panelId, this.currentPanel)
         }, 35000)
       }
