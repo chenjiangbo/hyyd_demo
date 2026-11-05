@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import './PetBubble.css'
 
@@ -69,7 +69,10 @@ export interface PetField {
   hint?: string
   required?: boolean
   readOnly?: boolean
-  options?: Array<{ value: string; label: string }>
+  options?: Array<{ value: string; label: string; price?: string }>
+  suggestion?: string
+  aiPrefill?: boolean
+  originalPhone?: string
   copyable?: boolean
   error?: string
   validation?: { rule: 'required' | 'phone' | 'id-card' | 'date'; message: string }
@@ -108,6 +111,9 @@ export type PetPanel =
       submitState?: 'idle' | 'submitting' | 'success' | 'error'
       confirmation?: { title: string; creations: Array<{ key: string; type: string; name: string; parent?: string }>; review: MasterReviewItem[] }
       submitMessage?: string
+      originalService?: string
+      originalAmount?: string
+      originalStatus?: string
     }
 
 export type PetLookupKind = 'hospital' | 'address' | 'department' | 'doctor' | 'escort'
@@ -145,7 +151,7 @@ function Actions({ actions, onAction }: { actions: PetAction[]; onAction?: (acti
   )
 }
 
-function SelectField({ field, onFieldChange }: { field: PetField; onFieldChange?: PetFieldChange }): React.JSX.Element {
+function SelectField({ field, onFieldChange, showFullValue = false }: { field: PetField; onFieldChange?: PetFieldChange; showFullValue?: boolean }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState<React.CSSProperties>({})
   const root = useRef<HTMLDivElement>(null)
@@ -180,7 +186,7 @@ function SelectField({ field, onFieldChange }: { field: PetField; onFieldChange?
   }, [open])
   const selected = field.options?.find((option) => option.value === String(field.value))
   return <div className="pet-bubble__search-select pet-bubble__choice-select" ref={root}>
-    <button type="button" className="pet-bubble__select-trigger" role="combobox" aria-label={field.label} aria-haspopup="listbox" aria-expanded={open} aria-controls={`${field.id}-options`} onClick={() => { if (open) setOpen(false); else openOptions() }} onKeyDown={(event) => { if (event.key === 'Escape') setOpen(false) }}>
+    <button type="button" className="pet-bubble__select-trigger" role="combobox" aria-label={field.label} title={showFullValue && field.value ? (selected?.label ?? String(field.value)) : undefined} aria-haspopup="listbox" aria-expanded={open} aria-controls={`${field.id}-options`} onClick={() => { if (open) setOpen(false); else openOptions() }} onKeyDown={(event) => { if (event.key === 'Escape') setOpen(false) }}>
       <span>{selected?.label ?? (String(field.value) || '请选择')}</span><span className="pet-bubble__select-chevron" aria-hidden="true" />
     </button>
     {open && createPortal(<div ref={optionsRoot} className="pet-bubble__search-options pet-bubble__lookup-portal" style={position} id={`${field.id}-options`} role="listbox" aria-label={field.label}>
@@ -189,7 +195,7 @@ function SelectField({ field, onFieldChange }: { field: PetField; onFieldChange?
   </div>
 }
 
-function TimeWheel({ label, value, count, onChange }: { label: string; value: string; count: number; onChange: (value: string) => void }): React.JSX.Element {
+const TimeWheel = memo(function TimeWheel({ label, value, count, onChange }: { label: string; value: string; count: number; onChange: (value: string) => void }): React.JSX.Element {
   const wheel = useRef<HTMLDivElement>(null)
   const initialValue = useRef(value)
   useEffect(() => {
@@ -208,13 +214,13 @@ function TimeWheel({ label, value, count, onChange }: { label: string; value: st
       if (next !== Number(value)) onChange(String(next).padStart(2, '0'))
     }}>
       <i aria-hidden="true" />
-      {Array.from({ length: count }, (_, index) => <button key={index} type="button" role="option" aria-selected={Number(value) === index} className={Number(value) === index ? 'is-selected' : ''} onClick={() => { onChange(String(index).padStart(2, '0')); if (wheel.current) wheel.current.scrollTo({ top: index * 28, behavior: 'smooth' }) }}>{String(index).padStart(2, '0')}</button>)}
+      {Array.from({ length: count }, (_, index) => <button key={index} type="button" role="option" aria-selected={Number(value) === index} className={Number(value) === index ? 'is-selected' : ''} onClick={() => { onChange(String(index).padStart(2, '0')); if (wheel.current) wheel.current.scrollTop = index * 28 }}>{String(index).padStart(2, '0')}</button>)}
       <i aria-hidden="true" />
     </div>
   </div>
-}
+})
 
-function DateTimeField({ field, onFieldChange }: { field: PetField; onFieldChange?: PetFieldChange }): React.JSX.Element {
+function DateTimeField({ field, onFieldChange, reserveCopy = false }: { field: PetField; onFieldChange?: PetFieldChange; reserveCopy?: boolean }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [month, setMonth] = useState(() => new Date())
   const [draftDate, setDraftDate] = useState('')
@@ -233,8 +239,10 @@ function DateTimeField({ field, onFieldChange }: { field: PetField; onFieldChang
       : { hour: pad(now.getHours()), minute: pad(now.getMinutes()) })
     setOpen(true)
   }
-  const rect = anchor.current?.getBoundingClientRect()
-  const panelRect = anchor.current?.closest('.pet-bubble--form')?.getBoundingClientRect()
+  const { rect, panelRect } = useMemo(() => ({
+    rect: open ? anchor.current?.getBoundingClientRect() : undefined,
+    panelRect: open ? anchor.current?.closest('.pet-bubble--form')?.getBoundingClientRect() : undefined
+  }), [open])
   const panelBounds = panelRect ?? { left: 0, right: window.innerWidth, top: 0, bottom: window.innerHeight, width: window.innerWidth, height: window.innerHeight }
   const pickerWidth = Math.min(286, Math.max(220, panelBounds.width - 16))
   const pickerHeight = Math.min(450, Math.max(220, panelBounds.height - 16))
@@ -249,7 +257,8 @@ function DateTimeField({ field, onFieldChange }: { field: PetField; onFieldChang
       : Math.max(panelBounds.top + 8, Math.min(centeredTop, panelBounds.bottom - pickerHeight - 8))
   const firstDay = (new Date(month.getFullYear(), month.getMonth(), 1).getDay() + 6) % 7
   const days = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate()
-  const setPart = (part: keyof typeof time, value: string): void => setTime((current) => ({ ...current, [part]: value }))
+  const setHour = useCallback((value: string): void => setTime((current) => current.hour === value ? current : { ...current, hour: value }), [])
+  const setMinute = useCallback((value: string): void => setTime((current) => current.minute === value ? current : { ...current, minute: value }), [])
   const apply = (): void => {
     if (!draftDate) return
     const hour = Number(time.hour)
@@ -259,7 +268,7 @@ function DateTimeField({ field, onFieldChange }: { field: PetField; onFieldChang
     setOpen(false)
   }
   return <div className="pet-bubble__input-with-copy">
-    <div className="pet-bubble__datetime-input"><input id={field.id} name={field.id} type="text" value={display} placeholder="请点击图标选择日期时间" readOnly onPaste={(event) => {
+    <div className="pet-bubble__datetime-input"><input id={field.id} name={field.id} type="text" value={display} placeholder="请选择日期时间" readOnly onPaste={(event) => {
       const text = event.clipboardData.getData('text').trim()
       const match = text.match(/^(\d{4})[-/.]?(\d{2})[-/.]?(\d{2})[T\s]+(\d{2}):(\d{2})(?::(\d{2}))?$/)
       if (!match) return
@@ -271,16 +280,16 @@ function DateTimeField({ field, onFieldChange }: { field: PetField; onFieldChang
       onFieldChange?.(field.id, `${year}-${month}-${day}T${hour}:${minute}:00`)
     }} aria-label={field.label} aria-invalid={Boolean(field.error)} />
     <button ref={anchor} className="pet-bubble__calendar-icon" type="button" title="选择日期和时间" aria-label={`选择${field.label}`} aria-haspopup="dialog" aria-expanded={open} onClick={openPicker}>▦</button></div>
-    {raw && <button type="button" title="复制" onClick={() => { void navigator.clipboard?.writeText(display) }}>复制</button>}
+    {(raw || reserveCopy) && <button type="button" title="复制" disabled={!raw} aria-hidden={!raw} style={!raw ? { visibility: 'hidden' } : undefined} onClick={() => { void navigator.clipboard?.writeText(display) }}>复制</button>}
     {open && createPortal(<>
-      <div className="pet-bubble__picker-dismiss" onMouseDown={() => setOpen(false)} />
+      <div className="pet-bubble__picker-dismiss" onMouseDown={(event) => { if (event.button === 0) setOpen(false) }} />
       <div className="pet-bubble__datetime-picker" style={{ left: pickerLeft, top: pickerTop, width: pickerWidth, maxHeight: pickerHeight }} role="dialog" aria-label={`选择${field.label}`}>
         <header><button type="button" aria-label="上个月" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}>‹</button><strong>{month.getFullYear()} 年 {month.getMonth() + 1} 月</strong><button type="button" aria-label="下个月" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}>›</button></header>
         <div className="pet-bubble__calendar-grid">{['一', '二', '三', '四', '五', '六', '日'].map((day) => <span key={day}>{day}</span>)}{Array.from({ length: firstDay }, (_, index) => <span key={`blank-${index}`} />)}{Array.from({ length: days }, (_, index) => {
           const date = `${month.getFullYear()}-${pad(month.getMonth() + 1)}-${pad(index + 1)}`
           return <button key={date} type="button" className={draftDate === date ? 'is-selected' : ''} onClick={() => setDraftDate(date)}>{index + 1}</button>
         })}</div>
-        <div className="pet-bubble__time-wheels"><TimeWheel label="时" value={time.hour} count={24} onChange={(value) => setPart('hour', value)} /><TimeWheel label="分" value={time.minute} count={60} onChange={(value) => setPart('minute', value)} /></div>
+        <div className="pet-bubble__time-wheels"><TimeWheel label="时" value={time.hour} count={24} onChange={setHour} /><TimeWheel label="分" value={time.minute} count={60} onChange={setMinute} /></div>
         <footer><button type="button" onClick={() => { onFieldChange?.(field.id, ''); setOpen(false) }}>清空</button><button type="button" onClick={() => { const now = new Date(); onFieldChange?.(field.id, `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}:00`); setOpen(false) }}>现在</button><button type="button" disabled={!draftDate || Number(time.hour) > 23 || Number(time.minute) > 59} onClick={apply}>确定</button></footer>
       </div>
     </>, document.body)}
@@ -350,7 +359,9 @@ function Field({ field, panel, onFieldChange, onLookup }: {
   const common = {
     id: field.id,
     name: field.id,
+    'aria-label': field.label,
     placeholder: field.placeholder,
+    title: (field.readOnly || panel.id.startsWith('order-ai:')) && field.value ? String(field.value) : undefined,
     readOnly: field.readOnly,
     required: field.required,
     'aria-invalid': Boolean(field.error),
@@ -358,20 +369,22 @@ function Field({ field, panel, onFieldChange, onLookup }: {
   }
 
   let control: React.JSX.Element
-  if (field.type === 'textarea') {
+  if (field.type === 'textarea' && field.id === 'groupName' && panel.id.startsWith('order-ai:')) {
+    control = <div className="pet-bubble__input-with-copy"><input {...common} type="text" value={String(field.value)} />{field.copyable && <button type="button" title="复制" disabled={!String(field.value)} onClick={() => { void navigator.clipboard?.writeText(String(field.value)) }}>复制</button>}</div>
+  } else if (field.type === 'textarea') {
     control = <div className="pet-bubble__input-with-copy"><textarea {...common} value={String(field.value)} rows={field.id === 'groupName' ? 1 : 3} />{field.copyable && <button type="button" title="复制" disabled={!String(field.value)} onClick={() => { void navigator.clipboard?.writeText(String(field.value)) }}>复制</button>}</div>
   } else if (field.type === 'select') {
-    control = <SelectField field={field} onFieldChange={onFieldChange} />
+    control = <SelectField field={field} onFieldChange={onFieldChange} showFullValue={panel.id.startsWith('order-ai:')} />
   } else if (field.type === 'datetime-local') {
-    control = <DateTimeField field={field} onFieldChange={onFieldChange} />
+    control = <DateTimeField field={field} onFieldChange={onFieldChange} reserveCopy={panel.id.startsWith('order-ai:')} />
   } else if (field.type === 'radio') {
     control = <span className="pet-bubble__choices">{(field.options ?? []).map((option) => <label key={option.value} className="pet-bubble__choice"><input type="radio" name={field.id} value={option.value} checked={String(field.value) === option.value} onChange={() => onFieldChange?.(field.id, option.value)} />{option.label}</label>)}</span>
   } else if (field.type === 'checkbox') {
-    control = <label className="pet-bubble__checkbox"><input type="checkbox" checked={Boolean(field.value)} disabled={field.readOnly} onChange={(event) => onFieldChange?.(field.id, String(event.target.checked))} /><span>{field.placeholder ?? field.label}</span></label>
+    control = <label className="pet-bubble__checkbox"><input type="checkbox" checked={field.value === true || field.value === 'true'} disabled={field.readOnly} onChange={(event) => onFieldChange?.(field.id, String(event.target.checked))} /><span>{field.placeholder ?? field.label}</span></label>
   } else if (kind) {
     const selected = lookupOptions.find((option) => option.id === String(field.value) || option.name === String(field.value))
     control = <div className="pet-bubble__search-select">
-      <input {...common} placeholder={`请选择或输入${field.label}`} ref={lookupInput} type="text" value={selected?.name ?? String(field.value)} onFocus={() => {
+      <input {...common} title={panel.id.startsWith('order-ai:') ? (selected?.name ?? String(field.value)) || undefined : common.title} placeholder={`请选择或输入${field.label}`} ref={lookupInput} type="text" value={selected?.name ?? String(field.value)} onFocus={() => {
         positionLookup()
         setLookupOpen(true)
         const currentValue = String(field.value)
@@ -395,7 +408,18 @@ function Field({ field, panel, onFieldChange, onLookup }: {
     </div>
   }
 
-  return <label className={`pet-bubble__field pet-bubble__field--${field.type}${!field.readOnly && !String(field.value ?? '').trim() ? ' pet-bubble__field--empty' : ''}`}>{field.type !== 'checkbox' && <span>{field.label}{field.required ? ' *' : ''}</span>}{control}{field.hint && <small>{field.hint}</small>}{field.error && <small className="pet-bubble__field-error">{field.error}</small>}</label>
+  const hospitalGroup = ['hospital', 'hospitalAddress', 'department', 'doctor'].includes(field.id)
+  const orderForm = panel.id.startsWith('order-ai:') && !panel.confirmation
+  const source = field.aiPrefill ? 'AI' : field.hint === '泰康意向' ? '意向' : ''
+  return <div data-field-id={field.id} data-has-source={Boolean(source)} className={`pet-bubble__field pet-bubble__field--${field.type}${!field.readOnly && !String(field.value ?? '').trim() ? ' pet-bubble__field--empty' : ''}`}>
+    {field.type !== 'checkbox' && <span className="pet-bubble__field-label">{field.label}{field.required ? ' *' : ''}</span>}
+    {control}
+    {orderForm && field.type !== 'checkbox' && source && <span className="pet-bubble__field-source">{source}</span>}
+    {!orderForm && field.aiPrefill && <small>AI 建议</small>}
+    {field.suggestion && String(field.value).trim() !== field.suggestion.trim() && <small>AI 建议：{field.suggestion} <button type="button" onClick={() => onFieldChange?.(hospitalGroup ? `__hospital_suggestion:${field.id}` : field.id, field.suggestion!)}>填入</button></small>}
+    {field.hint && (!orderForm || field.hint !== '泰康意向') && <small>{field.hint}</small>}
+    {field.error && <small className="pet-bubble__field-error">{field.error}</small>}
+  </div>
 }
 
 function FormFields({ panel, onFieldChange, onLookup, onAddEscortRecord, onRemoveEscortRecord }: {
@@ -409,21 +433,35 @@ function FormFields({ panel, onFieldChange, onLookup, onAddEscortRecord, onRemov
   if (!panel.sections?.length) return <div className="pet-bubble__form-body"><div className="pet-bubble__fields">{panel.fields.map((field) => <Field key={`${panel.id}:${field.id}`} field={field} panel={panel} onFieldChange={onFieldChange} onLookup={onLookup} />)}</div></div>
   const escortSections = panel.sections.filter((section) => section.repeatable)
   const orderSections = panel.sections.filter((section) => !section.repeatable)
-  return <div className="pet-bubble__form-body">
+  const orderAi = panel.id.startsWith('order-ai:')
+  return <fieldset className="pet-bubble__form-body" disabled={panel.submitState === 'submitting'}>
     {orderSections.map((section) => <fieldset className={`pet-bubble__form-section pet-bubble__form-section--order pet-bubble__form-section--${section.id}`} key={section.id}>
-      <legend>{section.title}{section.id === 'order-info' && fieldsById.has('orderNo') && <span className="pet-bubble__order-number">{String(fieldsById.get('orderNo')?.value ?? '')}<button type="button" title="复制订单号" onClick={() => { void navigator.clipboard?.writeText(String(fieldsById.get('orderNo')?.value ?? '')) }}>复制</button></span>}</legend>
-      <div className="pet-bubble__fields">{section.fieldIds.map((fieldId) => { const field = fieldsById.get(fieldId); return field ? <Field key={`${panel.id}:${field.id}`} field={field} panel={panel} onFieldChange={onFieldChange} onLookup={onLookup} /> : null })}</div>
+      <legend>{orderAi && section.id === 'order-info' ? '订单基本信息' : section.title}{!orderAi && section.id === 'order-info' && !section.fieldIds.includes('orderNo') && fieldsById.has('orderNo') && <span className="pet-bubble__order-number">{String(fieldsById.get('orderNo')?.value ?? '')}<button type="button" title="复制订单号" onClick={() => { void navigator.clipboard?.writeText(String(fieldsById.get('orderNo')?.value ?? '')) }}>复制</button></span>}</legend>
+      <div className="pet-bubble__fields">{(orderAi && section.id === 'order-info' ? ['orderNo', 'documentNo', 'groupName', 'orderStatus', 'channelService', 'orderAmount', 'amountChanged'] : section.fieldIds).map((fieldId) => {
+        const storedField = fieldsById.get(fieldId)
+        const field = orderAi && fieldId === 'documentNo' && storedField ? { ...storedField, label: '身份证号', placeholder: '暂无身份证号' } : storedField
+        const orderInfo = panel.id.startsWith('order-ai:') && section.id === 'order-info'
+        if (!field || (orderInfo && fieldId === 'amountChanged')) return null
+        if (orderInfo && fieldId === 'orderAmount') {
+          const editable = fieldsById.get('amountChanged')
+          return <div className="pet-bubble__amount-group" key={`${panel.id}:${field.id}`}><Field field={field} panel={panel} onFieldChange={onFieldChange} onLookup={onLookup} />{editable && <Field field={editable} panel={panel} onFieldChange={onFieldChange} onLookup={onLookup} />}</div>
+        }
+        return <Field key={`${panel.id}:${field.id}`} field={field} panel={panel} onFieldChange={onFieldChange} onLookup={onLookup} />
+      })}</div>
+      {section.id === 'hospital-info' && section.fieldIds.some((fieldId) => fieldsById.get(fieldId)?.suggestion) && <button className="pet-bubble__fill-group" type="button" onClick={() => onFieldChange?.('__hospital_suggestion_group', '')}>填入整组</button>}
     </fieldset>)}
     {escortSections.length > 0 && <fieldset className="pet-bubble__form-section pet-bubble__form-section--escort-cards">
       <legend>陪诊信息</legend>
+      {orderAi && <div className="pet-bubble__escort-table-header" aria-hidden="true"><span>服务日期/时间</span><span>陪诊人</span><span>陪诊电话</span><span /></div>}
       <div className="pet-bubble__escort-card-list">{escortSections.map((section, index) => {
+        const remove = <button className="pet-bubble__remove-record pet-bubble__remove-record--icon" type="button" title="移除陪诊信息" aria-label={`移除陪诊 ${index + 1}`} onClick={() => onRemoveEscortRecord?.(section.id)}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6 4.5V3h4v1.5m-5.5 0 .6 8h5.8l.6-8M6.5 6.5v4.5m3-4.5v4.5" /></svg></button>
         return <article className="pet-bubble__escort-card" key={section.id}>
-          <header><strong>陪诊 {index + 1}</strong>{escortSections.length > 1 && <button className="pet-bubble__remove-record pet-bubble__remove-record--icon" type="button" title="移除陪诊信息" aria-label={`移除陪诊 ${index + 1}`} onClick={() => onRemoveEscortRecord?.(section.id)}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6 4.5V3h4v1.5m-5.5 0 .6 8h5.8l.6-8M6.5 6.5v4.5m3-4.5v4.5" /></svg></button>}</header>
-          <div className="pet-bubble__fields">{section.fieldIds.map((fieldId) => { const field = fieldsById.get(fieldId); return field ? <Field key={`${panel.id}:${field.id}`} field={field} panel={panel} onFieldChange={onFieldChange} onLookup={onLookup} /> : null })}</div>
+          {!orderAi && <header><strong>陪诊 {index + 1}</strong>{remove}</header>}
+          <div className="pet-bubble__fields">{section.fieldIds.map((fieldId) => { const field = fieldsById.get(fieldId); return field ? <Field key={`${panel.id}:${field.id}`} field={field} panel={panel} onFieldChange={onFieldChange} onLookup={onLookup} /> : null })}{orderAi && remove}</div>
       </article> })}</div>
       <button className="pet-bubble__add-record" type="button" onClick={onAddEscortRecord}>＋ 新增陪诊信息</button>
     </fieldset>}
-  </div>
+  </fieldset>
 }
 
 function MasterReview({ items, addressValue, onFieldChange }: { items: MasterReviewItem[]; addressValue: string; onFieldChange?: PetFieldChange }): React.JSX.Element {
@@ -452,6 +490,7 @@ function MasterReview({ items, addressValue, onFieldChange }: { items: MasterRev
 
 export function PetBubble({ panel, skipEntranceAnimation, onAction, onClose, onSelectCandidate, onSelectApplication, onResolveImageOrder, onDiscardImageMatch, onPickOtherImageOrder, imageMatchError, onFieldChange, onLookup, onSizeChange, onAddEscortRecord, onRemoveEscortRecord }: PetBubbleProps): React.JSX.Element {
   const bubbleRef = useRef<HTMLElement>(null)
+  const wideOrderForm = panel.kind === 'form' && !panel.confirmation && panel.id?.startsWith('order-ai:')
 
   useEffect(() => {
     const element = bubbleRef.current
@@ -460,7 +499,7 @@ export function PetBubble({ panel, skipEntranceAnimation, onAction, onClose, onS
     let lastHeight = 0
     const report = (): void => {
       // Layout尺寸不受弹出动画的 transform 缩放影响，避免窗口按动画中的临时尺寸裁掉底部按钮。
-      const width = element.offsetWidth
+      const width = wideOrderForm ? Math.max(element.offsetWidth, Math.min(660, Math.max(240, window.screen.availWidth - 120))) : element.offsetWidth
       const height = element.offsetHeight
       if (width > 0 && height > 0 && (width !== lastWidth || height !== lastHeight)) {
         lastWidth = width
@@ -472,7 +511,7 @@ export function PetBubble({ panel, skipEntranceAnimation, onAction, onClose, onS
     observer.observe(element)
     report()
     return () => observer.disconnect()
-  }, [onSizeChange])
+  }, [onSizeChange, wideOrderForm])
 
   return (
     <section ref={bubbleRef} className={`pet-bubble pet-bubble--${panel.kind}${skipEntranceAnimation ? ' pet-bubble--no-entrance' : ''}${panel.kind === 'form' && panel.confirmation ? ' pet-bubble--master-review' : ''}${panel.kind === 'form' && !panel.confirmation && panel.id?.startsWith('order-ai:') ? ' pet-bubble--order-ai' : ''}`} style={panel.kind === 'form' ? ({

@@ -51,6 +51,7 @@ import {
   pushHuanyuOrderToMysql,
   huanyuOrderExistsOnMysql,
   readRemoteOrderDocumentNo,
+  readRemotePetOrder,
   updateHuanyuOrderDirectlyOnMysql,
   refreshRegistrationAssistFieldsFromMysql,
   REGISTRATION_ASSIST_REMOTE_AUTHORITATIVE_COLUMNS
@@ -4152,6 +4153,13 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
         AND field_code IN ('order_status', 'hospital', 'hospital_address', 'department', 'doctor',
           'request_time', 'response_time', 'service_start_time', 'appointment_success_time', 'latest_ticket_time',
           'escort_service_date', 'escort_name', 'escort_phone', 'escort_records')
+        AND (field_code NOT IN ('hospital', 'hospital_address', 'department', 'doctor') OR run_id = (
+          SELECT run_id FROM b_order_ai_field_candidates
+          WHERE huanyu_order_no = ${orderNo} AND status = 'pending'
+            AND candidate_type IN ('new_or_confirmed', 'change_candidate')
+            AND field_code IN ('hospital', 'hospital_address', 'department', 'doctor')
+          ORDER BY created_at DESC, id DESC LIMIT 1
+        ))
       ORDER BY field_code, created_at DESC, id DESC
     `
     const fields: Record<string, string> = {}
@@ -4202,6 +4210,17 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     const detail = (order?.detailJson ?? {}) as Record<string, unknown>
     const rec = (detail.recommendations ?? {}) as Record<string, unknown>
     const value = (key: string): string => String(rec[key] ?? '').trim() || String(raw[key] ?? '').trim()
+    const linkedOrders = await prisma.$queryRaw<Array<{ order_id: number }>>`
+      SELECT order_id FROM b_order_huanyu_services WHERE huanyu_order_no = ${orderNo} LIMIT 1
+    `
+    const intentionOrder = linkedOrders[0]
+      ? await prisma.order.findFirst({ where: { id: linkedOrders[0].order_id, source: 'taikang' }, select: { detailJson: true, rawJson: true } })
+      : await prisma.order.findFirst({ where: { huanyuOrderNo: orderNo, source: 'taikang' }, select: { detailJson: true, rawJson: true } })
+    const intentionRaw = (intentionOrder?.rawJson ?? {}) as Record<string, unknown>
+    const intentionDetail = (intentionOrder?.detailJson ?? {}) as Record<string, unknown>
+    const intentionRec = (intentionDetail.recommendations ?? {}) as Record<string, unknown>
+    const intentionValue = (key: string): string => String(intentionRec[key] ?? '').trim() || String(intentionRaw[key] ?? '').trim()
+    const intention = { hospital: intentionValue('intendHos'), department: intentionValue('intendDept'), doctor: intentionValue('intendDoc') }
     const date = order?.poolEnteredAt ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(order.poolEnteredAt).replace(/-/g, '') : ''
     const name = value('patientName') || order?.customerName || ''
     const sex = value('sex')
@@ -4215,7 +4234,21 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       ? `${date}${owner}${customerLevel}${name}${title}就医服务群${applicationNo}`
       : isStrickenCase === false && validName && applicationNo.length >= 8
         ? `${name}#${applicationNo.slice(-8)}` : ''
-    return reply.send({ data: { orderNo, fields, escortRecords, documentNo, documentNoStatus, groupName } })
+    return reply.send({ data: { orderNo, fields, intention, escortRecords, documentNo, documentNoStatus, groupName } })
+  })
+
+  fastify.get<{ Querystring: { orderNo?: string } }>('/api/v1/pet/order-current', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const orderNo = String(request.query.orderNo ?? '').trim()
+    if (!/^[A-Za-z0-9-]{6,64}$/.test(orderNo)) return reply.status(400).send({ error: '订单号格式无效' })
+    try {
+      const data = await readRemotePetOrder(orderNo)
+      if (!data) return reply.status(404).send({ error: '远端订单不存在' })
+      return reply.send({ data })
+    } catch (error) {
+      request.log.error({ error }, '读取远端订单失败')
+      return reply.status(503).send({ error: '读取远端订单失败，请稍后重试' })
+    }
   })
 
   // 浮动精灵一键填单：维表检查/确认沿用客户端规则，但订单只直接写远端 MySQL，不落本地快照。
@@ -4227,17 +4260,27 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     if (!/^[A-Za-z0-9-]{6,64}$/.test(orderNo)) return reply.status(400).send({ ok: false, error: '订单号格式无效' })
 
     const cleanText = (value: unknown): string => typeof value === 'string' ? value.trim() : ''
-    const escortList: Array<{ escortName: string; phone: string; serviceDate: string; sequence: string }> = Array.isArray(fields.escortList)
+    const escortList: Array<{ id: string; escortName: string; phone: string; expectedEscortId: string; expectedPhone: string; serviceDate: string; sequence: string }> = Array.isArray(fields.escortList)
       ? (fields.escortList as unknown[]).map((item: unknown, index: number) => {
         const record = item && typeof item === 'object' ? item as Record<string, unknown> : {}
         return {
-          escortName: cleanText(record.escortName),
-          phone: cleanText(record.phone),
+          id: cleanText(record.id), escortName: cleanText(record.escortName),
+          phone: cleanText(record.phone), expectedEscortId: cleanText(record.expectedEscortId), expectedPhone: cleanText(record.expectedPhone),
           serviceDate: cleanText(record.serviceDate),
           sequence: cleanText(record.sequence) || String(index + 1)
         }
       }) : []
-    if (escortList.length === 0) return reply.status(400).send({ ok: false, error: '至少保留一条陪诊信息' })
+    const expectedEscorts = Array.isArray(body.expectedEscorts) ? body.expectedEscorts.map((item: unknown) => {
+      const record = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+      return { id: cleanText(record.id), escortId: cleanText(record.escortId), serviceDate: cleanText(record.serviceDate) }
+    }) : undefined
+    const financial = body.financial && typeof body.financial === 'object' && !Array.isArray(body.financial) ? {
+      channel: cleanText(body.financial.channel), originalService: cleanText(body.financial.originalService), originalAmount: cleanText(body.financial.originalAmount),
+      service: cleanText(body.financial.service), amount: cleanText(body.financial.amount)
+    } : undefined
+    if (escortList.length === 0 && !expectedEscorts) return reply.status(400).send({ ok: false, error: '至少保留一条陪诊信息' })
+    if (expectedEscorts && (expectedEscorts.some((item: { id: string }) => !item.id) || escortList.some((item) => !item.serviceDate && !item.escortName && !item.id))) return reply.status(400).send({ ok: false, error: '请填写服务日期或陪诊人' })
+    if (expectedEscorts && escortList.some((item) => item.phone && !item.escortName)) return reply.status(400).send({ ok: false, error: '请先填写陪诊人，再填写陪诊电话' })
     const masterInput = {
       hospital: cleanText(fields.hospital),
       hospitalAddress: cleanText(fields.hospitalAddress),
@@ -4250,7 +4293,25 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       ? body.confirmedMasterCreations : null
     let needResetMasterData = false
     try {
+      const storageTime = (value: unknown): string | null => {
+        const raw = cleanText(value)
+        if (!raw) return null
+        const match = raw.match(/^(\d{4})-?(\d{2})-?(\d{2})[T\s]+(\d{2}):(\d{2})(?::(\d{2}))?$/)
+        if (!match) throw new Error('日期时间格式无效，请重新选择')
+        const [, year, month, day, hour, minute, second = '00'] = match
+        const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second)))
+        if (parsed.getUTCFullYear() !== Number(year) || parsed.getUTCMonth() + 1 !== Number(month) || parsed.getUTCDate() !== Number(day) || parsed.getUTCHours() !== Number(hour) || parsed.getUTCMinutes() !== Number(minute) || parsed.getUTCSeconds() !== Number(second)) throw new Error('日期时间无效，请重新选择')
+        return `${year}${month}${day} ${hour}:${minute}:${second}`
+      }
+      const times = { requestTime: storageTime(fields.requestTime), responseTime: storageTime(fields.responseTime), serviceStartTime: storageTime(fields.serviceStartTime), bookingFeedbackTime: storageTime(fields.bookingFeedbackTime), latestTicketTime: storageTime(fields.latestTicketTime), escorts: escortList.map((item) => storageTime(item.serviceDate)) }
       if (!await huanyuOrderExistsOnMysql(orderNo)) return reply.status(404).send({ ok: false, error: `远端寰宇订单 ${orderNo} 不存在` })
+      let serviceValidated = false
+      if (financial && financial.service !== financial.originalService) {
+        const product = await findHuanyuChannelProductById(financial.service)
+        if (!product || !financial.channel || product.id.slice(0, 4) !== financial.channel.slice(0, 4)) return reply.status(400).send({ ok: false, error: '服务项目不属于当前渠道，请重新选择' })
+        serviceValidated = true
+      }
+      if (expectedEscorts && escortList.some((item) => /^\d+$/.test(item.escortName) && item.expectedEscortId !== item.escortName)) return reply.status(400).send({ ok: false, error: '请重新选择陪诊人员' })
       const preview = await previewHuanyuMasterSave(masterInput)
       if (preview.creations.length && !confirmedCreations) {
         const review = await buildMasterReview(preview.creations, masterInput)
@@ -4266,15 +4327,16 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
         }
         confirmed = preview.creations
       }
-      const resolved: MasterSaveResolution = await commitHuanyuMasterSave(masterInput, confirmed, masterDetails)
-      needResetMasterData = resolved.creations.length > 0
-      const storageTime = (value: unknown): string | null => {
-        const raw = cleanText(value)
-        if (!raw) return null
-        if (/^\d{8}\s+\d{2}:\d{2}:\d{2}$/.test(raw)) return raw
-        const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?/)
-        return match ? `${match[1]}${match[2]}${match[3]} ${match[4]}:${match[5]}:${match[6] ?? '00'}` : null
+      if (expectedEscorts && body.expectedOrder && typeof body.expectedOrder === 'object') {
+        const current = await readRemotePetOrder(orderNo)
+        const keys = ['orderStatus', 'channel', 'channelService', 'orderAmount', 'hospital', 'hospitalAddress', 'department', 'doctor', 'requestTime', 'responseTime', 'serviceStartTime', 'bookingFeedbackTime', 'latestTicketTime']
+        const changed = !current || keys.some((key) => cleanText(current.order[key]) !== cleanText(body.expectedOrder[key]))
+        const normalize = (items: Array<{ id: string; escortId: string; serviceDate: string }>) => JSON.stringify(items.map((item) => [item.id, item.escortId, item.serviceDate]).sort((a, b) => a[0].localeCompare(b[0])))
+        const actual = current?.escorts.map((item) => ({ id: item.id, escortId: item.escortName, serviceDate: item.serviceDate })) ?? []
+        if (changed || normalize(actual) !== normalize(expectedEscorts)) return reply.status(409).send({ ok: false, error: '订单内容已发生变化，请重新打开订单' })
       }
+      const resolved: MasterSaveResolution = await commitHuanyuMasterSave(masterInput, confirmed, masterDetails)
+      needResetMasterData = resolved.creations.length > 0 || resolved.phoneUpdates > 0
       const update = await updateHuanyuOrderDirectlyOnMysql({
         orderNo,
         orderStatus: cleanText(fields.orderStatus),
@@ -4282,21 +4344,25 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
         hospitalAddressId: resolved.hospitalAddress,
         departmentId: resolved.department,
         doctorId: resolved.doctor,
-        requestTime: storageTime(fields.requestTime),
-        responseTime: storageTime(fields.responseTime),
-        serviceStartTime: storageTime(fields.serviceStartTime),
-        bookingFeedbackTime: storageTime(fields.bookingFeedbackTime),
-        latestTicketTime: storageTime(fields.latestTicketTime),
+        requestTime: times.requestTime,
+        responseTime: times.responseTime,
+        serviceStartTime: times.serviceStartTime,
+        bookingFeedbackTime: times.bookingFeedbackTime,
+        latestTicketTime: times.latestTicketTime,
+        expectedEscorts,
+        expectedOrder: body.expectedOrder && typeof body.expectedOrder === 'object' && !Array.isArray(body.expectedOrder) ? body.expectedOrder : undefined,
+        financial: financial ? { ...financial, serviceValidated } : undefined,
         escortList: escortList.map((item, index) => ({
+          id: item.id || undefined,
           escortId: resolved.escortIds[index] ?? '',
-          serviceDate: storageTime(item.serviceDate),
+          serviceDate: times.escorts[index],
           sequence: item.sequence
-        })).filter((item) => Boolean(item.escortId))
+        })).filter((item) => Boolean(item.escortId) || Boolean(expectedEscorts && (item.id || item.serviceDate)))
       })
-      return reply.send({ ok: true, orderNo, escortCount: update.escortCount, needResetMasterData })
+      return reply.send({ ok: true, orderNo, escortCount: update.escortCount, escortIds: update.escortIds, needResetMasterData })
     } catch (error) {
       const message = error instanceof Error ? error.message : '浮动精灵更新失败'
-      const status = message.includes('维表情况已变化') ? 409 : 400
+      const status = message.includes('维表情况已变化') || message.includes('陪诊记录已发生变化') || message.includes('订单金额或服务项目已发生变化') || message.includes('订单内容已发生变化') ? 409 : 400
       return reply.status(status).send({ ok: false, error: message, needResetMasterData })
     }
   })

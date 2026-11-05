@@ -2,6 +2,8 @@ import { StrictMode, useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { PetAvatar, type PetVisualState } from './PetAvatar'
 import { PetBubble, type Candidate, type NativeImageMatch, type PetLookupOption, type PetPanel } from './PetBubble'
+import { orderAmountChange } from './orderAmountRules'
+import { applyHospitalSuggestion } from './hospitalSuggestion'
 import { OrderPicker } from './OrderPicker'
 import './styles.css'
 
@@ -33,6 +35,8 @@ export function Pet(): React.JSX.Element {
   const [businessPanelVisible, setBusinessPanelVisible] = useState(true)
   const [panelResumed, setPanelResumed] = useState(false)
   const committedLookupSelections = useRef<Record<string, string>>({})
+  const escortIndexCounter = useRef({ panelId: '', value: 0 })
+  const escortSelections = useRef<Record<string, { id: string; phone: string }>>({})
   const [mode, setMode] = useState<PetMode>('idle')
   const [message, setMessage] = useState('把图片拖给我吧')
   const [candidates, setCandidates] = useState<Candidate[]>([])
@@ -241,11 +245,31 @@ export function Pet(): React.JSX.Element {
       if (!mounted) return
       if (!value || typeof value !== 'object' || typeof (value as { kind?: unknown }).kind !== 'string') {
         committedLookupSelections.current = {}
+        escortSelections.current = {}
+        escortIndexCounter.current = { panelId: '', value: 0 }
         setBusinessPanel(null)
         setBusinessPanelVisible(false)
         return
       }
       const nextPanel = value as PetPanel
+      if (nextPanel.kind === 'form') {
+        if (escortIndexCounter.current.panelId !== nextPanel.id) {
+          escortIndexCounter.current = { panelId: nextPanel.id, value: 0 }
+          escortSelections.current = Object.fromEntries(nextPanel.fields.flatMap((field) => {
+            const match = field.id.match(/^escort-(\d+)-name$/)
+            if (!match || !/^\d+$/.test(String(field.value))) return []
+            const phone = nextPanel.fields.find((item) => item.id === `escort-${match[1]}-phone`)
+            return [[match[1], { id: String(field.value), phone: String(field.originalPhone ?? phone?.value ?? '') }]]
+          }))
+        }
+        for (const section of nextPanel.sections ?? []) escortIndexCounter.current.value = Math.max(escortIndexCounter.current.value, Number(section.id.match(/^escort-(\d+)$/)?.[1] ?? 0))
+        if (nextPanel.submitState === 'submitting' && nextPanel.submitMessage?.startsWith('填单完成')) {
+          for (const [index, selection] of Object.entries(escortSelections.current)) {
+            const phone = nextPanel.fields.find((field) => field.id === `escort-${index}-phone`)
+            if (phone) selection.phone = String(phone.value ?? '')
+          }
+        }
+      }
       setPanelResumed(false)
       if (nextPanel.kind === 'form') {
         committedLookupSelections.current = Object.fromEntries(['hospital', 'department'].flatMap((fieldId) => {
@@ -313,6 +337,23 @@ export function Pet(): React.JSX.Element {
             : null)
 
   const changeBusinessField = (fieldId: string, value: string, selectedOption?: PetLookupOption): void => {
+    if (businessPanel?.kind === 'form' && businessPanel.submitState === 'submitting') return
+    if (fieldId.startsWith('__hospital_suggestion:')) {
+      const target = fieldId.slice('__hospital_suggestion:'.length)
+      if (!['hospital', 'hospitalAddress', 'department', 'doctor'].includes(target)) return
+      delete committedLookupSelections.current[target]
+      setBusinessPanel((current) => current?.kind !== 'form' ? current : { ...current, fields: applyHospitalSuggestion(current.fields, target, value) })
+      return
+    }
+    if (fieldId === '__hospital_suggestion_group') {
+      committedLookupSelections.current = {}
+      setBusinessPanel((current) => current?.kind !== 'form' ? current : {
+        ...current, fields: current.fields.map((field) => ['hospital', 'hospitalAddress', 'department', 'doctor'].includes(field.id)
+          ? { ...field, value: field.suggestion ?? '', suggestion: undefined, aiPrefill: Boolean(field.suggestion), hint: undefined }
+          : field)
+      })
+      return
+    }
     if (fieldId.startsWith('master:')) {
       setBusinessPanel((current) => {
         if (current?.kind !== 'form' || !current.confirmation) return current
@@ -328,6 +369,11 @@ export function Pet(): React.JSX.Element {
       })
       return
     }
+    const escortName = fieldId.match(/^escort-(\d+)-name$/)
+    if (escortName) {
+      if (selectedOption) escortSelections.current[escortName[1]] = { id: selectedOption.id, phone: selectedOption.phone ?? '' }
+      else if (escortSelections.current[escortName[1]]?.id !== value) delete escortSelections.current[escortName[1]]
+    }
     const currentValue = businessPanel?.kind === 'form'
       ? String(businessPanel.fields.find((field) => field.id === fieldId)?.value ?? '')
       : ''
@@ -338,6 +384,9 @@ export function Pet(): React.JSX.Element {
         currentValue === selectedOption.id || currentValue === selectedOption.name
       if (!sameSelection) resetFields = fieldId === 'hospital' ? ['hospitalAddress', 'department', 'doctor'] : ['doctor']
       committedLookupSelections.current[fieldId] = selectedOption.id
+    } else if (!selectedOption && (fieldId === 'hospital' || fieldId === 'department') && value !== currentValue) {
+      resetFields = fieldId === 'hospital' ? ['hospitalAddress', 'department', 'doctor'] : ['doctor']
+      delete committedLookupSelections.current[fieldId]
     }
     setBusinessPanel((current) => {
       if (current?.kind !== 'form') return current
@@ -345,8 +394,22 @@ export function Pet(): React.JSX.Element {
       const currentRequest = current.fields.find((field) => field.id === 'requestTime')?.value
       const currentResponse = current.fields.find((field) => field.id === 'responseTime')?.value
       const mirrorResponse = fieldId === 'requestTime' && (!currentResponse || currentResponse === currentRequest)
-      return { ...current, fields: current.fields.map((field) => field.id === fieldId || (mirrorResponse && field.id === 'responseTime')
-        ? { ...field, value } : reset.has(field.id) ? { ...field, value: '' } : field) }
+      const previousStatus = String(current.fields.find((field) => field.id === 'orderStatus')?.value ?? '')
+      const serviceField = current.fields.find((field) => field.id === 'channelService')
+      const service = fieldId === 'channelService' ? value : String(serviceField?.value ?? '')
+      const price = serviceField?.options?.find((option) => option.value === service)?.price ?? ''
+      const currentEditable = String(current.fields.find((field) => field.id === 'amountChanged')?.value ?? 'false') === 'true'
+      const { amount: nextAmount, editable, cancelled, missingPrice } = orderAmountChange({ fieldId, value, previousStatus, selectedService: service, originalService: current.originalService ?? '', originalAmount: current.originalAmount ?? '', originalStatus: current.originalStatus ?? '', servicePrice: price, editable: currentEditable })
+      const editedPhoneIndex = fieldId.match(/^escort-(\d+)-phone$/)?.[1]
+      const editedPhonePerson = editedPhoneIndex ? escortSelections.current[editedPhoneIndex]?.id : undefined
+      return { ...current, fields: current.fields.map((field) => {
+        const phoneIndex = field.id.match(/^escort-(\d+)-phone$/)?.[1]
+        if (editedPhonePerson && phoneIndex && escortSelections.current[phoneIndex]?.id === editedPhonePerson) return { ...field, value, aiPrefill: false, suggestion: field.suggestion === value ? undefined : field.suggestion }
+        if (field.id === 'orderAmount') return { ...field, value: fieldId === 'orderAmount' ? value : nextAmount ?? String(field.value), readOnly: !editable, error: missingPrice ? '未找到服务项目价格，请核对金额' : fieldId === 'orderAmount' || nextAmount !== undefined ? undefined : field.error }
+        if (field.id === 'amountChanged') return { ...field, value: String(editable), readOnly: cancelled }
+        if (field.id === fieldId || (mirrorResponse && field.id === 'responseTime')) return { ...field, value, aiPrefill: false, hint: undefined, suggestion: ['hospital', 'hospitalAddress', 'department', 'doctor'].includes(field.id) ? field.suggestion : field.suggestion === value ? undefined : field.suggestion }
+        return reset.has(field.id) ? { ...field, value: '', hint: undefined, aiPrefill: false } : field
+      }) }
     })
   }
 
@@ -379,7 +442,8 @@ export function Pet(): React.JSX.Element {
       const nextIndex = current.sections.reduce((maximum, section) => {
         const match = section.id.match(/^escort-(\d+)$/)
         return match ? Math.max(maximum, Number(match[1])) : maximum
-      }, 0) + 1
+      }, escortIndexCounter.current.value) + 1
+      escortIndexCounter.current.value = nextIndex
       const prefix = `escort-${nextIndex}`
       return {
         ...current,
@@ -398,10 +462,18 @@ export function Pet(): React.JSX.Element {
       if (current?.kind !== 'form' || !current.sections) return current
       const section = current.sections.find((item) => item.id === sectionId && item.repeatable)
       if (!section) return current
-      if (current.sections.filter((item) => item.repeatable).length <= 1) return current
+      const removedIndex = sectionId.match(/^escort-(\d+)$/)?.[1]
+      if (removedIndex) delete escortSelections.current[removedIndex]
       const removed = new Set(section.fieldIds)
       const sections = current.sections.filter((item) => item.id !== sectionId)
-      return { ...current, sections, fields: current.fields.filter((field) => !removed.has(field.id)) }
+      const fields = current.fields.filter((field) => !removed.has(field.id))
+      if (!sections.some((item) => item.repeatable)) {
+        const index = ++escortIndexCounter.current.value
+        const prefix = `escort-${index}`
+        fields.push({ id: `${prefix}-date`, label: '服务日期/时间', type: 'datetime-local', value: '', placeholder: '请选择服务日期/时间' }, { id: `${prefix}-name`, label: '陪诊人', type: 'text', value: '', placeholder: '请输入陪诊人' }, { id: `${prefix}-phone`, label: '陪诊电话', type: 'text', value: '', placeholder: '请输入陪诊电话' })
+        sections.push({ id: prefix, title: `陪诊服务 ${index}`, fieldIds: [`${prefix}-date`, `${prefix}-name`, `${prefix}-phone`], repeatable: true })
+      }
+      return { ...current, sections, fields }
     })
   }
 
@@ -409,6 +481,7 @@ export function Pet(): React.JSX.Element {
     if (!businessPanel || !('id' in businessPanel) || typeof businessPanel.id !== 'string') return
     const fields = businessPanel.kind === 'form'
       ? Object.fromEntries([...businessPanel.fields.map((field) => [field.id, field.value]),
+        ...Object.entries(escortSelections.current).flatMap(([index, selection]) => [[`escort-${index}-expected-id`, selection.id], [`escort-${index}-expected-phone`, selection.phone]]),
         ...(businessPanel.confirmation?.review.flatMap((item) => item.fields.map((field) => [`master:${item.key}:${field.id}`, field.value])) ?? [])])
       : undefined
     window.api.sendPetPanelAction({ panelId: businessPanel.id, actionId, fields })

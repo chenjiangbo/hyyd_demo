@@ -6,7 +6,7 @@ export interface MasterSaveInput {
   hospitalAddress?: string | null
   department?: string | null
   doctor?: string | null
-  escortList?: Array<{ escortName?: string; phone?: string }>
+  escortList?: Array<{ escortName?: string; phone?: string; expectedEscortId?: string; expectedPhone?: string }>
 }
 
 export interface MasterSaveCreation {
@@ -23,6 +23,7 @@ export interface MasterSaveResolution {
   doctor: string | null
   escortIds: Array<string | null>
   creations: MasterSaveCreation[]
+  phoneUpdates: number
 }
 
 type Db = Pick<PoolConnection, 'execute'>
@@ -57,10 +58,10 @@ async function nextId(db: Db, table: 'f_hy_yywh' | 'f_hy_ys' | 'f_hy_pzr', width
 }
 
 /** Preview and commit use identical relationship checks. Only commit may write. */
-async function resolve(db: Db, input: MasterSaveInput, create: boolean, details: MasterSaveDetails | null = null): Promise<MasterSaveResolution> {
+export async function resolve(db: Db, input: MasterSaveInput, create: boolean, details: MasterSaveDetails | null = null): Promise<MasterSaveResolution> {
   const result: MasterSaveResolution = {
     hospital: null, hospitalAddress: null, department: null, doctor: null,
-    escortIds: [], creations: []
+    escortIds: [], creations: [], phoneUpdates: 0
   }
   const hospitalValue = clean(input.hospital)
   const addressValue = clean(input.hospitalAddress)
@@ -224,6 +225,7 @@ async function resolve(db: Db, input: MasterSaveInput, create: boolean, details:
   }
 
   const createdEscortIds = new Map<string, string>()
+  const plannedPhones = new Map<string, { expected: string; next: string }>()
   for (const escort of input.escortList ?? []) {
     const value = clean(escort.escortName)
     if (!value) { result.escortIds.push(null); continue }
@@ -232,6 +234,24 @@ async function resolve(db: Db, input: MasterSaveInput, create: boolean, details:
     if (repeatedId) { result.escortIds.push(repeatedId); continue }
     let found = one(await rows(db,
       'SELECT CAST(ID AS CHAR) AS id, NAME AS name, SJ AS sj FROM dim_hy_pzr WHERE CAST(ID AS CHAR) = ? LIMIT 2', [value]), '陪诊人员')
+    if (found && escort.expectedEscortId) {
+      const id = String(found.id)
+      const currentPhone = clean(found.sj).replace(/\s/g, '')
+      const expectedPhone = clean(escort.expectedPhone).replace(/\s/g, '')
+      const nextPhone = clean(escort.phone).replace(/\s/g, '')
+      const previous = plannedPhones.get(id)
+      if (id !== clean(escort.expectedEscortId) || currentPhone !== (previous && create ? previous.next : expectedPhone)) throw new Error('陪诊人员电话已发生变化，请重新选择人员')
+      if (previous && (previous.next !== nextPhone || previous.expected !== expectedPhone)) throw new Error('同一陪诊人员的电话不一致，请核对')
+      plannedPhones.set(id, { expected: expectedPhone, next: nextPhone })
+      if (currentPhone !== nextPhone) {
+        if (!/^1[3-9]\d{9}$/.test(nextPhone)) throw new Error('请输入有效的陪诊电话')
+        if (create && previous === undefined) {
+          const [updated] = await db.execute('UPDATE f_hy_pzr SET SJ = ? WHERE CAST(ID AS CHAR) = ? AND COALESCE(SJ, \'\') = ?', [nextPhone, id, clean(found.sj)])
+          if (!('affectedRows' in updated) || updated.affectedRows !== 1) throw new Error('陪诊人员电话已发生变化，请重新选择人员')
+          result.phoneUpdates += 1
+        }
+      }
+    }
     if (!found) {
       const phone = clean(escort.phone).replace(/\D/g, '')
       if (!/^1[3-9]\d{9}$/.test(phone)) throw new Error(`陪诊人员“${value}”需要填写有效手机号`)

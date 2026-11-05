@@ -106,7 +106,7 @@
 .pet-bubble__field { display: grid; grid-template-columns: 84px minmax(0, 1fr); align-items: center; gap: 2px 6px; color: #805246; font-size: 12px; }
 .pet-bubble__field > span:first-child { white-space: nowrap; }
 .pet-bubble__form-header { flex: 0 0 auto; }
-.pet-bubble__form-body { min-height: 0; max-height: var(--pet-form-body-max-height, 750px); flex: 0 1 auto; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.pet-bubble__form-body { min-width: 0; min-height: 0; margin: 0; padding: 0; border: 0; max-height: var(--pet-form-body-max-height, 750px); flex: 0 1 auto; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .pet-bubble__form-section { margin: 0 0 4px; padding: 3px 6px 5px; border: 1px solid #f0d9c9; border-radius: 9px; }
 .pet-bubble__form-section legend { padding: 0 4px; color: #7a3826; font-size: 12px; font-weight: 600; }
 .pet-bubble__form-section--order-info .pet-bubble__fields,
@@ -135,6 +135,8 @@
 .pet-bubble__field select[aria-invalid='true'] { border-color: #c54b35; }
 .pet-bubble__field input[readonly], .pet-bubble__field textarea[readonly] { background: #f8f3ee; cursor: default; }
 .pet-bubble__field small { grid-column: 2; color: #a17365; font-size: 11px; line-height: 1.35; }
+.pet-bubble__field--checkbox .pet-bubble__checkbox { grid-column: 2; }
+.pet-bubble__field small button { padding: 1px 6px; border: 1px solid #e6cdbd; border-radius: 4px; color: #b94325; background: #fff; cursor: pointer; }
 .pet-bubble__field-error { color: #b84631 !important; }
 .pet-bubble__search-select { position: relative; min-width: 0; }
 .pet-bubble__search-options { position: absolute; z-index: 25; top: calc(100% + 4px); left: 0; display: grid; box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; max-height: 190px; overflow-x: hidden; overflow-y: auto; padding: 4px; border: 1px solid #e6cdbd; border-radius: 7px; background: #fff; box-shadow: 0 5px 14px rgba(80, 45, 30, .16); }
@@ -185,7 +187,7 @@
 .pet-bubble__master-confirm p { margin: 4px 0 6px; color: #805246; }
 .pet-bubble__master-confirm ul { max-height: 130px; margin: 0; padding-left: 18px; overflow-y: auto; }
 .pet-bubble__master-confirm li { margin: 2px 0; }
-.pet-bubble--master-review { width: 680px; max-width: calc(100vw - 24px); }
+.pet-bubble--master-review { width: 660px; max-width: calc(100vw - 108px); }
 .pet-bubble--master-review .pet-bubble__actions { justify-content: flex-end; margin-top: 10px; }
 .pet-bubble__master-review { min-height: 0; overflow-y: auto; scrollbar-width: thin; }
 .pet-bubble__master-review h2 { margin: 0 0 10px; color: #7a3826; font-size: 16px; }
@@ -238,20 +240,69 @@
 }
 
 /* 订单核对：用分隔线建立层级，保留可滚动表单和固定操作区。 */
-.pet-bubble--order-ai { width: 390px; padding: 12px 16px 10px; }
+.pet-bubble--order-ai { box-sizing: border-box; width: 660px; max-width: calc(100vw - 108px); padding: 12px 16px 10px; container-type: inline-size; }
+.pet-bubble.pet-bubble--order-ai { padding-right: 12px; padding-left: 12px; }
+.pet-bubble--order-ai .pet-bubble__form-header { padding-right: 26px; }
 .pet-bubble--order-ai .pet-bubble__description { margin: 0 0 5px; color: #93766a; line-height: 1.35; }
 .pet-bubble--order-ai .pet-bubble__form-body { padding-right: 3px; }
 .pet-bubble--order-ai .pet-bubble__form-section { min-width: 0; margin: 0; padding: 3px 0 5px; border: 0; border-radius: 0; border-bottom: 1px solid #f1e2d9; }
 .pet-bubble--order-ai .pet-bubble__form-section legend { padding: 0 8px 0 0; color: #75402e; font-size: 13px; font-weight: 700; }
 .pet-bubble__order-number { margin-left: 10px; font-size: 12px; font-weight: 400; }
 .pet-bubble__order-number button { margin-left: 5px; padding: 2px 5px; border: 1px solid #e6cdbd; border-radius: 5px; background: #fff; color: #805246; font-size: 9px; cursor: pointer; }
-.pet-bubble--order-ai .pet-bubble__form-section .pet-bubble__fields { gap: 2px; }
-.pet-bubble--order-ai .pet-bubble__field { grid-template-columns: 88px minmax(0, 1fr); gap: 6px; color: #80675b; }
+.pet-bubble--order-ai .pet-bubble__form-section .pet-bubble__fields { gap: 5px 8px; }
+.pet-bubble--order-ai .pet-bubble__form-section--hospital-info .pet-bubble__fields,
+.pet-bubble--order-ai .pet-bubble__form-section--time-info .pet-bubble__fields { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 16px; }
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__fields { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; column-gap: 16px; }
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='groupName'] { grid-column: 1 / -1; }
+.pet-bubble--order-ai .pet-bubble__field { grid-template-columns: 72px minmax(0, 1fr) auto; gap: 3px 4px; color: #80675b; }
+.pet-bubble--order-ai .pet-bubble__field[data-has-source='false'] { grid-template-columns: 72px minmax(0, 1fr); }
+.pet-bubble--order-ai .pet-bubble__form-section--hospital-info .pet-bubble__field,
+.pet-bubble--order-ai .pet-bubble__form-section--hospital-info .pet-bubble__field[data-has-source='false'] { grid-template-columns: 72px minmax(0, 1fr) 26px; }
+.pet-bubble--order-ai .pet-bubble__form-section--time-info .pet-bubble__field,
+.pet-bubble--order-ai .pet-bubble__form-section--time-info .pet-bubble__field[data-has-source='false'] { grid-template-columns: 72px minmax(0, 1fr) 26px; }
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field:not(.pet-bubble__field--checkbox) { grid-template-columns: 72px minmax(0, 1fr) auto; gap: 3px 4px; }
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field:not(.pet-bubble__field--checkbox)[data-has-source='false'] { grid-template-columns: 72px minmax(0, 1fr); }
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='orderNo'],
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='documentNo'],
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='groupName'],
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='orderAmount'] { grid-template-columns: 72px minmax(0, 1fr); }
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='orderStatus'],
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='orderStatus'][data-has-source='false'],
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='channelService'],
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='channelService'][data-has-source='false'] { grid-template-columns: 72px minmax(0, 1fr) 26px; }
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='orderNo'] .pet-bubble__field-source,
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='documentNo'] .pet-bubble__field-source,
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='groupName'] .pet-bubble__field-source,
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='channelService'] .pet-bubble__field-source,
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='orderAmount'] .pet-bubble__field-source { display: none; }
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field small { grid-column: 2 / -1; }
+.pet-bubble--order-ai .pet-bubble__amount-group { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; min-width: 0; padding-right: 30px; }
+.pet-bubble--order-ai .pet-bubble__amount-group .pet-bubble__field--checkbox { display: block; }
+.pet-bubble--order-ai .pet-bubble__amount-group .pet-bubble__checkbox { white-space: nowrap; font-size: 11px; }
+.pet-bubble--order-ai .pet-bubble__amount-group .pet-bubble__checkbox input { width: 13px; min-height: 13px; height: 13px; padding: 0; }
+.pet-bubble--order-ai .pet-bubble__field-source { color: #b85c3d; font-size: 10px; white-space: nowrap; }
+.pet-bubble--order-ai .pet-bubble__field small { grid-column: 2 / -1; overflow-wrap: anywhere; }
+.pet-bubble--order-ai .pet-bubble__fill-group { display: block; margin: 5px 0 0 auto; padding: 3px 8px; border: 1px solid #e6cdbd; border-radius: 6px; color: #b94325; background: #fff; font: inherit; cursor: pointer; }
 .pet-bubble--order-ai .pet-bubble__field input, .pet-bubble--order-ai .pet-bubble__select-trigger { min-height: 26px; border-color: #eadbd1; background: #fff; }
 .pet-bubble--order-ai .pet-bubble__field input[readonly], .pet-bubble--order-ai .pet-bubble__field textarea[readonly] { background: #f8f4f0; }
 .pet-bubble--order-ai .pet-bubble__field--empty input:not([readonly]), .pet-bubble--order-ai .pet-bubble__field--empty .pet-bubble__select-trigger { border-color: #eac8b3; background: #fffbf7; }
-.pet-bubble--order-ai .pet-bubble__escort-card { padding: 3px 6px; border: 1px solid #f0e2d9; border-radius: 8px; background: #fffdfa; }
-.pet-bubble--order-ai .pet-bubble__escort-card > header { padding: 0 0 1px; color: #8b5140; }
+.pet-bubble--order-ai .pet-bubble__escort-card { padding: 3px 0; border: 0; border-bottom: 1px solid #f0e2d9; border-radius: 0; background: transparent; }
+.pet-bubble--order-ai .pet-bubble__escort-table-header,
+.pet-bubble--order-ai .pet-bubble__escort-card .pet-bubble__fields { display: grid; grid-template-columns: minmax(185px, 1.2fr) minmax(120px, 1fr) minmax(135px, 1fr) 26px; gap: 6px 10px; align-items: start; }
+.pet-bubble--order-ai .pet-bubble__escort-table-header { padding: 1px 0 3px; color: #80675b; font-size: 12px; }
+.pet-bubble--order-ai .pet-bubble__escort-card .pet-bubble__field,
+.pet-bubble--order-ai .pet-bubble__escort-card .pet-bubble__field[data-has-source='false'] { grid-template-columns: minmax(0, 1fr) 26px; gap: 3px 4px; }
+.pet-bubble--order-ai .pet-bubble__escort-card .pet-bubble__field-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.pet-bubble--order-ai .pet-bubble__escort-card .pet-bubble__field small { grid-column: 1 / -1; }
+.pet-bubble--order-ai .pet-bubble__escort-card .pet-bubble__remove-record { justify-self: end; }
+@container (max-width: 580px) {
+  .pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__fields,
+  .pet-bubble--order-ai .pet-bubble__form-section--hospital-info .pet-bubble__fields,
+  .pet-bubble--order-ai .pet-bubble__form-section--time-info .pet-bubble__fields,
+  .pet-bubble--order-ai .pet-bubble__escort-card .pet-bubble__fields { grid-template-columns: minmax(0, 1fr); }
+  .pet-bubble--order-ai .pet-bubble__escort-table-header { display: none; }
+  .pet-bubble--order-ai .pet-bubble__escort-card .pet-bubble__field-label { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip: auto; grid-column: 1 / -1; }
+}
 .pet-bubble--order-ai .pet-bubble__add-record { margin-top: 4px; font-weight: 600; }
 .pet-bubble--order-ai .pet-bubble__actions { justify-content: flex-end; margin-top: 6px; }
 .pet-bubble--order-ai .pet-bubble__action--primary { min-width: 100px; font-size: 13px; font-weight: 600; }

@@ -1,6 +1,8 @@
-import mysql, { type Pool, type RowDataPacket } from 'mysql2/promise'
+import mysql, { type Pool, type PoolConnection, type RowDataPacket } from 'mysql2/promise'
 import type { PrismaClient } from '@prisma/client'
 import { getEnv } from './env.js'
+import { randomUUID } from 'node:crypto'
+import { getRemoteDictionaryPool } from './db/remoteDictionary.js'
 
 let pushPool: Pool | null = null
 
@@ -209,6 +211,31 @@ export async function readRemoteOrderDocumentNo(orderNo: string): Promise<{ docu
   } finally { connection.release() }
 }
 
+/** 读取精灵面板所需的远端订单与陪诊记录；不使用本地快照。 */
+export async function readRemotePetOrder(orderNo: string): Promise<{ order: Record<string, string>; escorts: Array<{ id: string; escortName: string; escortPhone: string; serviceDate: string }> } | null> {
+  const connection = await mysqlWriterPool().getConnection()
+  try {
+    const [rows] = await connection.execute<RowDataPacket[]>(
+      'SELECT `JZR_ZJHM`, `DD_state`, `BDQD`, `BDQD_FWXM`, `DDJE`, `H_NAME`, `H_ADDRESS`, `H_KS`, `H_YS`, `BBQ_XQ`, `BBQ_YD`, `BBQ_QDFW`, `BBQ_FK`, `lastQueuingTime` FROM `HY_FACT_DDCX_NEW` WHERE `DDBH` = ? LIMIT 1', [orderNo])
+    if (!rows[0]) return null
+    const row = rows[0]
+    const value = (key: string): string => row[key] == null ? '' : String(row[key]).trim()
+    const [escorts] = await connection.execute<RowDataPacket[]>(
+      'SELECT `ZJ`, `PZR`, `BBQ_FW` FROM `fact_hy_pzrxx` WHERE `DDBH` = ? ORDER BY `xtsj`, `ZJ`', [orderNo])
+    const ids = [...new Set(escorts.map((escort) => String(escort.PZR ?? '').trim()).filter(Boolean))]
+    const phones = new Map<string, string>()
+    if (ids.length) {
+      const [people] = await getRemoteDictionaryPool().execute<RowDataPacket[]>(`SELECT CAST(ID AS CHAR) AS id, SJ AS phone FROM f_hy_pzr WHERE CAST(ID AS CHAR) IN (${ids.map(() => '?').join(',')})`, ids)
+      for (const person of people) phones.set(String(person.id).trim(), String(person.phone ?? '').trim())
+    }
+    return { order: {
+      documentNo: value('JZR_ZJHM'), orderStatus: value('DD_state'), channel: value('BDQD'), channelService: value('BDQD_FWXM'), orderAmount: value('DDJE'),
+      hospital: value('H_NAME'), hospitalAddress: value('H_ADDRESS'), department: value('H_KS'), doctor: value('H_YS'),
+      requestTime: value('BBQ_XQ'), responseTime: value('BBQ_YD'), serviceStartTime: value('BBQ_QDFW'), bookingFeedbackTime: value('BBQ_FK'), latestTicketTime: value('lastQueuingTime')
+    }, escorts: escorts.map((escort) => ({ id: String(escort.ZJ ?? '').trim(), escortName: String(escort.PZR ?? '').trim(), escortPhone: phones.get(String(escort.PZR ?? '').trim()) ?? '', serviceDate: String(escort.BBQ_FW ?? '').trim() })) }
+  } finally { connection.release() }
+}
+
 /** 只在远程值与识别前读取的值完全一致时更新，保护并发人工修改。 */
 export async function updateRemoteOrderIdentity(orderNo: string, sourceOrderNo: string, expected: { name: string; documentType: string; documentNo: string }, documentNo: string): Promise<boolean> {
   const connection = await mysqlWriterPool().getConnection()
@@ -238,7 +265,10 @@ export interface PetHuanyuOrderUpdate {
   serviceStartTime: string | null
   bookingFeedbackTime: string | null
   latestTicketTime: string | null
-  escortList: Array<{ escortId: string; serviceDate: string | null; sequence: string }>
+  escortList: Array<{ escortId: string; serviceDate: string | null; sequence: string; id?: string }>
+  expectedEscorts?: Array<{ id: string; escortId: string; serviceDate: string }>
+  expectedOrder?: Record<string, string>
+  financial?: { channel: string; originalService: string; originalAmount: string; service: string; amount: string; serviceValidated?: boolean }
 }
 
 export async function huanyuOrderExistsOnMysql(orderNo: string): Promise<boolean> {
@@ -253,26 +283,66 @@ export async function huanyuOrderExistsOnMysql(orderNo: string): Promise<boolean
 }
 
 /** 浮动精灵专用：直接更新远端寰宇表，不读取或写入本地 PostgreSQL 快照。 */
-export async function updateHuanyuOrderDirectlyOnMysql(input: PetHuanyuOrderUpdate): Promise<{ escortCount: number }> {
+export async function updateHuanyuOrderDirectlyOnMysql(input: PetHuanyuOrderUpdate, connectionOverride?: PoolConnection): Promise<{ escortCount: number; escortIds: string[] }> {
   const orderNo = input.orderNo.trim()
   if (!orderNo) throw new Error('订单号不能为空')
-  const connection = await mysqlWriterPool().getConnection()
+  const connection = connectionOverride ?? await mysqlWriterPool().getConnection()
   try {
     await connection.beginTransaction()
     const [existingRows] = await connection.execute<RowDataPacket[]>(
-      'SELECT `DDBH` FROM `HY_FACT_DDCX_NEW` WHERE `DDBH` = ? LIMIT 1 FOR UPDATE', [orderNo])
+      'SELECT `DDBH`, `DD_state`, `BDQD`, `BDQD_FWXM`, `DDJE`, `H_NAME`, `H_ADDRESS`, `H_KS`, `H_YS`, `BBQ_XQ`, `BBQ_YD`, `BBQ_QDFW`, `BBQ_FK`, `lastQueuingTime` FROM `HY_FACT_DDCX_NEW` WHERE `DDBH` = ? LIMIT 1 FOR UPDATE', [orderNo])
     if (!existingRows.length) throw new Error(`远端寰宇订单 ${orderNo} 不存在`)
 
+    if (input.expectedOrder) {
+      const fields: Record<string, string> = { orderStatus: 'DD_state', hospital: 'H_NAME', hospitalAddress: 'H_ADDRESS', department: 'H_KS', doctor: 'H_YS', requestTime: 'BBQ_XQ', responseTime: 'BBQ_YD', serviceStartTime: 'BBQ_QDFW', bookingFeedbackTime: 'BBQ_FK', latestTicketTime: 'lastQueuingTime' }
+      if (Object.entries(fields).some(([key, column]) => String(existingRows[0][column] ?? '').trim() !== String(input.expectedOrder?.[key] ?? '').trim())) throw new Error('订单内容已发生变化，请重新打开订单')
+    }
+
+    if (input.financial) {
+      const f = input.financial
+      const current = existingRows[0]
+      const channel = String(current.BDQD ?? '').trim()
+      const service = String(current.BDQD_FWXM ?? '').trim()
+      const amount = current.DDJE == null ? '' : String(current.DDJE).trim()
+      if (channel !== f.channel || service !== f.originalService || (amount === '' ? f.originalAmount !== '' : f.originalAmount === '' || Number(amount) !== Number(f.originalAmount))) throw new Error('订单金额或服务项目已发生变化，请重新打开订单')
+      if (f.amount && !/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(f.amount)) throw new Error('请输入有效订单金额')
+      if (!f.amount && f.originalAmount) throw new Error('请输入有效订单金额')
+      if ((input.orderStatus === '已取消' || input.orderStatus === '无责取消') && (!f.amount || Number(f.amount) !== 0)) throw new Error('取消订单的金额必须为零')
+      if (f.service !== service) {
+        if (!f.service || !channel) throw new Error('请选择有效的服务项目')
+        if (!f.amount) throw new Error('服务项目价格为空，请核对订单金额')
+        if (!f.serviceValidated) throw new Error('服务项目不属于当前渠道，请重新选择')
+      }
+      await connection.execute('UPDATE `HY_FACT_DDCX_NEW` SET `BDQD_FWXM` = ?, `DDJE` = ? WHERE `DDBH` = ?', [f.service || null, f.amount || null, orderNo])
+    }
+
+    if (!input.expectedEscorts && input.escortList.length > 0) {
+      const [unfinished] = await connection.execute<RowDataPacket[]>(
+        "SELECT `ZJ` FROM `fact_hy_pzrxx` WHERE `DDBH` = ? AND (`PZR` IS NULL OR TRIM(CAST(`PZR` AS CHAR)) = '') LIMIT 1 FOR UPDATE", [orderNo])
+      if (unfinished.length) throw new Error('订单有待安排陪诊的服务日期，请更新客户端后重新打开订单')
+    }
+    if (input.expectedEscorts) {
+      const [current] = await connection.execute<RowDataPacket[]>(
+        'SELECT `ZJ`, `PZR`, `BBQ_FW` FROM `fact_hy_pzrxx` WHERE `DDBH` = ? FOR UPDATE', [orderNo])
+      const normalize = (items: Array<{ id: string; escortId: string; serviceDate: string }>) => JSON.stringify(items.map((item) => [item.id, item.escortId, item.serviceDate]).sort((a, b) => a[0].localeCompare(b[0])))
+      const actual = current.map((row) => ({ id: String(row.ZJ ?? '').trim(), escortId: String(row.PZR ?? '').trim(), serviceDate: String(row.BBQ_FW ?? '').trim() }))
+      if (normalize(actual) !== normalize(input.expectedEscorts)) throw new Error('陪诊记录已发生变化，请重新打开订单后再填写')
+      const validIds = new Set(actual.map((item) => item.id))
+      const selectedIds = input.escortList.map((item) => item.id).filter((id): id is string => Boolean(id))
+      if (new Set(selectedIds).size !== selectedIds.length || selectedIds.some((id) => !validIds.has(id))) throw new Error('陪诊记录标识无效，请重新打开订单')
+    }
+
+    const writeField = (column: string): string => input.expectedOrder ? '?' : `COALESCE(?, \`${column}\`)`
     await connection.execute(
         `UPDATE \`HY_FACT_DDCX_NEW\` SET
         \`DD_state\` = ?,
-        \`H_NAME\` = COALESCE(?, \`H_NAME\`), \`H_ADDRESS\` = COALESCE(?, \`H_ADDRESS\`),
-        \`H_KS\` = COALESCE(?, \`H_KS\`), \`H_YS\` = COALESCE(?, \`H_YS\`),
-        \`BBQ_XQ\` = COALESCE(?, \`BBQ_XQ\`), \`DATE_XQ\` = COALESCE(?, \`DATE_XQ\`),
-        \`BBQ_YD\` = COALESCE(?, \`BBQ_YD\`), \`DATE_YD\` = COALESCE(?, \`DATE_YD\`),
-        \`BBQ_QDFW\` = COALESCE(?, \`BBQ_QDFW\`), \`DATE_QDFW\` = COALESCE(?, \`DATE_QDFW\`),
-        \`BBQ_FK\` = COALESCE(?, \`BBQ_FK\`), \`DATE_FK\` = COALESCE(?, \`DATE_FK\`),
-        \`lastQueuingTime\` = COALESCE(?, \`lastQueuingTime\`)
+        \`H_NAME\` = ${writeField('H_NAME')}, \`H_ADDRESS\` = ${writeField('H_ADDRESS')},
+        \`H_KS\` = ${writeField('H_KS')}, \`H_YS\` = ${writeField('H_YS')},
+        \`BBQ_XQ\` = ${writeField('BBQ_XQ')}, \`DATE_XQ\` = ${writeField('DATE_XQ')},
+        \`BBQ_YD\` = ${writeField('BBQ_YD')}, \`DATE_YD\` = ${writeField('DATE_YD')},
+        \`BBQ_QDFW\` = ${writeField('BBQ_QDFW')}, \`DATE_QDFW\` = ${writeField('DATE_QDFW')},
+        \`BBQ_FK\` = ${writeField('BBQ_FK')}, \`DATE_FK\` = ${writeField('DATE_FK')},
+        \`lastQueuingTime\` = ${writeField('lastQueuingTime')}
        WHERE \`DDBH\` = ?`,
       [input.orderStatus, input.hospitalId, input.hospitalAddressId,
         input.departmentId, input.doctorId,
@@ -284,20 +354,33 @@ export async function updateHuanyuOrderDirectlyOnMysql(input: PetHuanyuOrderUpda
         orderNo]
     )
 
-    if (input.escortList.length > 0) await connection.execute('DELETE FROM `fact_hy_pzrxx` WHERE `DDBH` = ?', [orderNo])
+    if (!input.expectedEscorts && input.escortList.length > 0) await connection.execute('DELETE FROM `fact_hy_pzrxx` WHERE `DDBH` = ?', [orderNo])
+    if (input.expectedEscorts) {
+      const retained = new Set(input.escortList.map((item) => item.id).filter(Boolean))
+      for (const item of input.expectedEscorts) if (!retained.has(item.id)) {
+        await connection.execute('DELETE FROM `fact_hy_pzrxx` WHERE `DDBH` = ? AND `ZJ` = ?', [orderNo, item.id])
+      }
+    }
     let sequence = 0
+    const escortIds: string[] = []
     for (const escort of input.escortList) {
-      if (!escort.escortId) continue
+      if (!escort.escortId && (!input.expectedEscorts || (!escort.serviceDate && !escort.id))) continue
       sequence += 1
-      await connection.execute(
+      const recordId = escort.id || (input.expectedEscorts ? `${orderNo}${randomUUID().replace(/-/g, '').slice(0, 16)}` : `${orderNo}${sequence}`)
+      if (input.expectedEscorts && escort.id) {
+        await connection.execute('UPDATE `fact_hy_pzrxx` SET `PZR` = ?, `BBQ_FW` = ?, `xtsj` = ? WHERE `DDBH` = ? AND `ZJ` = ?', [escort.escortId || null, escort.serviceDate, String(sequence), orderNo, recordId])
+      } else if (input.expectedEscorts) {
+        await connection.execute('INSERT INTO `fact_hy_pzrxx` (`DDBH`, `PZR`, `BBQ_FW`, `ZJ`, `xtsj`) VALUES (?, ?, ?, ?, ?)', [orderNo, escort.escortId || null, escort.serviceDate, recordId, String(sequence)])
+      } else await connection.execute(
         `INSERT INTO \`fact_hy_pzrxx\` (\`DDBH\`, \`PZR\`, \`BBQ_FW\`, \`ZJ\`, \`xtsj\`)
          VALUES (?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE \`PZR\` = VALUES(\`PZR\`), \`BBQ_FW\` = VALUES(\`BBQ_FW\`), \`xtsj\` = VALUES(\`xtsj\`)`,
-        [orderNo, escort.escortId, escort.serviceDate, `${orderNo}${sequence}`, String(sequence)]
+        [orderNo, escort.escortId || null, escort.serviceDate, recordId, String(sequence)]
       )
+      escortIds.push(recordId)
     }
     await connection.commit()
-    return { escortCount: input.escortList.filter((escort) => Boolean(escort.escortId)).length }
+    return { escortCount: input.escortList.filter((escort) => Boolean(escort.escortId)).length, escortIds }
   } catch (error) {
     await connection.rollback().catch(() => undefined)
     throw error
