@@ -7,6 +7,7 @@ import { configuredBackendWsUrl } from '../backendConnection';
  */
 
 const $ = (id: string) => document.getElementById(id)!;
+$('ver').textContent = `v${chrome.runtime.getManifest().version}`;
 const FINGERPRINT_STORAGE_KEY = 'orderFingerprints';
 const TRACKING_ANALYSIS_STORAGE_KEY = 'trackingPoolAnalysis';
 const EDIT_PAGE_ANALYSIS_STORAGE_KEY = 'editPageAnalysis';
