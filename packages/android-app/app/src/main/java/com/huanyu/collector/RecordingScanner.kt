@@ -25,6 +25,7 @@ class RecordingScanner {
             File(root, "sounds/callrecorder"),
             File(root, "sounds/recorder/call"),
             File(root, "record/callrecord"),
+            File(root, "Record/Call"),
             File(root, "Recordings/Call"),
             File(root, "Recordings/Call Recordings"),
             File(root, "Recordings/Call recordings"),
@@ -43,27 +44,40 @@ class RecordingScanner {
         var unparsedCount = 0
         val totalAudioKeys = linkedSetOf<String>()
         val recentAudioFiles = linkedMapOf<String, File>()
+        val discoveredAudioFiles = linkedMapOf<String, File>()
+        val directoryDiagnostics = mutableListOf<RecordingDirectoryDiagnostic>()
 
         val existingDirs = dirs.filter { it.exists() && it.isDirectory }
+        dirs.filterNot { it.exists() && it.isDirectory }.forEach {
+            directoryDiagnostics.add(RecordingDirectoryDiagnostic(it.absolutePath, "不存在"))
+        }
         if (existingDirs.isEmpty()) issues.add("未找到预设录音目录，请检查录音设置和文件权限")
         existingDirs
             .forEach { dir ->
                 try {
                     if (!dir.canRead() || dir.listFiles() == null) {
                         issues.add("录音目录无法读取: ${dir.absolutePath}")
+                        directoryDiagnostics.add(RecordingDirectoryDiagnostic(dir.absolutePath, "无法读取"))
                         return@forEach
                     }
+                    var partial = false
                     val allFiles = dir.walkTopDown()
-                        .onFail { file, error -> issues.add("无法读取 ${file.absolutePath}: ${error.message}") }
+                        .onFail { file, error ->
+                            partial = true
+                            issues.add("无法读取 ${file.absolutePath}: ${error.message}")
+                        }
                         .filter { it.isFile }
                         .toList()
                     val allAudioFiles = allFiles.filter { it.extension.lowercase(Locale.ROOT) in extensions }
+                    allAudioFiles.forEach { discoveredAudioFiles.putIfAbsent(it.absolutePath, it) }
+                    directoryDiagnostics.add(RecordingDirectoryDiagnostic(dir.absolutePath, if (partial) "部分读取失败" else "已扫描", allAudioFiles.size))
                     val dirRecentAudioFiles = allAudioFiles.filter { it.lastModified() >= sinceMillis }
                     allAudioFiles.forEach { totalAudioKeys.add(fileIdentity(it)) }
                     dirRecentAudioFiles.forEach { recentAudioFiles.putIfAbsent(fileIdentity(it), it) }
                     summaries.add(directorySummary(dir, allAudioFiles, dirRecentAudioFiles, sinceMillis))
                 } catch (e: Exception) {
                     issues.add("录音目录读取失败: ${dir.absolutePath}")
+                    directoryDiagnostics.add(RecordingDirectoryDiagnostic(dir.absolutePath, "读取失败: ${e.javaClass.simpleName}"))
                     summaries.add("${dir.absolutePath}: 读取失败 ${e.javaClass.simpleName}: ${e.message.orEmpty()}")
                 }
             }
@@ -89,7 +103,10 @@ class RecordingScanner {
             summary = summaries.take(12).joinToString("\n"),
             unparsedSamples = samples.joinToString("\n"),
             unparsedCount = unparsedCount,
-            issue = issues.distinct().joinToString("\n")
+            issue = issues.distinct().joinToString("\n"),
+            discoveredFiles = discoveredAudioFiles.values.toList(),
+            discoveredRecordings = discoveredAudioFiles.values.mapNotNull { parseRecording(it) },
+            directoryDiagnostics = directoryDiagnostics
         )
     }
 
@@ -111,14 +128,22 @@ class RecordingScanner {
     private fun parseRecording(file: File): LocalRecording? {
         val name = file.name
         val compactName = name.replace(Regex("""\s+"""), "")
-        val phone = Regex("""(?:\+?86)?1\d{10}""").find(compactName)?.value ?: return null
-        val tsText = Regex("""20\d{12}""").find(name)?.value
-        val timestampMillis = tsText?.let { timestampFormat.parse(it)?.time } ?: file.lastModified()
+        val phone = Regex("""(?:\+?86)?1\d{10}""").find(compactName)?.value
+        val compactTime = Regex("""20\d{12}""").find(name)?.value
+        val vivoTime = Regex("""(20\d{2}-\d{2}-\d{2}) (\d{2}-\d{2}-\d{2})""").find(name)
+        val tsText = compactTime ?: vivoTime?.value?.replace(Regex("""[- ]"""), "")
+        val parsedTime = tsText?.let {
+            try { timestampFormat.apply { isLenient = false }.parse(it)?.time } catch (_: Exception) { null }
+        }
+        if (phone == null && (vivoTime == null || parsedTime == null)) return null
+        val timestampMillis = parsedTime ?: file.lastModified()
+        val contactName = vivoTime?.let { name.substring(0, it.range.first).trim().takeIf(String::isNotEmpty) }
         return LocalRecording(
             file = file,
-            phone = PhoneNormalizer.normalize(phone),
+            phone = phone?.let(PhoneNormalizer::normalize).orEmpty(),
             timestampMillis = timestampMillis,
-            safeName = sanitizeFileName("${timestampMillis}_${file.name}")
+            safeName = sanitizeFileName("${timestampMillis}_${file.name}"),
+            contactName = contactName
         )
     }
 
@@ -139,12 +164,18 @@ data class RecordingScanResult(
     val summary: String,
     val unparsedSamples: String,
     val unparsedCount: Int,
-    val issue: String
+    val issue: String,
+    val discoveredFiles: List<File>,
+    val discoveredRecordings: List<LocalRecording>,
+    val directoryDiagnostics: List<RecordingDirectoryDiagnostic>
 )
+
+data class RecordingDirectoryDiagnostic(val path: String, val status: String, val audioCount: Int = 0)
 
 data class LocalRecording(
     val file: File,
     val phone: String,
     val timestampMillis: Long,
-    val safeName: String
+    val safeName: String,
+    val contactName: String? = null
 )

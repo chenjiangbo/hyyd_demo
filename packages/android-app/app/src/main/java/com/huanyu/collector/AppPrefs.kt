@@ -229,6 +229,13 @@ class AppPrefs(context: Context) {
 
     fun isRecordingUploaded(path: String): Boolean = prefs.getBoolean("uploaded:$path", false)
 
+    fun rememberRecordingCallId(path: String, callId: Long) {
+        if (callId > 0) prefs.edit().putLong("recording-call:$path", callId).apply()
+    }
+
+    fun recordingCallId(path: String): Long = prefs.getLong("recording-call:$path", 0L)
+
+
     fun markRecordingUploaded(path: String) {
         prefs.edit().putBoolean("uploaded:$path", true).apply()
     }

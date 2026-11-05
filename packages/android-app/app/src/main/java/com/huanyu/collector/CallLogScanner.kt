@@ -13,6 +13,7 @@ class CallLogScanner(private val context: Context) {
 
         val result = mutableListOf<LocalCall>()
         val projection = arrayOf(
+            CallLog.Calls._ID,
             CallLog.Calls.NUMBER,
             CallLog.Calls.CACHED_NAME,
             CallLog.Calls.TYPE,
@@ -28,6 +29,7 @@ class CallLogScanner(private val context: Context) {
         ) ?: throw IllegalStateException("无法读取系统通话记录")
 
         cursor.use {
+            val idIdx = it.getColumnIndexOrThrow(CallLog.Calls._ID)
             val numberIdx = it.getColumnIndexOrThrow(CallLog.Calls.NUMBER)
             val nameIdx = it.getColumnIndex(CallLog.Calls.CACHED_NAME)
             val typeIdx = it.getColumnIndexOrThrow(CallLog.Calls.TYPE)
@@ -36,7 +38,6 @@ class CallLogScanner(private val context: Context) {
 
             while (it.moveToNext()) {
                 val phone = PhoneNormalizer.normalize(it.getString(numberIdx).orEmpty())
-                if (phone.isBlank()) continue
                 val contactName = if (nameIdx >= 0) {
                     it.getString(nameIdx)?.trim()?.takeIf { name -> name.isNotEmpty() }
                 } else {
@@ -53,7 +54,9 @@ class CallLogScanner(private val context: Context) {
                         direction = direction,
                         callStatus = callStatus(type, durationSec),
                         durationSec = durationSec,
-                        startedAtMillis = it.getLong(dateIdx)
+                        startedAtMillis = it.getLong(dateIdx),
+                        sourceId = it.getLong(idIdx),
+                        rawType = if (it.isNull(typeIdx)) null else type
                     )
                 )
             }
@@ -78,5 +81,7 @@ data class LocalCall(
     val direction: String,
     val callStatus: String,
     val durationSec: Int,
-    val startedAtMillis: Long
+    val startedAtMillis: Long,
+    val sourceId: Long = 0L,
+    val rawType: Int? = null
 )

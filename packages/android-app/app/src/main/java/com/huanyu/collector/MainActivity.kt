@@ -3,6 +3,7 @@ package com.huanyu.collector
 import android.Manifest
 import android.app.Activity
 import android.app.ActivityManager
+import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Context
@@ -310,6 +311,26 @@ class MainActivity : Activity() {
 
     private fun renderRecordings(prefs: AppPrefs) {
         content.addView(pageHeader("最近录音", "显示录音扫描、匹配和上传结果"))
+        val diagnosticFile = java.io.File(filesDir, "recording-diagnostics.json")
+        if (diagnosticFile.length() >= 20L * 1024 * 1024) {
+            content.addView(emptyCard("诊断日志已超过 20 MB，请及时导出。"))
+        }
+        content.addView(outlineButton("查看采集诊断") { showRecordingDiagnostics() })
+        content.addView(outlineButton("导出诊断日志") {
+            AlertDialog.Builder(this).setTitle("导出诊断日志")
+                .setMessage("日志包含录音文件名、路径和联系人信息，请确认分享对象。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("选择保存位置") { _, _ ->
+                    try {
+                        RecordingDiagnostics(this).bytes()
+                        startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "application/json"
+                            putExtra(Intent.EXTRA_TITLE, "录音采集诊断.json")
+                        }, 8101)
+                    } catch (e: Exception) { Toast.makeText(this, "暂无可导出的诊断日志", Toast.LENGTH_LONG).show() }
+                }.show()
+        })
         content.addView(metricGrid(listOf(
             "总音频" to "${prefs.lastRecordingTotalFileCount}",
             "游标后" to "${prefs.lastRecordingRawFileCount}",
@@ -343,6 +364,77 @@ class MainActivity : Activity() {
                 footer = callId
             ))
         }
+    }
+
+    @Deprecated("Android document picker callback")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != 8101 || resultCode != Activity.RESULT_OK) return
+        val uri = data?.data ?: return
+        try {
+            val bytes = RecordingDiagnostics(this).bytes()
+            val stream = contentResolver.openOutputStream(uri) ?: throw IllegalStateException("无法打开目标文件")
+            stream.use { it.write(bytes) }
+            Toast.makeText(this, "诊断日志已导出", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) { Toast.makeText(this, "导出失败: ${e.message}", Toast.LENGTH_LONG).show() }
+    }
+
+    private fun showRecordingDiagnostics() {
+        val data = try { RecordingDiagnostics(this).read() } catch (_: Exception) {
+            Toast.makeText(this, "暂无诊断日志，请先启动采集", Toast.LENGTH_LONG).show(); return
+        }
+        val calls = data.optJSONObject("calls") ?: JSONObject()
+        val recordings = data.optJSONObject("recordings") ?: JSONObject()
+        val items = arrayOf("录音记录 (${recordings.length()})", "关联待确认通话", "全部通话 (${calls.length()})", "扫描目录")
+        AlertDialog.Builder(this).setTitle("采集诊断").setItems(items) { _, which ->
+            val text = StringBuilder()
+            if (which == 0) {
+                val keys = recordings.keys()
+                while (keys.hasNext()) {
+                    val item = recordings.getJSONObject(keys.next())
+                    text.append(item.optString("name")).append("\n状态：").append(item.optString("status"))
+                        .append("\n原因：").append(if (item.isNull("reason")) "无" else item.optString("reason"))
+                        .append("\n路径：").append(item.optString("path"))
+                        .append("\n附近通话：").append(item.optJSONArray("nearbyCalls")?.length() ?: 0).append("\n")
+                    val nearby = item.optJSONArray("nearbyCalls")
+                    if (nearby != null) for (j in 0 until nearby.length()) {
+                        val candidate = nearby.getJSONObject(j)
+                        val candidateCall = calls.optJSONObject(candidate.optString("callId"))
+                        text.append("  ").append(candidateCall?.optString("phoneMasked") ?: "未知")
+                            .append("  时间差 ").append(candidate.optLong("timeDifferenceMs") / 1000.0).append("秒")
+                            .append("  时长差 ")
+                            .append(if (candidate.isNull("durationDifferenceMs")) "未知" else "${candidate.optLong("durationDifferenceMs") / 1000.0}秒")
+                            .append("\n")
+                    }
+                    text.append("\n")
+                }
+            } else if (which == 1 || which == 2) {
+                val keys = calls.keys()
+                while (keys.hasNext()) {
+                    val item = calls.getJSONObject(keys.next())
+                    if (which == 1 && item.optString("recordingStatus") != "关联情况未确认") continue
+                    text.append(formatTs(item.optLong("startedAt"))).append("  ").append(item.optString("phoneMasked"))
+                        .append("  ").append(item.optInt("durationSeconds")).append("秒  ")
+                        .append(item.optString("recordingStatus")).append("\n")
+                }
+                if (!data.isNull("callScanError")) text.append("\n通话记录读取失败：").append(data.optString("callScanError"))
+                if (!data.optBoolean("processingComplete", false)) text.append("\n本次采集尚未处理完成，匹配状态可能尚未更新。")
+                text.append("\n关联待确认不代表没有录音，历史关联信息可能缺失。")
+            } else {
+                val dirs = data.optJSONArray("directories")
+                if (dirs != null) for (i in 0 until dirs.length()) {
+                    val item = dirs.getJSONObject(i)
+                    text.append(item.optString("path")).append("：").append(item.optString("status")).append("\n")
+                }
+                text.append("通话及采集起点：").append(formatTs(data.optLong("callScanFrom"))).append("\n")
+                if (!data.isNull("callScanError")) text.append("通话记录读取失败：").append(data.optString("callScanError")).append("\n")
+                if (!data.optBoolean("processingComplete", false)) text.append("本次采集尚未处理完成。\n")
+                text.append(data.optString("scanIssues"))
+            }
+            val scroll = ScrollView(this)
+            scroll.addView(TextView(this).apply { setPadding(dp(20), dp(12), dp(20), dp(12)); textSize = 14f; setTextColor(COLOR_ON_SURFACE); this.text = text.ifBlank { "暂无记录" } })
+            AlertDialog.Builder(this).setTitle(items[which]).setView(scroll).setPositiveButton("关闭", null).show()
+        }.setNegativeButton("关闭", null).show()
     }
 
     private fun renderSyncDetails(prefs: AppPrefs) {
@@ -845,6 +937,7 @@ class MainActivity : Activity() {
     private fun permissionGrid(): View {
         return metricGrid(listOf(
             "通话记录" to yesNo(granted(Manifest.permission.READ_CALL_LOG)),
+            "通讯录" to yesNo(granted(Manifest.permission.READ_CONTACTS)),
             "电话状态" to yesNo(granted(Manifest.permission.READ_PHONE_STATE)),
             "音频读取" to yesNo(audioGranted()),
             "全部文件" to yesNo(Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager())
@@ -1092,6 +1185,7 @@ class MainActivity : Activity() {
     private fun requestRuntimePermissions() {
         val permissions = mutableListOf(
             Manifest.permission.READ_CALL_LOG,
+            Manifest.permission.READ_CONTACTS,
             Manifest.permission.READ_PHONE_STATE
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -1116,7 +1210,7 @@ class MainActivity : Activity() {
         if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
             startCollectionWhenReady()
         } else {
-            Toast.makeText(this, "需要允许通话记录、电话状态和音频读取权限，才能自动采集上传。", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "需要允许通话记录、通讯录、电话状态和音频读取权限，才能自动采集上传。", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -1202,6 +1296,7 @@ class MainActivity : Activity() {
 
         val requiredPermissions = arrayOf(
             Manifest.permission.READ_CALL_LOG,
+            Manifest.permission.READ_CONTACTS,
             Manifest.permission.READ_PHONE_STATE,
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 Manifest.permission.READ_MEDIA_AUDIO

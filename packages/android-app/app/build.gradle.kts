@@ -11,8 +11,8 @@ android {
         applicationId = "com.huanyu.collector"
         minSdk = 29
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 4
+        versionName = "0.4.0"
 
         buildConfigField("String", "BACKEND_URL", "\"http://47.95.14.233:9093\"")
         buildConfigField("String", "EMPLOYEE_CODE", "\"\"")
@@ -30,6 +30,7 @@ android {
 
 dependencies {
     implementation("androidx.work:work-runtime-ktx:2.11.2")
+    testImplementation("junit:junit:4.13.2")
 }
 
 kotlin {

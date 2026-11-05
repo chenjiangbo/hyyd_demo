@@ -98,6 +98,20 @@ class CollectorRunner(context: Context) {
             Log.i(TAG, "首次采集仅补最近 $INITIAL_HISTORY_DAYS 天，起点=${prefs.lastCallLogTs}")
         }
 
+        // 先保存本机扫描结果，即使后端不可用也能排查文件与权限。
+        var diagnosticScan: RecordingScanResult? = null
+        var diagnosticCalls: List<LocalCall> = emptyList()
+        var diagnosticCallError: String? = null
+        try {
+            diagnosticScan = RecordingScanner().scanSince(prefs.recordingScanFloorTs)
+            try { diagnosticCalls = CallLogScanner(appContext).scanSince(prefs.recordingScanFloorTs - 1L) }
+            catch (e: Exception) { diagnosticCallError = "通话记录读取失败: ${e.message ?: e.javaClass.simpleName}" }
+            RecordingDiagnostics(appContext).create(diagnosticScan, diagnosticCalls, prefs.recordingScanFloorTs, emptyMap(), emptyMap(), emptyMap(), diagnosticCallError, false)
+        } catch (e: Exception) {
+            prefs.recordingScanIssue = "诊断日志保存失败: ${e.message ?: e.javaClass.simpleName}"
+            Log.e(TAG, "本机诊断扫描失败", e)
+        }
+
         prefs.updateSyncProgress("检查后端连接", total = 0, processed = 0, uploaded = 0, failed = 0, current = "")
         val backend = BackendClient(prefs.backendUrl, prefs.employeeCode)
         val health = backend.health()
@@ -132,6 +146,7 @@ class CollectorRunner(context: Context) {
         prefs.updateSyncProgress("处理通话记录 ${calls.size} 条")
         for (call in calls) {
             maxSyncedTs = maxOf(maxSyncedTs, call.startedAtMillis)
+            if (call.phone.isBlank()) continue
             try {
                 val match = backend.matchCallPhone(call.phone)
                 if (!match.matched) {
@@ -159,8 +174,23 @@ class CollectorRunner(context: Context) {
 
         prefs.updateSyncProgress("扫描录音目录", total = 0, processed = 0, uploaded = 0, failed = 0, current = "")
         prefs.recordingResult = "处理中"
-        val recordingScan = RecordingScanner().scanSince(prefs.recordingScanFloorTs)
+        val recordingScan = diagnosticScan ?: RecordingScanner().scanSince(prefs.recordingScanFloorTs)
         val recordings = recordingScan.recordings
+        val diagnosticStatuses = mutableMapOf<String, String>()
+        val diagnosticLinks = mutableMapOf<String, LocalCall>()
+        val diagnosticReasons = mutableMapOf<String, Pair<String, Int>>()
+        val diagnosticBackendCallIds = mutableMapOf<String, Int>()
+        val diagnosticAttempted = mutableSetOf<String>()
+        fun rememberRecording(recording: LocalRecording, status: String, callId: Int? = null) {
+            diagnosticStatuses[recording.file.absolutePath] = status
+            prefs.rememberRecordingListItem(recording, status, callId)
+        }
+        recordings.filter { prefs.isRecordingUploaded(it.file.absolutePath) }.forEach {
+            val path = it.file.absolutePath
+            diagnosticStatuses[path] = "已上传"
+            val savedId = prefs.recordingCallId(path)
+            if (savedId > 0) diagnosticCalls.singleOrNull { call -> call.sourceId == savedId }?.let { call -> diagnosticLinks[path] = call }
+        }
         prefs.lastRecordingScanCount = recordings.size
         prefs.lastRecordingTotalFileCount = recordingScan.totalAudioCount
         prefs.lastRecordingRawFileCount = recordingScan.rawAudioCount
@@ -185,6 +215,7 @@ class CollectorRunner(context: Context) {
         )
         for (recording in pendingRecordings) {
             val path = recording.file.absolutePath
+            diagnosticAttempted.add(path)
             prefs.updateSyncProgress(
                 "处理录音",
                 total = pendingRecordings.size,
@@ -194,28 +225,28 @@ class CollectorRunner(context: Context) {
                 current = recording.file.name
             )
 
-            var call = prefs.findCall(recording.phone, recording.timestampMillis)
-            if (call == null) {
-                val match = backend.matchCallPhone(recording.phone)
-                if (!match.matched) {
-                    prefs.rememberRecordingListItem(recording, "非订单电话，已忽略")
-                    recordingProcessedCount += 1
-                    prefs.updateSyncProgress(
-                        "处理录音",
-                        total = pendingRecordings.size,
-                        processed = recordingProcessedCount,
-                        uploaded = recordingUploadedCount,
-                        failed = recordingFailureCount,
-                        current = recording.file.name
-                    )
-                    continue
+            var call: SyncedCall? = null
+            try {
+                val localCall = RecordingMatcher(appContext).match(recording) { reason, count -> diagnosticReasons[path] = reason to count }
+                if (localCall != null) {
+                    diagnosticLinks[path] = localCall
+                    val match = backend.matchCallPhone(localCall.phone)
+                    if (!match.matched) {
+                        rememberRecording(recording, "非订单电话，已忽略")
+                        recordingProcessedCount += 1
+                        prefs.updateSyncProgress("处理录音", processed = recordingProcessedCount, current = recording.file.name)
+                        continue
+                    }
+                    call = backend.postCall(localCall, match.orderId)
+                    prefs.rememberCall(call)
                 }
-                call = backend.lookupCall(recording.phone, recording.timestampMillis)
-                if (call != null) prefs.rememberCall(call)
+            } catch (e: Exception) {
+                diagnosticReasons[path] = ("关联过程失败: ${e.javaClass.simpleName}" to -1)
+                Log.e(TAG, "录音关联失败，将在后续采集中重试: $path", e)
             }
             if (call == null) {
                 prefs.lastRecordingMissCount += 1
-                prefs.rememberRecordingListItem(recording, "待关联通话")
+                rememberRecording(recording, "待关联通话")
                 recordingProcessedCount += 1
                 prefs.updateSyncProgress(
                     "处理录音",
@@ -228,6 +259,15 @@ class CollectorRunner(context: Context) {
                 continue
             }
 
+            diagnosticBackendCallIds[path] = call.id
+            if (!diagnosticLinks.containsKey(path) && diagnosticCallError == null) {
+                val selectedCall = call
+                val local = diagnosticCalls.filter {
+                    it.startedAtMillis == selectedCall.startedAtMillis && it.direction == selectedCall.direction &&
+                        PhoneNormalizer.normalize(it.phone) == PhoneNormalizer.normalize(selectedCall.phone)
+                }.singleOrNull()
+                if (local != null) diagnosticLinks[path] = local
+            }
             try {
                 prefs.updateSyncProgress(
                     "登记录音",
@@ -239,8 +279,9 @@ class CollectorRunner(context: Context) {
                 )
                 val registration = backend.registerRecording(call, recording)
                 if (registration.alreadyUploaded) {
+                    diagnosticLinks[path]?.let { prefs.rememberRecordingCallId(path, it.sourceId) }
                     prefs.markRecordingUploaded(path)
-                    prefs.rememberRecordingListItem(recording, "已存在", call.id)
+                    rememberRecording(recording, "已存在", call.id)
                     recordingProcessedCount += 1
                     prefs.updateSyncProgress(
                         "录音已存在",
@@ -272,8 +313,9 @@ class CollectorRunner(context: Context) {
                     current = recording.file.name
                 )
                 backend.confirmRecordingUploaded(call.id, prefs.installationId)
+                diagnosticLinks[path]?.let { prefs.rememberRecordingCallId(path, it.sourceId) }
                 prefs.markRecordingUploaded(path)
-                prefs.rememberRecordingListItem(recording, "已上传", call.id)
+                rememberRecording(recording, "已上传", call.id)
                 recordingProcessedCount += 1
                 recordingUploadedCount += 1
                 prefs.lastRunRecordingsUploaded = recordingUploadedCount
@@ -293,7 +335,7 @@ class CollectorRunner(context: Context) {
                 prefs.lastRunRecordingsFailed = recordingFailureCount
                 recordingProcessedCount += 1
                 lastRecordingFailure = "callId=${call.id} ${recording.file.name}: $message"
-                prefs.rememberRecordingListItem(recording, "上传失败: $message", call.id)
+                rememberRecording(recording, "上传失败: $message", call.id)
                 Log.e(TAG, "录音上传失败，跳过该文件并继续处理后续录音: $path", e)
                 prefs.updateSyncProgress(
                     "录音上传失败，继续后续录音",
@@ -308,6 +350,16 @@ class CollectorRunner(context: Context) {
         }
         if (recordingFailureCount > 0) {
             prefs.lastSyncError = "录音上传失败 $recordingFailureCount 条，已继续处理后续录音；最后失败: $lastRecordingFailure"
+        }
+        try {
+            if (diagnosticCallError != null) {
+                diagnosticCalls = CallLogScanner(appContext).scanSince(prefs.recordingScanFloorTs - 1L)
+                diagnosticCallError = null
+            }
+            RecordingDiagnostics(appContext).create(recordingScan, diagnosticCalls, prefs.recordingScanFloorTs, diagnosticStatuses, diagnosticLinks, diagnosticReasons, diagnosticCallError, true, diagnosticBackendCallIds, diagnosticAttempted)
+        } catch (e: Exception) {
+            prefs.recordingScanIssue = listOf(prefs.recordingScanIssue, "诊断日志保存失败: ${e.message ?: e.javaClass.simpleName}").filter { it.isNotBlank() }.joinToString("\n")
+            Log.e(TAG, "诊断日志保存失败", e)
         }
         val finishedAt = System.currentTimeMillis()
         prefs.lastRunCallsScanned = calls.size
