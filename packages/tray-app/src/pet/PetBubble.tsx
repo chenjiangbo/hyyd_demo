@@ -151,12 +151,14 @@ function Actions({ actions, onAction }: { actions: PetAction[]; onAction?: (acti
   )
 }
 
-function SelectField({ field, onFieldChange, showFullValue = false }: { field: PetField; onFieldChange?: PetFieldChange; showFullValue?: boolean }): React.JSX.Element {
+function SelectField({ field, onFieldChange, showFullValue = false, searchable = false }: { field: PetField; onFieldChange?: PetFieldChange; showFullValue?: boolean; searchable?: boolean }): React.JSX.Element {
   const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState<string | null>(null)
   const [position, setPosition] = useState<React.CSSProperties>({})
   const root = useRef<HTMLDivElement>(null)
   const optionsRoot = useRef<HTMLDivElement>(null)
   const openOptions = (): void => {
+    setQuery(null)
     const rect = root.current?.getBoundingClientRect()
     if (!rect) return
     const bounds = root.current?.closest('.pet-bubble--form')?.getBoundingClientRect()
@@ -185,12 +187,16 @@ function SelectField({ field, onFieldChange, showFullValue = false }: { field: P
     return () => { document.removeEventListener('mousedown', close); window.removeEventListener('scroll', closeOnScroll, true); window.removeEventListener('resize', closeOnResize) }
   }, [open])
   const selected = field.options?.find((option) => option.value === String(field.value))
+  const options = [{ value: '', label: '请选择' }, ...(field.options ?? [])].filter((option) => !query?.trim() || option.label.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
   return <div className="pet-bubble__search-select pet-bubble__choice-select" ref={root}>
-    <button type="button" className="pet-bubble__select-trigger" role="combobox" aria-label={field.label} title={showFullValue && field.value ? (selected?.label ?? String(field.value)) : undefined} aria-haspopup="listbox" aria-expanded={open} aria-controls={`${field.id}-options`} onClick={() => { if (open) setOpen(false); else openOptions() }} onKeyDown={(event) => { if (event.key === 'Escape') setOpen(false) }}>
+    {searchable ? <div className="pet-bubble__editable-select">
+      <input id={field.id} name={field.id} role="combobox" aria-label={field.label} aria-autocomplete="list" aria-expanded={open} aria-controls={`${field.id}-options`} placeholder="请选择" value={open && query !== null ? query : (selected?.label ?? String(field.value))} onFocus={(event) => { if (!open) openOptions(); event.currentTarget.select() }} onClick={() => { if (!open) openOptions() }} onChange={(event) => { if (!open) openOptions(); setQuery(event.target.value) }} onKeyDown={(event) => { if (event.key === 'Escape' || event.key === 'Tab') setOpen(false) }} />
+      <span className="pet-bubble__select-chevron" aria-hidden="true" />
+    </div> : <button type="button" className="pet-bubble__select-trigger" role="combobox" aria-label={field.label} title={showFullValue && field.value ? (selected?.label ?? String(field.value)) : undefined} aria-haspopup="listbox" aria-expanded={open} aria-controls={`${field.id}-options`} onClick={() => { if (open) setOpen(false); else openOptions() }} onKeyDown={(event) => { if (event.key === 'Escape') setOpen(false) }}>
       <span>{selected?.label ?? (String(field.value) || '请选择')}</span><span className="pet-bubble__select-chevron" aria-hidden="true" />
-    </button>
+    </button>}
     {open && createPortal(<div ref={optionsRoot} className="pet-bubble__search-options pet-bubble__lookup-portal" style={position} id={`${field.id}-options`} role="listbox" aria-label={field.label}>
-      {[{ value: '', label: '请选择' }, ...(field.options ?? [])].map((option) => <button key={option.value} type="button" role="option" aria-selected={String(field.value) === option.value} onClick={(event) => { event.preventDefault(); setOpen(false); onFieldChange?.(field.id, option.value) }}>{option.label}</button>)}
+      {options.map((option) => <button key={option.value} type="button" role="option" aria-selected={String(field.value) === option.value} onClick={(event) => { event.preventDefault(); setOpen(false); onFieldChange?.(field.id, option.value) }}>{option.label}</button>)}
     </div>, document.body)}
   </div>
 }
@@ -374,7 +380,7 @@ function Field({ field, panel, onFieldChange, onLookup }: {
   } else if (field.type === 'textarea') {
     control = <div className="pet-bubble__input-with-copy"><textarea {...common} value={String(field.value)} rows={field.id === 'groupName' ? 1 : 3} />{field.copyable && <button type="button" title="复制" disabled={!String(field.value)} onClick={() => { void navigator.clipboard?.writeText(String(field.value)) }}>复制</button>}</div>
   } else if (field.type === 'select') {
-    control = <SelectField field={field} onFieldChange={onFieldChange} showFullValue={panel.id.startsWith('order-ai:')} />
+    control = <SelectField field={field} onFieldChange={onFieldChange} showFullValue={panel.id.startsWith('order-ai:')} searchable={field.id === 'channelService' || field.id === 'orderStatus'} />
   } else if (field.type === 'datetime-local') {
     control = <DateTimeField field={field} onFieldChange={onFieldChange} reserveCopy={panel.id.startsWith('order-ai:')} />
   } else if (field.type === 'radio') {
@@ -481,7 +487,7 @@ function MasterReview({ items, addressValue, onFieldChange }: { items: MasterRev
           const parent = parentId ? item.fields.find((field) => field.id === parentId)?.value : ''
           const options = parentId ? reviewField.options.filter((option) => option.parent === parent) : reviewField.options
           const id = `master:${item.key}:${reviewField.id}`
-          return <label className={`pet-bubble__master-field${reviewField.value ? '' : ' pet-bubble__master-field--empty'}`} key={id}><span>{reviewField.label}</span><SelectField field={{ id, label: reviewField.label, type: 'select', value: reviewField.value, options, placeholder: '请选择' }} onFieldChange={onFieldChange} /></label>
+          return <label className={`pet-bubble__master-field${reviewField.value ? '' : ' pet-bubble__master-field--empty'}`} key={id}><span>{reviewField.label}</span><SelectField field={{ id, label: reviewField.label, type: 'select', value: reviewField.value, options, placeholder: '请选择' }} onFieldChange={onFieldChange} searchable={item.type === 'hospital' || item.type === 'address' || item.type === 'department'} /></label>
         })}{(item.type === 'hospital' || item.type === 'address') && <div className="pet-bubble__master-address"><span>医院地址</span><span>{addressValue || itemAddress || '未填写'}</span>{item.addressSuggestion && <><span>AI 建议值（请核对院区）</span><span>{item.addressSuggestion.value}</span><div><button type="button" disabled={addressValue === item.addressSuggestion.value} onClick={() => onFieldChange?.('hospitalAddress', item.addressSuggestion!.value)}>{addressValue === item.addressSuggestion.value ? '已采纳' : '采纳建议值'}</button></div></>}</div>}</div>
       </section>
     })}</div>

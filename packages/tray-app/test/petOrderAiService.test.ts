@@ -6,6 +6,41 @@ import { PetOrderAiService, type PetOrderAiPanel } from '../src/main/pet-order-a
 
 const origin = 'chrome-extension://akaojickfipoeobmiokkdbdaimeifmoa'
 
+test('订单值优先，意向写入后清除已保存字段标识', async () => {
+  const order = { channel: '', channelService: '', orderAmount: '', hospital: '', department: '', orderStatus: '待跟进' }
+  const backend = createServer((request, response) => {
+    response.setHeader('Content-Type', 'application/json')
+    if (request.url?.startsWith('/api/v1/pet/order-current')) return void response.end(JSON.stringify({ data: { order, escorts: [] } }))
+    if (request.url?.startsWith('/api/v1/pet/order-ai-fields')) return void response.end(JSON.stringify({ data: { fields: { order_status: '已取消' }, intention: { hospital: '意向医院', department: '意向科室' } } }))
+    if (request.url === '/api/v1/pet/huanyu-order-update') {
+      order.hospital = '医院编号'
+      return void response.end(JSON.stringify({ ok: true, escortIds: [] }))
+    }
+    return void response.end(JSON.stringify({ data: [] }))
+  })
+  await new Promise<void>((resolve) => backend.listen(0, '127.0.0.1', resolve))
+  const panels: PetOrderAiPanel[] = []
+  const service = new PetOrderAiService((panel) => panels.push(panel), (_id, panel) => panels.push(panel), () => {}, 43197)
+  service.setConfig({ backendUrl: `http://127.0.0.1:${(backend.address() as { port: number }).port}`, employeeCode: 'TEST' })
+  service.start()
+  const token = randomUUID()
+  try {
+    await fetch('http://127.0.0.1:43197/pet/order-page', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ event: 'open', token, tabId: 1, orderNo: 'HYYD000001', formOrderNo: 'HYYD000001' }) })
+    await waitFor(() => panels.some((panel) => panel.kind === 'form'))
+    const panel = panels.filter((item) => item.kind === 'form').at(-1)!
+    assert.equal(panel.fields?.find((field) => field.id === 'orderStatus')?.value, '待跟进')
+    assert.equal(panel.fields?.find((field) => field.id === 'orderStatus')?.suggestion, '已取消')
+    assert.equal(panel.fields?.find((field) => field.id === 'hospital')?.hint, '泰康意向')
+    await service.handlePanelAction(`order-ai:${token}`, 'one-click-fill', Object.fromEntries((panel.fields ?? []).map((field) => [field.id, field.value])))
+    const updated = panels.at(-1)!
+    assert.equal(updated.fields?.find((field) => field.id === 'hospital')?.hint, undefined)
+    assert.equal(updated.fields?.find((field) => field.id === 'department')?.hint, '泰康意向')
+  } finally {
+    service.stop()
+    await new Promise<void>((resolve) => backend.close(() => resolve()))
+  }
+})
+
 async function waitFor(predicate: () => boolean): Promise<void> {
   const until = Date.now() + 2_000
   while (!predicate()) {
@@ -16,6 +51,16 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 
 test('订单切换时旧 AI 结果不能覆盖新面板，关闭只作用于当前订单', async () => {
   const backend = createServer(async (request, response) => {
+    if (request.url?.startsWith('/api/v1/pet/order-current')) {
+      response.setHeader('Content-Type', 'application/json')
+      response.end(JSON.stringify({ data: { order: { channel: '', channelService: '', orderAmount: '' }, escorts: [] } }))
+      return
+    }
+    if (request.url?.startsWith('/api/v1/dictionaries/huanyu/channel-products')) {
+      response.setHeader('Content-Type', 'application/json')
+      response.end(JSON.stringify({ data: [] }))
+      return
+    }
     if (request.url?.startsWith('/api/v1/dictionaries/huanyu/order-statuses')) {
       response.setHeader('Content-Type', 'application/json')
       response.end(JSON.stringify({ data: [{ id: '1', name: '待跟进' }] }))
@@ -115,6 +160,11 @@ test('详情订单号不一致时阻止表单；最小化后恢复原面板', as
     const panelId = `order-ai:${correct}`
     assert.equal(panels.at(-1)?.id, panelId)
     await send('suspend', correct, 'HYYD000003', 'HYYD000003')
+    await send('open', correct, 'HYYD000003', 'HYYD000003')
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    assert.deepEqual(suspended, [])
+    await send('suspend', correct, 'HYYD000003', 'HYYD000003')
+    await waitFor(() => suspended.length > 0)
     assert.deepEqual(suspended, [panelId])
     await send('open', correct, 'HYYD000003', 'HYYD000003')
     assert.deepEqual(resumed, [panelId])
