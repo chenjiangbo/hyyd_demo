@@ -64,6 +64,14 @@ class AppPrefs(context: Context) {
         get() = prefs.getLong("recording_scan_floor_ts", 0L)
         set(value) = prefs.edit().putLong("recording_scan_floor_ts", value).apply()
 
+    var diagnosticHistoryComplete: Boolean
+        get() = prefs.getBoolean("diagnostic_history_complete_v1", false)
+        set(value) { check(prefs.edit().putBoolean("diagnostic_history_complete_v1", value).commit()) }
+
+    var diagnosticCallWatermark: Long
+        get() = prefs.getLong("diagnostic_call_watermark_v1", 0L)
+        set(value) { check(prefs.edit().putLong("diagnostic_call_watermark_v1", value).commit()) }
+
     var serviceStartedAt: Long
         get() = prefs.getLong("service_started_at", 0L)
         set(value) = prefs.edit().putLong("service_started_at", value).apply()
@@ -368,6 +376,23 @@ class AppPrefs(context: Context) {
     }
 
     private fun localCallKey(call: LocalCall): String = "${call.phone}:${call.startedAtMillis}:${call.direction}"
+
+    private fun callDiagnosticKey(call: LocalCall): String {
+        val value = "${PhoneNormalizer.normalize(call.phone)}:${call.startedAtMillis}:${call.direction}"
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
+        return "call-diagnostic:" + digest.joinToString("") { "%02x".format(it) }
+    }
+
+    fun callDiagnostic(call: LocalCall): JSONObject = try {
+        JSONObject(prefs.getString(callDiagnosticKey(call), "{}") ?: "{}")
+    } catch (_: Exception) { JSONObject() }
+
+    fun recordCallDiagnostic(call: LocalCall, field: String, value: String, backendId: Int? = null) {
+        val diagnostic = callDiagnostic(call)
+        diagnostic.put(field, value).put("${field}At", System.currentTimeMillis())
+        if (backendId != null) diagnostic.put("backendCallId", backendId)
+        prefs.edit().putString(callDiagnosticKey(call), diagnostic.toString()).apply()
+    }
 
     private fun localCallToJson(call: LocalCall): JSONObject {
         return JSONObject()

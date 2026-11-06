@@ -8,7 +8,7 @@ import android.provider.ContactsContract
 
 /** 无号码录音仅在本机全部通话候选中确定唯一对应关系。 */
 class RecordingMatcher(private val context: Context) {
-    fun match(recording: LocalRecording, diagnostic: (String, Int) -> Unit = { _, _ -> }): LocalCall? {
+    fun match(recording: LocalRecording, isConfirmedOccupied: (LocalCall) -> Boolean = { false }, diagnostic: (String, Int) -> Unit = { _, _ -> }): LocalCall? {
         val file = recording.file
         val size = file.length()
         val modified = file.lastModified()
@@ -27,17 +27,26 @@ class RecordingMatcher(private val context: Context) {
         // 查询包含边界的时间段，不能先过滤非订单或未知号码。
         val calls = CallLogScanner(context).scanSince(recording.timestampMillis - 60_001L)
         val candidates = RecordingMatchRules.candidates(calls, recording.timestampMillis, duration)
-        val numberCandidates = if (recording.phone.isNotBlank()) candidates.filter {
-            PhoneNormalizer.normalize(it.phone) == PhoneNormalizer.normalize(recording.phone)
+        val numberCandidates = if (recording.phone.isNotBlank()) calls.filter {
+            it.callStatus == "answered" && recording.timestampMillis - it.startedAtMillis in 0..60_000L &&
+                PhoneNormalizer.normalize(it.phone) == PhoneNormalizer.normalize(recording.phone) &&
+                RecordingMatchRules.durationMatches(it.durationSec, duration)
         } else candidates
-        val selected = when {
-            recording.phone.isNotBlank() -> RecordingMatchRules.uniqueNumberCandidate(calls, recording.phone, recording.timestampMillis, duration)
+        val initiallySelected = when {
+            recording.phone.isNotBlank() -> numberCandidates.singleOrNull()
             candidates.size == 0 -> null
             candidates.size == 1 -> candidates.single()
             else -> selectByContact(recording.contactName, candidates)
         }
+        var resolvedByOccupancy = false
+        val selected = if (initiallySelected == null && numberCandidates.size > 1) {
+            RecordingMatchRules.afterExcludingOccupied(numberCandidates, isConfirmedOccupied).also {
+                resolvedByOccupancy = it != null
+            }
+        } else initiallySelected
         val result = selected?.takeIf { it.phone.isNotBlank() }
         val reason = when {
+            result != null && resolvedByOccupancy -> "排除已确认被其他录音占用的候选后唯一匹配"
             result != null -> "已找到通话"
             numberCandidates.isEmpty() -> "没有符合号码、时间和时长的通话"
             numberCandidates.size > 1 -> "多个候选无法唯一确定"

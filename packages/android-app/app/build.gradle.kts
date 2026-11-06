@@ -11,8 +11,8 @@ android {
         applicationId = "com.huanyu.collector"
         minSdk = 29
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 10
+        versionName = "0.10.0"
 
         buildConfigField("String", "BACKEND_URL", "\"http://47.95.14.233:9093\"")
         buildConfigField("String", "EMPLOYEE_CODE", "\"\"")

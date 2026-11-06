@@ -98,22 +98,47 @@ class CollectorRunner(context: Context) {
             Log.i(TAG, "首次采集仅补最近 $INITIAL_HISTORY_DAYS 天，起点=${prefs.lastCallLogTs}")
         }
 
+        // 诊断范围独立于业务采集范围；不会重置已有上传游标。
+        val diagnosticFrom = if (!prefs.diagnosticHistoryComplete || prefs.diagnosticCallWatermark == 0L) {
+            DIAGNOSTIC_HISTORY_START
+        } else {
+            maxOf(DIAGNOSTIC_HISTORY_START, prefs.diagnosticCallWatermark - DIAGNOSTIC_OVERLAP_MS)
+        }
+
         // 先保存本机扫描结果，即使后端不可用也能排查文件与权限。
         var diagnosticScan: RecordingScanResult? = null
         var diagnosticCalls: List<LocalCall> = emptyList()
         var diagnosticCallError: String? = null
         try {
             diagnosticScan = RecordingScanner().scanSince(prefs.recordingScanFloorTs)
-            try { diagnosticCalls = CallLogScanner(appContext).scanSince(prefs.recordingScanFloorTs - 1L) }
+            try { diagnosticCalls = CallLogScanner(appContext).scanSince(diagnosticFrom - 1L) }
             catch (e: Exception) { diagnosticCallError = "通话记录读取失败: ${e.message ?: e.javaClass.simpleName}" }
-            RecordingDiagnostics(appContext).create(diagnosticScan, diagnosticCalls, prefs.recordingScanFloorTs, emptyMap(), emptyMap(), emptyMap(), diagnosticCallError, false)
+            RecordingDiagnostics(appContext).create(diagnosticScan, diagnosticCalls, prefs.recordingScanFloorTs, emptyMap(), emptyMap(), emptyMap(), diagnosticCallError, false, diagnosticCallFrom = diagnosticFrom, historyFrom = DIAGNOSTIC_HISTORY_START, historyComplete = prefs.diagnosticHistoryComplete)
         } catch (e: Exception) {
+            if (diagnosticCallError == null) diagnosticCallError = "诊断初始化失败: ${e.javaClass.simpleName}"
             prefs.recordingScanIssue = "诊断日志保存失败: ${e.message ?: e.javaClass.simpleName}"
             Log.e(TAG, "本机诊断扫描失败", e)
         }
 
         prefs.updateSyncProgress("检查后端连接", total = 0, processed = 0, uploaded = 0, failed = 0, current = "")
         val backend = BackendClient(prefs.backendUrl, prefs.employeeCode)
+        fun checkOrder(call: LocalCall): CallPhoneMatch = try {
+            backend.matchCallPhone(call.phone).also {
+                prefs.recordCallDiagnostic(call, "orderCheck", if (it.matched) "命中订单" else "未命中订单")
+                if (!it.matched && !prefs.callDiagnostic(call).has("backendCallId")) {
+                    prefs.recordCallDiagnostic(call, "callUpload", "未命中订单，不上传")
+                }
+            }
+        } catch (e: Exception) {
+            prefs.recordCallDiagnostic(call, "orderCheck", "检查失败: ${e.javaClass.simpleName}")
+            throw e
+        }
+        fun uploadCall(call: LocalCall, orderId: Int?): SyncedCall = try {
+            backend.postCall(call, orderId).also { prefs.recordCallDiagnostic(call, "callUpload", "已上传", it.id) }
+        } catch (e: Exception) {
+            prefs.recordCallDiagnostic(call, "callUpload", "上传失败: ${e.javaClass.simpleName}")
+            throw e
+        }
         val health = backend.health()
         prefs.lastBackendHealth = health
         prefs.lastBackendHealthAt = System.currentTimeMillis()
@@ -122,13 +147,13 @@ class CollectorRunner(context: Context) {
         prefs.callResult = "处理中"
         for (call in prefs.pendingCalls()) {
             try {
-                val match = backend.matchCallPhone(call.phone)
+                val match = checkOrder(call)
                 if (!match.matched) {
                     prefs.removePendingCall(call)
                     prefs.rememberLocalCallListItem(call, "非订单电话，已忽略")
                     continue
                 }
-                val remote = backend.postCall(call, match.orderId)
+                val remote = uploadCall(call, match.orderId)
                 prefs.removePendingCall(call)
                 prefs.rememberCall(remote)
                 prefs.rememberCallListItem(remote, uploaded = true)
@@ -146,14 +171,17 @@ class CollectorRunner(context: Context) {
         prefs.updateSyncProgress("处理通话记录 ${calls.size} 条")
         for (call in calls) {
             maxSyncedTs = maxOf(maxSyncedTs, call.startedAtMillis)
-            if (call.phone.isBlank()) continue
+            if (call.phone.isBlank()) {
+                prefs.recordCallDiagnostic(call, "orderCheck", "号码不可用，未检查")
+                continue
+            }
             try {
-                val match = backend.matchCallPhone(call.phone)
+                val match = checkOrder(call)
                 if (!match.matched) {
                     prefs.rememberLocalCallListItem(call, "非订单电话，已忽略")
                     continue
                 }
-                val remote = backend.postCall(call, match.orderId)
+                val remote = uploadCall(call, match.orderId)
                 prefs.rememberCall(remote)
                 prefs.rememberCallListItem(remote, uploaded = true)
                 prefs.lastCallUploadCount += 1
@@ -181,6 +209,7 @@ class CollectorRunner(context: Context) {
         val diagnosticReasons = mutableMapOf<String, Pair<String, Int>>()
         val diagnosticBackendCallIds = mutableMapOf<String, Int>()
         val diagnosticAttempted = mutableSetOf<String>()
+        val diagnosticOccupancy = mutableMapOf<String, MutableList<Pair<LocalCall, String>>>()
         fun rememberRecording(recording: LocalRecording, status: String, callId: Int? = null) {
             diagnosticStatuses[recording.file.absolutePath] = status
             prefs.rememberRecordingListItem(recording, status, callId)
@@ -227,17 +256,39 @@ class CollectorRunner(context: Context) {
 
             var call: SyncedCall? = null
             try {
-                val localCall = RecordingMatcher(appContext).match(recording) { reason, count -> diagnosticReasons[path] = reason to count }
+                val localCall = RecordingMatcher(appContext).match(recording, isConfirmedOccupied = { candidate ->
+                    // 必须同时具备本机上传成功的文件映射和后台精确通话的上传确认。
+                    val other = recordings.filter {
+                        it.file.absolutePath != path && candidate.sourceId > 0 &&
+                            prefs.isRecordingUploaded(it.file.absolutePath) &&
+                            prefs.recordingCallId(it.file.absolutePath) == candidate.sourceId
+                    }.singleOrNull()
+                    var evidence = "没有唯一的本机已上传录音映射"
+                    val occupied = if (other == null) false else try {
+                        val remote = backend.lookupHistoricalCall(candidate)
+                        val confirmed = remote != null && remote.hasUploadConfirmation &&
+                            remote.recordingKey == "android-recordings/${other.safeName}" &&
+                            remote.recordingKey != "android-recordings/${recording.safeName}"
+                        evidence = if (confirmed) "本机映射与后台上传确认一致，排除此候选" else "后台上传确认或录音地址不一致，保留候选"
+                        confirmed
+                    } catch (e: Exception) {
+                        evidence = "后台检查失败，保留候选: ${e.javaClass.simpleName}"
+                        Log.w(TAG, "无法核实候选通话占用状态，保留候选", e)
+                        false
+                    }
+                    diagnosticOccupancy.getOrPut(path) { mutableListOf() }.add(candidate to evidence)
+                    occupied
+                }) { reason, count -> diagnosticReasons[path] = reason to count }
                 if (localCall != null) {
                     diagnosticLinks[path] = localCall
-                    val match = backend.matchCallPhone(localCall.phone)
+                    val match = checkOrder(localCall)
                     if (!match.matched) {
                         rememberRecording(recording, "非订单电话，已忽略")
                         recordingProcessedCount += 1
                         prefs.updateSyncProgress("处理录音", processed = recordingProcessedCount, current = recording.file.name)
                         continue
                     }
-                    call = backend.postCall(localCall, match.orderId)
+                    call = uploadCall(localCall, match.orderId)
                     prefs.rememberCall(call)
                 }
             } catch (e: Exception) {
@@ -269,6 +320,14 @@ class CollectorRunner(context: Context) {
                 if (local != null) diagnosticLinks[path] = local
             }
             try {
+                val local = diagnosticLinks[path]
+                if (local != null && diagnosticReasons[path]?.first == "排除已确认被其他录音占用的候选后唯一匹配") {
+                    val target = backend.lookupHistoricalCall(local)
+                        ?: throw IllegalStateException("无法核实目标通话的后台录音状态")
+                    if (target.id != call.id || (target.recordingKey != null && target.recordingKey != "android-recordings/${recording.safeName}")) {
+                        throw IllegalStateException("目标通话已有其他录音或后台通话不一致")
+                    }
+                }
                 prefs.updateSyncProgress(
                     "登记录音",
                     total = pendingRecordings.size,
@@ -351,12 +410,55 @@ class CollectorRunner(context: Context) {
         if (recordingFailureCount > 0) {
             prefs.lastSyncError = "录音上传失败 $recordingFailureCount 条，已继续处理后续录音；最后失败: $lastRecordingFailure"
         }
+        // 仅核查订单归属并写诊断，不提交历史通话或录音。
+        var historicalChecksComplete = diagnosticCallError == null
+        if (!prefs.diagnosticHistoryComplete && diagnosticCallError == null) {
+            val checkedPhones = mutableMapOf<String, Boolean>()
+            for (historicalCall in diagnosticCalls) {
+                val existing = prefs.callDiagnostic(historicalCall).optString("historyOrderCheck", "")
+                if (historicalCall.phone.isBlank()) {
+                    if (existing != "号码不可用") prefs.recordCallDiagnostic(historicalCall, "historyOrderCheck", "号码不可用")
+                    continue
+                }
+                try {
+                    val phone = PhoneNormalizer.normalize(historicalCall.phone)
+                    val matched = when (existing) {
+                        "命中订单" -> true
+                        "未命中订单" -> false
+                        else -> (checkedPhones[phone] ?: backend.matchCallPhone(phone).matched.also { checkedPhones[phone] = it }).also {
+                            prefs.recordCallDiagnostic(historicalCall, "historyOrderCheck", if (it) "命中订单" else "未命中订单")
+                        }
+                    }
+                    val lookupStatus = prefs.callDiagnostic(historicalCall).optString("historyBackendLookup", "")
+                    if (matched && (lookupStatus.isBlank() || lookupStatus.startsWith("检查失败"))) {
+                        val found = backend.lookupHistoricalCall(historicalCall)
+                        if (found?.recordingKey != null) prefs.recordCallDiagnostic(historicalCall, "historyRecordingKey", found.recordingKey)
+                        val detail = if (found == null) "未返回精确候选" else when {
+                            found.recordingKey != null && found.hasUploadConfirmation -> "返回精确候选，录音有上传确认"
+                            found.recordingKey != null -> "返回精确候选，录音上传未确认"
+                            else -> "返回精确候选，无录音地址"
+                        }
+                        prefs.recordCallDiagnostic(historicalCall, "historyBackendLookup", detail, found?.id)
+                    }
+                } catch (e: Exception) {
+                    historicalChecksComplete = false
+                    val field = if (prefs.callDiagnostic(historicalCall).optString("historyOrderCheck") == "命中订单") "historyBackendLookup" else "historyOrderCheck"
+                    prefs.recordCallDiagnostic(historicalCall, field, "检查失败: ${e.javaClass.simpleName}")
+                }
+            }
+        }
+
         try {
             if (diagnosticCallError != null) {
-                diagnosticCalls = CallLogScanner(appContext).scanSince(prefs.recordingScanFloorTs - 1L)
+                diagnosticCalls = CallLogScanner(appContext).scanSince(diagnosticFrom - 1L)
                 diagnosticCallError = null
             }
-            RecordingDiagnostics(appContext).create(recordingScan, diagnosticCalls, prefs.recordingScanFloorTs, diagnosticStatuses, diagnosticLinks, diagnosticReasons, diagnosticCallError, true, diagnosticBackendCallIds, diagnosticAttempted)
+            val historyReady = prefs.diagnosticHistoryComplete || (historicalChecksComplete && diagnosticCallError == null && recordingScan.issue.isBlank())
+            RecordingDiagnostics(appContext).create(recordingScan, diagnosticCalls, prefs.recordingScanFloorTs, diagnosticStatuses, diagnosticLinks, diagnosticReasons, diagnosticCallError, true, diagnosticBackendCallIds, diagnosticAttempted, diagnosticFrom, DIAGNOSTIC_HISTORY_START, historyReady, diagnosticOccupancy)
+            if (historyReady) {
+                prefs.diagnosticHistoryComplete = true
+                prefs.diagnosticCallWatermark = runStartedAt
+            }
         } catch (e: Exception) {
             prefs.recordingScanIssue = listOf(prefs.recordingScanIssue, "诊断日志保存失败: ${e.message ?: e.javaClass.simpleName}").filter { it.isNotBlank() }.joinToString("\n")
             Log.e(TAG, "诊断日志保存失败", e)
@@ -385,6 +487,8 @@ class CollectorRunner(context: Context) {
     companion object {
         private const val TAG = "HuanyuCollector"
         private const val INITIAL_HISTORY_DAYS = 7L
+        private const val DIAGNOSTIC_HISTORY_START = 1793116800000L // 2026-10-28 00:00 Asia/Shanghai
+        private const val DIAGNOSTIC_OVERLAP_MS = 10 * 60 * 1000L
         private val SYNC_LOCK = Any()
     }
 }

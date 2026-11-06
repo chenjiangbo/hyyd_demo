@@ -87,6 +87,19 @@ class BackendClient(
         )
     }
 
+    /** 只读取后台候选；必须和本机通话身份精确相符才记录候选信息。 */
+    fun lookupHistoricalCall(call: LocalCall): HistoricalCallLookup? {
+        val response = postJson("/api/v1/calls/lookup", JSONObject()
+            .put("phone", call.phone).put("startedAtMillis", call.startedAtMillis))
+        if (response.isNull("data")) return null
+        val data = response.getJSONObject("data")
+        val timestamp = Instant.parse(data.getString("startedAt")).toEpochMilli()
+        if (timestamp != call.startedAtMillis || data.optString("direction") != call.direction ||
+            PhoneNormalizer.normalize(data.optString("phone")) != PhoneNormalizer.normalize(call.phone)) return null
+        val key = if (data.isNull("recordingOssKey")) null else data.optString("recordingOssKey").takeIf { it.isNotBlank() }
+        return HistoricalCallLookup(data.getInt("id"), key, !data.isNull("recordingUploadedAt"))
+    }
+
     fun registerRecording(call: SyncedCall, recording: LocalRecording): RecordingRegistration {
         val ossKey = "android-recordings/${recording.safeName}"
         val body = JSONObject()
@@ -152,6 +165,8 @@ data class CallPhoneMatch(
     val orderId: Int? = null,
     val sourceOrderNo: String = ""
 )
+
+data class HistoricalCallLookup(val id: Int, val recordingKey: String?, val hasUploadConfirmation: Boolean)
 
 data class RecordingRegistration(
     val uploadUrl: String?,

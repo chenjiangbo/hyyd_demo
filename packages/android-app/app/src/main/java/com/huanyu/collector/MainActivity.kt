@@ -415,7 +415,12 @@ class MainActivity : Activity() {
                     if (which == 1 && item.optString("recordingStatus") != "关联情况未确认") continue
                     text.append(formatTs(item.optLong("startedAt"))).append("  ").append(item.optString("phoneMasked"))
                         .append("  ").append(item.optInt("durationSeconds")).append("秒  ")
-                        .append(item.optString("recordingStatus")).append("\n")
+                        .append(item.optString("recordingMatchStatus", item.optString("recordingStatus")))
+                        .append("  录音上传：").append(item.optString("recordingUploadStatus", "未记录"))
+                        .append("  后台录音：").append(item.optString("recordingBackendStatus", "未查询"))
+                        .append("  订单：").append(item.optString("orderCheck", "未记录"))
+                        .append("  历史核查：").append(item.optString("historyOrderCheck", "未检查"))
+                        .append("  通话上传：").append(item.optString("callUpload", "未记录")).append("\n")
                 }
                 if (!data.isNull("callScanError")) text.append("\n通话记录读取失败：").append(data.optString("callScanError"))
                 if (!data.optBoolean("processingComplete", false)) text.append("\n本次采集尚未处理完成，匹配状态可能尚未更新。")
@@ -426,7 +431,9 @@ class MainActivity : Activity() {
                     val item = dirs.getJSONObject(i)
                     text.append(item.optString("path")).append("：").append(item.optString("status")).append("\n")
                 }
-                text.append("通话及采集起点：").append(formatTs(data.optLong("callScanFrom"))).append("\n")
+                text.append("历史核查起点：").append(formatTs(data.optLong("historyFrom"))).append("\n")
+                text.append("本次通话扫描起点：").append(formatTs(data.optLong("callScanFrom"))).append("\n")
+                text.append("历史核查：").append(if (data.optBoolean("historyReviewComplete")) "已完成" else "未完成").append("\n")
                 if (!data.isNull("callScanError")) text.append("通话记录读取失败：").append(data.optString("callScanError")).append("\n")
                 if (!data.optBoolean("processingComplete", false)) text.append("本次采集尚未处理完成。\n")
                 text.append(data.optString("scanIssues"))
