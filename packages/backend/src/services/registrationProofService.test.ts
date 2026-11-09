@@ -50,7 +50,7 @@ async function run() {
     assert.equal(traces[0].systemPrompt, requestBody.messages[0].content)
     assert.equal(traces[0].userPrompt, requestBody.messages[1].content)
     assert.equal(requestBody.model, 'qwen-plus')
-    assert.match(requestBody.messages[1].content, /挂号凭证图片识别结果/)
+    assert.match(requestBody.messages[1].content, /图片识别结果/)
     assert.match(requestBody.messages[1].content, /程序检索到的申领号及其全部订单/)
     assert.equal(requestBody.messages[1].content.includes('沟通'), false)
     assert.equal(requestBody.messages[0].content.includes('沟通'), false)

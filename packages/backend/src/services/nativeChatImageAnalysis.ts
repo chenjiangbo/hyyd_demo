@@ -104,25 +104,27 @@ async function getAttachment(prisma: PrismaClient, id: number) {
     message_application_link_status: string
     employee_id: number
     received_at: Date | null
+    root_direction: string | null
+    conversation_title: string | null
   }>>`
     SELECT a.id, a.message_id, m.conversation_id, a.kind, a.mime_type, a.storage_key, a.state, a.source_metadata,
            a.application_no, a.order_id, a.application_link_status, a.application_link_source,
            m.application_no AS message_application_no, m.order_id AS message_order_id,
-           m.application_link_status AS message_application_link_status, c.employee_id, root.occurred_at AS received_at
+           m.application_link_status AS message_application_link_status, c.employee_id, c.title AS conversation_title, root.occurred_at AS received_at, root.direction AS root_direction
       FROM native_chat_attachments a
       JOIN native_chat_messages m ON m.id = a.message_id
       JOIN native_chat_conversations c ON c.id = m.conversation_id
       LEFT JOIN LATERAL (
         WITH RECURSIVE ancestors AS (
-          SELECT m.conversation_id, m.source_message_id, m.parent_source_message_id, m.occurred_at, ARRAY[m.id] AS visited
+          SELECT m.conversation_id, m.source_message_id, m.parent_source_message_id, m.occurred_at, m.direction, ARRAY[m.id] AS visited
           UNION ALL
-          SELECT p.conversation_id, p.source_message_id, p.parent_source_message_id, p.occurred_at, ancestors.visited || p.id
+          SELECT p.conversation_id, p.source_message_id, p.parent_source_message_id, p.occurred_at, p.direction, ancestors.visited || p.id
             FROM ancestors
             JOIN native_chat_messages p ON p.conversation_id = ancestors.conversation_id
               AND p.source_message_id = ancestors.parent_source_message_id
            WHERE NOT p.id = ANY(ancestors.visited)
         )
-        SELECT occurred_at FROM ancestors WHERE parent_source_message_id IS NULL
+        SELECT occurred_at, direction FROM ancestors WHERE parent_source_message_id IS NULL
       ) root ON TRUE
      WHERE a.id = ${id}
   `
@@ -138,7 +140,9 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
     if (!await isImageAiEnabled(prisma)) return
     const attachment = await getAttachment(prisma, id)
     if (!attachment || attachment.kind !== 'image' || attachment.state !== 'available' || !attachment.storage_key) return
+    if (attachment.conversation_title?.includes('护工')) return
     if (!attachment.received_at) throw new Error(`图片附件 ${id} 的合并消息未找到，无法判断发送时间`)
+    if (attachment.root_direction !== 'outgoing') return
     const startAt = await getNativeChatImageAnalysisStartAt(prisma)
     if (!nativeChatStoredBeijingTimeIsEligible(attachment.received_at, startAt)) return
     const metadata = asRecord(attachment.source_metadata) ?? {}
@@ -188,7 +192,7 @@ async function processAttachment(prisma: PrismaClient, minio: Minio.Client, id: 
       }
     }
 
-    if (analysis?.imageType !== '挂号凭证') return
+    if (analysis?.imageType !== '挂号凭证' && analysis?.imageType !== '就诊签到记录') return
     if (!await isImageAiEnabled(prisma)) return
     const priorMatch = asRecord(analysis.registrationMatch)
     if (priorMatch?.status === 'completed' || priorMatch?.status === 'failed') return
@@ -327,29 +331,32 @@ async function recoverAvailableImages(prisma: PrismaClient, minio: Minio.Client)
       SELECT a.id
         FROM native_chat_attachments a
         JOIN native_chat_messages m ON m.id = a.message_id
+        JOIN native_chat_conversations c ON c.id = m.conversation_id
         LEFT JOIN LATERAL (
           WITH RECURSIVE ancestors AS (
-            SELECT m.conversation_id, m.source_message_id, m.parent_source_message_id, m.occurred_at, ARRAY[m.id] AS visited
+            SELECT m.conversation_id, m.source_message_id, m.parent_source_message_id, m.occurred_at, m.direction, ARRAY[m.id] AS visited
             UNION ALL
-            SELECT p.conversation_id, p.source_message_id, p.parent_source_message_id, p.occurred_at, ancestors.visited || p.id
+            SELECT p.conversation_id, p.source_message_id, p.parent_source_message_id, p.occurred_at, p.direction, ancestors.visited || p.id
               FROM ancestors
               JOIN native_chat_messages p ON p.conversation_id = ancestors.conversation_id
                 AND p.source_message_id = ancestors.parent_source_message_id
              WHERE NOT p.id = ANY(ancestors.visited)
           )
-          SELECT occurred_at FROM ancestors WHERE parent_source_message_id IS NULL
+          SELECT occurred_at, direction FROM ancestors WHERE parent_source_message_id IS NULL
         ) root ON TRUE
        WHERE a.kind = 'image'
          AND a.state = 'available'
          AND a.storage_key IS NOT NULL
          AND a.source_metadata->>'rendition' = 'non_thumbnail'
+         AND COALESCE(c.title, '') NOT LIKE '%护工%'
+         AND root.direction = 'outgoing'
          AND (root.occurred_at IS NULL OR root.occurred_at >= (${startAt}::timestamptz AT TIME ZONE 'Asia/Shanghai'))
          AND (
            a.source_metadata->'imageAnalysis' IS NULL
            OR a.source_metadata->'imageAnalysis'->>'status' IN ('retrying', 'pending')
            OR (
              a.source_metadata->'imageAnalysis'->>'status' = 'completed'
-             AND a.source_metadata->'imageAnalysis'->>'imageType' = '挂号凭证'
+             AND a.source_metadata->'imageAnalysis'->>'imageType' IN ('挂号凭证', '就诊签到记录')
              AND COALESCE(a.source_metadata->'imageAnalysis'->'registrationMatch'->>'status', 'pending') IN ('pending', 'retrying')
            )
          )

@@ -22,7 +22,7 @@ async function run(): Promise<void> {
   } as unknown as PrismaClient
   const result = await loadNativeChatFieldAiBatch(prisma, 'fwyy12345678', 42)
   assert.deepEqual(messageWhere, { applicationLinkStatus: 'matched', OR: [{ applicationNo: 'fwyy12345678', orderId: null }, { orderId: 42 }] })
-  assert.deepEqual(attachmentWhere, { applicationLinkStatus: 'matched', kind: 'image', orderId: 42, sourceMetadata: { path: ['imageAnalysis', 'imageType'], equals: '挂号凭证' } })
+  assert.deepEqual(attachmentWhere, { applicationLinkStatus: 'matched', kind: 'image', orderId: 42, OR: ['挂号凭证', '就诊签到记录'].map((imageType) => ({ sourceMetadata: { path: ['imageAnalysis', 'imageType'], equals: imageType } })) })
   assert.equal(result.messages.length, 2)
   assert.match(result.messages.find((item) => item.sourceRef === '原生消息#1')?.contentText ?? '', /渠道订单号：COD123/)
   assert.equal(result.messages.find((item) => item.sourceRef === '原生消息#1')?.senderId, 'employee-123')
@@ -40,6 +40,9 @@ async function run(): Promise<void> {
   assert.match(material, /图片描述=医院挂号凭证/)
   assert.match(material, /患者：张三/)
   assert.match(material, /科室=内科/)
+  const checkinPrisma = { nativeChatMessage: { findMany: async () => [] }, nativeChatAttachment: { findMany: async () => [{ ...proof, sourceMetadata: { imageAnalysis: { imageType: '就诊签到记录', description: '签到成功' } } }] } } as unknown as PrismaClient
+  const checkin = await loadNativeChatFieldAiBatch(checkinPrisma, 'fwyy12345678', 42)
+  assert.match(checkin.messages[0].contentText, /独立就诊签到记录素材/)
   console.log('nativeChatAiAdapter: individually linked messages and independent proof material passed')
 }
 

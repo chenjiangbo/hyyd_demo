@@ -109,7 +109,7 @@ export class PetIntakeService {
 
     const image = response.image
     if (!Number.isSafeInteger(response.analysisRecordId) || response.analysisRecordId <= 0) throw new Error('后台没有返回图片识别记录编号')
-    if (image.imageType !== '挂号凭证') {
+    if (image.imageType !== '挂号凭证' && image.imageType !== '就诊签到记录') {
       this.removeStaged(stagedPath)
       const description = [image.typeDescription, image.description, image.visibleText].filter(Boolean).join('；')
       return {

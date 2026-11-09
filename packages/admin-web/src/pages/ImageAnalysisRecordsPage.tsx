@@ -46,7 +46,7 @@ function ImageTest({ source, id, available }: { source: 'wechat' | 'wxwork' | 'p
 
 export default function ImageAnalysisRecordsPage(): React.JSX.Element {
   const [preview, setPreview] = useState<string | null>(null)
-  const [filter, setFilter] = useState<'all' | 'awaiting' | 'waiting_image'>('awaiting')
+  const [filter, setFilter] = useState<'all' | 'awaiting' | 'waiting_image' | 'completed'>('awaiting')
   const query = useInfiniteQuery({
     queryKey: ['image-analysis-records', filter],
     initialPageParam: undefined as string | undefined,
@@ -67,7 +67,7 @@ export default function ImageAnalysisRecordsPage(): React.JSX.Element {
   }
   return <div className="space-y-4">
     <div><h1 className="text-2xl font-semibold">图片识别记录</h1><p className="mt-2 text-fg-muted">查看微信、企微和浮动精灵的图片及识别结果。</p></div>
-    <div className="flex flex-wrap items-center gap-4"><button className="rounded border border-line px-3 py-2" type="button" onClick={() => void query.refetch()}>刷新记录</button><label className="flex items-center gap-2 text-sm">筛选<select className="rounded border border-line bg-surface px-3 py-2" value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}><option value="awaiting">待分析</option><option value="waiting_image">等待图片</option><option value="all">全部记录</option></select></label>{awaitingAi !== undefined && <span className="text-sm font-medium">待图片分析 {awaitingAi} 条</span>}{filteredTotal !== undefined && <span className="text-sm text-fg-muted">当前筛选 {filteredTotal} 条，已加载 {items.length} 条</span>}{total !== undefined && <span className="text-sm text-fg-muted">全部 {total} 条</span>}</div>
+    <div className="flex flex-wrap items-center gap-4"><button className="rounded border border-line px-3 py-2" type="button" onClick={() => void query.refetch()}>刷新记录</button><label className="flex items-center gap-2 text-sm">筛选<select className="rounded border border-line bg-surface px-3 py-2" value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}><option value="awaiting">待分析</option><option value="waiting_image">等待图片</option><option value="completed">已分析</option><option value="all">全部记录</option></select></label>{awaitingAi !== undefined && <span className="text-sm font-medium">待图片分析 {awaitingAi} 条</span>}{filteredTotal !== undefined && <span className="text-sm text-fg-muted">当前筛选 {filteredTotal} 条，已加载 {items.length} 条</span>}{total !== undefined && <span className="text-sm text-fg-muted">全部 {total} 条</span>}</div>
     {query.isLoading && <p>正在加载…</p>}
     {query.error && <p className="text-danger">加载失败：{(query.error as Error).message}</p>}
     {!query.isLoading && !query.error && items.length === 0 && <p className="text-fg-muted">暂无图片记录</p>}

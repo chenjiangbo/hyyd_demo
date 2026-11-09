@@ -127,7 +127,7 @@ export function registerNativeChatCollectionAdminRoutes(
       })
       result = { ...result, image }
       await save('running')
-      if (image.imageType === '挂号凭证') {
+      if ((image.imageType === '挂号凭证' || image.imageType === '就诊签到记录')) {
         const match = await matchNativeRegistrationProofToOrders(prisma, '', image, {
           applicationNo: rows[0].application_no,
           onAiTrace: async (trace) => { result = { ...result, matchTrace: trace }; await save('running') }
@@ -145,7 +145,7 @@ export function registerNativeChatCollectionAdminRoutes(
 
   fastify.get<{ Querystring: { cursor?: string; filter?: string } }>('/api/v1/admin/image-analysis-records', async (request, reply) => {
     const filter = request.query.filter ?? 'all'
-    if (!['all', 'awaiting', 'waiting_image'].includes(filter)) return reply.status(400).send({ error: '图片记录筛选条件无效' })
+    if (!['all', 'awaiting', 'waiting_image', 'completed'].includes(filter)) return reply.status(400).send({ error: '图片记录筛选条件无效' })
     let cursor: { time: string; source: string; id: number } | null = null
     if (request.query.cursor) {
       try {
@@ -170,6 +170,8 @@ export function registerNativeChatCollectionAdminRoutes(
                (a.state = 'available' AND a.storage_key IS NOT NULL
                 AND a.source_metadata->>'rendition' = 'non_thumbnail'
                 AND root.occurred_at IS NOT NULL
+                AND root.direction = 'outgoing'
+                AND COALESCE(c.title, '') NOT LIKE '%护工%'
                 AND (a.source_metadata->'imageAnalysis' IS NULL
                      OR a.source_metadata->'imageAnalysis'->>'status' IN ('pending', 'retrying'))
                 AND CASE WHEN jsonb_typeof(a.source_metadata->'imageAnalysis'->'attemptCount') = 'number'
@@ -184,15 +186,15 @@ export function registerNativeChatCollectionAdminRoutes(
           JOIN employees e ON e.id = c.employee_id
           LEFT JOIN LATERAL (
             WITH RECURSIVE ancestors AS (
-              SELECT m.conversation_id, m.source_message_id, m.parent_source_message_id, m.occurred_at, ARRAY[m.id] AS visited
+              SELECT m.conversation_id, m.source_message_id, m.parent_source_message_id, m.occurred_at, m.direction, ARRAY[m.id] AS visited
               UNION ALL
-              SELECT p.conversation_id, p.source_message_id, p.parent_source_message_id, p.occurred_at, ancestors.visited || p.id
+              SELECT p.conversation_id, p.source_message_id, p.parent_source_message_id, p.occurred_at, p.direction, ancestors.visited || p.id
                 FROM ancestors
                 JOIN native_chat_messages p ON p.conversation_id = ancestors.conversation_id
                   AND p.source_message_id = ancestors.parent_source_message_id
                WHERE NOT p.id = ANY(ancestors.visited)
             )
-            SELECT occurred_at FROM ancestors WHERE parent_source_message_id IS NULL
+            SELECT occurred_at, direction FROM ancestors WHERE parent_source_message_id IS NULL
           ) root ON TRUE
          WHERE a.kind = 'image'
            AND (root.occurred_at IS NULL OR root.occurred_at >= (${startAt}::timestamptz AT TIME ZONE 'Asia/Shanghai'))
@@ -203,7 +205,7 @@ export function registerNativeChatCollectionAdminRoutes(
          WHERE p.created_at >= (${startAt}::timestamptz AT TIME ZONE 'Asia/Shanghai')
       )
     `
-    const filterCondition = filter === 'awaiting' ? Prisma.sql`awaiting_ai` : filter === 'waiting_image' ? Prisma.sql`waiting_image` : Prisma.sql`TRUE`
+    const filterCondition = filter === 'awaiting' ? Prisma.sql`awaiting_ai` : filter === 'waiting_image' ? Prisma.sql`waiting_image` : filter === 'completed' ? Prisma.sql`(image_analysis->>'status' = 'completed' OR (source = 'pet' AND image_analysis IS NOT NULL))` : Prisma.sql`TRUE`
     const [rows, counts] = await prisma.$transaction([
       prisma.$queryRaw<Array<{ id: number; source: string; employee_name: string; title: string | null; occurred_at: Date; state: string; image_analysis: unknown; registration_match: unknown; error: string | null; order_id: number | null; image_available: boolean; received_time_unknown: boolean }>>(Prisma.sql`
         ${records}

@@ -5285,9 +5285,9 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
         imageAttempts.push({ attempt: 1, response: response.content, model: response.model })
         await prisma.$executeRaw`UPDATE pet_image_analysis_records SET image_analysis = ${JSON.stringify({ imageAttempts })}::jsonb, updated_at = NOW() WHERE id = ${record.id}`
       })
-      await prisma.$executeRaw`UPDATE pet_image_analysis_records SET image_analysis = ${JSON.stringify({ ...image, imageAttempts })}::jsonb, status = ${image.imageType === '挂号凭证' ? 'matching' : 'completed'}, updated_at = NOW() WHERE id = ${record.id}`
+      await prisma.$executeRaw`UPDATE pet_image_analysis_records SET image_analysis = ${JSON.stringify({ ...image, imageAttempts })}::jsonb, status = ${(image.imageType === '挂号凭证' || image.imageType === '就诊签到记录') ? 'matching' : 'completed'}, updated_at = NOW() WHERE id = ${record.id}`
       let matchTrace: Record<string, unknown> | null = null
-      const registrationMatch = image.imageType === '挂号凭证'
+      const registrationMatch = (image.imageType === '挂号凭证' || image.imageType === '就诊签到记录')
         ? await matchNativeRegistrationProofToOrders(prisma, `data:${mimeType};base64,${base64}`, image, { applicationNo: null, onAiTrace: async (trace) => {
           matchTrace = { attempt: 1, ...trace }
           await prisma.$executeRaw`UPDATE pet_image_analysis_records SET registration_match = ${JSON.stringify({ attempts: [matchTrace] })}::jsonb, updated_at = NOW() WHERE id = ${record.id}`
@@ -5335,7 +5335,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     if (type === 'text' && !textContent) return reply.status(400).send({ error: '文本不能为空' })
     if (type === 'image' && (!base64 || !mimeType))
       return reply.status(400).send({ error: '图片需要 base64 + mimeType' })
-    if (imageAnalysis && (type !== 'image' || imageAnalysis.imageType !== '挂号凭证' ||
+    if (imageAnalysis && (type !== 'image' || (imageAnalysis.imageType !== '挂号凭证' && imageAnalysis.imageType !== '就诊签到记录') ||
       !Array.isArray(imageAnalysis.visibleFields) ||
       imageAnalysis.visibleFields.some((field) => typeof field.label !== 'string' || typeof field.value !== 'string') ||
       [imageAnalysis.typeDescription, imageAnalysis.description, imageAnalysis.visibleText].some((value) => typeof value !== 'string'))) {

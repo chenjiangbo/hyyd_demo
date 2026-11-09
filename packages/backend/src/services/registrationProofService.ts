@@ -306,6 +306,7 @@ export async function analyzeRegistrationProof(
 }
 
 type NativeImageSummary = {
+  imageType?: string
   description: string
   visibleText: string
   visibleFields: Array<{ label: string; value: string }>
@@ -542,11 +543,11 @@ export async function matchNativeRegistrationProofToOrders(
     }))
   }))
   const userPrompt = [
-    `挂号凭证图片识别结果：${JSON.stringify({ description: image.description, visibleText: image.visibleText, visibleFields: image.visibleFields })}`,
+    `图片识别结果：${JSON.stringify({ imageType: image.imageType, description: image.description, visibleText: image.visibleText, visibleFields: image.visibleFields })}`,
     `程序检索到的申领号及其全部订单：${JSON.stringify(modelCandidates)}`
   ].join('\n\n')
   const systemPrompt = [
-      '你是医疗服务业务匹配助手。根据提供的挂号凭证识别内容、候选申领号和订单资料，判断凭证属于哪个申领号和订单。',
+      '你是医疗服务业务匹配助手。根据提供的图片识别内容、候选申领号和订单资料，判断图片属于哪个申领号和订单。就诊签到记录反映签到状态，不能当作挂号完成时间。',
       '申领号代表一次客户服务申请；同一申领号下可能有多个服务订单。姓名可以帮助判断客户，但不能单独确定同一客户的具体订单。',
       '只使用输入中明确提供的凭证内容和订单资料。订单资料为空不代表与凭证一致，不得把凭证上的内容当作订单字段，也不得推断未提供的事实。',
       '凭证中的医院登记号、就诊序号、医院订单号不是业务申领号或寰宇订单号；除非候选订单明确提供相同业务编号，否则不要用这些号码进行匹配。',

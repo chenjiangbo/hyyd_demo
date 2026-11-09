@@ -174,7 +174,7 @@ export async function loadNativeChatFieldAiBatch(
       applicationLinkStatus: 'matched',
       kind: 'image',
       orderId,
-      sourceMetadata: { path: ['imageAnalysis', 'imageType'], equals: '挂号凭证' }
+      OR: ['挂号凭证', '就诊签到记录'].map((imageType) => ({ sourceMetadata: { path: ['imageAnalysis', 'imageType'], equals: imageType } }))
     },
     include: { message: { include: { conversation: { select: { channel: true } } } } },
     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }]
@@ -194,7 +194,7 @@ export async function loadNativeChatFieldAiBatch(
       // leak an unmatched voucher's OCR text into the containing message.
       const metadata = metadataRecord(attachment.sourceMetadata)
       const analysis = metadataRecord(metadata?.imageAnalysis)
-      if (attachment.kind === 'image' && analysis?.imageType === '挂号凭证') continue
+      if (attachment.kind === 'image' && (analysis?.imageType === '挂号凭证' || analysis?.imageType === '就诊签到记录')) continue
       if (voucherAttachmentIds.has(attachment.id)) continue
       evidence.push(attachmentEvidence(attachment))
     }
@@ -231,7 +231,7 @@ export async function loadNativeChatFieldAiBatch(
       : []
     const manager = metadataRecord(metadataRecord(analysis?.registrationMatch)?.managerResolution)
     const contentText = [
-      '独立挂号凭证素材',
+      `独立${analysis?.imageType === '就诊签到记录' ? '就诊签到记录' : '挂号凭证'}素材`,
       attachment.fileName ? `文件名=${attachment.fileName}` : null,
       typeof analysis?.description === 'string' ? `图片描述=${analysis.description}` : null,
       typeof analysis?.visibleText === 'string' ? `图片文字=${analysis.visibleText}` : null,

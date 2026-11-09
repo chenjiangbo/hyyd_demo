@@ -126,7 +126,7 @@ async function runSilentCommunicationOrders(prisma: PrismaClient, minio: Minio.C
         JOIN native_chat_messages nm ON nm.id = a.message_id
         WHERE a.application_link_status = 'matched'
           AND a.kind = 'image'
-          AND a.source_metadata->'imageAnalysis'->>'imageType' = '挂号凭证'
+          AND a.source_metadata->'imageAnalysis'->>'imageType' IN ('挂号凭证', '就诊签到记录')
           AND a.order_id = o.id
           AND GREATEST(a.updated_at, COALESCE(a.application_linked_at, 'epoch'::timestamp), nm.observed_at)
               > COALESCE(o.field_ai_last_native_at, 'epoch'::timestamp)
@@ -152,7 +152,7 @@ async function runSilentCommunicationOrders(prisma: PrismaClient, minio: Minio.C
       COALESCE((SELECT MAX(GREATEST(a.updated_at, COALESCE(a.application_linked_at, 'epoch'::timestamp)))
         FROM native_chat_attachments a
         WHERE a.application_link_status = 'matched' AND a.kind = 'image'
-          AND a.source_metadata->'imageAnalysis'->>'imageType' = '挂号凭证'
+          AND a.source_metadata->'imageAnalysis'->>'imageType' IN ('挂号凭证', '就诊签到记录')
           AND a.order_id = o.id
       ), 'epoch'::timestamp)
     ) <= ${cutoff}

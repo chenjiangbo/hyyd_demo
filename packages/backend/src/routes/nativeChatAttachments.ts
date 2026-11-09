@@ -110,7 +110,7 @@ export function registerNativeChatAttachmentRoutes(
          AND a.kind = 'image'
          AND a.storage_key IS NOT NULL
          AND a.application_link_source IS DISTINCT FROM 'manager_confirmation'
-         AND a.source_metadata->'imageAnalysis'->>'imageType' = '挂号凭证'
+         AND a.source_metadata->'imageAnalysis'->>'imageType' IN ('挂号凭证', '就诊签到记录')
          AND a.source_metadata->'imageAnalysis'->'registrationMatch'->>'status' = 'completed'
          AND a.source_metadata->'imageAnalysis'->'registrationMatch'->'managerResolution' IS NULL
          AND jsonb_array_length(COALESCE(a.source_metadata->'imageAnalysis'->'registrationMatch'->'candidateApplications', '[]'::jsonb)) > 0
@@ -161,7 +161,7 @@ export function registerNativeChatAttachmentRoutes(
       ? attachment.source_metadata as Record<string, unknown> : {}
     const analysis = source.imageAnalysis && typeof source.imageAnalysis === 'object' && !Array.isArray(source.imageAnalysis)
       ? source.imageAnalysis as Record<string, unknown> : {}
-    if (analysis.imageType !== '挂号凭证' || !analysis.registrationMatch || typeof analysis.registrationMatch !== 'object') {
+    if ((analysis.imageType !== '挂号凭证' && analysis.imageType !== '就诊签到记录') || !analysis.registrationMatch || typeof analysis.registrationMatch !== 'object') {
       return reply.status(409).send({ error: '图片没有待确认的挂号凭证匹配结果' })
     }
     const previousMatch = analysis.registrationMatch as Record<string, unknown>
@@ -206,7 +206,7 @@ export function registerNativeChatAttachmentRoutes(
     const match = analysis.registrationMatch && typeof analysis.registrationMatch === 'object' && !Array.isArray(analysis.registrationMatch)
       ? analysis.registrationMatch as Record<string, unknown>
       : {}
-    if (analysis.imageType !== '挂号凭证' || match.status !== 'completed') return reply.status(409).send({ error: '图片没有待确认的挂号凭证匹配结果' })
+    if ((analysis.imageType !== '挂号凭证' && analysis.imageType !== '就诊签到记录') || match.status !== 'completed') return reply.status(409).send({ error: '图片没有待确认的挂号凭证匹配结果' })
     if (match.managerResolution) {
       const previous = match.managerResolution as Record<string, unknown>
       if (previous.status === 'manager_confirmed' && previous.applicationNo === applicationNo && previous.orderId === orderId) {

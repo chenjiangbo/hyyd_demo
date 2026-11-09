@@ -35,7 +35,15 @@ async function run(): Promise<void> {
       (3,1,'completed','{}',NULL,NULL,NULL,'2026-11-02 19:00:00',NULL,NULL)`,
     `INSERT INTO native_chat_messages SELECT 100+n,1,'extra-'||n,NULL,'2026-11-03 01:00:00'::timestamp + n * interval '1 second' FROM generate_series(1,52) AS n`,
     `INSERT INTO native_chat_attachments SELECT 100+n,100+n,'image','available','extra-'||n,NULL,NULL,NULL,NULL FROM generate_series(1,52) AS n`,
+    `ALTER TABLE native_chat_messages ADD COLUMN direction text NOT NULL DEFAULT 'outgoing'`,
+    `UPDATE native_chat_messages SET direction = 'incoming' WHERE id = 102`,
+    `INSERT INTO native_chat_conversations VALUES (2, 1, 'wechat', '北京护工群')`,
+    `UPDATE native_chat_messages SET conversation_id = 2 WHERE id = 108`,
+    `UPDATE native_chat_messages SET direction = 'incoming' WHERE id = 6`,
+    `UPDATE native_chat_attachments SET state = 'available', storage_key = 'merged-image', source_metadata = '{"rendition":"non_thumbnail"}' WHERE id = 4`,
+    `UPDATE native_chat_messages SET direction = 'incoming' WHERE id = 104`,
     `UPDATE native_chat_attachments SET source_metadata = '{"rendition":"non_thumbnail"}' WHERE id = 101`,
+    `UPDATE native_chat_attachments SET source_metadata = '{"rendition":"non_thumbnail"}' WHERE id = 108`,
     `UPDATE native_chat_attachments SET source_metadata = '{"rendition":"non_thumbnail","imageAnalysis":{"status":"retrying","attemptCount":1}}' WHERE id = 102`,
     `UPDATE native_chat_attachments SET source_metadata = '{"rendition":"non_thumbnail","imageAnalysis":{"status":"retrying","attemptCount":2}}' WHERE id = 103`,
     `UPDATE native_chat_attachments SET source_metadata = '{"rendition":"non_thumbnail","imageAnalysis":{"status":"completed"}}' WHERE id = 104`,
@@ -73,14 +81,14 @@ async function run(): Promise<void> {
     assert.equal(new Set(all.map((r: { source: string; id: number }) => `${r.source}:${r.id}`)).size, 56)
     assert.equal(all.some((r: { source: string; id: number }) => r.source === 'wechat' && r.id === 1), false)
     assert.equal(all.some((r: { source: string; id: number }) => r.source === 'wechat' && r.id === 3), false)
-    assert.equal(all.find((r: { source: string; id: number }) => r.source === 'wechat' && r.id === 4).image_available, false)
+    assert.equal(all.find((r: { source: string; id: number }) => r.source === 'wechat' && r.id === 4).image_available, true)
     assert.equal(all.find((r: { source: string; id: number }) => r.source === 'wechat' && r.id === 107).registration_match.managerResolution.status, 'manager_not_applicable')
     assert.equal(all.find((r: { source: string; id: number }) => r.source === 'pet' && r.id === 1).image_available, true)
     assert.equal(all.find((r: { source: string; id: number }) => r.source === 'pet' && r.id === 2).image_available, false)
     const awaiting = await app.inject({ method: 'GET', url: '/api/v1/admin/image-analysis-records?filter=awaiting' })
     assert.equal(awaiting.statusCode, 200, awaiting.body)
     assert.equal(awaiting.json().data.filteredTotal, 2)
-    assert.deepEqual(awaiting.json().data.items.map((r: { id: number }) => r.id).sort(), [101, 102])
+    assert.deepEqual(awaiting.json().data.items.map((r: { id: number }) => r.id).sort((a: number, b: number) => a - b), [4, 101])
     const waitingFirst = await app.inject({ method: 'GET', url: '/api/v1/admin/image-analysis-records?filter=waiting_image' })
     assert.equal(waitingFirst.statusCode, 200, waitingFirst.body)
     const waitingData = waitingFirst.json().data
