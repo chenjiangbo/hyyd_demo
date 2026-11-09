@@ -125,6 +125,8 @@ interface PetBubbleProps {
   skipEntranceAnimation?: boolean
   onAction?: (actionId: string) => void
   onClose?: () => void
+  onMinimize?: () => void
+  onDragStart?: (event: React.MouseEvent<HTMLElement>) => void
   onSelectCandidate?: (orderId: number) => void
   onFieldChange?: PetFieldChange
   onLookup?: (kind: PetLookupKind, query: string, parent: { hospitalId?: string; departmentId?: string; currentId?: string }) => Promise<PetLookupOption[]>
@@ -494,7 +496,7 @@ function MasterReview({ items, addressValue, onFieldChange }: { items: MasterRev
   </div>
 }
 
-export function PetBubble({ panel, skipEntranceAnimation, onAction, onClose, onSelectCandidate, onSelectApplication, onResolveImageOrder, onDiscardImageMatch, onPickOtherImageOrder, imageMatchError, onFieldChange, onLookup, onSizeChange, onAddEscortRecord, onRemoveEscortRecord }: PetBubbleProps): React.JSX.Element {
+export function PetBubble({ panel, skipEntranceAnimation, onAction, onClose, onMinimize, onDragStart, onSelectCandidate, onSelectApplication, onResolveImageOrder, onDiscardImageMatch, onPickOtherImageOrder, imageMatchError, onFieldChange, onLookup, onSizeChange, onAddEscortRecord, onRemoveEscortRecord }: PetBubbleProps): React.JSX.Element {
   const bubbleRef = useRef<HTMLElement>(null)
   const wideOrderForm = panel.kind === 'form' && !panel.confirmation && panel.id?.startsWith('order-ai:')
 
@@ -520,7 +522,15 @@ export function PetBubble({ panel, skipEntranceAnimation, onAction, onClose, onS
   }, [onSizeChange, wideOrderForm])
 
   return (
-    <section ref={bubbleRef} className={`pet-bubble pet-bubble--${panel.kind}${skipEntranceAnimation ? ' pet-bubble--no-entrance' : ''}${panel.kind === 'form' && panel.confirmation ? ' pet-bubble--master-review' : ''}${panel.kind === 'form' && !panel.confirmation && panel.id?.startsWith('order-ai:') ? ' pet-bubble--order-ai' : ''}`} style={panel.kind === 'form' ? ({
+    <section ref={bubbleRef} onMouseDown={(event) => {
+      const target = event.target as HTMLElement
+      if (event.button !== 0 || !event.currentTarget.contains(target) || target.closest('button, input, textarea, select, a, [role="dialog"], [role="listbox"], [contenteditable="true"]')) return
+      for (let element: HTMLElement | null = target; element && element !== event.currentTarget; element = element.parentElement) {
+        const rect = element.getBoundingClientRect()
+        if (element.scrollHeight > element.clientHeight && event.clientX >= rect.left + element.clientWidth) return
+      }
+      onDragStart?.(event)
+    }} className={`pet-bubble pet-bubble--${panel.kind}${skipEntranceAnimation ? ' pet-bubble--no-entrance' : ''}${panel.kind === 'form' && panel.confirmation ? ' pet-bubble--master-review' : ''}${panel.kind === 'form' && !panel.confirmation && panel.id?.startsWith('order-ai:') ? ' pet-bubble--order-ai' : ''}`} style={panel.kind === 'form' ? ({
       maxHeight: `${Math.max(240, window.screen.availHeight - 54)}px`,
       '--pet-form-body-max-height': `${Math.max(140, window.screen.availHeight - 230)}px`
     } as React.CSSProperties) : panel.kind === 'image-match' ? ({
@@ -528,6 +538,7 @@ export function PetBubble({ panel, skipEntranceAnimation, onAction, onClose, onS
       maxHeight: `${Math.max(160, window.screen.availHeight - 90)}px`
     } as React.CSSProperties) : undefined} role="status" aria-live="polite">
       <span className="pet-bubble__tail" aria-hidden="true" />
+      {onMinimize && <button className="pet-bubble__minimize" type="button" aria-label="缩小面板" title="缩小" onClick={onMinimize}>−</button>}
       <button className="pet-bubble__close" type="button" aria-label="关闭面板" title="关闭" onClick={onClose}>×</button>
       {panel.kind === 'speech' && <><p className="pet-bubble__text">{panel.text}</p><Actions actions={panel.actions ?? []} onAction={onAction} /></>}
       {panel.kind === 'progress' && <><p className="pet-bubble__text">{panel.text}</p>{panel.progress !== undefined && <div className="pet-bubble__progress" aria-label={`处理进度 ${panel.progress}%`}><span style={{ width: `${Math.max(0, Math.min(100, panel.progress))}%` }} /></div>}</>}

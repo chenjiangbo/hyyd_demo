@@ -33,6 +33,7 @@ function droppedPathFromUri(value: string): string | null {
 export function Pet(): React.JSX.Element {
   const [businessPanel, setBusinessPanel] = useState<PetPanel | null>(null)
   const [businessPanelVisible, setBusinessPanelVisible] = useState(true)
+  const [minimizedPanelId, setMinimizedPanelId] = useState<string | null>(null)
   const [panelResumed, setPanelResumed] = useState(false)
   const committedLookupSelections = useRef<Record<string, string>>({})
   const escortIndexCounter = useRef({ panelId: '', value: 0 })
@@ -53,6 +54,7 @@ export function Pet(): React.JSX.Element {
   const receivingTimer = useRef<number | null>(null)
   const dragOverRef = useRef(false)
   const petDragRef = useRef<PetDrag | null>(null)
+  const petWasDragged = useRef(false)
 
   const announce = (nextMessage: string, talk = false): void => {
     setMessage(nextMessage)
@@ -308,7 +310,8 @@ export function Pet(): React.JSX.Element {
   }, [])
 
   // Drag-over stays compact so the drop target does not move under the cursor.
-  const expanded = (businessPanelVisible && businessPanel !== null) || (mode !== 'idle' && mode !== 'dragover') || speaking
+  const businessMinimized = businessPanel?.kind === 'form' && businessPanel.id === minimizedPanelId
+  const expanded = (businessPanelVisible && businessPanel !== null && !businessMinimized) || (mode !== 'idle' && mode !== 'dragover') || speaking
 
   const avatarState: PetVisualState = businessPanelVisible && businessPanel ? 'speaking' : mode === 'dragover'
     ? 'dragover'
@@ -326,7 +329,7 @@ export function Pet(): React.JSX.Element {
 
   const panel: PetPanel | null = (mode === 'candidates' && nativeImageMatch !== null
     ? { kind: 'image-match', match: nativeImageMatch, selectedApplicationNo }
-    : null) ?? (businessPanelVisible ? businessPanel : null) ?? (mode === 'candidates' && candidates.length > 0
+    : null) ?? (businessPanelVisible && !businessMinimized ? businessPanel : null) ?? (mode === 'candidates' && candidates.length > 0
     ? { kind: 'candidate-list', title: '请选择这张凭证对应的订单', items: candidates }
     : mode === 'unknown' || mode === 'warning'
       ? { kind: 'error', text: message }
@@ -586,30 +589,42 @@ export function Pet(): React.JSX.Element {
       : '暂时无法确认移动端状态'
 
   useEffect(() => {
+    let moveFrame: number | null = null
+    let pendingMove: { x: number; y: number } | null = null
+    const flushMove = (): void => {
+      moveFrame = null
+      if (!pendingMove) return
+      window.api.movePet(pendingMove.x, pendingMove.y)
+      pendingMove = null
+    }
     const onMouseMove = (event: MouseEvent): void => {
       const drag = petDragRef.current
       if (!drag || event.buttons === 0) return
-      window.api.movePet(
-        Math.round(drag.windowX + event.screenX - drag.startX),
-        Math.round(drag.windowY + event.screenY - drag.startY)
-      )
+      if (Math.abs(event.screenX - drag.startX) + Math.abs(event.screenY - drag.startY) > 4) petWasDragged.current = true
+      pendingMove = { x: Math.round(drag.windowX + event.screenX - drag.startX), y: Math.round(drag.windowY + event.screenY - drag.startY) }
+      if (moveFrame === null) moveFrame = window.requestAnimationFrame(flushMove)
     }
     const onMouseUp = (event: MouseEvent): void => {
       if (petDragRef.current) {
+        if (moveFrame !== null) window.cancelAnimationFrame(moveFrame)
+        flushMove()
         petDebug('mouseup', { screenX: event.screenX, screenY: event.screenY })
         petDragRef.current = null
+        void window.api.setPetExpanded(expanded).then((layout) => setBubbleSide(layout.bubbleSide))
       }
     }
     window.addEventListener('mousemove', onMouseMove)
     window.addEventListener('mouseup', onMouseUp)
     return () => {
+      if (moveFrame !== null) window.cancelAnimationFrame(moveFrame)
       window.removeEventListener('mousemove', onMouseMove)
       window.removeEventListener('mouseup', onMouseUp)
     }
-  }, [])
+  }, [expanded])
 
-  const startPetDrag = async (event: React.MouseEvent<HTMLDivElement>): Promise<void> => {
+  const startPetDrag = async (event: React.MouseEvent<HTMLElement>): Promise<void> => {
     if (event.button !== 0) return
+    petWasDragged.current = false
     petDebug('mousedown', { screenX: event.screenX, screenY: event.screenY })
     event.preventDefault()
     const bounds = await window.api.getPetBounds()
@@ -631,12 +646,15 @@ export function Pet(): React.JSX.Element {
       <div
         className="pet-character"
         onMouseDown={(event) => { void startPetDrag(event) }}
+        onClick={() => { if (!petWasDragged.current && businessPanelVisible && businessMinimized) { setMinimizedPanelId(null); setPanelResumed(true) } }}
       >
         <PetAvatar state={avatarState} />
         {mobileStatus.state !== 'unknown' && <span className={`pet-mobile-status pet-mobile-status--${mobileStatus.state}`} title={mobileStatusTitle} aria-label={mobileStatusTitle} />}
       </div>
       {expanded && panel !== null && <PetBubble
         panel={panel}
+        onMinimize={panel === businessPanel && panel.kind === 'form' ? () => setMinimizedPanelId(panel.id) : undefined}
+        onDragStart={(event) => { void startPetDrag(event) }}
         onClose={() => { if (panel === businessPanel && businessPanelVisible && businessPanel) void window.api.hidePetPanel(); setMode('idle'); setSpeaking(false) }}
         skipEntranceAnimation={panelResumed && panel === businessPanel}
         onSelectCandidate={selectCandidate}

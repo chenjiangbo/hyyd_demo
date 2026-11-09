@@ -38,6 +38,8 @@
 
 .pet-bubble--candidate-list { top: 28px; max-height: min(70vh, 620px); overflow-y: auto; }
 .pet-bubble--form { top: 28px; width: 380px; max-width: calc(100vw - 24px); max-height: 900px; overflow: visible; animation: pet-bubble-throw-left 260ms cubic-bezier(.16, 1, .3, 1) both; }
+.pet-expanded .pet-bubble--form { top: auto; bottom: 32px; }
+.pet-expanded.pet-bubble-left .pet-bubble--form { left: auto; right: 102px; }
 .pet-expanded.pet-bubble-left .pet-bubble--form { transform-origin: right bottom; }
 .pet-expanded.pet-bubble-right .pet-bubble--form { transform-origin: left bottom; animation-name: pet-bubble-throw-right; }
 .pet-bubble--image-match { top: 28px; width: 360px; min-width: 0; overflow-x: hidden; overflow-y: auto; }
@@ -338,4 +340,7 @@
 .pet-bubble__close { position: absolute; top: 5px; right: 7px; z-index: 2; width: 26px; height: 26px; padding: 0; border: 1px solid #d4aa98; border-radius: 50%; background: #fff5ee; color: #854631; font-size: 22px; line-height: 22px; cursor: pointer; }
 .pet-bubble__close:hover { border-color: #b95437; background: #f7dfd3; color: #713622; }
 .pet-bubble__close:focus-visible { outline: 2px solid #b95437; outline-offset: 2px; }
+.pet-bubble__minimize { position: absolute; top: 5px; right: 39px; z-index: 2; width: 26px; height: 26px; padding: 0; border: 1px solid #d4aa98; border-radius: 50%; background: #fff5ee; color: #854631; font-size: 20px; line-height: 22px; cursor: pointer; }
+.pet-bubble__minimize:hover { border-color: #b95437; background: #f7dfd3; }
+.pet-bubble--order-ai .pet-bubble__form-header { padding-right: 58px; }
 .pet-bubble { padding-right: 36px; }

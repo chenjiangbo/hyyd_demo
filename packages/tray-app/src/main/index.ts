@@ -699,9 +699,7 @@ if (!gotLock) {
       if (typeof x !== 'number' || !Number.isInteger(x) || typeof y !== 'number' || !Number.isInteger(y)) {
         throw new Error('浮动精灵位置非法')
       }
-      const before = petWindow.getPosition()
       petWindow.setPosition(x, y)
-      writePetDiagnostic('window:move', { before, after: [x, y] })
     })
     ipcMain.handle('pet:set-expanded', (_e, expanded: unknown): { bubbleSide: PetBubbleSide } => {
       if (typeof expanded !== 'boolean') throw new Error('浮动精灵展开状态非法')
