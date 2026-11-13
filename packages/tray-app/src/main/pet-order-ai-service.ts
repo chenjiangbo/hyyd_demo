@@ -27,6 +27,7 @@ export type PetOrderAiPanel = {
   originalService?: string
   originalAmount?: string
   originalStatus?: string
+  isStrickenCase?: boolean
   sections?: Array<{ id: string; title: string; fieldIds: string[]; repeatable?: boolean }>
   actions?: Array<{ id: string; label: string; tone?: 'primary' | 'secondary'; loading?: boolean }>
   confirmation?: { title: string; originalAddress?: string; creations: Array<{ key: string; type: string; name: string; parent?: string }>; review: MasterReviewItem[] }
@@ -549,7 +550,7 @@ export class PetOrderAiService {
       const formPanel: PetOrderAiPanel = {
         kind: 'form', id, title: '',
         description: '以下为订单的部分字段及 AI 建议值，核对或修改后可一键填单。',
-        fields, originalService: current.channelService, originalAmount: current.orderAmount, originalStatus: current.orderStatus,
+        fields, originalService: current.channelService, originalAmount: current.orderAmount, originalStatus: current.orderStatus, isStrickenCase: current.isStrickenCase === '1',
         sections: [
           { id: 'order-info', title: '订单基本信息', fieldIds: ['orderNo', 'documentNo', 'groupName', 'orderStatus', 'channelService', 'orderAmount', 'amountChanged'] },
           { id: 'hospital-info', title: '医院信息', fieldIds: ['hospital', 'hospitalAddress', 'department', 'doctor'] },

@@ -259,6 +259,7 @@
 .pet-bubble--order-ai .pet-bubble__form-section .pet-bubble__fields { gap: 5px 8px; }
 .pet-bubble--order-ai .pet-bubble__form-section--hospital-info .pet-bubble__fields,
 .pet-bubble--order-ai .pet-bubble__form-section--time-info .pet-bubble__fields { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 16px; }
+.pet-bubble__special-case { margin-left: 10px; padding: 2px 7px; border-radius: 4px; background: #fff0e7; color: #c84b26; font-size: 12px; }
 .pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__fields { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; column-gap: 16px; }
 .pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='groupName'] { grid-column: 1 / -1; }
 .pet-bubble--order-ai .pet-bubble__field { grid-template-columns: 72px minmax(0, 1fr) auto; gap: 3px 4px; color: #80675b; }

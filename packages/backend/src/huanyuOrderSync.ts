@@ -251,6 +251,7 @@ export async function syncHuanyuOrderFromTaikang(
       BDQD: text(channel?.id ?? null, 100),
       BDQD_DDBH: text(order.sourceOrderNo, 50),
       BDQD_DDBH2: text(backupOrderNo, 50),
+      isStrickenCase: detail.isStrickenCase === true ? '1' : detail.isStrickenCase === false ? '0' : null,
       BDQD_FWXM: text(product?.id ?? null, 50),
       DDJE: amount,
       KHJL: text(manager, 50),

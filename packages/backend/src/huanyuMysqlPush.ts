@@ -175,7 +175,7 @@ export async function createHuanyuOrderOnMysql(row: Record<string, unknown>): Pr
     'DDBH', 'DD_state', 'BDQD', 'BDQD_DDBH', 'BDQD_DDBH2', 'BDQD_FWXM', 'DDJE', 'KHJL',
     'JZR_XM', 'JZR_ZJLX', 'JZR_XB', 'JZR_NL', 'JZR_LXDH',
     'JZR_JSMC', 'JZR_JSGX', 'JZR_JSLXFS', 'JZR_JB', 'JZR_BZ',
-    'YYQDLX', 'xtsj_'
+    'YYQDLX', 'isStrickenCase', 'xtsj_'
   ] as const
   const sql = `INSERT INTO \`HY_FACT_DDCX_NEW\` (${columns.map((column) => `\`${column}\``).join(', ')}) VALUES (${columns.map((column) => column === 'xtsj_' ? "DATE_FORMAT(NOW(), '%Y%m%d%H%i%s')" : '?').join(', ')})`
   const connection = await mysqlWriterPool().getConnection()
@@ -216,7 +216,7 @@ export async function readRemotePetOrder(orderNo: string): Promise<{ order: Reco
   const connection = await mysqlWriterPool().getConnection()
   try {
     const [rows] = await connection.execute<RowDataPacket[]>(
-      'SELECT `JZR_ZJHM`, `DD_state`, `BDQD`, `BDQD_FWXM`, `DDJE`, `H_NAME`, `H_ADDRESS`, `H_KS`, `H_YS`, `BBQ_XQ`, `BBQ_YD`, `BBQ_QDFW`, `BBQ_FK`, `lastQueuingTime`, `PZXJ` FROM `HY_FACT_DDCX_NEW` WHERE `DDBH` = ? LIMIT 1', [orderNo])
+      'SELECT `JZR_ZJHM`, `DD_state`, `BDQD`, `BDQD_FWXM`, `DDJE`, `isStrickenCase`, `H_NAME`, `H_ADDRESS`, `H_KS`, `H_YS`, `BBQ_XQ`, `BBQ_YD`, `BBQ_QDFW`, `BBQ_FK`, `lastQueuingTime`, `PZXJ` FROM `HY_FACT_DDCX_NEW` WHERE `DDBH` = ? LIMIT 1', [orderNo])
     if (!rows[0]) return null
     const row = rows[0]
     const value = (key: string): string => row[key] == null ? '' : String(row[key]).trim()
@@ -229,7 +229,7 @@ export async function readRemotePetOrder(orderNo: string): Promise<{ order: Reco
       for (const person of people) phones.set(String(person.id).trim(), String(person.phone ?? '').trim())
     }
     return { order: {
-      documentNo: value('JZR_ZJHM'), orderStatus: value('DD_state'), channel: value('BDQD'), channelService: value('BDQD_FWXM'), orderAmount: value('DDJE'),
+      documentNo: value('JZR_ZJHM'), orderStatus: value('DD_state'), channel: value('BDQD'), channelService: value('BDQD_FWXM'), orderAmount: value('DDJE'), isStrickenCase: value('isStrickenCase'),
       hospital: value('H_NAME'), hospitalAddress: value('H_ADDRESS'), department: value('H_KS'), doctor: value('H_YS'),
       requestTime: value('BBQ_XQ'), responseTime: value('BBQ_YD'), serviceStartTime: value('BBQ_QDFW'), bookingFeedbackTime: value('BBQ_FK'), latestTicketTime: value('lastQueuingTime'), escortSummary: value('PZXJ')
     }, escorts: escorts.map((escort) => ({ id: String(escort.ZJ ?? '').trim(), escortName: String(escort.PZR ?? '').trim(), escortPhone: phones.get(String(escort.PZR ?? '').trim()) ?? '', serviceDate: String(escort.BBQ_FW ?? '').trim() })) }
