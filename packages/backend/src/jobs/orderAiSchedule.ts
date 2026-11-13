@@ -113,11 +113,11 @@ async function runSilentCommunicationOrders(prisma: PrismaClient, minio: Minio.C
           FROM native_chat_attachments a
           WHERE a.message_id = nm.id
         ) na ON TRUE
-        WHERE nc.application_link_status = 'matched'
-          AND nc.application_no IS NOT NULL
-          AND nm.application_link_status = 'matched'
-          AND nm.application_no = nc.application_no
-          AND (nm.order_id = o.id OR (nm.order_id IS NULL AND o.raw_json->>'crmApplyNo' IS NOT NULL AND nm.application_no = o.raw_json->>'crmApplyNo'))
+        WHERE nm.application_link_status = 'matched'
+          AND ((nm.application_link_source = 'dispatch_channel_order_no' AND nm.order_id = o.id)
+            OR (nc.application_link_status = 'matched' AND nc.application_no IS NOT NULL
+              AND nm.application_no = nc.application_no
+              AND (nm.order_id = o.id OR (nm.order_id IS NULL AND o.raw_json->>'crmApplyNo' IS NOT NULL AND nm.application_no = o.raw_json->>'crmApplyNo'))))
           AND GREATEST(nm.observed_at, COALESCE(nm.application_linked_at, 'epoch'::timestamp), COALESCE(na.latest_attachment_at, 'epoch'::timestamp))
               > COALESCE(o.field_ai_last_native_at, 'epoch'::timestamp)
       ) OR EXISTS (
@@ -143,11 +143,11 @@ async function runSilentCommunicationOrders(prisma: PrismaClient, minio: Minio.C
           FROM native_chat_attachments a
           WHERE a.message_id = nm.id
         ) na ON TRUE
-        WHERE nc.application_link_status = 'matched'
-          AND nc.application_no IS NOT NULL
-          AND nm.application_link_status = 'matched'
-          AND nm.application_no = nc.application_no
-          AND (nm.order_id = o.id OR (nm.order_id IS NULL AND o.raw_json->>'crmApplyNo' IS NOT NULL AND nm.application_no = o.raw_json->>'crmApplyNo'))
+        WHERE nm.application_link_status = 'matched'
+          AND ((nm.application_link_source = 'dispatch_channel_order_no' AND nm.order_id = o.id)
+            OR (nc.application_link_status = 'matched' AND nc.application_no IS NOT NULL
+              AND nm.application_no = nc.application_no
+              AND (nm.order_id = o.id OR (nm.order_id IS NULL AND o.raw_json->>'crmApplyNo' IS NOT NULL AND nm.application_no = o.raw_json->>'crmApplyNo'))))
       ), 'epoch'::timestamp),
       COALESCE((SELECT MAX(GREATEST(a.updated_at, COALESCE(a.application_linked_at, 'epoch'::timestamp)))
         FROM native_chat_attachments a
