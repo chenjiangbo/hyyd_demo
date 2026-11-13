@@ -206,10 +206,9 @@ function SelectField({ field, onFieldChange, showFullValue = false, searchable =
 
 const TimeWheel = memo(function TimeWheel({ label, value, count, onChange }: { label: string; value: string; count: number; onChange: (value: string) => void }): React.JSX.Element {
   const wheel = useRef<HTMLDivElement>(null)
-  const initialValue = useRef(value)
   useEffect(() => {
-    if (wheel.current) wheel.current.scrollTop = Number(initialValue.current) * 28
-  }, [])
+    if (wheel.current && Math.round(wheel.current.scrollTop / 28) !== Number(value)) wheel.current.scrollTop = Number(value) * 28
+  }, [value])
   return <div className="pet-bubble__time-wheel">
     <span>{label}</span>
     <div ref={wheel} role="listbox" aria-label={label} tabIndex={0} onKeyDown={(event) => {
@@ -232,20 +231,25 @@ const TimeWheel = memo(function TimeWheel({ label, value, count, onChange }: { l
 function DateTimeField({ field, onFieldChange, reserveCopy = false }: { field: PetField; onFieldChange?: PetFieldChange; reserveCopy?: boolean }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [month, setMonth] = useState(() => new Date())
+  const [timeOpen, setTimeOpen] = useState(false)
   const [draftDate, setDraftDate] = useState('')
-  const [time, setTime] = useState({ hour: '00', minute: '00' })
+  const [time, setTime] = useState({ hour: '00', minute: '00', second: '00' })
+  const [timeInput, setTimeInput] = useState('00:00:00')
   const anchor = useRef<HTMLButtonElement>(null)
   const raw = String(field.value)
   const display = raw.replace('T', ' ')
   const pad = (value: number): string => String(value).padStart(2, '0')
   const openPicker = (): void => {
+    setTimeOpen(false)
     const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?$/)
     const now = new Date()
     setMonth(match ? new Date(Number(match[1]), Number(match[2]) - 1, 1) : new Date(now.getFullYear(), now.getMonth(), 1))
     setDraftDate(match ? `${match[1]}-${match[2]}-${match[3]}` : `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`)
-    setTime(match
-      ? { hour: match[4], minute: match[5] }
-      : { hour: pad(now.getHours()), minute: pad(now.getMinutes()) })
+    const nextTime = match
+      ? { hour: match[4], minute: match[5], second: match[6] ?? '00' }
+      : { hour: pad(now.getHours()), minute: pad(now.getMinutes()), second: pad(now.getSeconds()) }
+    setTime(nextTime)
+    setTimeInput(`${nextTime.hour}:${nextTime.minute}:${nextTime.second}`)
     setOpen(true)
   }
   const { rect, panelRect } = useMemo(() => ({
@@ -268,12 +272,17 @@ function DateTimeField({ field, onFieldChange, reserveCopy = false }: { field: P
   const days = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate()
   const setHour = useCallback((value: string): void => setTime((current) => current.hour === value ? current : { ...current, hour: value }), [])
   const setMinute = useCallback((value: string): void => setTime((current) => current.minute === value ? current : { ...current, minute: value }), [])
+  const setSecond = useCallback((value: string): void => setTime((current) => current.second === value ? current : { ...current, second: value }), [])
+  useEffect(() => { setTimeInput(`${time.hour}:${time.minute}:${time.second}`) }, [time])
+  const validDate = /^\d{4}-\d{2}-\d{2}$/.test(draftDate) && (() => {
+    const [year, month, day] = draftDate.split('-').map(Number)
+    const date = new Date(year, month - 1, day)
+    return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
+  })()
+  const validTime = /^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/.test(timeInput)
   const apply = (): void => {
-    if (!draftDate) return
-    const hour = Number(time.hour)
-    const minute = Number(time.minute)
-    if (hour > 23 || minute > 59) return
-    onFieldChange?.(field.id, `${draftDate}T${pad(hour)}:${pad(minute)}:00`)
+    if (!validDate || !validTime) return
+    onFieldChange?.(field.id, `${draftDate}T${timeInput}`)
     setOpen(false)
   }
   return <div className="pet-bubble__input-with-copy">
@@ -286,20 +295,21 @@ function DateTimeField({ field, onFieldChange, reserveCopy = false }: { field: P
       const date = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(seconds))
       if (date.getFullYear() !== Number(year) || date.getMonth() + 1 !== Number(month) || date.getDate() !== Number(day) || date.getHours() !== Number(hour) || date.getMinutes() !== Number(minute) || date.getSeconds() !== Number(seconds)) return
       setOpen(false)
-      onFieldChange?.(field.id, `${year}-${month}-${day}T${hour}:${minute}:00`)
+      onFieldChange?.(field.id, `${year}-${month}-${day}T${hour}:${minute}:${seconds}`)
     }} aria-label={field.label} aria-invalid={Boolean(field.error)} />
     <button ref={anchor} className="pet-bubble__calendar-icon" type="button" title="选择日期和时间" aria-label={`选择${field.label}`} aria-haspopup="dialog" aria-expanded={open} onClick={openPicker}>▦</button></div>
     {(raw || reserveCopy) && <button type="button" title="复制" disabled={!raw} aria-hidden={!raw} style={!raw ? { visibility: 'hidden' } : undefined} onClick={() => { void navigator.clipboard?.writeText(display) }}>复制</button>}
     {open && createPortal(<>
       <div className="pet-bubble__picker-dismiss" onMouseDown={(event) => { if (event.button === 0) setOpen(false) }} />
       <div className="pet-bubble__datetime-picker" style={{ left: pickerLeft, top: pickerTop, width: pickerWidth, maxHeight: pickerHeight }} role="dialog" aria-label={`选择${field.label}`}>
+        <div className="pet-bubble__datetime-edit"><input aria-label="日期" placeholder="YYYY-MM-DD" value={draftDate} onFocus={() => setTimeOpen(false)} onChange={(event) => { const value = event.target.value; setDraftDate(value); if (/^\d{4}-\d{2}-\d{2}$/.test(value)) { const [year, month] = value.split('-').map(Number); if (month >= 1 && month <= 12) setMonth(new Date(year, month - 1, 1)) } }} /><input aria-label="时间" placeholder="HH:mm:ss" value={timeInput} onFocus={() => setTimeOpen(true)} onClick={() => setTimeOpen(true)} onChange={(event) => { const value = event.target.value; setTimeInput(value); if (/^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/.test(value)) { const [hour, minute, second] = value.split(':'); setTime({ hour, minute, second }) } }} /></div>
         <header><button type="button" aria-label="上个月" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}>‹</button><strong>{month.getFullYear()} 年 {month.getMonth() + 1} 月</strong><button type="button" aria-label="下个月" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}>›</button></header>
         <div className="pet-bubble__calendar-grid">{['一', '二', '三', '四', '五', '六', '日'].map((day) => <span key={day}>{day}</span>)}{Array.from({ length: firstDay }, (_, index) => <span key={`blank-${index}`} />)}{Array.from({ length: days }, (_, index) => {
           const date = `${month.getFullYear()}-${pad(month.getMonth() + 1)}-${pad(index + 1)}`
-          return <button key={date} type="button" className={draftDate === date ? 'is-selected' : ''} onClick={() => setDraftDate(date)}>{index + 1}</button>
+          return <button key={date} type="button" className={draftDate === date ? 'is-selected' : ''} onClick={() => { setDraftDate(date); setTimeOpen(false) }}>{index + 1}</button>
         })}</div>
-        <div className="pet-bubble__time-wheels"><TimeWheel label="时" value={time.hour} count={24} onChange={setHour} /><TimeWheel label="分" value={time.minute} count={60} onChange={setMinute} /></div>
-        <footer><button type="button" onClick={() => { onFieldChange?.(field.id, ''); setOpen(false) }}>清空</button><button type="button" onClick={() => { const now = new Date(); onFieldChange?.(field.id, `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}:00`); setOpen(false) }}>现在</button><button type="button" disabled={!draftDate || Number(time.hour) > 23 || Number(time.minute) > 59} onClick={apply}>确定</button></footer>
+        {timeOpen && <div className="pet-bubble__time-popup"><div className="pet-bubble__time-wheels"><TimeWheel label="时" value={time.hour} count={24} onChange={setHour} /><TimeWheel label="分" value={time.minute} count={60} onChange={setMinute} /><TimeWheel label="秒" value={time.second} count={60} onChange={setSecond} /></div><div className="pet-bubble__time-popup-actions"><button type="button" onClick={() => setTimeOpen(false)}>确定</button></div></div>}
+        <footer><button type="button" onClick={() => { onFieldChange?.(field.id, ''); setOpen(false) }}>清空</button><button type="button" onClick={() => { const now = new Date(); onFieldChange?.(field.id, `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`); setOpen(false) }}>现在</button><button type="button" disabled={!validDate || !validTime} onClick={apply}>确定</button></footer>
       </div>
     </>, document.body)}
   </div>

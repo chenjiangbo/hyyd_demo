@@ -173,7 +173,12 @@
 .pet-bubble__calendar-grid > span, .pet-bubble__calendar-grid > button { display: grid; height: 26px; place-items: center; }
 .pet-bubble__calendar-grid > span { color: #9b766a; }
 .pet-bubble__calendar-grid > button.is-selected { color: #fff; background: #e3613b; }
-.pet-bubble__time-wheels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin: 8px 0; }
+.pet-bubble__datetime-edit { display: flex; gap: 6px; margin-bottom: 8px; }
+.pet-bubble__datetime-edit input { box-sizing: border-box; min-width: 0; width: 50%; padding: 5px; border: 1px solid #e6cdbd; border-radius: 5px; background: #fff; color: inherit; font: inherit; }
+.pet-bubble__time-popup { position: absolute; z-index: 1; top: 39px; right: 8px; width: 170px; padding: 5px; border: 1px solid #e6cdbd; border-radius: 7px; background: #fffdf9; box-shadow: 0 4px 12px rgba(80, 45, 30, .16); }
+.pet-bubble__time-popup-actions { text-align: right; }
+.pet-bubble__time-popup-actions button { padding: 4px 8px; color: #c84b26; }
+.pet-bubble__time-wheels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 8px 0; }
 .pet-bubble__time-wheel { min-width: 0; text-align: center; }
 .pet-bubble__time-wheel > span { display: block; margin-bottom: 3px; color: #9b766a; }
 .pet-bubble__time-wheel > div { position: relative; height: 140px; overflow-y: auto; padding: 56px 2px; box-sizing: border-box; border: 1px solid #f0d9c9; border-radius: 7px; background: linear-gradient(to bottom, #fffdf9, #fff7f0); scroll-snap-type: y mandatory; scrollbar-width: thin; overscroll-behavior: contain; }
@@ -254,12 +259,12 @@
 .pet-bubble--order-ai .pet-bubble__form-body { padding-right: 3px; }
 .pet-bubble--order-ai .pet-bubble__form-section { min-width: 0; margin: 0; padding: 3px 0 5px; border: 0; border-radius: 0; border-bottom: 1px solid #f1e2d9; }
 .pet-bubble--order-ai .pet-bubble__form-section legend { padding: 0 8px 0 0; color: #75402e; font-size: 13px; font-weight: 700; }
+.pet-bubble__special-case { margin-left: 10px; padding: 2px 7px; border-radius: 4px; background: #fff0e7; color: #c84b26; font-size: 12px; }
 .pet-bubble__order-number { margin-left: 10px; font-size: 12px; font-weight: 400; }
 .pet-bubble__order-number button { margin-left: 5px; padding: 2px 5px; border: 1px solid #e6cdbd; border-radius: 5px; background: #fff; color: #805246; font-size: 9px; cursor: pointer; }
 .pet-bubble--order-ai .pet-bubble__form-section .pet-bubble__fields { gap: 5px 8px; }
 .pet-bubble--order-ai .pet-bubble__form-section--hospital-info .pet-bubble__fields,
 .pet-bubble--order-ai .pet-bubble__form-section--time-info .pet-bubble__fields { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 16px; }
-.pet-bubble__special-case { margin-left: 10px; padding: 2px 7px; border-radius: 4px; background: #fff0e7; color: #c84b26; font-size: 12px; }
 .pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__fields { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; column-gap: 16px; }
 .pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='groupName'] { grid-column: 1 / -1; }
 .pet-bubble--order-ai .pet-bubble__field { grid-template-columns: 72px minmax(0, 1fr) auto; gap: 3px 4px; color: #80675b; }
