@@ -4152,7 +4152,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
         AND candidate_type IN ('new_or_confirmed', 'change_candidate')
         AND field_code IN ('order_status', 'hospital', 'hospital_address', 'department', 'doctor',
           'request_time', 'response_time', 'service_start_time', 'appointment_success_time', 'latest_ticket_time',
-          'escort_service_date', 'escort_name', 'escort_phone', 'escort_records')
+          'escort_service_date', 'escort_name', 'escort_phone', 'escort_records', 'escort_service_summary')
         AND (field_code NOT IN ('hospital', 'hospital_address', 'department', 'doctor') OR run_id = (
           SELECT run_id FROM b_order_ai_field_candidates
           WHERE huanyu_order_no = ${orderNo} AND status = 'pending'
@@ -4329,7 +4329,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       }
       if (expectedEscorts && body.expectedOrder && typeof body.expectedOrder === 'object') {
         const current = await readRemotePetOrder(orderNo)
-        const keys = ['orderStatus', 'channel', 'channelService', 'orderAmount', 'hospital', 'hospitalAddress', 'department', 'doctor', 'requestTime', 'responseTime', 'serviceStartTime', 'bookingFeedbackTime', 'latestTicketTime']
+        const keys = ['orderStatus', 'channel', 'channelService', 'orderAmount', 'hospital', 'hospitalAddress', 'department', 'doctor', 'requestTime', 'responseTime', 'serviceStartTime', 'bookingFeedbackTime', 'latestTicketTime', ...(Object.hasOwn(fields, 'escortSummary') ? ['escortSummary'] : [])]
         const changed = !current || keys.some((key) => cleanText(current.order[key]) !== cleanText(body.expectedOrder[key]))
         const normalize = (items: Array<{ id: string; escortId: string; serviceDate: string }>) => JSON.stringify(items.map((item) => [item.id, item.escortId, item.serviceDate]).sort((a, b) => a[0].localeCompare(b[0])))
         const actual = current?.escorts.map((item) => ({ id: item.id, escortId: item.escortName, serviceDate: item.serviceDate })) ?? []
@@ -4339,6 +4339,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       needResetMasterData = resolved.creations.length > 0 || resolved.phoneUpdates > 0
       const update = await updateHuanyuOrderDirectlyOnMysql({
         orderNo,
+        ...(Object.hasOwn(fields, 'escortSummary') ? { escortSummary: cleanText(fields.escortSummary) } : {}),
         orderStatus: cleanText(fields.orderStatus),
         hospitalId: resolved.hospital,
         hospitalAddressId: resolved.hospitalAddress,

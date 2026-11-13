@@ -216,7 +216,7 @@ export async function readRemotePetOrder(orderNo: string): Promise<{ order: Reco
   const connection = await mysqlWriterPool().getConnection()
   try {
     const [rows] = await connection.execute<RowDataPacket[]>(
-      'SELECT `JZR_ZJHM`, `DD_state`, `BDQD`, `BDQD_FWXM`, `DDJE`, `H_NAME`, `H_ADDRESS`, `H_KS`, `H_YS`, `BBQ_XQ`, `BBQ_YD`, `BBQ_QDFW`, `BBQ_FK`, `lastQueuingTime` FROM `HY_FACT_DDCX_NEW` WHERE `DDBH` = ? LIMIT 1', [orderNo])
+      'SELECT `JZR_ZJHM`, `DD_state`, `BDQD`, `BDQD_FWXM`, `DDJE`, `H_NAME`, `H_ADDRESS`, `H_KS`, `H_YS`, `BBQ_XQ`, `BBQ_YD`, `BBQ_QDFW`, `BBQ_FK`, `lastQueuingTime`, `PZXJ` FROM `HY_FACT_DDCX_NEW` WHERE `DDBH` = ? LIMIT 1', [orderNo])
     if (!rows[0]) return null
     const row = rows[0]
     const value = (key: string): string => row[key] == null ? '' : String(row[key]).trim()
@@ -231,7 +231,7 @@ export async function readRemotePetOrder(orderNo: string): Promise<{ order: Reco
     return { order: {
       documentNo: value('JZR_ZJHM'), orderStatus: value('DD_state'), channel: value('BDQD'), channelService: value('BDQD_FWXM'), orderAmount: value('DDJE'),
       hospital: value('H_NAME'), hospitalAddress: value('H_ADDRESS'), department: value('H_KS'), doctor: value('H_YS'),
-      requestTime: value('BBQ_XQ'), responseTime: value('BBQ_YD'), serviceStartTime: value('BBQ_QDFW'), bookingFeedbackTime: value('BBQ_FK'), latestTicketTime: value('lastQueuingTime')
+      requestTime: value('BBQ_XQ'), responseTime: value('BBQ_YD'), serviceStartTime: value('BBQ_QDFW'), bookingFeedbackTime: value('BBQ_FK'), latestTicketTime: value('lastQueuingTime'), escortSummary: value('PZXJ')
     }, escorts: escorts.map((escort) => ({ id: String(escort.ZJ ?? '').trim(), escortName: String(escort.PZR ?? '').trim(), escortPhone: phones.get(String(escort.PZR ?? '').trim()) ?? '', serviceDate: String(escort.BBQ_FW ?? '').trim() })) }
   } finally { connection.release() }
 }
@@ -265,6 +265,7 @@ export interface PetHuanyuOrderUpdate {
   serviceStartTime: string | null
   bookingFeedbackTime: string | null
   latestTicketTime: string | null
+  escortSummary?: string
   escortList: Array<{ escortId: string; serviceDate: string | null; sequence: string; id?: string }>
   expectedEscorts?: Array<{ id: string; escortId: string; serviceDate: string }>
   expectedOrder?: Record<string, string>
@@ -290,11 +291,12 @@ export async function updateHuanyuOrderDirectlyOnMysql(input: PetHuanyuOrderUpda
   try {
     await connection.beginTransaction()
     const [existingRows] = await connection.execute<RowDataPacket[]>(
-      'SELECT `DDBH`, `DD_state`, `BDQD`, `BDQD_FWXM`, `DDJE`, `H_NAME`, `H_ADDRESS`, `H_KS`, `H_YS`, `BBQ_XQ`, `BBQ_YD`, `BBQ_QDFW`, `BBQ_FK`, `lastQueuingTime` FROM `HY_FACT_DDCX_NEW` WHERE `DDBH` = ? LIMIT 1 FOR UPDATE', [orderNo])
+      'SELECT `DDBH`, `DD_state`, `BDQD`, `BDQD_FWXM`, `DDJE`, `H_NAME`, `H_ADDRESS`, `H_KS`, `H_YS`, `BBQ_XQ`, `BBQ_YD`, `BBQ_QDFW`, `BBQ_FK`, `lastQueuingTime`, `PZXJ` FROM `HY_FACT_DDCX_NEW` WHERE `DDBH` = ? LIMIT 1 FOR UPDATE', [orderNo])
     if (!existingRows.length) throw new Error(`远端寰宇订单 ${orderNo} 不存在`)
 
     if (input.expectedOrder) {
       const fields: Record<string, string> = { orderStatus: 'DD_state', hospital: 'H_NAME', hospitalAddress: 'H_ADDRESS', department: 'H_KS', doctor: 'H_YS', requestTime: 'BBQ_XQ', responseTime: 'BBQ_YD', serviceStartTime: 'BBQ_QDFW', bookingFeedbackTime: 'BBQ_FK', latestTicketTime: 'lastQueuingTime' }
+      if (input.escortSummary !== undefined) fields.escortSummary = 'PZXJ'
       if (Object.entries(fields).some(([key, column]) => String(existingRows[0][column] ?? '').trim() !== String(input.expectedOrder?.[key] ?? '').trim())) throw new Error('订单内容已发生变化，请重新打开订单')
     }
 
@@ -342,7 +344,7 @@ export async function updateHuanyuOrderDirectlyOnMysql(input: PetHuanyuOrderUpda
         \`BBQ_YD\` = ${writeField('BBQ_YD')}, \`DATE_YD\` = ${writeField('DATE_YD')},
         \`BBQ_QDFW\` = ${writeField('BBQ_QDFW')}, \`DATE_QDFW\` = ${writeField('DATE_QDFW')},
         \`BBQ_FK\` = ${writeField('BBQ_FK')}, \`DATE_FK\` = ${writeField('DATE_FK')},
-        \`lastQueuingTime\` = ${writeField('lastQueuingTime')}
+        \`lastQueuingTime\` = ${writeField('lastQueuingTime')}${input.escortSummary !== undefined ? ', `PZXJ` = ?' : ''}
        WHERE \`DDBH\` = ?`,
       [input.orderStatus, input.hospitalId, input.hospitalAddressId,
         input.departmentId, input.doctorId,
@@ -351,6 +353,7 @@ export async function updateHuanyuOrderDirectlyOnMysql(input: PetHuanyuOrderUpda
         input.serviceStartTime, input.serviceStartTime?.slice(0, 8) ?? null,
         input.bookingFeedbackTime, input.bookingFeedbackTime?.slice(0, 8) ?? null,
         input.latestTicketTime,
+        ...(input.escortSummary !== undefined ? [input.escortSummary] : []),
         orderNo]
     )
 

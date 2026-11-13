@@ -6,6 +6,7 @@ import { registerNativeChatIngestRoutes } from './nativeChatIngest.js'
 async function run(): Promise<void> {
   let conversation: { id: number; application_no: string | null; application_candidate: string | null; application_link_status: string } | null = null
   const inserted: unknown[][] = []
+  const queued: string[] = []
   const tx = {
     $queryRaw: async (query: TemplateStringsArray | { sql: string }, ...values: unknown[]) => {
       const sql = Array.isArray(query) ? query.join('?') : (query as { sql: string }).sql
@@ -17,7 +18,7 @@ async function run(): Promise<void> {
       if (sql.includes('FROM orders')) return [{ id: 42, source_order_no: 'COD12345678', application_no: 'fwyy12345678' }]
       throw new Error(`unexpected query: ${sql}`)
     },
-    $executeRaw: async () => 1
+    $executeRaw: async (query: TemplateStringsArray) => { queued.push(query.join('?')); return 1 }
   }
   const prisma = { $transaction: async (fn: (value: typeof tx) => Promise<unknown>) => fn(tx) } as unknown as PrismaClient
   const app = Fastify()
@@ -50,6 +51,17 @@ async function run(): Promise<void> {
   assert.equal(dispatch.statusCode, 200)
   assert.equal(inserted[2][13], 'fwyy12345678')
   assert.equal(inserted[2][14], 42)
+  const summary = await app.inject({ method: 'POST', url: '/api/v1/native-chat/ingest', payload: {
+    ...payload, messages: [{ ...message, sourceMessageId: 'msg3', text: '陪诊小结：' + '字'.repeat(77) }]
+  } })
+  assert.equal(summary.statusCode, 200)
+  assert.ok(queued.some((sql) => sql.includes('INSERT INTO escort_summary_jobs') && sql.includes('enabled_since')))
+  queued.length = 0
+  const shortSummary = await app.inject({ method: 'POST', url: '/api/v1/native-chat/ingest', payload: {
+    ...payload, messages: [{ ...message, sourceMessageId: 'msg4', text: '陪诊小结' + '字'.repeat(76) }]
+  } })
+  assert.equal(shortSummary.statusCode, 200)
+  assert.equal(queued.some((sql) => sql.includes('INSERT INTO escort_summary_jobs')), false)
   await app.close()
   console.log('nativeChatIngest: missing directory, unmatched, title link and dispatch link passed')
 }

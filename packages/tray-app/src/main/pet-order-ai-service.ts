@@ -235,6 +235,7 @@ export class PetOrderAiService {
     }
     const requestFields = {
       orderStatus: fields.orderStatus ?? '',
+      escortSummary: fields.escortSummary ?? '',
       hospital: fields.hospital ?? '', hospitalAddress: fields.hospitalAddress ?? '', department: fields.department ?? '', doctor: fields.doctor ?? '',
       requestTime: fields.requestTime ?? '', responseTime: fields.responseTime ?? '', serviceStartTime: fields.serviceStartTime ?? '',
       bookingFeedbackTime: fields.bookingFeedbackTime ?? '', latestTicketTime: fields.latestTicketTime ?? '',
@@ -532,6 +533,7 @@ export class PetOrderAiService {
           placeholder: `请输入${label}`
         })),
         ...TIME_FIELDS.map(([id, code, label]) => ({ id, label, type: 'datetime-local' as const, ...merged(toDateTimeLocal(current[id] ?? ''), toDateTimeLocal(values[code] ?? '')), placeholder: `请选择${label}` })),
+        { id: 'escortSummary', label: '陪诊小结', type: 'textarea' as const, ...merged(current.escortSummary ?? '', values.escort_service_summary ?? ''), placeholder: '请输入陪诊小结' },
         ...escortRecords.flatMap((record, index) => {
           const prefix = `escort-${index + 1}`
           const ai = matchedAi.has(index) ? aiEscorts[matchedAi.get(index)!] : undefined
@@ -552,6 +554,7 @@ export class PetOrderAiService {
           { id: 'order-info', title: '订单基本信息', fieldIds: ['orderNo', 'documentNo', 'groupName', 'orderStatus', 'channelService', 'orderAmount', 'amountChanged'] },
           { id: 'hospital-info', title: '医院信息', fieldIds: ['hospital', 'hospitalAddress', 'department', 'doctor'] },
           { id: 'time-info', title: '时间信息', fieldIds: TIME_FIELDS.map(([fieldId]) => fieldId) },
+          { id: 'escort-summary', title: '陪诊小结', fieldIds: ['escortSummary'] },
           ...escortRecords.map((_, index) => {
             const prefix = `escort-${index + 1}`
             return { id: prefix, title: `陪诊服务 ${index + 1}`, fieldIds: [`${prefix}-date`, `${prefix}-name`, `${prefix}-phone`], repeatable: true }

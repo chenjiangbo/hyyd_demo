@@ -14,7 +14,7 @@ import {
   type BriefCallInput,
   type BriefMaterialInput
 } from '../llm/orderBriefService.js'
-import { extractOrderServiceFields, ORDER_AI_FIELD_PROMPT_VERSION } from '../llm/orderAiExtraction.js'
+import { extractOrderServiceFields, resolveDirectEscortSummary, ORDER_AI_FIELD_PROMPT_VERSION } from '../llm/orderAiExtraction.js'
 import { understandImage } from '../llm/imageUnderstandService.js'
 import { applyOrderWorkflowEvent } from '../workflow/serviceWorkflow.js'
 import { findHuanyuOrderNosOnMysqlByChannelOrderNo } from '../huanyuMysqlPush.js'
@@ -416,6 +416,7 @@ export async function analyzeOrderFields(
         serviceRemark: raw.comments ?? raw.comment ?? null,
         bFormSaved
       },
+      directEscortSummary: resolveDirectEscortSummary(orderId, order.sourceOrderNo, huanyuOrders, nativeBatch.messages),
       messages: [
         ...nativeBatch.messages.map((message) => ({
           id: -1_000_000_000 - message.id,
@@ -428,6 +429,7 @@ export async function analyzeOrderFields(
           sourceTypeCode: message.sourceTypeCode,
           sourceItemIndex: message.sourceItemIndex,
           contentText: message.contentText,
+          preparedEscortSummary: message.preparedEscortSummary,
           occurredAt: message.occurredAt
         })),
         ...mats

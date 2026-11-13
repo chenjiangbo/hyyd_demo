@@ -7,14 +7,21 @@ import { PetOrderAiService, type PetOrderAiPanel } from '../src/main/pet-order-a
 const origin = 'chrome-extension://akaojickfipoeobmiokkdbdaimeifmoa'
 
 test('订单值优先，意向写入后清除已保存字段标识', async () => {
-  const order = { channel: '', channelService: '', orderAmount: '', hospital: '', department: '', orderStatus: '待跟进' }
+  const order = { channel: '', channelService: '', orderAmount: '', hospital: '', department: '', orderStatus: '待跟进', escortSummary: '' }
+  let submittedSummary: unknown
   const backend = createServer((request, response) => {
     response.setHeader('Content-Type', 'application/json')
     if (request.url?.startsWith('/api/v1/pet/order-current')) return void response.end(JSON.stringify({ data: { order, escorts: [] } }))
-    if (request.url?.startsWith('/api/v1/pet/order-ai-fields')) return void response.end(JSON.stringify({ data: { fields: { order_status: '已取消' }, intention: { hospital: '意向医院', department: '意向科室' } } }))
+    if (request.url?.startsWith('/api/v1/pet/order-ai-fields')) return void response.end(JSON.stringify({ data: { fields: { order_status: '已取消', escort_service_summary: '陪诊小结建议' }, intention: { hospital: '意向医院', department: '意向科室' } } }))
     if (request.url === '/api/v1/pet/huanyu-order-update') {
-      order.hospital = '医院编号'
-      return void response.end(JSON.stringify({ ok: true, escortIds: [] }))
+      let body = ''
+      request.on('data', (chunk) => { body += chunk })
+      request.on('end', () => {
+        submittedSummary = JSON.parse(body).fields.escortSummary
+        order.hospital = '医院编号'
+        response.end(JSON.stringify({ ok: true, escortIds: [] }))
+      })
+      return
     }
     return void response.end(JSON.stringify({ data: [] }))
   })
@@ -31,7 +38,9 @@ test('订单值优先，意向写入后清除已保存字段标识', async () =>
     assert.equal(panel.fields?.find((field) => field.id === 'orderStatus')?.value, '待跟进')
     assert.equal(panel.fields?.find((field) => field.id === 'orderStatus')?.suggestion, '已取消')
     assert.equal(panel.fields?.find((field) => field.id === 'hospital')?.hint, '泰康意向')
+    assert.equal(panel.fields?.find((field) => field.id === 'escortSummary')?.value, '陪诊小结建议')
     await service.handlePanelAction(`order-ai:${token}`, 'one-click-fill', Object.fromEntries((panel.fields ?? []).map((field) => [field.id, field.value])))
+    assert.equal(submittedSummary, '陪诊小结建议')
     const updated = panels.at(-1)!
     assert.equal(updated.fields?.find((field) => field.id === 'hospital')?.hint, undefined)
     assert.equal(updated.fields?.find((field) => field.id === 'department')?.hint, '泰康意向')

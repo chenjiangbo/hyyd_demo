@@ -26,6 +26,14 @@ async function run(): Promise<void> {
   assert.equal(result.messages.length, 2)
   assert.match(result.messages.find((item) => item.sourceRef === '原生消息#1')?.contentText ?? '', /渠道订单号：COD123/)
   assert.equal(result.messages.find((item) => item.sourceRef === '原生消息#1')?.senderId, 'employee-123')
+  const summaryPrisma = {
+    nativeChatMessage: { findMany: async () => [{ ...message, text: '陪诊小结：原始消息' }] },
+    nativeChatAttachment: { findMany: async () => [] },
+    $queryRaw: async () => [{ message_id: 1, summary: '已提炼：就诊完成' }]
+  } as unknown as PrismaClient
+  const summaryBatch = await loadNativeChatFieldAiBatch(summaryPrisma, 'fwyy12345678', 42)
+  assert.equal(summaryBatch.messages[0].preparedEscortSummary, '已提炼：就诊完成')
+  assert.match(summaryBatch.messages[0].contentText, /已提炼：就诊完成/)
   const wechatPrisma = {
     nativeChatMessage: { findMany: async () => [
       { ...message, id: 3, senderId: '7', sourceMetadata: { shard: 'message_1.db', senderUsername: 'wxid_alice' }, conversation: { channel: 'wechat' } },

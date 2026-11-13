@@ -32,6 +32,7 @@
     "@huanyu/shared-types": "workspace:*",
     "@prisma/client": "^5.14.0",
     "dotenv": "^16.4.5",
+    "fast-xml-parser": "5.8.0",
     "fastify": "^4.27.0",
     "jsonwebtoken": "^9.0.3",
     "minio": "^8.0.1",

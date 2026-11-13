@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import type { PrismaClient } from '@prisma/client'
 import type { NativeChatAttachment, NativeChatMessage } from '@huanyu/shared-types'
 import { resolveNativeMessageBusinessLinks } from '../services/nativeChatMessageLink.js'
+import { isEscortSummaryEligibleText } from '../services/escortSummaryEligibility.js'
 
 type IngestBody = {
   conversation: {
@@ -317,6 +318,24 @@ export function registerNativeChatIngestRoutes(fastify: FastifyInstance, prisma:
         if (!row) throw new Error(`源消息写入后未返回记录：${message.sourceMessageId}`)
         if (row.inserted) inserted++
         else updated++
+
+        // Only newly sent messages after the feature's installation are queued.
+        // Matching runs independently after the message transaction commits.
+        if (row.inserted && message.text) {
+          let eligible = false
+          try { eligible = isEscortSummaryEligibleText(message.text) }
+          catch (error) {
+            request.log.error({ event: 'escort_summary_text_error', messageId: row.id, error: error instanceof Error ? error.message : String(error) }, '陪诊小结文字无法解析，请核查原消息')
+          }
+          if (eligible) {
+            await tx.$executeRaw`
+              INSERT INTO escort_summary_jobs (message_id)
+              SELECT ${row.id} FROM escort_summary_settings
+               WHERE id = 1 AND ${occurredAt}::timestamp >= enabled_since
+              ON CONFLICT (message_id) DO NOTHING
+            `
+          }
+        }
 
         for (const attachment of message.attachments ?? []) {
           const attachmentId = attachment.sourceAttachmentId

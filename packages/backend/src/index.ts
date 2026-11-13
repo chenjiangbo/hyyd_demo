@@ -20,6 +20,7 @@ import {
 } from './routes/api.js'
 import { startOrderAiSchedule } from './jobs/orderAiSchedule.js'
 import { startNativeChatImageAnalysisWorker } from './services/nativeChatImageAnalysis.js'
+import { startEscortSummaryMatcher } from './services/escortSummaryMatcher.js'
 import { initializeNativeChatCollectionConfig } from './services/nativeChatCollectionConfig.js'
 import { startOrderReminderSchedule } from './jobs/orderReminderSchedule.js'
 import { loadChineseWorkdayCalendar, startChineseWorkdayCalendarSync } from './jobs/chineseWorkdayCalendarSync.js'
@@ -1081,6 +1082,7 @@ async function start() {
     // 电话 ASR 完成后即时触发；微信/企微按申领号静默后台配置的时长后触发。
     startOrderAiSchedule(prisma, minioClient)
     startNativeChatImageAnalysisWorker(prisma, minioClient)
+    startEscortSummaryMatcher(prisma, minioClient)
 
     // 每年 12 月 1 日至 31 日检查下一年节假日安排，发布后同步并停止当年检查。
     await startChineseWorkdayCalendarSync(prisma, {

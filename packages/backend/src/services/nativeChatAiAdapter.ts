@@ -1,4 +1,4 @@
-import type { PrismaClient } from '@prisma/client'
+import { Prisma, type PrismaClient } from '@prisma/client'
 
 export type NativeChatAiMessage = {
   id: number
@@ -11,6 +11,8 @@ export type NativeChatAiMessage = {
   sourceTypeCode: string | null
   sourceItemIndex: number | null
   contentText: string
+  preparedEscortSummary?: string
+  linkedOrderId?: number | null
   occurredAt: Date
   changedAt: Date
 }
@@ -183,12 +185,23 @@ export async function loadNativeChatFieldAiBatch(
   let latestChangedAt: Date | null = null
   const messages: NativeChatAiMessage[] = []
   const voucherAttachmentIds = new Set(attachmentRows.map((row) => row.id))
+  const summaryIds = messageRows.filter((row) => row.text && /陪诊(?:小结|总结|过程)/.test(row.text)).map((row) => row.id)
+  const summaries = summaryIds.length ? await prisma.$queryRaw<Array<{ message_id: number; summary: string }>>(Prisma.sql`
+    SELECT message_id, result->>'escortSummary' AS summary FROM escort_summary_jobs
+    WHERE message_id IN (${Prisma.join(summaryIds)}) AND result->>'escortSummary' IS NOT NULL
+  `) : []
+  const summaryByMessage = new Map(summaries.map((item) => [item.message_id, item.summary]))
   for (const row of messageRows) {
     const changedAt = [row.observedAt, row.applicationLinkedAt, ...row.attachments.map((attachment) => attachment.updatedAt)]
       .filter((value): value is Date => value !== null)
       .reduce((latest, value) => value > latest ? value : latest, row.observedAt)
     if (!latestChangedAt || changedAt > latestChangedAt) latestChangedAt = changedAt
-    const evidence = [row.text?.trim() || null]
+    const messageText = row.text?.trim() || null
+    const evidence = [messageText && /陪诊(?:小结|总结|过程)/.test(messageText)
+      ? `含陪诊小结相关字样的原始消息（请区分实际小结与仅提到小结的要求）：\n${messageText}`
+      : messageText]
+    const preparedSummary = summaryByMessage.get(row.id)
+    if (preparedSummary) evidence.push(`已提炼的陪诊服务小结（填写时直接使用，不要再总结）：\n${preparedSummary}`)
     for (const attachment of row.attachments) {
       // A registration voucher is a separately linked business material. Never
       // leak an unmatched voucher's OCR text into the containing message.
@@ -210,6 +223,8 @@ export async function loadNativeChatFieldAiBatch(
       sourceTypeCode: row.sourceTypeCode,
       sourceItemIndex: row.sourceItemIndex,
       contentText: evidence.filter((value): value is string => Boolean(value)).join('\n'),
+      preparedEscortSummary: preparedSummary,
+      linkedOrderId: row.orderId,
       occurredAt: row.occurredAt,
       changedAt
     })
