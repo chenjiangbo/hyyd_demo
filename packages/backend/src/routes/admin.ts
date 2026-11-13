@@ -1,3 +1,4 @@
+import { triggerOrderAiAnalysis } from '../jobs/orderAiSchedule.js'
 /**
  * 管理后台（admin-web）专用 REST + WS 路由。
  *
@@ -1946,6 +1947,43 @@ export function registerAdminRoutes(
       } catch (err: any) {
         rootFastify.log.error('admin orders 失败:', err)
         return reply.status(500).send({ error: '订单浏览查询失败: ' + err.message })
+      }
+    })
+
+    fastify.get<{ Params: { id: string } }>('/api/v1/admin/orders/:id/ai-fields/result', async (request, reply) => {
+      const id = Number(request.params.id)
+      if (!Number.isSafeInteger(id) || id <= 0) return reply.status(400).send({ error: '订单ID非法' })
+      const runs = await prisma.$queryRaw<Array<{ id: bigint; status: string; model: string; created_at: Date; completed_at: Date | null; error_message: string | null }>>`
+        SELECT id, status, model, created_at, completed_at, error_message
+        FROM b_order_ai_analysis_runs WHERE order_id = ${id} ORDER BY created_at DESC, id DESC LIMIT 1
+      `
+      const run = runs[0]
+      if (!run) return reply.send({ data: { latestRun: null, result: null } })
+      const successful = run.status === 'succeeded' ? run : (await prisma.$queryRaw<typeof runs>`
+        SELECT id, status, model, created_at, completed_at, error_message
+        FROM b_order_ai_analysis_runs WHERE order_id = ${id} AND status = 'succeeded' ORDER BY created_at DESC, id DESC LIMIT 1
+      `)[0]
+      const serializeRun = (item: typeof run) => ({ status: item.status, model: item.model, createdAt: item.created_at.toISOString(), completedAt: item.completed_at?.toISOString() ?? null, error: item.error_message })
+      if (!successful) return reply.send({ data: { latestRun: serializeRun(run), result: null } })
+      const fields = await prisma.$queryRaw<Array<{ id: bigint; huanyu_order_no: string | null; field_label: string; value_text: string; status: string; evidence_json: unknown }>>`
+        SELECT id, huanyu_order_no, field_label, value_text, status, evidence_json
+        FROM b_order_ai_field_candidates WHERE order_id = ${id} AND run_id = ${successful.id} ORDER BY huanyu_order_no, id
+      `
+      return reply.send({ data: { latestRun: serializeRun(run), result: { ...serializeRun(successful), fields: fields.map((field) => ({ id: String(field.id), orderNo: field.huanyu_order_no, label: field.field_label, value: field.value_text, status: field.status, evidence: field.evidence_json })) } } })
+    })
+
+    fastify.post<{ Params: { id: string } }>('/api/v1/admin/orders/:id/ai-fields/reanalyze', async (request, reply) => {
+      const id = Number(request.params.id)
+      if (!Number.isSafeInteger(id) || id <= 0) return reply.status(400).send({ error: '订单ID非法' })
+      const order = await prisma.order.findUnique({ where: { id }, select: { id: true } })
+      if (!order) return reply.status(404).send({ error: '订单不存在' })
+      try {
+        const result = await triggerOrderAiAnalysis(prisma, minioClient, id, { force: true })
+        if (!result?.fieldExtractionSucceeded) return reply.status(502).send({ error: '订单分析失败，请查看后台日志' })
+        return reply.send({ data: { ok: true, model: result.model ?? null } })
+      } catch (error) {
+        request.log.error({ err: error, orderId: id }, '管理员重新分析订单失败')
+        return reply.status(500).send({ error: '订单分析失败，请查看后台日志' })
       }
     })
 

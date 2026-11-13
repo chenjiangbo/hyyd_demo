@@ -11,7 +11,7 @@ import { ORDER_FIELD_GROUPS, KNOWN_KEYS, isEmptyVal } from '../lib/orderFields'
 import { AsrBadge } from '../components/badges'
 import type { OrderMessage } from '../api/types'
 
-type OrderDetailTab = 'basic' | 'messages' | 'calls'
+type OrderDetailTab = 'basic' | 'messages' | 'calls' | 'ai'
 type MessageChannelTab = 'all' | 'wxwork' | 'wechat'
 
 function Field({ label, value, raw }: { label: string; value: unknown; raw?: boolean }): React.JSX.Element {
@@ -33,11 +33,33 @@ export default function OrderDetailPage(): React.JSX.Element {
   const [showJson, setShowJson] = useState(false)
   const [activeTab, setActiveTab] = useState<OrderDetailTab>('basic')
   const [messageChannel, setMessageChannel] = useState<MessageChannelTab>('all')
+  const [analyzing, setAnalyzing] = useState(false)
+  const [analysisStatus, setAnalysisStatus] = useState<{ ok: boolean; text: string } | null>(null)
+
+  async function reanalyze(): Promise<void> {
+    setAnalyzing(true)
+    setAnalysisStatus(null)
+    try {
+      await adminApi.reanalyzeOrder(orderId)
+      await aiResult.refetch()
+      setAnalysisStatus({ ok: true, text: '分析完成' })
+    } catch (error) {
+      void aiResult.refetch()
+      setAnalysisStatus({ ok: false, text: error instanceof Error ? error.message : '分析失败' })
+    } finally {
+      setAnalyzing(false)
+    }
+  }
 
   const q = useQuery({
     queryKey: ['order-full', orderId],
     queryFn: () => adminApi.orderFull(orderId),
     enabled: Number.isFinite(orderId)
+  })
+  const aiResult = useQuery({
+    queryKey: ['order-ai-result', orderId],
+    queryFn: () => adminApi.orderAiResult(orderId),
+    enabled: Number.isSafeInteger(orderId) && orderId > 0
   })
 
   if (q.isLoading) return <LoadingBlock />
@@ -54,6 +76,13 @@ export default function OrderDetailPage(): React.JSX.Element {
   const wechatCount = messages.filter((m) => m.channel === 'wechat').length
   // 未知字段：rec 里有值但不在已知映射里的
   const unknownFields = Object.entries(rec).filter(([k, v]) => !KNOWN_KEYS.has(k) && !isEmptyVal(v))
+  const aiGroups = new Map<string, NonNullable<NonNullable<typeof aiResult.data>['result']>['fields']>()
+  for (const field of aiResult.data?.result?.fields ?? []) {
+    const key = field.orderNo || ''
+    const group = aiGroups.get(key) ?? []
+    group.push(field)
+    aiGroups.set(key, group)
+  }
 
   return (
     <div>
@@ -69,6 +98,8 @@ export default function OrderDetailPage(): React.JSX.Element {
           <h1 className="text-xl font-semibold">{displayName}</h1>
           <PoolBadge poolType={order.poolType} />
           <StatusBadge status={order.status} />
+          <button type="button" disabled={analyzing} onClick={() => void reanalyze()} className="ml-auto rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50">{analyzing ? '分析中…' : '重新分析'}</button>
+          {analysisStatus && <span role="status" className={analysisStatus.ok ? 'text-sm text-green-700' : 'text-sm text-red-700'}>{analysisStatus.text}</span>}
         </div>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-1 text-sm">
           <Field label="订单号" value={order.sourceOrderNo} />
@@ -84,7 +115,8 @@ export default function OrderDetailPage(): React.JSX.Element {
         {[
           { key: 'basic' as const, label: '基本信息' },
           { key: 'messages' as const, label: `消息 ${messages.length}` },
-          { key: 'calls' as const, label: `通话 ${calls.length}` }
+          { key: 'calls' as const, label: `通话 ${calls.length}` },
+          { key: 'ai' as const, label: 'AI分析结果' }
         ].map((tab) => (
           <button
             key={tab.key}
@@ -99,6 +131,24 @@ export default function OrderDetailPage(): React.JSX.Element {
           </button>
         ))}
       </div>
+
+      {activeTab === 'ai' && <Card className="p-5 mb-4">
+        <h2 className="text-sm font-semibold mb-3">最新分析结果</h2>
+        {aiResult.isLoading ? <LoadingBlock /> : aiResult.error ? <ErrorBlock error={aiResult.error} onRetry={() => void aiResult.refetch()} /> : <>
+          {aiResult.data?.latestRun?.status === 'failed' && <p className="mb-3 text-sm text-red-700">最近一次分析失败：{aiResult.data.latestRun.error || '请查看后台日志'}</p>}
+          {aiResult.data?.latestRun?.status === 'running' && <p className="mb-3 text-sm text-fg-muted">正在分析，显示上次结果</p>}
+          {aiResult.data?.result ? <>
+            <p className="mb-3 text-xs text-fg-muted">分析时间：{fmtTimeFull(aiResult.data.result.completedAt || aiResult.data.result.createdAt)}　模型：{aiResult.data.result.model}</p>
+            {aiResult.data.result.fields.length === 0 ? <EmptyBlock label="本次分析未提取到字段" /> : <div className="space-y-5">{[...aiGroups].map(([orderNo, fields]) => <section key={orderNo || 'unknown'}>
+              {orderNo && <h3 className="mb-2 border-b border-line pb-2 text-sm font-semibold">寰宇订单号：{orderNo}</h3>}
+              <div className="grid grid-cols-1 gap-x-8 md:grid-cols-2">{fields.map((field) => {
+                const sources = Array.isArray(field.evidence) ? field.evidence.map((item: unknown) => item && typeof item === 'object' && 'sourceId' in item ? String(item.sourceId).trim() : '').filter(Boolean) : []
+                return <div key={field.id} className="py-2 text-sm"><div className="flex gap-2"><span className="w-28 shrink-0 text-fg-muted">{field.label}</span><span className="whitespace-pre-wrap break-all">{field.value}</span></div>{sources.length > 0 && <div className="mt-1 pl-28 text-xs text-fg-muted">依据：{sources.join('、')}</div>}</div>
+              })}</div>
+            </section>)}</div>}
+          </> : <EmptyBlock label="暂无分析结果" />}
+        </>}
+      </Card>}
 
       {activeTab === 'basic' && (
         <>

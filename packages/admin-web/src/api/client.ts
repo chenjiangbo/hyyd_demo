@@ -457,6 +457,12 @@ export const adminApi = {
   orderFull(id: number) {
     return request<OrderFull>(`/api/v1/admin/orders/${id}/full`)
   },
+  reanalyzeOrder(id: number) {
+    return request<{ ok: boolean; model: string | null }>(`/api/v1/admin/orders/${id}/ai-fields/reanalyze`, { method: 'POST', body: '{}' })
+  },
+  orderAiResult(id: number) {
+    return request<{ latestRun: { status: string; createdAt: string; error: string | null } | null; result: { model: string; createdAt: string; completedAt: string | null; fields: Array<{ id: string; orderNo: string | null; label: string; value: string; status: string; evidence: unknown }> } | null }>(`/api/v1/admin/orders/${id}/ai-fields/result`)
+  },
 
   // ───── 素材 ─────
   materials(
