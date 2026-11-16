@@ -498,3 +498,47 @@ model PetImageAnalysisRecord {
   @@index([createdAt(sort: Desc), id(sort: Desc)], map: "pet_image_analysis_records_created_idx")
   @@map("pet_image_analysis_records")
 }
+
+model OutpatientCompletionRun {
+  runDay     DateTime  @id @db.Date @map("run_day")
+  status     String    @db.VarChar(16)
+  leaseId    String?   @db.VarChar(80) @map("lease_id")
+  leaseUntil DateTime? @db.Timestamp(3) @map("lease_until")
+  updatedAt  DateTime  @default(now()) @db.Timestamp(3) @map("updated_at")
+  @@map("outpatient_completion_runs")
+}
+
+model OutpatientCompletionTask {
+  runDay        DateTime  @db.Date @map("run_day")
+  sourceOrderNo String    @db.VarChar(100) @map("source_order_no")
+  huanyuOrderNo String    @db.VarChar(100) @map("huanyu_order_no")
+  createdAt     DateTime  @db.Timestamp(3) @map("created_at")
+  state         String    @default("pending") @db.VarChar(20)
+  leaseAccount  String?   @db.VarChar(100) @map("lease_account")
+  leaseId       String?   @db.VarChar(80) @map("lease_id")
+  leaseUntil    DateTime? @db.Timestamp(3) @map("lease_until")
+  updatedAt     DateTime  @default(now()) @db.Timestamp(3) @map("updated_at")
+  @@id([runDay, sourceOrderNo])
+  @@map("outpatient_completion_tasks")
+}
+
+model OutpatientCompletionAttempt {
+  runDay        DateTime  @db.Date @map("run_day")
+  sourceOrderNo String    @db.VarChar(100) @map("source_order_no")
+  account       String    @db.VarChar(100)
+  result        String    @db.VarChar(20)
+  remoteState   String?   @db.VarChar(40) @map("remote_state")
+  remoteStateName String? @db.VarChar(100) @map("remote_state_name")
+  syncResult    String?   @db.VarChar(20) @map("sync_result")
+  retryAfter    DateTime? @db.Timestamp(3) @map("retry_after")
+  updatedAt     DateTime  @default(now()) @db.Timestamp(3) @map("updated_at")
+  @@id([runDay, sourceOrderNo, account])
+  @@map("outpatient_completion_attempts")
+}
+
+model OutpatientCompletionPreferred {
+  sourceOrderNo String   @id @db.VarChar(100) @map("source_order_no")
+  account       String   @db.VarChar(100)
+  updatedAt     DateTime @default(now()) @db.Timestamp(3) @map("updated_at")
+  @@map("outpatient_completion_preferred")
+}

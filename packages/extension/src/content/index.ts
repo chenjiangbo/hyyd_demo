@@ -1,4 +1,5 @@
 export {};
+import { classifyTrackingMatches, parseTrackingPage, type TrackingMatch } from './outpatientTracking';
 
 console.log('[寰宇探针] Content Script 已注入');
 
@@ -2190,7 +2191,7 @@ async function claimCollector(): Promise<string | null> {
   return collectorGeneration;
 }
 
-async function sendCollected(type: 'SYNC_ORDERS' | 'ORDER_DETAIL_FETCHED' | 'ORDER_ATTACHMENTS_FETCHED', identity: CollectionIdentity, payload: unknown) {
+async function sendCollected(type: 'SYNC_ORDERS' | 'ORDER_DETAIL_FETCHED' | 'ORDER_ATTACHMENTS_FETCHED' | 'OUTPATIENT_COMPLETION_LEASE' | 'OUTPATIENT_COMPLETION_RESULT', identity: CollectionIdentity, payload: unknown) {
   assertSession(identity);
   const response = await chrome.runtime.sendMessage({
     type,
@@ -2208,6 +2209,64 @@ async function sendCollected(type: 'SYNC_ORDERS' | 'ORDER_DETAIL_FETCHED' | 'ORD
     throw new Error(response?.error || '后台未确认保存');
   }
   return response;
+}
+
+async function checkOutpatientCompletion(identity: CollectionIdentity): Promise<void> {
+  for (let count = 0; count < 10; count++) {
+    await confirmIdentity(identity);
+    const ack = await sendCollected('OUTPATIENT_COMPLETION_LEASE', identity, {});
+    const task = ack.payload as { source_order_no?: string; lease_id?: string } | null;
+    if (!task) break;
+    if (!task.source_order_no || !task.lease_id) throw new Error('全程门诊查询任务不完整');
+    const sourceOrderNo = task.source_order_no;
+    let outcome: 'found' | 'not_found' | 'error' = 'error';
+    let state: string | undefined;
+    let stateName: string | undefined;
+    try {
+      const matches: TrackingMatch[] = [];
+      for (let pageNum = 1; pageNum <= MAX_PAGES; pageNum++) {
+        const response = await apiPost(UNIFY_BASE, 'medicalmanager/trackingPool', {
+          ...trackingPoolBaseBody(identity.userId, '', ''), subOrderNo: sourceOrderNo, pageNum, pageSize: PAGE_SIZE
+        }, 15_000, identity);
+        const page = parseTrackingPage(response, sourceOrderNo);
+        matches.push(...page.matches);
+        if (!page.hasNextPage) break;
+        if (pageNum === MAX_PAGES) throw new Error('泰康追踪池结果分页未完成');
+        await sleep(800);
+      }
+      const result = classifyTrackingMatches(matches);
+      outcome = result.outcome;
+      state = result.state;
+      stateName = result.stateName;
+    } catch (error) {
+      if (error instanceof TaikangAuthError || error instanceof TaikangSessionChanged) throw error;
+      console.warn('[寰宇探针] 全程门诊状态查询失败', error);
+    }
+    await confirmIdentity(identity);
+    await sendCollected('OUTPATIENT_COMPLETION_RESULT', identity, { sourceOrderNo, leaseId: task.lease_id, outcome, ...(state ? { state } : {}), ...(stateName ? { stateName } : {}) });
+    await sleep(2000);
+  }
+}
+
+// 完成同步不依赖普通采集开关、个人池查询或列表上报。
+let outpatientCompletionRunning = false;
+async function pollOutpatientCompletion(): Promise<void> {
+  if (outpatientCompletionRunning) return;
+  outpatientCompletionRunning = true;
+  try {
+    const generation = await claimCollector();
+    if (!generation) return;
+    const token = findTaikangToken();
+    if (!token) return;
+    const user = await getUser();
+    if (token !== findTaikangToken()) throw new TaikangSessionChanged('获取账号时凭证变化');
+    if (!user) return;
+    await checkOutpatientCompletion({ ...user, token, generation, batchId: crypto.randomUUID() });
+  } catch (error) {
+    console.warn('[寰宇探针] 全程门诊检查暂停', error);
+  } finally {
+    outpatientCompletionRunning = false;
+  }
 }
 
 async function pollOnce(): Promise<void> {
@@ -2406,6 +2465,8 @@ function startPolling() {
   pollingStarted = true;
   setTimeout(() => void pollOnce(), POLL_FIRST_DELAY_MS);
   setInterval(() => void pollOnce(), POLL_INTERVAL_MS);
+  setTimeout(() => void pollOutpatientCompletion(), POLL_FIRST_DELAY_MS);
+  setInterval(() => void pollOutpatientCompletion(), POLL_INTERVAL_MS);
   setInterval(() => {
     void claimCollector().then((generation) => {
       if (generation && !polling && fingerprintAccount === null) void pollOnce();

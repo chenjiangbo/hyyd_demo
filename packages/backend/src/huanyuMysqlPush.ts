@@ -35,6 +35,11 @@ function mysqlWriterPool(): Pool {
   return pushPool
 }
 
+/** 供需要同一远程连接执行锁定与更新的订单任务使用。 */
+export function getHuanyuWriterPool(): Pool {
+  return mysqlWriterPool()
+}
+
 const ORDER_COLUMNS = [
   'DDBH', 'DD_state', 'BDQD', 'BDQD_DDBH', 'BDQD_DDBH2', 'BDQD_XF', 'BDQD_DJR', 'BDQD_DJR2',
   'BDQD_FWXM', 'DDJE', 'KHJL', 'JZR_XM', 'JZR_ZJLX', 'JZR_ZJHM', 'JZR_XB', 'JZR_NL', 'JZR_LXDH',

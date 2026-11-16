@@ -42,6 +42,7 @@ import { ensureReminderTables } from './db/ensureReminderTables.js'
 import { ensureSysSettingsTable } from './db/ensureSysSettingsTable.js'
 import { ensureTaikangHuanyuChannelMappingTable } from './db/ensureTaikangHuanyuChannelMappingTable.js'
 import { ensureOrderAttributionMismatchTable } from './db/ensureOrderAttributionMismatchTable.js'
+import { ensureOutpatientCompletionTables, startOutpatientCompletionSchedule, leaseOutpatientTask, recordOutpatientResult } from './services/outpatientCompletion.js'
 import { assertShanghaiDatabaseTimezone, createShanghaiPrismaClient } from './db/shanghaiPrisma.js'
 import { syncHuanyuOrderFromTaikang } from './huanyuOrderSync.js'
 import { findHuanyuOrderNoOnMysqlByChannelOrderNo, findHuanyuOrderNosOnMysqlByChannelOrderNo } from './huanyuMysqlPush.js'
@@ -354,6 +355,7 @@ async function start() {
     await loadChineseWorkdayCalendar(prisma)
     await ensureTaikangHuanyuChannelMappingTable(prisma)
     await ensureOrderAttributionMismatchTable(prisma)
+    await ensureOutpatientCompletionTables(prisma)
     await ensureBuckets()
 
     // 1. 注册 CORS 跨域插件
@@ -510,6 +512,29 @@ async function start() {
                 trackingPoolPageActive: !!message.trackingPoolPageActive,
                 lastSeenAt: Date.now()
                 })
+              }
+            } else if (message.type === 'OUTPATIENT_COMPLETION_LEASE' || message.type === 'OUTPATIENT_COMPLETION_RESULT') {
+              const requestId = typeof message.requestId === 'string' ? message.requestId : ''
+              const reply = (ok: boolean, payload?: unknown, error?: string) => socket.send(JSON.stringify({ type: 'OUTPATIENT_COMPLETION_ACK', requestId, ok, payload, error }))
+              if (client !== 'ext' || message.protocolVersion !== 2 || !requestId || message.taikangAccount !== taikangAccount || !Number.isInteger(taikangUserId) || taikangUserId <= 0 || Number(message.taikangUserId) !== taikangUserId || !await bindingStillMatches()) {
+                reply(false, undefined, '泰康账号或请求无效')
+                return
+              }
+              try {
+                if (message.type === 'OUTPATIENT_COMPLETION_LEASE') {
+                  const connectedIds = [...activeConnections.entries()].filter(([, c]) => c.ext?.readyState === 1).map(([id]) => id)
+                  const employees = await prisma.employee.findMany({ where: { id: { in: connectedIds } }, select: { taikangAccount: true } })
+                  const onlineAccounts = employees.map(e => e.taikangAccount).filter((v): v is string => Boolean(v))
+                  reply(true, await leaseOutpatientTask(prisma, taikangAccount, onlineAccounts))
+                } else {
+                  const p = message.payload
+                  if (!p || typeof p.sourceOrderNo !== 'string' || p.sourceOrderNo.length > 100 || typeof p.leaseId !== 'string' || !/^[a-f0-9-]{36}$/.test(p.leaseId) || !['found', 'not_found', 'error'].includes(p.outcome) || (p.state !== undefined && typeof p.state !== 'string') || (p.stateName !== undefined && typeof p.stateName !== 'string')) throw new Error('查询结果无效')
+                  await recordOutpatientResult(prisma, taikangAccount, p)
+                  reply(true)
+                }
+              } catch (error) {
+                server.log.error({ error }, '全程门诊完成同步失败')
+                reply(false, undefined, error instanceof Error ? error.message : '处理失败')
               }
             } else if (message.type === 'ORDERS_SYNCED') {
               const requestId = typeof message.requestId === 'string' ? message.requestId : ''
@@ -1075,7 +1100,8 @@ async function start() {
     
     const stopGreenPassIdCardRetries = startGreenPassIdCardRetries(prisma, minioClient)
     const stopGreenPassSyncRetries = startGreenPassSyncRetries()
-    server.addHook('onClose', async () => { stopGreenPassIdCardRetries(); stopGreenPassSyncRetries() })
+    const stopOutpatientCompletion = startOutpatientCompletionSchedule(prisma, server.log)
+    server.addHook('onClose', async () => { stopGreenPassIdCardRetries(); stopGreenPassSyncRetries(); stopOutpatientCompletion() })
     await server.listen({ port, host })
     server.log.info(`寰宇医道后端服务启动成功，运行在: http://${host}:${port}`)
 
