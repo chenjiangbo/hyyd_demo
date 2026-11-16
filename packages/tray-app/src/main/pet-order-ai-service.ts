@@ -497,13 +497,22 @@ export class PetOrderAiService {
       const currentEscorts = currentPayload.data.escorts
       const matchedAi = new Map<number, number>()
       if (currentEscorts.length) currentEscorts.forEach((record, index) => {
-        const date = toDateTimeLocal(record.serviceDate)
-        if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(date)) return
-        const originalMatches = currentEscorts.filter((item) => toDateTimeLocal(item.serviceDate) === date)
-        const candidates = aiEscorts.map((item, candidateIndex) => ({ item, candidateIndex })).filter(({ item }) => toDateTimeLocal(item.serviceDate) === date)
+        const date = toDateTimeLocal(record.serviceDate).slice(0, 10)
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return
+        const originalMatches = currentEscorts.filter((item) => toDateTimeLocal(item.serviceDate).slice(0, 10) === date)
+        const candidates = aiEscorts.map((item, candidateIndex) => ({ item, candidateIndex })).filter(({ item }) => toDateTimeLocal(item.serviceDate).slice(0, 10) === date)
         if (originalMatches.length === 1 && candidates.length === 1) matchedAi.set(index, candidates[0].candidateIndex)
       })
       if (currentEscorts.length === 1 && aiEscorts.length === 1 && !matchedAi.size && !currentEscorts[0].serviceDate && !currentEscorts[0].escortName && !currentEscorts[0].escortPhone) matchedAi.set(0, 0)
+      if (currentEscorts.length) aiEscorts.forEach((record, index) => {
+        if ([...matchedAi.values()].includes(index)) return
+        const date = toDateTimeLocal(record.serviceDate).slice(0, 10)
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return
+        if (currentEscorts.some((item) => toDateTimeLocal(item.serviceDate).slice(0, 10) === date)) return
+        if (aiEscorts.filter((item) => toDateTimeLocal(item.serviceDate).slice(0, 10) === date).length !== 1) return
+        matchedAi.set(escortRecords.length, index)
+        escortRecords.push(record)
+      })
       const unmatchedAi = currentEscorts.length ? aiEscorts.filter((_, index) => ![...matchedAi.values()].includes(index)) : []
       const merged = (original: string, suggestion: string, originalName = original): { value: string; suggestion?: string; aiPrefill?: boolean } => {
         if (!original) return { value: suggestion, aiPrefill: Boolean(suggestion) }
@@ -539,7 +548,7 @@ export class PetOrderAiService {
         ...escortRecords.flatMap((record, index) => {
           const prefix = `escort-${index + 1}`
           const ai = matchedAi.has(index) ? aiEscorts[matchedAi.get(index)!] : undefined
-          const prefilled = currentEscorts.length === 0 && Boolean(aiEscorts[index])
+          const prefilled = (currentEscorts.length === 0 && Boolean(aiEscorts[index])) || index >= currentEscorts.length && Boolean(ai)
           return [
             { id: `${prefix}-date`, label: '服务日期/时间', type: 'datetime-local' as const, ...merged(prefilled ? '' : toDateTimeLocal(record.serviceDate), prefilled ? toDateTimeLocal(record.serviceDate) : toDateTimeLocal(ai?.serviceDate ?? '')), placeholder: '请选择服务日期/时间' },
             { id: `${prefix}-name`, label: '陪诊人', type: 'text' as const, ...merged(prefilled ? '' : record.escortName, prefilled ? record.escortName : ai?.escortName ?? '', resolvedNames[`${prefix}-name`] ?? ''), originalPhone: currentEscorts[index]?.escortPhone, placeholder: '请输入陪诊人' },
