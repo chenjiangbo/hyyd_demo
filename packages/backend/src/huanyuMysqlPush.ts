@@ -284,6 +284,16 @@ export async function huanyuOrderExistsOnMysql(orderNo: string): Promise<boolean
 }
 
 /** 浮动精灵专用：直接更新远端寰宇表，不读取或写入本地 PostgreSQL 快照。 */
+export function validatePetOrderFinancial(f: NonNullable<PetHuanyuOrderUpdate['financial']>, orderStatus: string): void {
+  if (f.amount && !/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(f.amount)) throw new Error('请输入有效订单金额')
+  if (!f.amount && f.originalAmount) throw new Error('请输入有效订单金额')
+  if ((orderStatus === '已取消' || orderStatus === '无责取消') && (!f.amount || Number(f.amount) !== 0)) throw new Error('取消订单的金额必须为零')
+  if (f.service !== f.originalService) {
+    if (!f.service || !f.channel) throw new Error('请选择有效的服务项目')
+    if (!f.amount) throw new Error('服务项目价格为空，请核对订单金额')
+  }
+}
+
 export async function updateHuanyuOrderDirectlyOnMysql(input: PetHuanyuOrderUpdate, connectionOverride?: PoolConnection): Promise<{ escortCount: number; escortIds: string[] }> {
   const orderNo = input.orderNo.trim()
   if (!orderNo) throw new Error('订单号不能为空')
@@ -307,12 +317,8 @@ export async function updateHuanyuOrderDirectlyOnMysql(input: PetHuanyuOrderUpda
       const service = String(current.BDQD_FWXM ?? '').trim()
       const amount = current.DDJE == null ? '' : String(current.DDJE).trim()
       if (channel !== f.channel || service !== f.originalService || (amount === '' ? f.originalAmount !== '' : f.originalAmount === '' || Number(amount) !== Number(f.originalAmount))) throw new Error('订单金额或服务项目已发生变化，请重新打开订单')
-      if (f.amount && !/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(f.amount)) throw new Error('请输入有效订单金额')
-      if (!f.amount && f.originalAmount) throw new Error('请输入有效订单金额')
-      if ((input.orderStatus === '已取消' || input.orderStatus === '无责取消') && (!f.amount || Number(f.amount) !== 0)) throw new Error('取消订单的金额必须为零')
+      validatePetOrderFinancial(f, input.orderStatus)
       if (f.service !== service) {
-        if (!f.service || !channel) throw new Error('请选择有效的服务项目')
-        if (!f.amount) throw new Error('服务项目价格为空，请核对订单金额')
         if (!f.serviceValidated) throw new Error('服务项目不属于当前渠道，请重新选择')
       }
       await connection.execute('UPDATE `HY_FACT_DDCX_NEW` SET `BDQD_FWXM` = ?, `DDJE` = ? WHERE `DDBH` = ?', [f.service || null, f.amount || null, orderNo])

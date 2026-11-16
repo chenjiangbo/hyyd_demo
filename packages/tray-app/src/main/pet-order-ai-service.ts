@@ -225,7 +225,7 @@ export class PetOrderAiService {
       ].map((field) => ({ ...field, ...currentFields.find((existing) => existing.id === field.id), value: fields[field.id] ?? '' }))
     })
     this.currentPanel = { ...this.currentPanel,
-      fields: [...currentFields.filter((field) => !/^escort-\d+-(date|name|phone)$/.test(field.id)).map((field) => {
+      fields: [...currentFields.filter((field) => !/^escort-\d+-(date|name|phone)$/.test(field.id) && (!/^unmatched-ai-\d+-(date|name|phone)$/.test(field.id) || Object.hasOwn(fields, field.id))).map((field) => {
         const value = Object.prototype.hasOwnProperty.call(fields, field.id) ? fields[field.id] : field.value
         return { ...field, value, readOnly: field.id === 'orderAmount' ? fields.amountChanged !== 'true' || ['已取消', '无责取消'].includes(fields.orderStatus) : field.id === 'amountChanged' ? ['已取消', '无责取消'].includes(fields.orderStatus) : field.readOnly }
       }), ...escortFields],
@@ -335,7 +335,7 @@ export class PetOrderAiService {
         submitMessage: error instanceof Error ? error.message : '订单更新失败',
         actions: !this.currentSnapshot ? [] : this.currentPanel.confirmation
           ? [{ id: 'cancel-master-create', label: '返回修改' }, { id: 'confirm-master-create', label: '重试创建并填单', tone: 'primary' }]
-          : [{ id: 'one-click-fill', label: '重试', tone: 'primary' }] }
+          : [{ id: 'one-click-fill', label: '一键填单', tone: 'primary' }] }
       this.updatePanel(panelId, this.currentPanel)
     }
   }
@@ -503,6 +503,7 @@ export class PetOrderAiService {
         const candidates = aiEscorts.map((item, candidateIndex) => ({ item, candidateIndex })).filter(({ item }) => toDateTimeLocal(item.serviceDate) === date)
         if (originalMatches.length === 1 && candidates.length === 1) matchedAi.set(index, candidates[0].candidateIndex)
       })
+      if (currentEscorts.length === 1 && aiEscorts.length === 1 && !matchedAi.size && !currentEscorts[0].serviceDate && !currentEscorts[0].escortName && !currentEscorts[0].escortPhone) matchedAi.set(0, 0)
       const unmatchedAi = currentEscorts.length ? aiEscorts.filter((_, index) => ![...matchedAi.values()].includes(index)) : []
       const merged = (original: string, suggestion: string, originalName = original): { value: string; suggestion?: string; aiPrefill?: boolean } => {
         if (!original) return { value: suggestion, aiPrefill: Boolean(suggestion) }
@@ -545,7 +546,11 @@ export class PetOrderAiService {
             { id: `${prefix}-phone`, label: '陪诊电话', type: 'text' as const, ...merged(prefilled ? '' : record.escortPhone, prefilled ? record.escortPhone : ai?.escortPhone ?? ''), placeholder: '请输入陪诊电话' }
           ]
         }),
-        ...unmatchedAi.map((record, index) => ({ id: `unmatched-ai-${index}`, label: 'AI 建议（未匹配陪诊记录）', type: 'text' as const, value: [record.serviceDate, record.escortName, record.escortPhone].filter(Boolean).join(' / '), placeholder: '', readOnly: true, copyable: true }))
+        ...unmatchedAi.flatMap((record, index) => [
+          { id: `unmatched-ai-${index}-date`, label: '服务日期/时间', type: 'text' as const, value: toDateTimeLocal(record.serviceDate), placeholder: '', readOnly: true },
+          { id: `unmatched-ai-${index}-name`, label: '陪诊人', type: 'text' as const, value: record.escortName, placeholder: '', readOnly: true },
+          { id: `unmatched-ai-${index}-phone`, label: '陪诊电话', type: 'text' as const, value: record.escortPhone, placeholder: '', readOnly: true }
+        ])
       ]
       const formPanel: PetOrderAiPanel = {
         kind: 'form', id, title: '',
@@ -560,7 +565,6 @@ export class PetOrderAiService {
             const prefix = `escort-${index + 1}`
             return { id: prefix, title: `陪诊服务 ${index + 1}`, fieldIds: [`${prefix}-date`, `${prefix}-name`, `${prefix}-phone`], repeatable: true }
           }),
-          ...(unmatchedAi.length ? [{ id: 'unmatched-ai', title: 'AI 建议', fieldIds: unmatchedAi.map((_, index) => `unmatched-ai-${index}`) }] : [])
         ],
         actions: [{ id: 'one-click-fill', label: '一键填单', tone: 'primary' }],
         submitState: 'idle'

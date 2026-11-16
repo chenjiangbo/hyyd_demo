@@ -143,6 +143,27 @@ export async function listRemoteEscortReminderDetails(orderNo: string): Promise<
   }))
 }
 
+/** 按订单和陪诊明细读取提醒展示信息，避免多条陪诊安排之间混用人员。 */
+export async function readEscortReminderDisplay(orderNo: string, detailId: string): Promise<{ hospital: string; customer: string; escort: string; phone: string } | null> {
+  const [rows] = await readOnlyPool().execute<RowDataPacket[]>(`
+    SELECT h.JZR_XM AS customer, h.H_NAME AS hospitalValue, yy.name AS hospital,
+           pzr.name AS escort, pzr.SJ AS phone
+      FROM HY_FACT_DDCX_NEW h
+      LEFT JOIN f_hy_yywh yy ON CAST(yy.id AS CHAR) = TRIM(CAST(h.H_NAME AS CHAR))
+      LEFT JOIN fact_hy_pzrxx detail ON detail.DDBH = h.DDBH AND CAST(detail.ZJ AS CHAR) = ?
+      LEFT JOIN f_hy_pzr pzr ON CAST(pzr.ID AS CHAR) = TRIM(CAST(detail.PZR AS CHAR))
+     WHERE h.DDBH = ? LIMIT 1`, [detailId, orderNo])
+  const row = rows[0]
+  if (!row) return null
+  const hospitalValue = String(row.hospitalValue ?? '').trim()
+  return {
+    customer: String(row.customer ?? '').trim(),
+    hospital: String(row.hospital ?? '').trim() || (/^\d+$/.test(hospitalValue) ? '' : hospitalValue),
+    escort: String(row.escort ?? '').trim(),
+    phone: String(row.phone ?? '').trim()
+  }
+}
+
 function searchTerm(value: unknown): string {
   return typeof value === 'string' ? value.trim().slice(0, 100) : ''
 }

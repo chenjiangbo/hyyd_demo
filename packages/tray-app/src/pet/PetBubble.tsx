@@ -416,7 +416,6 @@ function Field({ field, panel, onFieldChange, onLookup }: {
         {lookupOptions.map((option) => <button key={option.id} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => {
           const currentValue = String(field.value)
           if (currentValue !== option.id) onFieldChange?.(field.id, option.id, option)
-          if (kind === 'escort' && option.phone) onFieldChange?.(field.id.replace(/-name$/, '-phone'), option.phone)
           setLookupOpen(false)
         }}>{option.name}</button>)}
       </div>, document.body)}
@@ -435,9 +434,20 @@ function Field({ field, panel, onFieldChange, onLookup }: {
     {control}
     {orderForm && field.type !== 'checkbox' && source && <span className="pet-bubble__field-source">{source}</span>}
     {!orderForm && field.aiPrefill && <small>AI 建议</small>}
-    {field.suggestion && String(field.value).trim() !== field.suggestion.trim() && <small>AI 建议：{field.suggestion} <button type="button" onClick={() => onFieldChange?.(hospitalGroup ? `__hospital_suggestion:${field.id}` : field.id, field.suggestion!)}>填入</button></small>}
+    {field.suggestion && String(field.value).trim() !== field.suggestion.trim() && <small>AI 建议：{field.suggestion} <button type="button" onClick={() => onFieldChange?.(hospitalGroup ? `__hospital_suggestion:${field.id}` : /^escort-\d+-name$/.test(field.id) ? `__escort_name_suggestion:${field.id}` : field.id, field.suggestion!)}>填入</button></small>}
     {field.hint && (!orderForm || field.hint !== '泰康意向') && <small>{field.hint}</small>}
     {field.error && <small className="pet-bubble__field-error">{field.error}</small>}
+  </div>
+}
+
+function UnmatchedEscortSuggestion({ index, fields, sections, onFieldChange }: { index: string; fields: Map<string, PetField>; sections: PetFormSection[]; onFieldChange?: PetFieldChange }): React.JSX.Element {
+  const items = (['date', 'name', 'phone'] as const).map((key) => fields.get(`unmatched-ai-${index}-${key}`))
+  return <div className="pet-bubble__unmatched-escort">
+    <strong>AI 建议（未匹配陪诊记录）</strong>
+    <div className="pet-bubble__unmatched-values">{items.map((field) => field && <div key={field.id}><span>{field.label}</span><span>{String(field.value).replace('T', ' ') || '未提取'}</span></div>)}</div>
+    <div className="pet-bubble__unmatched-actions">
+      <SelectField field={{ id: `unmatched-target-${index}`, label: '选择对应陪诊信息', type: 'select', value: '', options: [...sections.map((section, i) => ({ value: section.id, label: `陪诊信息 ${i + 1}` })), { value: 'new', label: '新增陪诊信息' }] }} onFieldChange={(_id, value) => { if (value) onFieldChange?.(`__escort_suggestion:${index}`, value) }} />
+    </div>
   </div>
 }
 
@@ -453,6 +463,7 @@ function FormFields({ panel, onFieldChange, onLookup, onAddEscortRecord, onRemov
   const escortSections = panel.sections.filter((section) => section.repeatable)
   const orderSections = panel.sections.filter((section) => !section.repeatable)
   const orderAi = panel.id.startsWith('order-ai:')
+  const unmatchedIndexes = panel.fields.map((field) => field.id.match(/^unmatched-ai-(\d+)-date$/)?.[1]).filter((index): index is string => Boolean(index))
   return <fieldset className="pet-bubble__form-body" disabled={panel.submitState === 'submitting'}>
     {orderSections.map((section) => <fieldset className={`pet-bubble__form-section pet-bubble__form-section--order pet-bubble__form-section--${section.id}`} key={section.id}>
       <legend>{orderAi && section.id === 'order-info' ? '订单基本信息' : section.title}{orderAi && section.id === 'order-info' && panel.isStrickenCase && <span className="pet-bubble__special-case">专案 +20元</span>}{!orderAi && section.id === 'order-info' && !section.fieldIds.includes('orderNo') && fieldsById.has('orderNo') && <span className="pet-bubble__order-number">{String(fieldsById.get('orderNo')?.value ?? '')}<button type="button" title="复制订单号" onClick={() => { void navigator.clipboard?.writeText(String(fieldsById.get('orderNo')?.value ?? '')) }}>复制</button></span>}</legend>
@@ -478,6 +489,7 @@ function FormFields({ panel, onFieldChange, onLookup, onAddEscortRecord, onRemov
           {!orderAi && <header><strong>陪诊 {index + 1}</strong>{remove}</header>}
           <div className="pet-bubble__fields">{section.fieldIds.map((fieldId) => { const field = fieldsById.get(fieldId); return field ? <Field key={`${panel.id}:${field.id}`} field={field} panel={panel} onFieldChange={onFieldChange} onLookup={onLookup} /> : null })}{orderAi && remove}</div>
       </article> })}</div>
+      {unmatchedIndexes.map((index) => <UnmatchedEscortSuggestion key={index} index={index} fields={fieldsById} sections={escortSections} onFieldChange={onFieldChange} />)}
       <button className="pet-bubble__add-record" type="button" onClick={onAddEscortRecord}>＋ 新增陪诊信息</button>
     </fieldset>}
   </fieldset>

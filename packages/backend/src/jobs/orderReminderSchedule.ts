@@ -12,7 +12,7 @@
 import type { PrismaClient } from '@prisma/client'
 import { formatYmd, parseYmdToShanghaiDate, subtractWorkdays } from '../lib/chineseWorkdays.js'
 import { sendAliyunSms, getSmsConfig, isSmsTemplateEnabled } from '../services/aliyunSmsService.js'
-import { findRemoteReminderOrder, listRemoteEscortReminderDetails } from '../db/remoteDictionary.js'
+import { findRemoteReminderOrder, listRemoteEscortReminderDetails, readEscortReminderDisplay } from '../db/remoteDictionary.js'
 import { normalizeReminderDate, shouldAdvancePeriodicReminder } from './orderReminderRules.js'
 import { parseShanghaiDateTime } from '../time/shanghaiTime.js'
 
@@ -215,6 +215,18 @@ interface EscortRejectReminderRow {
   service_date?: string | null
 }
 
+export function formatPreDayEscortReminder(orderNo: string, serviceDate: string, message: string, display: { hospital: string; customer: string; escort: string; phone: string } | null): string {
+  const date = serviceDate.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  const displayDate = date ? `${date[1]}年${Number(date[2])}月${Number(date[3])}日` : serviceDate || '日期未填写'
+  return `订单号: ${orderNo}\n客户${display?.customer || '未填写'}将于${displayDate}在${display?.hospital || '医院未填写'}就诊，陪诊人${display?.escort || '未填写'}（${display?.phone || '电话未填写'}）${message}`
+}
+
+async function preDayEscortReminderContent(row: EscortRejectReminderRow, serviceDate: string, message: string): Promise<string> {
+  const order = await findRemoteReminderOrder(row.source_order_no, row.huanyu_order_no)
+  const display = order && row.pzr_detail_id ? await readEscortReminderDisplay(order.orderNo, row.pzr_detail_id) : null
+  return formatPreDayEscortReminder(row.source_order_no, serviceDate, message, display)
+}
+
 /** 前一天拒单保留系统提醒；当天拒单才短信通知客户经理。 */
 async function createEscortRejectReminder(
   prisma: PrismaClient,
@@ -230,7 +242,7 @@ async function createEscortRejectReminder(
       huanyuOrderNo: row.huanyu_order_no,
       employeeId: row.assigned_employee_id,
       type: 'escort',
-      content: `订单号: ${row.source_order_no}\n陪诊人员: ${row.pzr || '未填写'}\n服务日期: ${serviceDate}\n提醒内容: 陪诊人员反馈无法出工，请及时处理！`,
+      content: await preDayEscortReminderContent(row, serviceDate, '反馈无法出工，请及时处理。'),
       dedupeKey: `auto:escort_pre_day_reject:${row.source_order_no}:${row.pzr_detail_id || 'unknown'}:${params.ymd}`,
       logger: params.logger,
       extra: { serviceDate, pzr: row.pzr, pzrDetailId: row.pzr_detail_id, willAttend: false, remark: params.remark }
@@ -1436,7 +1448,7 @@ export async function scanEscortDailyCheckReminders(prisma: PrismaClient, logger
           huanyuOrderNo: row.huanyu_order_no,
           employeeId: row.assigned_employee_id,
           type: 'escort',
-          content: `订单号: ${row.source_order_no}\n陪诊人员: ${row.pzr}\n服务日期: ${tomorrowYmd}\n提醒内容: 陪诊人员前一天确认短信后仍未反馈，请及时处理！`,
+          content: await preDayEscortReminderContent(row, tomorrowYmd, '尚未反馈出工确认，请及时联系。'),
           dedupeKey: `auto:escort_pre_day_unack:${row.source_order_no}:${row.pzr_detail_id}:${ymd}`,
           logger,
           extra: { serviceDate: tomorrowYmd, pzr: row.pzr, pzrDetailId: row.pzr_detail_id }

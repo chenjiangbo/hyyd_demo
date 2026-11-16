@@ -118,6 +118,14 @@
 .pet-bubble__form-section--escort { padding-top: 5px; padding-bottom: 7px; }
 .pet-bubble__form-section--escort-cards { padding: 6px; }
 .pet-bubble__escort-card-list { display: grid; gap: 4px; }
+.pet-bubble__unmatched-escort { display: grid; gap: 6px; margin: 8px 0; padding: 8px 10px; border: 1px solid #efd8ca; border-radius: 8px; color: #704b3d; font-size: 12px; }
+.pet-bubble__unmatched-values { display: flex; flex-wrap: wrap; gap: 4px 20px; }
+.pet-bubble__unmatched-values > div { display: flex; gap: 5px; }
+.pet-bubble__unmatched-values > div > span:first-child { color: #94796b; }
+.pet-bubble__unmatched-actions { display: flex; align-items: center; gap: 8px; }
+.pet-bubble__unmatched-actions .pet-bubble__search-select { width: 190px; max-width: 100%; }
+.pet-bubble__unmatched-actions > button { padding: 4px 12px; border: 1px solid #e6cdbd; border-radius: 6px; color: #a34b31; background: #fff; font: inherit; cursor: pointer; }
+.pet-bubble__unmatched-actions > button:disabled { opacity: .5; cursor: default; }
 .pet-bubble__escort-card { padding: 4px 0; border: 1px solid #efd8ca; border-radius: 8px; background: #fffdf9; }
 .pet-bubble__escort-card > header { display: flex; min-height: 22px; align-items: center; justify-content: space-between; gap: 5px; margin-bottom: 2px; color: #7a3826; font-size: 12px; }
 .pet-bubble__escort-card .pet-bubble__fields { gap: 2px; }

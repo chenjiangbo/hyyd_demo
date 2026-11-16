@@ -53,6 +53,7 @@ import {
   readRemoteOrderDocumentNo,
   readRemotePetOrder,
   updateHuanyuOrderDirectlyOnMysql,
+  validatePetOrderFinancial,
   refreshRegistrationAssistFieldsFromMysql,
   REGISTRATION_ASSIST_REMOTE_AUTHORITATIVE_COLUMNS
 } from '../huanyuMysqlPush.js'
@@ -4304,6 +4305,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
         return `${year}${month}${day} ${hour}:${minute}:${second}`
       }
       const times = { requestTime: storageTime(fields.requestTime), responseTime: storageTime(fields.responseTime), serviceStartTime: storageTime(fields.serviceStartTime), bookingFeedbackTime: storageTime(fields.bookingFeedbackTime), latestTicketTime: storageTime(fields.latestTicketTime), escorts: escortList.map((item) => storageTime(item.serviceDate)) }
+      if (financial) validatePetOrderFinancial(financial, cleanText(fields.orderStatus))
       if (!await huanyuOrderExistsOnMysql(orderNo)) return reply.status(404).send({ ok: false, error: `远端寰宇订单 ${orderNo} 不存在` })
       let serviceValidated = false
       if (financial && financial.service !== financial.originalService) {
@@ -4312,6 +4314,17 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
         serviceValidated = true
       }
       if (expectedEscorts && escortList.some((item) => /^\d+$/.test(item.escortName) && item.expectedEscortId !== item.escortName)) return reply.status(400).send({ ok: false, error: '请重新选择陪诊人员' })
+      if (expectedEscorts && body.expectedOrder && typeof body.expectedOrder === 'object') {
+        const current = await readRemotePetOrder(orderNo)
+        const keys = ['orderStatus', 'channel', 'channelService', 'orderAmount', 'hospital', 'hospitalAddress', 'department', 'doctor', 'requestTime', 'responseTime', 'serviceStartTime', 'bookingFeedbackTime', 'latestTicketTime', ...(Object.hasOwn(fields, 'escortSummary') ? ['escortSummary'] : [])]
+        const changed = !current || keys.some((key) => cleanText(current.order[key]) !== cleanText(body.expectedOrder[key]))
+        const normalize = (items: Array<{ id: string; escortId: string; serviceDate: string }>) => JSON.stringify(items.map((item) => [item.id, item.escortId, item.serviceDate]).sort((a, b) => a[0].localeCompare(b[0])))
+        const actual = current?.escorts.map((item) => ({ id: item.id, escortId: item.escortName, serviceDate: item.serviceDate })) ?? []
+        if (changed || normalize(actual) !== normalize(expectedEscorts)) return reply.status(409).send({ ok: false, error: '订单内容已发生变化，请重新打开订单' })
+        const selectedIds = escortList.map((item) => item.id).filter(Boolean)
+        const validIds = new Set(actual.map((item) => item.id))
+        if (new Set(selectedIds).size !== selectedIds.length || selectedIds.some((id) => !validIds.has(id))) return reply.status(400).send({ ok: false, error: '陪诊记录标识无效，请重新打开订单' })
+      }
       const preview = await previewHuanyuMasterSave(masterInput)
       if (preview.creations.length && !confirmedCreations) {
         const review = await buildMasterReview(preview.creations, masterInput)
@@ -4326,14 +4339,6 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
           return reply.status(409).send({ ok: false, error: '建档信息已变化，请返回重新核对' })
         }
         confirmed = preview.creations
-      }
-      if (expectedEscorts && body.expectedOrder && typeof body.expectedOrder === 'object') {
-        const current = await readRemotePetOrder(orderNo)
-        const keys = ['orderStatus', 'channel', 'channelService', 'orderAmount', 'hospital', 'hospitalAddress', 'department', 'doctor', 'requestTime', 'responseTime', 'serviceStartTime', 'bookingFeedbackTime', 'latestTicketTime', ...(Object.hasOwn(fields, 'escortSummary') ? ['escortSummary'] : [])]
-        const changed = !current || keys.some((key) => cleanText(current.order[key]) !== cleanText(body.expectedOrder[key]))
-        const normalize = (items: Array<{ id: string; escortId: string; serviceDate: string }>) => JSON.stringify(items.map((item) => [item.id, item.escortId, item.serviceDate]).sort((a, b) => a[0].localeCompare(b[0])))
-        const actual = current?.escorts.map((item) => ({ id: item.id, escortId: item.escortName, serviceDate: item.serviceDate })) ?? []
-        if (changed || normalize(actual) !== normalize(expectedEscorts)) return reply.status(409).send({ ok: false, error: '订单内容已发生变化，请重新打开订单' })
       }
       const resolved: MasterSaveResolution = await commitHuanyuMasterSave(masterInput, confirmed, masterDetails)
       needResetMasterData = resolved.creations.length > 0 || resolved.phoneUpdates > 0

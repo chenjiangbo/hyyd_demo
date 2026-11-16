@@ -863,7 +863,7 @@ export function registerAdminRoutes(
               name: '陪诊前一天出工未反馈通知',
               trigger: '次日就诊的陪诊订单，前一天 11:00 已成功发出短信，截至 13:00 仍未收到出工反馈',
               target: '订单责任客户经理系统提醒',
-              content: '订单号: ${orderNo}\n陪诊人员: ${escortName}\n服务日期: ${serviceDate}\n提醒内容: 陪诊人员前一天确认后仍未反馈，请及时处理！',
+              content: '订单号: ${orderNo}\n客户${customerName}将于${serviceDate}在${hospitalName}就诊，陪诊人${escortName}（${escortPhone}）尚未反馈出工确认，请及时联系。',
               technicalConditions: [
                 '订单为有效状态、已关联责任客户经理、服务类型在陪诊反馈范围内且存在待处理/进行中陪诊步骤；从 fact_hy_pzrxx 同一条最新且 PZR 非空的记录读取 PZR 和 BBQ_FW，日期匹配次日',
                 '最新正式陪诊明细中的 PZR 非空；代码未校验人员字典',
@@ -878,7 +878,7 @@ export function registerAdminRoutes(
               name: '陪诊前一天拒绝出工通知',
               trigger: '次日就诊的陪诊订单，陪诊员在反馈中明确回复【无法出工】',
               target: '订单责任客户经理系统提醒',
-              content: '订单号: ${orderNo}\n陪诊人员: ${escortName}\n服务日期: ${serviceDate}\n提醒内容: 陪诊人员反馈无法出工，请及时处理！',
+              content: '订单号: ${orderNo}\n客户${customerName}将于${serviceDate}在${hospitalName}就诊，陪诊人${escortName}（${escortPhone}）反馈无法出工，请及时处理。',
               technicalConditions: [
                 '订单处于有效状态、关联责任客户经理、服务类型在陪诊反馈范围内并存在有效陪诊步骤；从 fact_hy_pzrxx 同一条最新且 PZR 非空的记录读取 PZR 和 BBQ_FW，日期匹配次日',
                 'fact_hy_pzfk 中当天、当前陪诊人及服务日期的 pre_day 反馈 will_attend = false',
