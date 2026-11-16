@@ -90,7 +90,10 @@ type MatcherDependencies = {
 }
 const defaultDependencies: MatcherDependencies = { chat, config: getOrderAiAutomationConfig, trigger: triggerOrderAiAnalysis }
 async function finishAnalysis(prisma: PrismaClient, minio: Minio.Client, id: number, orderId: number, result: Record<string, unknown>, deps: MatcherDependencies): Promise<void> {
-  const analysis = await deps.trigger(prisma, minio, orderId)
+  // A newly matched escort summary is new business input even when an earlier
+  // order-field run already advanced the normal message watermark. Force one
+  // fresh pass so this run loads the message and its prepared summary.
+  const analysis = await deps.trigger(prisma, minio, orderId, { force: true })
   if (!analysis) throw new Error('陪诊小结关联的订单不存在')
   if (analysis.skipped && analysis.reason === 'waiting_for_retry') throw new Error('订单字段分析等待重试')
   if (analysis.skipped && analysis.reason === 'automatic_retries_exhausted') {
@@ -98,7 +101,7 @@ async function finishAnalysis(prisma: PrismaClient, minio: Minio.Client, id: num
     console.error('[escort-summary] 订单字段分析重试已耗尽', { messageId: id, orderId })
     return
   }
-  if (analysis.skipped && analysis.reason !== 'no_new_content') throw new Error(`订单字段分析未执行：${analysis.reason ?? '未知原因'}`)
+  if (analysis.skipped) throw new Error(`订单字段分析未执行：${analysis.reason ?? '未知原因'}`)
   await prisma.$executeRaw`UPDATE escort_summary_jobs SET status='matched', result=COALESCE(result, '{}'::jsonb) || ${JSON.stringify(result)}::jsonb, last_error=NULL, updated_at=NOW() WHERE message_id=${id}`
 }
 export async function processEscortSummaryJob(prisma: PrismaClient, minio: Minio.Client, id: number, deps: MatcherDependencies = defaultDependencies): Promise<void> {

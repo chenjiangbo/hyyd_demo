@@ -185,11 +185,21 @@ export async function loadNativeChatFieldAiBatch(
   let latestChangedAt: Date | null = null
   const messages: NativeChatAiMessage[] = []
   const voucherAttachmentIds = new Set(attachmentRows.map((row) => row.id))
-  const summaryIds = messageRows.filter((row) => row.text && /陪诊(?:小结|总结|过程)/.test(row.text)).map((row) => row.id)
-  const summaries = summaryIds.length ? await prisma.$queryRaw<Array<{ message_id: number; summary: string }>>(Prisma.sql`
-    SELECT message_id, result->>'escortSummary' AS summary FROM escort_summary_jobs
-    WHERE message_id IN (${Prisma.join(summaryIds)}) AND result->>'escortSummary' IS NOT NULL
-  `) : []
+  // The eligibility parser can find keywords inside decoded/nested XML even
+  // when the raw message string does not contain those words literally. Load
+  // prepared summaries by the same linked-message scope as messageRows rather
+  // than re-detecting them with a raw-text regex here.
+  const summaries = await prisma.$queryRaw<Array<{ message_id: number; summary: string }>>(Prisma.sql`
+    SELECT j.message_id, j.result->>'escortSummary' AS summary
+    FROM escort_summary_jobs j
+    JOIN native_chat_messages m ON m.id = j.message_id
+    WHERE j.result->>'escortSummary' IS NOT NULL
+      AND m.application_link_status = 'matched'
+      AND (
+        (${applicationNo}::text IS NOT NULL AND m.application_no = ${applicationNo} AND m.order_id IS NULL)
+        OR m.order_id = ${orderId}
+      )
+  `)
   const summaryByMessage = new Map(summaries.map((item) => [item.message_id, item.summary]))
   for (const row of messageRows) {
     const changedAt = [row.observedAt, row.applicationLinkedAt, ...row.attachments.map((attachment) => attachment.updatedAt)]
