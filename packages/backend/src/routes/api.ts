@@ -40,9 +40,10 @@ import {
   listHuanyuHospitalAddresses,
   listHuanyuHospitalDepartments,
   listHuanyuHospitalDoctors,
-  listHuanyuHospitals
+  listHuanyuHospitals,
+  listHuanyuOrderStatuses
 } from '../db/remoteDictionary.js'
-import { huanyuBookingChannelTypes, huanyuDocumentTypes, huanyuExpertLevels, huanyuMedicareTypes, huanyuOrderStatuses } from '../dictionaries/huanyuOrder.js'
+import { huanyuBookingChannelTypes, huanyuDocumentTypes, huanyuExpertLevels, huanyuMedicareTypes } from '../dictionaries/huanyuOrder.js'
 import { registerDictionaryManageRoutes } from './dictionaryManage.js'
 import { registerEscortFeedbackRoutes } from './escortFeedbackRoutes.js'
 import { applyOrderWorkflowEvent, getOrderWorkflow, initializeOrderWorkflow, type WorkflowEventInput } from '../workflow/serviceWorkflow.js'
@@ -867,10 +868,9 @@ export function registerApiRoutes(
     return reply.send({ data: huanyuBookingChannelTypes() })
   })
 
-  // 寰宇订单状态为后端固定字典，不连接远端数据库。
   fastify.get('/api/v1/dictionaries/huanyu/order-statuses', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
-    return reply.send({ data: huanyuOrderStatuses() })
+    return reply.send({ data: await listHuanyuOrderStatuses() })
   })
 
   // 寰宇订单证件类型为后端固定字典，id 与展示名称一致。

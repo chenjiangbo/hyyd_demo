@@ -465,7 +465,7 @@ export class PetOrderAiService {
       if (!productResponse.ok) throw new Error('服务项目读取失败')
       const productPayload = await productResponse.json() as { data?: Array<{ id: string; name: string; price: string }> }
       const products = productPayload.data ?? []
-      const statusOptions = await this.dictionary('status').catch(() => []) as Array<{ id?: string; name?: string }>
+      const statusOptions = await this.dictionary('status') as Array<{ id?: string; name?: string }>
       const nameLookups = [
         { key: 'hospital', kind: 'hospital', value: current.hospital },
         { key: 'hospitalAddress', kind: 'address', value: current.hospitalAddress },

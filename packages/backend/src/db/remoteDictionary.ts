@@ -99,6 +99,13 @@ export function getRemoteDictionaryPool(): Pool {
   return readOnlyPool()
 }
 
+export async function listHuanyuOrderStatuses(): Promise<HuanyuChannelOption[]> {
+  const [rows] = await readOnlyPool().execute<RowDataPacket[]>(
+    "SELECT DISTINCT TRIM(ZT) AS name FROM HY_D_DDZT WHERE ZT IS NOT NULL AND TRIM(ZT) <> '' ORDER BY name"
+  )
+  return rows.map((row) => ({ id: String(row.name), name: String(row.name) }))
+}
+
 /**
  * 提醒不依赖本地寰宇镜像表。订单主信息、客户经理电话直接来自远程库。
  */
