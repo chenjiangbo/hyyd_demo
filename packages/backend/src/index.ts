@@ -28,6 +28,7 @@ import { registerAdminRoutes, ADMIN_COOKIE, verifyAdminToken } from './routes/ad
 import { addAdminSocket, removeAdminSocket } from './routes/adminBus.js'
 import { saveOrderAttachments, saveOrderDetailBundle } from './orderDetail.js'
 import { saveTaikangFormEvent } from './taikangFormRecording.js'
+import { registerPinganIngestRoutes } from './pinganCollection.js'
 import { ensureOrderIdCardOcrTable, scheduleOrderIdCardOcr } from './services/orderIdCardOcr.js'
 import { ensureGreenPassIdCardJobs, runGreenPassIdCardOcr, startGreenPassIdCardRetries } from './services/greenPassIdCardOcr.js'
 import { initScheduler } from './asr/transcribeScheduler.js'
@@ -1021,6 +1022,7 @@ async function start() {
 
     // 4. 注册 REST API 路由
     registerApiRoutes(server, prisma, minioClient, minioPublicClient)
+    registerPinganIngestRoutes(server, prisma, minioClient)
 
     // 4.1 注册管理后台 admin 路由（独立 JWT cookie 鉴权，挂 /api/v1/admin/*）
     registerAdminRoutes(server, prisma, minioClient, minioPublicClient)

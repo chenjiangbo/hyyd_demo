@@ -69,6 +69,7 @@ import { confirmPetImageOrder, dismissPetImage } from '../services/petImageConfi
 import { getOrderAiAutomationConfig, isImageAiEnabled } from '../services/orderAiAutomationConfig.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { formatShanghaiDateTime, parseShanghaiDateTime, shanghaiDateKey } from '../time/shanghaiTime.js'
+import { isEmployeeAuthExemptPath } from '../employeeRequestAuth.js'
 import {
   CreateOrderPayload,
   ClaimOrderPayload, 
@@ -476,31 +477,8 @@ export function registerApiRoutes(
   
   // 1. 鉴权 Hook
   fastify.addHook('preHandler', async (request: FastifyRequest, reply: FastifyReply) => {
-    // 排除健康检查等不需要鉴权的接口。
-    // - /api/v1/admin/*：走独立管理员 JWT cookie 鉴权（见 routes/admin.ts）
-    // - /admin/*：管理后台前端静态资源（@fastify/static），由前端自身登录态控制
-    // 这些都不参与员工 X-Employee-Code 体系，直接放行。
-    if (
-      request.url === '/health' ||
-      request.url === '/api/v1/login' ||
-      request.url.startsWith('/ws') ||
-      request.url.startsWith('/api/v1/admin') ||
-      request.url.startsWith('/api/v1/order-attachments/') ||
-      request.url.startsWith('/admin') ||
-      request.url.startsWith('/ext') || // 插件分发文件（.crx / update.xml），公开资源
-      request.url.startsWith('/download') || // App 安装包下载，公开资源
-      request.url.startsWith('/api/v1/departments') ||
-      request.url.startsWith('/api/v1/hospitals') ||
-      request.url.startsWith('/api/v1/doctors') ||
-      request.url.startsWith('/api/v1/channels') ||
-      request.url.startsWith('/api/v1/internal-products') ||
-      request.url.startsWith('/api/v1/payment-channels') ||
-      request.url.startsWith('/api/v1/escorts') ||
-      request.url.startsWith('/api/v1/regions') ||
-      request.url.startsWith('/api/v1/dim_cslb') ||
-      request.url.startsWith('/m/') ||
-      request.url.startsWith('/api/v1/escort-feedback')
-    ) {
+    // 平安采集单独依据订单里的当前处理人 ID 归属，不使用员工请求头体系。
+    if (isEmployeeAuthExemptPath(request.url)) {
       return
     }
 

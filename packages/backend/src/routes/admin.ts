@@ -40,6 +40,7 @@ import {
 import { findHuanyuChannelById, listHuanyuChannels } from '../db/remoteDictionary.js'
 import { DEFAULT_WORKFLOW_TEMPLATES } from '../workflow/defaultWorkflowConfig.js'
 import { registerTaikangFormAdminRoutes } from '../taikangFormRecording.js'
+import { registerPinganAdminRoutes } from '../pinganCollection.js'
 import { registerNativeChatCollectionAdminRoutes } from './nativeChatCollectionAdmin.js'
 import { getHyhomeOrderSite, saveHyhomeOrderSite } from '../services/hyhomeOrderSites.js'
 import {
@@ -357,6 +358,7 @@ export function registerAdminRoutes(
     })
 
     registerTaikangFormAdminRoutes(fastify, prisma, minioClient, getEnv().minioBucketScreenshots)
+    registerPinganAdminRoutes(fastify, prisma, minioPublicClient)
     registerNativeChatCollectionAdminRoutes(fastify, prisma, minioClient, minioPublicClient)
 
     fastify.get('/api/v1/admin/hyhome-order-site', async (_request, reply) => {

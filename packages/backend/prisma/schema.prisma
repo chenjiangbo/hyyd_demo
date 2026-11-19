@@ -13,6 +13,7 @@ model Employee {
   phone                   String
   wechatId                String?                  @map("wechat_id")
   taikangAccount          String?                  @map("taikang_account")
+  pinganId                String?                  @unique @map("pingan_id")
   token                   String                   @unique
   password                String?                  @map("PASSWORD")
   enabled                 Int                      @default(1) @map("ENABLED")
@@ -22,6 +23,8 @@ model Employee {
   materials               Material[]
   unmatchedOrderRefs      UnmatchedOrderRef[]
   taikangFormSessions      TaikangFormSession[]
+  pinganStaff              PinganStaff[]
+  pinganOrders             PinganOrder[]
   nativeChatConversations  NativeChatConversation[]
   mobileClientStates      MobileClientState[]
 
@@ -63,6 +66,133 @@ model TaikangFormEvent {
   @@unique([sessionId, sequence])
   @@index([sessionId, occurredAt])
   @@map("taikang_form_events")
+}
+
+model PinganAccount {
+  pinganUserId String                 @id @db.VarChar(40) @map("pingan_user_id")
+  displayName  String?                @map("display_name")
+  firstSeenAt  DateTime               @default(now()) @db.Timestamp(3) @map("first_seen_at")
+  lastSeenAt   DateTime               @db.Timestamp(3) @map("last_seen_at")
+  createdAt    DateTime               @default(now()) @db.Timestamp(3) @map("created_at")
+  updatedAt    DateTime               @updatedAt @db.Timestamp(3) @map("updated_at")
+  orders       PinganOrder[]
+  runs         PinganCollectionRun[]
+
+  @@map("pingan_accounts")
+}
+
+model PinganStaff {
+  pinganStaffId String       @id @db.VarChar(40) @map("pingan_staff_id")
+  displayName   String?      @map("display_name")
+  employeeId    Int?         @map("employee_id")
+  employee      Employee?    @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  firstSeenAt   DateTime     @default(now()) @db.Timestamp(3) @map("first_seen_at")
+  lastSeenAt    DateTime     @db.Timestamp(3) @map("last_seen_at")
+  createdAt     DateTime     @default(now()) @db.Timestamp(3) @map("created_at")
+  updatedAt     DateTime     @updatedAt @db.Timestamp(3) @map("updated_at")
+  orders        PinganOrder[]
+
+  @@index([employeeId, lastSeenAt(sort: Desc)])
+  @@map("pingan_staff")
+}
+
+model PinganOrder {
+  pinganUserId       String        @db.VarChar(40) @map("pingan_user_id")
+  account            PinganAccount @relation(fields: [pinganUserId], references: [pinganUserId], onDelete: Cascade)
+  orderId            String        @db.VarChar(120) @map("order_id")
+  handlerUserId      String?       @db.VarChar(40) @map("handler_user_id")
+  handlerStaff       PinganStaff?  @relation(fields: [handlerUserId], references: [pinganStaffId], onDelete: SetNull)
+  handlerName        String?       @map("handler_name")
+  employeeId         Int?          @map("employee_id")
+  employee           Employee?     @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  orderType          String        @db.VarChar(80) @map("order_type")
+  orderTypeName      String        @db.VarChar(120) @map("order_type_name")
+  status             String        @default("") @db.VarChar(120)
+  statusName         String        @default("") @db.VarChar(160) @map("status_name")
+  listJson           Json          @map("list_json")
+  detailJson         Json?         @map("detail_json")
+  decryptedFields    Json          @map("decrypted_fields")
+  captureState       String        @db.VarChar(32) @map("capture_state")
+  attachmentState    String        @default("not_captured") @db.VarChar(32) @map("attachment_state")
+  attachmentErrors   String[]      @default([]) @map("attachment_errors")
+  errors             String[]      @default([])
+  listFingerprint    String        @map("list_fingerprint")
+  detailFingerprint  String?       @map("detail_fingerprint")
+  firstSeenAt        DateTime      @db.Timestamp(3) @map("first_seen_at")
+  lastSeenAt         DateTime      @db.Timestamp(3) @map("last_seen_at")
+  createdAt          DateTime      @default(now()) @db.Timestamp(3) @map("created_at")
+  updatedAt          DateTime      @updatedAt @db.Timestamp(3) @map("updated_at")
+  attachments        PinganOrderAttachment[]
+
+  @@id([pinganUserId, orderId])
+  @@index([employeeId, lastSeenAt(sort: Desc), orderId])
+  @@index([handlerUserId, lastSeenAt(sort: Desc)])
+  @@index([orderType, status, lastSeenAt(sort: Desc)])
+  @@map("pingan_orders")
+}
+
+model PinganOrderAttachment {
+  pinganUserId String     @db.VarChar(40) @map("pingan_user_id")
+  orderId      String     @db.VarChar(120) @map("order_id")
+  order        PinganOrder @relation(fields: [pinganUserId, orderId], references: [pinganUserId, orderId], onDelete: Cascade)
+  attachmentId String     @db.VarChar(240) @map("attachment_id")
+  fileName     String     @db.VarChar(500) @map("file_name")
+  fileType     String?    @db.VarChar(120) @map("file_type")
+  mimeType     String     @db.VarChar(160) @map("mime_type")
+  byteSize     BigInt     @map("byte_size")
+  sha256       String     @db.Char(64)
+  minioBucket  String     @db.VarChar(120) @map("minio_bucket")
+  minioKey     String     @db.VarChar(1000) @map("minio_key")
+  capturedAt   DateTime   @db.Timestamp(3) @map("captured_at")
+  createdAt    DateTime   @default(now()) @db.Timestamp(3) @map("created_at")
+
+  @@id([pinganUserId, orderId, attachmentId])
+  @@index([pinganUserId, orderId])
+  @@map("pingan_order_attachments")
+}
+
+model PinganCollectionRun {
+  id                 String                  @id @db.Uuid
+  pinganUserId       String                  @db.VarChar(40) @map("pingan_user_id")
+  account            PinganAccount           @relation(fields: [pinganUserId], references: [pinganUserId], onDelete: Cascade)
+  installDate        DateTime                @db.Date @map("install_date")
+  scanStartDate      DateTime                @db.Date @map("scan_start_date")
+  scanEndDate        DateTime                @db.Date @map("scan_end_date")
+  startedAt          DateTime                @db.Timestamp(3) @map("started_at")
+  completedAt        DateTime?               @db.Timestamp(3) @map("completed_at")
+  state              String                  @db.VarChar(32)
+  uniqueOrderCount   Int?                    @map("unique_order_count")
+  listRows           Int?                    @map("list_rows")
+  detailCount        Int?                    @map("detail_count")
+  decryptedFieldCount Int?                   @map("decrypted_field_count")
+  attachmentCount    Int?                    @map("attachment_count")
+  errorCount         Int?                    @map("error_count")
+  error              String?
+  pages              PinganCollectionPage[]
+  createdAt          DateTime                @default(now()) @db.Timestamp(3) @map("created_at")
+  updatedAt          DateTime                @updatedAt @db.Timestamp(3) @map("updated_at")
+
+  @@index([startedAt(sort: Desc), id(sort: Desc)])
+  @@map("pingan_collection_runs")
+}
+
+model PinganCollectionPage {
+  runId      String             @db.Uuid @map("run_id")
+  run        PinganCollectionRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  orderType  String             @db.VarChar(80) @map("order_type")
+  pageNum    Int                @map("page_num")
+  pageCount  Int                @map("page_count")
+  pageSize   Int                @map("page_size")
+  total      Int
+  rowCount   Int                @map("row_count")
+  state      String             @db.VarChar(32)
+  capturedAt DateTime           @db.Timestamp(3) @map("captured_at")
+  completedAt DateTime?         @db.Timestamp(3) @map("completed_at")
+  query      Json
+
+  @@id([runId, orderType, pageNum])
+  @@index([runId, orderType, pageNum])
+  @@map("pingan_collection_pages")
 }
 
 model Order {

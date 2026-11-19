@@ -57,6 +57,8 @@
       #start-edit-batch-case-service { background: #312e81; }
       #download-edit-analysis { background: #059669; }
       #clear-edit-analysis { background: #7c2d12; }
+      #download-pingan-data { background: #047857; }
+      #download-pingan-logs { background: #2563eb; }
       .debug-note { margin-top: 8px; color: #9a3412; font-size: 11px; line-height: 1.45; }
       .analysis-status { margin-top: 8px; color: #374151; font-size: 11px; line-height: 1.45; word-break: break-word; }
     </style>
@@ -91,6 +93,18 @@
         <span class="dot dot-gray" id="form-record-dot"></span>
         <span id="form-record-text">检查中…</span>
       </span>
+    </div>
+
+    <div class="separator"></div>
+
+    <div class="debug-section" id="pingan-section">
+      <div class="debug-title">平安好医生采集</div>
+      <div class="analysis-status" id="pingan-collection-status">等待登录平安好医生</div>
+      <div class="analysis-status" id="pingan-collection-counts">尚无采集记录</div>
+      <div class="debug-buttons">
+        <button id="download-pingan-data">导出采集结果</button>
+        <button id="download-pingan-logs">导出采集日志</button>
+      </div>
     </div>
 
     <div class="separator"></div>

@@ -25,6 +25,7 @@ import TaikangHuanyuChannelMappingPage from './pages/TaikangHuanyuChannelMapping
 import OrderAiBusinessConfigPage from './pages/OrderAiBusinessConfigPage'
 import AiSkillConfigPage from './pages/AiSkillConfigPage'
 import TaikangFormSessionsPage from './pages/TaikangFormSessionsPage'
+import PinganOrdersPage from './pages/PinganOrdersPage'
 import TaikangFormSessionPage from './pages/TaikangFormSessionPage'
 import NativeChatCollectionConfigPage from './pages/NativeChatCollectionConfigPage'
 import NativeChatRecordsPage from './pages/NativeChatRecordsPage'
@@ -52,6 +53,7 @@ export default function App(): React.JSX.Element {
         <Route path="employees/:id" element={<EmployeeDetailPage />} />
         <Route path="orders" element={<OrdersPage />} />
         <Route path="orders/:id" element={<OrderDetailPage />} />
+        <Route path="pingan-orders" element={<PinganOrdersPage />} />
         <Route path="materials" element={<MaterialsPage />} />
         <Route path="materials/:id" element={<MaterialDetailPage />} />
         <Route path="messages" element={<MessagesPage />} />
