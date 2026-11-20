@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "tsup --watch",
     "build": "tsup",
-    "test:recorder": "pnpm build && node --test test/formRecorderPage.test.mjs"
+    "test:recorder": "pnpm build && node --test test/formRecorderPage.test.mjs",
+    "test:pingan": "pnpm build && node --test test/pinganPageProbe.test.mjs test/pinganApi.test.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.268",

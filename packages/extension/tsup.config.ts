@@ -8,6 +8,8 @@ export default defineConfig({
     content: 'src/content/index.ts',
     pageProbe: 'src/content/pageProbe.ts',
     formRecorderPage: 'src/content/formRecorderPage.ts',
+    pinganPageProbe: 'src/pingan/pageProbe.ts',
+    pinganCollector: 'src/pingan/content.ts',
     hyhomeDetector: 'src/content/hyhomeDetector.ts',
     hyhomeCalculation: 'src/content/hyhomeCalculation.ts',
     popup: 'src/popup/index.ts'

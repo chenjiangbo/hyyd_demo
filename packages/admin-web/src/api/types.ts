@@ -333,6 +333,94 @@ export interface TaikangFormEventPage {
   nextAfterSequence: number | null
 }
 
+export interface PinganAccountRow {
+  pinganUserId: string
+  displayName: string | null
+  firstSeenAt: string
+  lastSeenAt: string
+  orderCount: number
+  runCount: number
+}
+
+export interface PinganStaffRow {
+  pinganStaffId: string
+  displayName: string | null
+  employeeId: number | null
+  employee: { id: number; name: string } | null
+  firstSeenAt: string
+  lastSeenAt: string
+  mapped: boolean
+  orderCount: number
+}
+
+export interface PinganOrderListRow {
+  pinganUserId: string
+  orderId: string
+  handlerUserId: string | null
+  handlerName: string | null
+  orderType: string
+  orderTypeName: string
+  status: string
+  statusName: string
+  captureState: string
+  attachmentState: string
+  attachmentErrors: string[]
+  lastSeenAt: string
+  employee: { id: number; name: string } | null
+  account: { displayName: string | null }
+  attachmentCount: number
+}
+
+export interface PinganOrderPage {
+  items: PinganOrderListRow[]
+  page: number
+  pageSize: number
+  total: number
+  pageCount: number
+}
+
+export interface PinganOrderDetail extends PinganOrderListRow {
+  listJson: Record<string, unknown>
+  detailJson: Record<string, unknown> | null
+  decryptedFields: Record<string, string>
+  errors: string[]
+  listFingerprint: string
+  detailFingerprint: string | null
+  firstSeenAt: string
+  createdAt: string
+  updatedAt: string
+  attachments: Array<{
+    attachmentId: string
+    fileName: string
+    fileType: string
+    mimeType: string
+    byteSize: string
+    sha256: string
+    capturedAt: string
+    url: string
+  }>
+}
+
+export interface PinganCollectionRunRow {
+  id: string
+  pinganUserId: string
+  account: { displayName: string | null }
+  installDate: string
+  scanStartDate: string
+  scanEndDate: string
+  startedAt: string
+  completedAt: string | null
+  state: string
+  uniqueOrderCount: number | null
+  listRows: number | null
+  detailCount: number | null
+  decryptedFieldCount: number | null
+  attachmentCount: number | null
+  errorCount: number | null
+  error: string | null
+  pageCount: number
+}
+
 export interface EmployeeDetail {
   id: number
   name: string

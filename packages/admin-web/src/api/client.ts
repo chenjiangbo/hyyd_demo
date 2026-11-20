@@ -39,7 +39,12 @@ import type {
   NativeChatAccount,
   NativeChatConversationSummary,
   NativeChatAdminMessagePage,
-  OrderAiAutomationConfig
+  OrderAiAutomationConfig,
+  PinganAccountRow,
+  PinganStaffRow,
+  PinganOrderPage,
+  PinganOrderDetail,
+  PinganCollectionRunRow
 } from './types'
 
 export type HyhomeOrderSite = { origin: string; origins: string[]; listResourceId: string; detailResourceId: string }
@@ -413,6 +418,30 @@ export const adminApi = {
     return request<TaikangFormEventPage>(
       `/api/v1/admin/taikang-form-sessions/${encodeURIComponent(id)}/events${qs({ afterSequence })}`
     )
+  },
+  pinganAccounts() {
+    return request<PinganAccountRow[]>('/api/v1/admin/pingan/accounts')
+  },
+  pinganEmployees() {
+    return request<Array<{ id: number; name: string }>>('/api/v1/admin/pingan/employees')
+  },
+  pinganStaff() {
+    return request<PinganStaffRow[]>('/api/v1/admin/pingan/staff')
+  },
+  updatePinganStaff(pinganStaffId: string, employeeId: number | null) {
+    return request<PinganStaffRow>(`/api/v1/admin/pingan/staff/${encodeURIComponent(pinganStaffId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ employeeId })
+    })
+  },
+  pinganOrders(params: { page?: number; pageSize?: number; search?: string; orderType?: string; employeeId?: number } = {}) {
+    return request<PinganOrderPage>(`/api/v1/admin/pingan/orders${qs(params)}`)
+  },
+  pinganOrder(pinganUserId: string, orderId: string) {
+    return request<PinganOrderDetail>(`/api/v1/admin/pingan/orders/${encodeURIComponent(pinganUserId)}/${encodeURIComponent(orderId)}`)
+  },
+  pinganRuns() {
+    return request<PinganCollectionRunRow[]>('/api/v1/admin/pingan/runs')
   },
   deleteCaptureDiagnosticImage(objectKey: string) {
     return request<{ ok: boolean }>(`/api/v1/admin/capture-diagnostic-images/${objectKey}`, { method: 'DELETE' })

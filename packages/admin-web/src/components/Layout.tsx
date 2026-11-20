@@ -8,6 +8,7 @@ const NAV_ITEMS: Array<{ to: string; label: string; icon: string; end?: boolean 
   { to: '/', label: '仪表盘', icon: '◵', end: true },
   { to: '/employees', label: '员工', icon: '☻' },
   { to: '/orders', label: '订单', icon: '▤' },
+  { to: '/pingan-orders', label: '平安好医生订单', icon: '▤' },
   { to: '/materials', label: '素材', icon: '✎' },
   { to: '/messages', label: '消息', icon: '✉' },
   { to: '/calls', label: '通话', icon: '☎' },

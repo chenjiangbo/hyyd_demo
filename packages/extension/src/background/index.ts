@@ -2,8 +2,113 @@ import { countFormEvents, deleteFormEvent, nextFormEvent, queueFormEvent } from 
 import { DEFAULT_BACKEND_WS_URL, configuredBackendWsUrl } from '../backendConnection';
 import { handleHyhomePageEvent } from './hyhomeBridge';
 import { syncHyhomeSite } from './hyhomeSites';
+import {
+  deleteStalePinganAttachments,
+  getPinganAttachment,
+  getPinganOrder,
+  persistPinganAttachment,
+  savePinganEvent,
+  savePinganOrder,
+  savePinganPage,
+  savePinganRun,
+  setPinganStatus,
+} from '../pingan/localStore';
+import { PINGAN_INSTALL_DATE_KEY } from '../pingan/types';
 
 console.log('[寰宇探针] Background Service Worker 已启动');
+
+const PINGAN_ORDER_CONTEXT_PREFIX = 'pingan-order-context:';
+const PINGAN_ATTACHMENT_REQUEST_FILTER = {
+  urls: [
+    'https://iobs.pingan.com.cn/download/*',
+    'https://filegw.jk.cn/file*',
+  ],
+};
+
+async function rememberPinganOrderContext(tabId: number, event: { runId?: string; orderId?: string; orderType?: string }): Promise<void> {
+  if (!event.orderId) return;
+  await chrome.storage.session.set({
+    [`${PINGAN_ORDER_CONTEXT_PREFIX}${tabId}`]: {
+      runId: event.runId || 'page-session',
+      orderId: event.orderId,
+      orderType: event.orderType,
+      observedAt: Date.now(),
+    },
+  });
+}
+
+async function pinganOrderContextForTab(tabId: number): Promise<{ runId: string; orderId: string; orderType?: string } | null> {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  const candidates = [tab?.openerTabId, tabId].filter((value): value is number => Number.isInteger(value));
+  const stored = await chrome.storage.session.get(candidates.map((id) => `${PINGAN_ORDER_CONTEXT_PREFIX}${id}`));
+  for (const id of candidates) {
+    const context = stored[`${PINGAN_ORDER_CONTEXT_PREFIX}${id}`] as { runId?: string; orderId?: string; orderType?: string; observedAt?: number } | undefined;
+    if (context?.orderId && Date.now() - Number(context.observedAt ?? 0) < 30 * 60 * 1000) {
+      return { runId: context.runId || 'page-session', orderId: context.orderId, orderType: context.orderType };
+    }
+  }
+  return null;
+}
+
+async function recordPinganAttachmentRequest(
+  details: chrome.webRequest.WebResponseCacheDetails,
+  level: 'info' | 'error',
+  responseHeaders?: chrome.webRequest.HttpHeader[],
+  failure?: string
+): Promise<void> {
+  const url = new URL(details.url);
+  const context = details.tabId >= 0 ? await pinganOrderContextForTab(details.tabId) : null;
+  const headers = new Map((responseHeaders ?? []).map((header) => [header.name.toLowerCase(), header.value ?? '']));
+  const mimeType = headers.get('content-type')?.split(';')[0]?.trim();
+  const byteLength = Number(headers.get('content-length'));
+  const queryKeys = [...new Set(url.searchParams.keys())].sort();
+  const status = 'statusCode' in details ? Number((details as chrome.webRequest.WebResponseHeadersDetails).statusCode) : undefined;
+  const message = failure
+    ? `附件新标签请求失败：${details.method} ${url.origin}${url.pathname}；原因 ${failure}`
+    : `附件新标签请求完成：${details.method} ${url.origin}${url.pathname} → HTTP ${status ?? '未知'}${mimeType ? `；${mimeType}` : ''}${Number.isFinite(byteLength) && byteLength > 0 ? `；${byteLength} 字节` : ''}${queryKeys.length ? `；参数名 ${queryKeys.join(',')}` : ''}`;
+  await savePinganEvent({
+    id: crypto.randomUUID(),
+    runId: context?.runId ?? 'page-session',
+    at: new Date(details.timeStamp).toISOString(),
+    level,
+    kind: 'attachment_browser_request',
+    ...(context?.orderId ? { orderId: context.orderId } : {}),
+    ...(context?.orderType ? { orderType: context.orderType } : {}),
+    method: details.method,
+    ...(status ? { httpStatus: status } : {}),
+    message,
+  });
+}
+
+chrome.webRequest.onCompleted.addListener((details) => {
+  void recordPinganAttachmentRequest(details, 'info', details.responseHeaders)
+    .catch((error) => console.warn('[平安采集] 记录附件标签请求失败', error));
+}, PINGAN_ATTACHMENT_REQUEST_FILTER, ['responseHeaders']);
+
+chrome.webRequest.onErrorOccurred.addListener((details) => {
+  void recordPinganAttachmentRequest(details, 'error', undefined, details.error)
+    .catch((error) => console.warn('[平安采集] 记录附件标签请求失败', error));
+}, PINGAN_ATTACHMENT_REQUEST_FILTER);
+
+function beijingDateString(date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+async function initializePinganInstallDate(): Promise<void> {
+  const current = await chrome.storage.local.get(PINGAN_INSTALL_DATE_KEY);
+  if (typeof current[PINGAN_INSTALL_DATE_KEY] !== 'string') {
+    await chrome.storage.local.set({ [PINGAN_INSTALL_DATE_KEY]: beijingDateString() });
+  }
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  void initializePinganInstallDate().catch((error) => console.error('[平安采集] 初始化日期失败', error));
+});
+void initializePinganInstallDate().catch((error) => console.error('[平安采集] 读取安装日期失败', error));
 
 let ws: WebSocket | null = null;
 const CLIENT_TYPE = 'ext';
@@ -95,6 +200,29 @@ function isCurrentCollector(tabId: number | undefined, generation: string): bool
 async function loadConfig() {
   const r = await chrome.storage.local.get(['backendWsUrl']);
   backendWsUrl = configuredBackendWsUrl(r.backendWsUrl);
+}
+
+async function pinganBackendRequest(path: string, init: RequestInit = {}): Promise<any> {
+  await loadConfig();
+  const url = new URL(backendWsUrl);
+  url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+  url.pathname = path;
+  url.search = '';
+  url.hash = '';
+  const hasForm = typeof FormData !== 'undefined' && init.body instanceof FormData;
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      ...(hasForm ? {} : { 'Content-Type': 'application/json' }),
+      ...init.headers,
+    },
+  });
+  let payload: any;
+  try { payload = await response.json(); }
+  catch { throw new Error(`后台返回非 JSON，HTTP ${response.status}`); }
+  if (!response.ok) throw new Error(payload?.error || `后台请求失败，HTTP ${response.status}`);
+  if (!payload || !Object.prototype.hasOwnProperty.call(payload, 'data')) throw new Error('后台响应缺少 data');
+  return payload.data;
 }
 
 // ─── WebSocket 连接 ──────────────────────────────────────────
@@ -393,6 +521,121 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .then(() => sendResponse({ ok: true }))
         .catch((error) => sendResponse({ ok: false, error: String(error) }));
       return true;
+    case 'PINGAN_GET_INSTALL_DATE':
+    case 'PINGAN_SET_STATUS':
+    case 'PINGAN_SAVE_EVENT':
+    case 'PINGAN_SAVE_PAGE':
+    case 'PINGAN_SAVE_RUN':
+    case 'PINGAN_SAVE_ORDER':
+    case 'PINGAN_GET_ORDER':
+    case 'PINGAN_DOWNLOAD_ATTACHMENT':
+    case 'PINGAN_DELETE_STALE_ATTACHMENTS':
+    case 'PINGAN_BACKEND_IDENTIFY':
+    case 'PINGAN_BACKEND_RUN':
+    case 'PINGAN_BACKEND_PAGE':
+    case 'PINGAN_BACKEND_ORDER':
+    case 'PINGAN_BACKEND_ATTACHMENT': {
+      void (async () => {
+        const pageUrl = sender.tab?.url;
+        if (!pageUrl || new URL(pageUrl).hostname !== 'www.jk.cn') throw new Error('请求来源不是平安好医生页面');
+        switch (message.type) {
+          case 'PINGAN_SET_STATUS':
+            await setPinganStatus(message.status);
+            sendResponse({ ok: true });
+            return;
+          case 'PINGAN_SAVE_EVENT':
+            await savePinganEvent(message.event);
+            if (sender.tab?.id) await rememberPinganOrderContext(sender.tab.id, message.event);
+            sendResponse({ ok: true });
+            return;
+          case 'PINGAN_SAVE_PAGE':
+            await savePinganPage(message.page);
+            sendResponse({ ok: true });
+            return;
+          case 'PINGAN_SAVE_RUN':
+            await savePinganRun(message.run);
+            sendResponse({ ok: true });
+            return;
+          case 'PINGAN_SAVE_ORDER':
+            await savePinganOrder(message.order);
+            if (sender.tab?.id) await rememberPinganOrderContext(sender.tab.id, {
+              orderId: message.order?.orderId,
+              orderType: message.order?.orderType,
+            });
+            sendResponse({ ok: true });
+            return;
+          case 'PINGAN_GET_ORDER':
+            sendResponse({ ok: true, order: await getPinganOrder(String(message.pinganUserId ?? ''), String(message.orderId ?? '')) });
+            return;
+          case 'PINGAN_GET_INSTALL_DATE': {
+            await initializePinganInstallDate();
+            const value = await chrome.storage.local.get(PINGAN_INSTALL_DATE_KEY);
+            sendResponse({ ok: true, installDate: value[PINGAN_INSTALL_DATE_KEY] });
+            return;
+          }
+          case 'PINGAN_DELETE_STALE_ATTACHMENTS':
+            await deleteStalePinganAttachments(String(message.pinganUserId ?? ''), String(message.orderId ?? ''), Array.isArray(message.keepIds) ? message.keepIds.map(String) : []);
+            sendResponse({ ok: true });
+            return;
+          case 'PINGAN_BACKEND_IDENTIFY': {
+            const data = await pinganBackendRequest('/api/v1/pingan/identify', {
+              method: 'POST', body: JSON.stringify({ pinganUserId: message.pinganUserId, displayName: message.displayName }),
+            });
+            sendResponse({ ok: true, data });
+            return;
+          }
+          case 'PINGAN_BACKEND_RUN':
+          case 'PINGAN_BACKEND_PAGE':
+          case 'PINGAN_BACKEND_ORDER': {
+            const path = message.type === 'PINGAN_BACKEND_RUN'
+              ? '/api/v1/pingan/runs'
+              : message.type === 'PINGAN_BACKEND_PAGE' ? '/api/v1/pingan/pages' : '/api/v1/pingan/orders';
+            const key = message.type === 'PINGAN_BACKEND_RUN' ? 'run' : message.type === 'PINGAN_BACKEND_PAGE' ? 'page' : 'order';
+            const data = await pinganBackendRequest(path, {
+              method: 'POST', body: JSON.stringify({ pinganUserId: message.pinganUserId, [key]: message[key] }),
+            });
+            sendResponse({ ok: true, data });
+            return;
+          }
+          case 'PINGAN_BACKEND_ATTACHMENT': {
+            const orderId = String(message.orderId ?? '');
+            const attachmentId = String(message.attachmentId ?? '');
+            const attachment = await getPinganAttachment(String(message.pinganUserId ?? ''), `${orderId}:${attachmentId}`);
+            if (!attachment) throw new Error(`本机未找到订单 ${orderId} 的附件 ${attachmentId}`);
+            const form = new FormData();
+            form.append('pinganUserId', String(message.pinganUserId ?? ''));
+            form.append('orderId', orderId);
+            form.append('attachmentId', attachmentId);
+            form.append('fileName', attachment.fileName);
+            form.append('fileType', attachment.fileType ?? '');
+            form.append('mimeType', attachment.mimeType);
+            form.append('sha256', attachment.sha256);
+            form.append('capturedAt', attachment.capturedAt);
+            form.append('file', attachment.blob, attachment.fileName || 'attachment');
+            const data = await pinganBackendRequest('/api/v1/pingan/attachments', { method: 'POST', body: form });
+            sendResponse({ ok: true, data });
+            return;
+          }
+          case 'PINGAN_DOWNLOAD_ATTACHMENT': {
+            const url = new URL(String(message.url ?? ''));
+            const validIobsUrl = url.hostname === 'iobs.pingan.com.cn' && url.pathname.startsWith('/download/');
+            const validFileGatewayUrl = url.hostname === 'filegw.jk.cn' && url.pathname === '/file';
+            if (url.protocol !== 'https:' || (!validIobsUrl && !validFileGatewayUrl)) throw new Error('附件下载地址无效');
+            const saved = await persistPinganAttachment(
+              String(message.pinganUserId ?? ''),
+              String(message.orderId ?? ''),
+              String(message.attachmentId ?? ''),
+              String(message.fileName ?? ''),
+              typeof message.fileType === 'string' && message.fileType.trim() ? message.fileType.trim() : null,
+              url.href
+            );
+            sendResponse({ ok: true, ...saved });
+            return;
+          }
+        }
+      })().catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+      return true;
+    }
     case 'RECORD_TAIKANG_FORM_EVENT':
     case 'RECORD_TAIKANG_FORM_SCREENSHOT': {
       void (async () => {
@@ -578,6 +821,7 @@ async function forwardBaselineToTabs(payload: unknown, account: string, requestI
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  void chrome.storage.session.remove(`${PINGAN_ORDER_CONTEXT_PREFIX}${tabId}`);
   if (tabId !== collectorTabId) return;
   collectorTabId = null;
   collectorHeartbeatAt = 0;

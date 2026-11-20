@@ -1,5 +1,6 @@
 export {};
 import { configuredBackendWsUrl } from '../backendConnection';
+import { exportPinganData, exportPinganLogs } from '../pingan/localStore';
 
 /**
  * 寰宇探针 Popup
@@ -11,6 +12,7 @@ $('ver').textContent = `v${chrome.runtime.getManifest().version}`;
 const FINGERPRINT_STORAGE_KEY = 'orderFingerprints';
 const TRACKING_ANALYSIS_STORAGE_KEY = 'trackingPoolAnalysis';
 const EDIT_PAGE_ANALYSIS_STORAGE_KEY = 'editPageAnalysis';
+const PINGAN_STATUS_STORAGE_KEY = 'pinganCollectionStatus';
 
 async function getConfig(): Promise<{ backendWsUrl: string; collectPaused: boolean }> {
   const r = await chrome.storage.local.get(['backendWsUrl', 'collectPaused']);
@@ -87,6 +89,64 @@ async function refreshStatus() {
     tkDot.className = 'dot dot-red';
     tkText.textContent = '未打开';
   }
+  await refreshPinganStatus();
+}
+
+async function refreshPinganStatus(): Promise<void> {
+  const stored = await chrome.storage.local.get(PINGAN_STATUS_STORAGE_KEY);
+  const status = stored[PINGAN_STATUS_STORAGE_KEY];
+  if (!status) {
+    $('pingan-collection-status').textContent = '等待登录平安好医生';
+    $('pingan-collection-counts').textContent = '尚无采集记录';
+    return;
+  }
+  const stateText: Record<string, string> = {
+    waiting_login: '等待登录平安好医生',
+    waiting_page: '请打开平安好医生订单列表页',
+    running: '正在采集',
+    completed: '本轮已完成',
+    partial_failure: '本轮部分失败',
+    error: '采集出错',
+  };
+  const current = status.currentType
+    ? `：${status.currentType}${status.currentPage ? ` 第 ${status.currentPage}/${status.pageCount || '?'} 页` : ''}`
+    : '';
+  const label = $('pingan-collection-status');
+  label.textContent = `${stateText[status.state] ?? '状态未知'}${current}`;
+  label.title = status.lastError || '';
+  $('pingan-collection-counts').textContent =
+    `订单 ${status.listCount ?? 0} · 详情 ${status.detailCount ?? 0} · 解密字段 ${status.decryptedFieldCount ?? 0} · 附件 ${status.attachmentCount ?? 0} · 错误 ${status.errorCount ?? 0}`;
+  const backendStatus = status.backendAccountState === 'registered' ? '后台已登记'
+    : status.backendAccountState === 'offline' ? '后台暂不可用' : '';
+  if (backendStatus) label.textContent += ` · ${backendStatus}`;
+}
+
+function downloadJSON(data: unknown, filename: string): void {
+  const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function downloadPinganData(): Promise<void> {
+  const data = await exportPinganData();
+  if ((!Array.isArray(data.orders) || data.orders.length === 0) &&
+      (!Array.isArray(data.legacyOrders) || data.legacyOrders.length === 0) &&
+      (!Array.isArray(data.legacyAttachments) || data.legacyAttachments.length === 0)) {
+    throw new Error('当前没有可导出的平安订单');
+  }
+  downloadJSON(data, `pingan-orders-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+}
+
+async function downloadPinganLogs(): Promise<void> {
+  const data = await exportPinganLogs();
+  if (!Array.isArray(data.events) || data.events.length === 0) throw new Error('当前没有可导出的平安采集日志');
+  downloadJSON(data, `pingan-collection-logs-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
 }
 
 function renderCollectStatus(paused: boolean) {
@@ -342,6 +402,16 @@ async function clearEditAnalysis() {
   await refreshStatus();
   await refreshTrackingAnalysisStatus();
   await refreshEditAnalysisStatus();
+
+  $('download-pingan-data').addEventListener('click', () => {
+    downloadPinganData().catch((error) => alert(`导出平安采集结果失败：${error instanceof Error ? error.message : String(error)}`));
+  });
+  $('download-pingan-logs').addEventListener('click', () => {
+    downloadPinganLogs().catch((error) => alert(`导出平安采集日志失败：${error instanceof Error ? error.message : String(error)}`));
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes[PINGAN_STATUS_STORAGE_KEY]) void refreshPinganStatus();
+  });
 
   $('save-config').addEventListener('click', () => {
     setConfig().catch((e) => window.alert(e instanceof Error ? e.message : String(e)));
