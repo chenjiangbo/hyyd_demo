@@ -1,3 +1,4 @@
+import { ensureSpecialPriceIntentColumn, enqueueSpecialPriceIntent, startSpecialPriceIntentWorker } from './services/specialPrice.js'
 // 全局统一东八区（中国标准时间）
 process.env.TZ = 'Asia/Shanghai'
 
@@ -347,6 +348,7 @@ async function start() {
     // 先确保寰宇订单与 B 端运营表单相关业务表存在，再注册路由和启动服务。
     // 该检查幂等，已有表不会被修改。
     await ensureHuanyuTables(prisma)
+    await ensureSpecialPriceIntentColumn(prisma)
     await ensureOrderIdCardOcrTable(prisma)
     await ensureGreenPassIdCardJobs(prisma)
     await ensureBOrderFormTables(prisma)
@@ -660,17 +662,21 @@ async function start() {
                     saved = await prisma.order.findUniqueOrThrow({ where: { source_sourceOrderNo: { source: 'taikang', sourceOrderNo } } })
                   } else {
                     try {
-                      saved = await prisma.order.create({ data: {
-                        source: 'taikang',
-                        sourceCategory,
-                        sourceOrderNo,
-                        customerName: orderData.patientName || '未知',
-                        status: taikangStatus,
-                        assignedEmployeeId: pool === 'personal' ? employeeId : null,
-                        orderState: newState,
-                        poolEnteredAt,
-                        rawJson
-                      } })
+                      saved = await prisma.$transaction(async (tx) => {
+                        const created = await tx.order.create({ data: {
+                          source: 'taikang',
+                          sourceCategory,
+                          sourceOrderNo,
+                          customerName: orderData.patientName || '未知',
+                          status: taikangStatus,
+                          assignedEmployeeId: pool === 'personal' ? employeeId : null,
+                          orderState: newState,
+                          poolEnteredAt,
+                          rawJson
+                        } })
+                        await enqueueSpecialPriceIntent(tx, created.id)
+                        return created
+                      })
                     } catch (error) {
                       if ((error as { code?: string }).code !== 'P2002') throw error
                       const concurrent = await prisma.order.findUnique({
@@ -1108,6 +1114,7 @@ async function start() {
     server.log.info(`寰宇医道后端服务启动成功，运行在: http://${host}:${port}`)
 
     // 电话 ASR 完成后即时触发；微信/企微按申领号静默后台配置的时长后触发。
+    startSpecialPriceIntentWorker(prisma)
     startOrderAiSchedule(prisma, minioClient)
     startNativeChatImageAnalysisWorker(prisma, minioClient)
     startEscortSummaryMatcher(prisma, minioClient)

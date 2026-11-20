@@ -1,3 +1,4 @@
+import { lookupSpecialPrice, resolveExactDictionaryName, cleanIntentText, readTaikangIntent } from '../services/specialPrice.js'
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { PrismaClient, Prisma } from '@prisma/client'
 import * as Minio from 'minio'
@@ -4120,6 +4121,33 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
 
   // 浮动精灵按列表中的寰宇订单号取最新 AI 候选；仅展示和编辑，不在这里保存或回填。
   fastify.get<{ Querystring: { orderNo?: string } }>('/api/v1/pet/order-ai-fields', async (request, reply) => {
+  fastify.get<{ Querystring: { orderNo?: string; hospital?: string; doctor?: string; product?: string } }>('/api/v1/pet/special-price', async (request, reply) => {
+    if (!request.employee) return reply.status(401).send({ error: '未登录' })
+    const orderNo = String(request.query.orderNo ?? '').trim()
+    if (!/^[A-Za-z0-9-]{6,64}$/.test(orderNo)) return reply.status(400).send({ error: '订单号格式无效' })
+    try {
+      let links = await prisma.$queryRaw<Array<{ id: number; raw_json: unknown }>>`SELECT o.id, o.raw_json FROM orders o JOIN b_order_huanyu_services s ON s.order_id=o.id WHERE s.huanyu_order_no=${orderNo} AND o.source='taikang' LIMIT 2`
+      if (!links.length) links = await prisma.$queryRaw<Array<{ id: number; raw_json: unknown }>>`SELECT id, raw_json FROM orders WHERE huanyu_order_no=${orderNo} AND source='taikang' LIMIT 2`
+      if (links.length !== 1) return reply.send({ data: { state: 'incomplete' } })
+      const raw = (links[0].raw_json ?? {}) as Record<string, any>
+      const taikang = (raw.taikangRawJson ?? {}) as Record<string, unknown>
+      const code = String(taikang.serviceType ?? '')
+      const type = code === '2000701' || code === '2000710' ? 'outpatient' : code === '2000706' ? 'inpatient' : code === '2000704' ? 'check' : ''
+      const intentRow = await prisma.$queryRaw<Array<{ taikang_intention: unknown }>>`SELECT taikang_intention FROM orders WHERE id=${links[0].id}`
+      const intent = readTaikangIntent(intentRow[0]?.taikang_intention)
+      if (!type) return reply.send({ data: { state: 'incomplete', intention: intent } })
+      const current = await readRemotePetOrder(orderNo)
+      if (!current) return reply.status(404).send({ error: '订单不存在' })
+      const hospital = await resolveExactDictionaryName('hospital', String(request.query.hospital ?? ''))
+      const subject = await resolveExactDictionaryName(type === 'check' ? 'product' : 'doctor', String(type === 'check' ? request.query.product ?? '' : request.query.doctor ?? ''))
+      const result = await lookupSpecialPrice(type, hospital, subject, current.order.channel)
+      return reply.send({ data: { ...result, type, intention: intent } })
+    } catch (error) {
+      request.log.error(error, '特殊报价查询失败')
+      return reply.status(503).send({ error: '特殊报价查询失败' })
+    }
+  })
+
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
     const orderNo = String(request.query.orderNo ?? '').trim()
     if (!/^[A-Za-z0-9-]{6,64}$/.test(orderNo)) return reply.status(400).send({ error: '订单号格式无效' })
@@ -4193,13 +4221,17 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       SELECT order_id FROM b_order_huanyu_services WHERE huanyu_order_no = ${orderNo} LIMIT 1
     `
     const intentionOrder = linkedOrders[0]
-      ? await prisma.order.findFirst({ where: { id: linkedOrders[0].order_id, source: 'taikang' }, select: { detailJson: true, rawJson: true } })
-      : await prisma.order.findFirst({ where: { huanyuOrderNo: orderNo, source: 'taikang' }, select: { detailJson: true, rawJson: true } })
+      ? await prisma.order.findFirst({ where: { id: linkedOrders[0].order_id, source: 'taikang' }, select: { id: true, detailJson: true, rawJson: true } })
+      : await prisma.order.findFirst({ where: { huanyuOrderNo: orderNo, source: 'taikang' }, select: { id: true, detailJson: true, rawJson: true } })
     const intentionRaw = (intentionOrder?.rawJson ?? {}) as Record<string, unknown>
     const intentionDetail = (intentionOrder?.detailJson ?? {}) as Record<string, unknown>
     const intentionRec = (intentionDetail.recommendations ?? {}) as Record<string, unknown>
-    const intentionValue = (key: string): string => String(intentionRec[key] ?? '').trim() || String(intentionRaw[key] ?? '').trim()
-    const intention = { hospital: intentionValue('intendHos'), department: intentionValue('intendDept'), doctor: intentionValue('intendDoc') }
+    const intentionOriginal = (intentionRaw.taikangRawJson ?? {}) as Record<string, unknown>
+    const intentionValue = (key: string): string => cleanIntentText(intentionRec[key]) || cleanIntentText(intentionOriginal[key]) || cleanIntentText(intentionRaw[key])
+    const intentRows = intentionOrder ? await prisma.$queryRaw<Array<{ taikang_intention: unknown }>>`SELECT taikang_intention FROM orders WHERE id = ${intentionOrder.id}` : []
+    const storedIntention = readTaikangIntent(intentRows[0]?.taikang_intention)
+    const intention = { hospital: intentionValue('intendHos') || storedIntention?.hospital || '', department: intentionValue('intendDept') || storedIntention?.department || '', doctor: intentionValue('intendDoc') || storedIntention?.doctor || '' }
+    const intentPending = storedIntention?.status === 'pending' || storedIntention?.status === 'processing'
     const date = order?.poolEnteredAt ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(order.poolEnteredAt).replace(/-/g, '') : ''
     const name = value('patientName') || order?.customerName || ''
     const sex = value('sex')
@@ -4213,7 +4245,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       ? `${date}${owner}${customerLevel}${name}${title}就医服务群${applicationNo}`
       : isStrickenCase === false && validName && applicationNo.length >= 8
         ? `${name}#${applicationNo.slice(-8)}` : ''
-    return reply.send({ data: { orderNo, fields, intention, escortRecords, documentNo, documentNoStatus, groupName } })
+    return reply.send({ data: { orderNo, fields, intention, intentPending, escortRecords, documentNo, documentNoStatus, groupName } })
   })
 
   fastify.get<{ Querystring: { orderNo?: string } }>('/api/v1/pet/order-current', async (request, reply) => {

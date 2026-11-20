@@ -38,6 +38,9 @@ export function Pet(): React.JSX.Element {
   const committedLookupSelections = useRef<Record<string, string>>({})
   const escortIndexCounter = useRef({ panelId: '', value: 0 })
   const escortSelections = useRef<Record<string, { id: string; phone: string }>>({})
+  const specialPriceEdited = useRef<{ panelId: string; fields: Set<string> }>({ panelId: '', fields: new Set() })
+  const [specialPriceText, setSpecialPriceText] = useState('')
+  const [specialIntent, setSpecialIntent] = useState<{ panelId: string; hospital: string; doctor: string; pending: boolean }>({ panelId: '', hospital: '', doctor: '', pending: false })
   const [mode, setMode] = useState<PetMode>('idle')
   const [message, setMessage] = useState('把图片拖给我吧')
   const [candidates, setCandidates] = useState<Candidate[]>([])
@@ -365,6 +368,12 @@ export function Pet(): React.JSX.Element {
       if (!/^\d+$/.test(suggestionIndex) || !value) return
       if (businessPanel?.kind !== 'form' || !businessPanel.sections) return
       const sourceValue = (key: string) => String(businessPanel.fields.find((field) => field.id === `unmatched-ai-${suggestionIndex}-${key}`)?.value ?? '')
+    if (fieldId === 'hospital' || fieldId === 'doctor' || fieldId === 'department' || fieldId === '__hospital_suggestion_group' || fieldId.startsWith('__hospital_suggestion:')) {
+      const id = businessPanel?.kind === 'form' ? businessPanel.id : ''
+      if (specialPriceEdited.current.panelId !== id) specialPriceEdited.current = { panelId: id, fields: new Set() }
+      if (fieldId === '__hospital_suggestion_group') { specialPriceEdited.current.fields.add('hospital'); specialPriceEdited.current.fields.add('department'); specialPriceEdited.current.fields.add('doctor') }
+      else specialPriceEdited.current.fields.add(fieldId.replace('__hospital_suggestion:', ''))
+    }
       const suggestedName = sourceValue('name').trim()
       const suggestedPhone = sourceValue('phone')
       const nextIndex = value === 'new' ? Math.max(escortIndexCounter.current.value, ...businessPanel.sections.map((section) => Number(section.id.match(/^escort-(\d+)$/)?.[1] ?? 0))) + 1 : 0
@@ -473,6 +482,7 @@ export function Pet(): React.JSX.Element {
       const nameChanged = escortName && value !== String(current.fields.find((field) => field.id === fieldId)?.value ?? '')
       const currentRequest = current.fields.find((field) => field.id === 'requestTime')?.value
       const currentResponse = current.fields.find((field) => field.id === 'responseTime')?.value
+    for (const resetField of resetFields) specialPriceEdited.current.fields.add(resetField)
       const mirrorResponse = fieldId === 'requestTime' && (!currentResponse || currentResponse === currentRequest)
       const previousStatus = String(current.fields.find((field) => field.id === 'orderStatus')?.value ?? '')
       const serviceField = current.fields.find((field) => field.id === 'channelService')
@@ -501,6 +511,53 @@ export function Pet(): React.JSX.Element {
       const option = item as Record<string, unknown>
       if (typeof option.id !== 'string' && typeof option.id !== 'number') return []
       const id = String(option.id)
+  const pricePanel = businessPanel?.kind === 'form' && businessPanel.id.startsWith('order-ai:') ? businessPanel : null
+  const pricePanelId = pricePanel?.id ?? ''
+  const priceField = (id: string): string => String(pricePanel?.fields.find((field) => field.id === id)?.value ?? '')
+  const priceOrderNo = priceField('orderNo'), priceHospital = priceField('hospital'), priceDoctor = priceField('doctor'), priceProduct = priceField('channelService')
+  const fallbackHospital = pricePanel?.specialPriceFallback?.hospital ?? '', fallbackDoctor = pricePanel?.specialPriceFallback?.doctor ?? ''
+  const fallbackPending = pricePanel?.specialPriceFallback?.pending ?? false
+  useEffect(() => {
+    if (specialPriceEdited.current.panelId !== pricePanelId) specialPriceEdited.current = { panelId: pricePanelId, fields: new Set() }
+    setSpecialIntent({ panelId: pricePanelId, hospital: '', doctor: '', pending: fallbackPending })
+    setSpecialPriceText('')
+  }, [pricePanelId])
+  useEffect(() => {
+    if (!pricePanelId || !priceOrderNo) return
+    let active = true
+    let timer: number | undefined
+    const run = async (): Promise<void> => {
+      const edited = specialPriceEdited.current.panelId === pricePanelId ? specialPriceEdited.current.fields : new Set<string>()
+      const hospital = priceHospital || (!edited.has('hospital') ? fallbackHospital || (specialIntent.panelId === pricePanelId ? specialIntent.hospital : '') : '')
+      const doctor = priceDoctor || (!edited.has('doctor') ? fallbackDoctor || (specialIntent.panelId === pricePanelId ? specialIntent.doctor : '') : '')
+      try {
+        const data = await window.api.petOrderDictionary('special-price', JSON.stringify({ orderNo: priceOrderNo, hospital, doctor, product: priceProduct })) as { state?: string; type?: string; price?: string; intention?: { hospital?: string; doctor?: string; department?: string; status?: string } }
+        if (!active) return
+        const labels: Record<string, string> = { outpatient: '门诊特殊报价', inpatient: '住院特殊报价', check: '检查加急特殊报价' }
+        setSpecialPriceText(data.state === 'found' && data.type && data.price ? `${labels[data.type]}（${data.price}元）` : data.state === 'ambiguous' ? '特殊报价待核实' : '')
+        const intent = data.intention
+        if (intent?.status === 'done') setBusinessPanel((current) => {
+          if (current?.kind !== 'form' || current.id !== pricePanelId || current.submitState === 'submitting') return current
+          const touched = specialPriceEdited.current.panelId === pricePanelId ? specialPriceEdited.current.fields : new Set<string>()
+          let changed = false
+          const fields = current.fields.map((field) => {
+            if (!['hospital', 'department', 'doctor'].includes(field.id) || field.value || field.suggestion || touched.has(field.id)) return field
+            const value = intent[field.id as 'hospital' | 'department' | 'doctor'] ?? ''
+            if (!value) return field
+            changed = true
+            return { ...field, value, hint: '泰康意向' }
+          })
+          return changed ? { ...current, fields } : current
+        })
+        if (intent && (intent.hospital !== specialIntent.hospital || intent.doctor !== specialIntent.doctor || (intent.status === 'pending' || intent.status === 'processing') !== specialIntent.pending || specialIntent.panelId !== pricePanelId)) setSpecialIntent({ panelId: pricePanelId, hospital: intent.hospital ?? '', doctor: intent.doctor ?? '', pending: intent.status === 'pending' || intent.status === 'processing' })
+        if (intent?.status === 'pending' || intent?.status === 'processing') timer = window.setTimeout(() => void run(), 5000)
+      } catch { if (active) setSpecialPriceText('特殊报价查询失败') }
+    }
+    setSpecialPriceText('')
+    void run()
+    return () => { active = false; if (timer) window.clearTimeout(timer) }
+  }, [pricePanelId, priceOrderNo, priceHospital, priceDoctor, priceProduct, fallbackHospital, fallbackDoctor, specialIntent])
+
       const name = typeof option.name === 'string' ? option.name : id
       const phone = typeof option.phone === 'string' ? option.phone : undefined
       return [{ id, name, phone }]
@@ -731,7 +788,7 @@ export function Pet(): React.JSX.Element {
         {mobileStatus.state !== 'unknown' && <span className={`pet-mobile-status pet-mobile-status--${mobileStatus.state}`} title={mobileStatusTitle} aria-label={mobileStatusTitle} />}
       </div>
       {expanded && panel !== null && <PetBubble
-        panel={panel}
+        panel={panel.kind === 'form' && panel.id === pricePanelId ? { ...panel, specialPriceText } : panel}
         onMinimize={panel === businessPanel && panel.kind === 'form' ? () => setMinimizedPanelId(panel.id) : undefined}
         onDragStart={(event) => { void startPetDrag(event) }}
         onClose={() => { if (panel === businessPanel && businessPanelVisible && businessPanel) void window.api.hidePetPanel(); setMode('idle'); setSpeaking(false) }}

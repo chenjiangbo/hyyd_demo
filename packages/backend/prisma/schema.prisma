@@ -210,6 +210,7 @@ model Order {
   assignedEmployee        Employee?                @relation(fields: [assignedEmployeeId], references: [id])
   rawJson                 Json?                    @map("raw_json")
   detailJson              Json?                    @map("detail_json")
+  taikangIntention        Json?                    @map("taikang_intention")
   detailFetchedAt         DateTime?                @db.Timestamp(3) @map("detail_fetched_at")
   detailFingerprint       String?                  @map("detail_fingerprint") // 插件算的状态指纹，用于增量基线
   orderState              String?                  @map("order_state") // 泰康订单状态码原值，用于检测状态变化

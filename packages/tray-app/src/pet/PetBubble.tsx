@@ -115,6 +115,8 @@ export type PetPanel =
       originalAmount?: string
       originalStatus?: string
       isStrickenCase?: boolean
+      specialPriceFallback?: { hospital: string; doctor: string; pending: boolean }
+      specialPriceText?: string
     }
 
 export type PetLookupKind = 'hospital' | 'address' | 'department' | 'doctor' | 'escort' | 'bd'
@@ -467,7 +469,7 @@ function FormFields({ panel, onFieldChange, onLookup, onAddEscortRecord, onRemov
   const unmatchedIndexes = panel.fields.map((field) => field.id.match(/^unmatched-ai-(\d+)-date$/)?.[1]).filter((index): index is string => Boolean(index))
   return <fieldset className="pet-bubble__form-body" disabled={panel.submitState === 'submitting'}>
     {orderSections.map((section) => <fieldset className={`pet-bubble__form-section pet-bubble__form-section--order pet-bubble__form-section--${section.id}`} key={section.id}>
-      <legend>{orderAi && section.id === 'order-info' ? '订单基本信息' : section.title}{orderAi && section.id === 'order-info' && panel.isStrickenCase && <span className="pet-bubble__special-case">专案 +20元</span>}{!orderAi && section.id === 'order-info' && !section.fieldIds.includes('orderNo') && fieldsById.has('orderNo') && <span className="pet-bubble__order-number">{String(fieldsById.get('orderNo')?.value ?? '')}<button type="button" title="复制订单号" onClick={() => { void navigator.clipboard?.writeText(String(fieldsById.get('orderNo')?.value ?? '')) }}>复制</button></span>}</legend>
+      <legend>{orderAi && section.id === 'order-info' ? '订单基本信息' : section.title}{orderAi && section.id === 'order-info' && panel.isStrickenCase && <span className="pet-bubble__special-case">专案 +20元</span>}{orderAi && section.id === 'order-info' && panel.specialPriceText && <span className="pet-bubble__special-case">{panel.specialPriceText}</span>}{!orderAi && section.id === 'order-info' && !section.fieldIds.includes('orderNo') && fieldsById.has('orderNo') && <span className="pet-bubble__order-number">{String(fieldsById.get('orderNo')?.value ?? '')}<button type="button" title="复制订单号" onClick={() => { void navigator.clipboard?.writeText(String(fieldsById.get('orderNo')?.value ?? '')) }}>复制</button></span>}</legend>
       <div className="pet-bubble__fields">{(orderAi && section.id === 'order-info' ? ['sourceOrderNo', 'documentNo', 'groupName', 'orderNo', 'orderStatus', 'channelService', 'orderAmount', 'amountChanged', 'bookingChannelType', 'bd'] : section.fieldIds).map((fieldId) => {
         const storedField = fieldsById.get(fieldId)
         const field = orderAi && fieldId === 'documentNo' && storedField ? { ...storedField, label: '身份证号', placeholder: '暂无身份证号' } : storedField

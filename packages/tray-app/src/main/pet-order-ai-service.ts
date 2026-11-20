@@ -28,6 +28,7 @@ export type PetOrderAiPanel = {
   originalAmount?: string
   originalStatus?: string
   isStrickenCase?: boolean
+  specialPriceFallback?: { hospital: string; doctor: string; pending: boolean }
   sections?: Array<{ id: string; title: string; fieldIds: string[]; repeatable?: boolean }>
   actions?: Array<{ id: string; label: string; tone?: 'primary' | 'secondary'; loading?: boolean }>
   confirmation?: { title: string; originalAddress?: string; creations: Array<{ key: string; type: string; name: string; parent?: string }>; review: MasterReviewItem[] }
@@ -186,6 +187,14 @@ export class PetOrderAiService {
     const active = this.active
     if (!active || panelId !== `order-ai:${active.token}` || this.currentPanel?.kind !== 'form') return
     if (this.currentPanel.submitState === 'submitting') return
+    if (kind === 'special-price') {
+      const input = JSON.parse(query) as Record<string, string>
+      const params = new URLSearchParams(input)
+      const response = await fetch(`${config.backendUrl}/api/v1/pet/special-price?${params}`, { headers: { 'X-Employee-Code': config.employeeCode }, signal: AbortSignal.timeout(10000) })
+      const payload = await response.json() as { data?: unknown; error?: string }
+      if (!response.ok) throw new Error(payload.error || '特殊报价查询失败')
+      return payload.data
+    }
     if (actionId === 'cancel-master-create') {
       for (const item of this.currentPanel.confirmation?.review ?? []) {
         this.masterDraft[item.key] = Object.fromEntries(item.fields.map((field) => [field.id, typeof values[`master:${item.key}:${field.id}`] === 'string' ? values[`master:${item.key}:${field.id}`] as string : field.value]))
@@ -482,6 +491,7 @@ export class PetOrderAiService {
       }))) as Record<string, string>
       if (this.active?.token !== token || this.active.invalidated || this.active.formOrderNo !== orderNo) return
       const escortRecords = currentPayload.data.escorts.map((record) => ({ serviceDate: record.serviceDate, escortName: record.escortName, escortPhone: record.escortPhone }))
+          intentPending?: boolean
       if (escortRecords.length === 0) escortRecords.push(...(payload.data?.escortRecords ?? []).map((record) => ({ serviceDate: record.serviceDate ?? '', escortName: record.escortName ?? '', escortPhone: record.escortPhone ?? '' })))
       if (escortRecords.length === 0) escortRecords.push({
         serviceDate: '',
@@ -551,7 +561,13 @@ export class PetOrderAiService {
         { id: 'amountChanged', label: '金额修改', type: 'checkbox' as const, value: 'false', placeholder: '金额修改', readOnly: cancelled },
         ...HOSPITAL_FIELDS.map(([id, label]) => ({
           id, label, type: 'text' as const,
-          ...(hasOrderHospitalGroup
+          ...(['hospital', 'department', 'doctor'].includes(id)
+            ? (current[id] ?? '').trim()
+              ? merged(current[id], values[hospitalCode(id)] ?? '', resolvedNames[id] ?? '')
+              : (values[hospitalCode(id)] ?? '').trim()
+                ? { value: values[hospitalCode(id)], aiPrefill: true }
+                : { value: id === 'hospital' && isArea ? '' : (intention[id] ?? ''), hint: intention[id] && !(id === 'hospital' && isArea) ? '泰康意向' : undefined }
+            : hasOrderHospitalGroup
             ? { value: current[id] ?? '', suggestion: (values[hospitalCode(id)] ?? '').trim() || undefined }
             : hasAiHospitalGroup
               ? { value: values[hospitalCode(id)] ?? '', aiPrefill: Boolean(values[hospitalCode(id)]) }
@@ -606,3 +622,4 @@ export class PetOrderAiService {
     }
   }
 }
+        specialPriceFallback: { hospital: (values.hospital ?? '').trim() || intention.hospital || '', doctor: (values.doctor ?? '').trim() || intention.doctor || '', pending: Boolean(payload.data?.intentPending) },
