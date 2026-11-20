@@ -180,13 +180,18 @@ export async function createHuanyuOrderOnMysql(row: Record<string, unknown>): Pr
     'DDBH', 'DD_state', 'BDQD', 'BDQD_DDBH', 'BDQD_DDBH2', 'BDQD_FWXM', 'DDJE', 'KHJL',
     'JZR_XM', 'JZR_ZJLX', 'JZR_XB', 'JZR_NL', 'JZR_LXDH',
     'JZR_JSMC', 'JZR_JSGX', 'JZR_JSLXFS', 'JZR_JB', 'JZR_BZ',
-    'YYQDLX', 'isStrickenCase', 'xtsj_'
+    'YYQDLX', 'isStrickenCase', 'xtsj_', 'BBQ_XQ', 'DATE_XQ', 'BBQ_YD', 'DATE_YD'
   ] as const
-  const sql = `INSERT INTO \`HY_FACT_DDCX_NEW\` (${columns.map((column) => `\`${column}\``).join(', ')}) VALUES (${columns.map((column) => column === 'xtsj_' ? "DATE_FORMAT(NOW(), '%Y%m%d%H%i%s')" : '?').join(', ')})`
+  const creationValues: Record<string, string> = {
+    xtsj_: "DATE_FORMAT(NOW(), '%Y%m%d%H%i%s')",
+    BBQ_XQ: "DATE_FORMAT(NOW(), '%Y%m%d %H:%i:%s')", DATE_XQ: "DATE_FORMAT(NOW(), '%Y%m%d')",
+    BBQ_YD: "DATE_FORMAT(NOW(), '%Y%m%d %H:%i:%s')", DATE_YD: "DATE_FORMAT(NOW(), '%Y%m%d')"
+  }
+  const sql = `INSERT INTO \`HY_FACT_DDCX_NEW\` (${columns.map((column) => `\`${column}\``).join(', ')}) VALUES (${columns.map((column) => creationValues[column] ?? '?').join(', ')})`
   const connection = await mysqlWriterPool().getConnection()
   try {
     await connection.query("SET time_zone = '+08:00'")
-    await connection.execute(sql, values(row, columns.filter((column) => column !== 'xtsj_')))
+    await connection.execute(sql, values(row, columns.filter((column) => !creationValues[column])))
   } finally {
     connection.release()
   }
@@ -221,7 +226,7 @@ export async function readRemotePetOrder(orderNo: string): Promise<{ order: Reco
   const connection = await mysqlWriterPool().getConnection()
   try {
     const [rows] = await connection.execute<RowDataPacket[]>(
-      'SELECT `JZR_ZJHM`, `DD_state`, `BDQD`, `BDQD_FWXM`, `DDJE`, `isStrickenCase`, `H_NAME`, `H_ADDRESS`, `H_KS`, `H_YS`, `BBQ_XQ`, `BBQ_YD`, `BBQ_QDFW`, `BBQ_FK`, `lastQueuingTime`, `PZXJ` FROM `HY_FACT_DDCX_NEW` WHERE `DDBH` = ? LIMIT 1', [orderNo])
+      'SELECT `BDQD_DDBH`, `JZR_ZJHM`, `xtsj_`, `DD_state`, `YYQDLX`, `BDYH`, `BDQD`, `BDQD_FWXM`, `DDJE`, `isStrickenCase`, `H_NAME`, `H_ADDRESS`, `H_KS`, `H_YS`, `BBQ_XQ`, `BBQ_YD`, `BBQ_QDFW`, `BBQ_FK`, `lastQueuingTime`, `PZXJ` FROM `HY_FACT_DDCX_NEW` WHERE `DDBH` = ? LIMIT 1', [orderNo])
     if (!rows[0]) return null
     const row = rows[0]
     const value = (key: string): string => row[key] == null ? '' : String(row[key]).trim()
@@ -234,7 +239,7 @@ export async function readRemotePetOrder(orderNo: string): Promise<{ order: Reco
       for (const person of people) phones.set(String(person.id).trim(), String(person.phone ?? '').trim())
     }
     return { order: {
-      documentNo: value('JZR_ZJHM'), orderStatus: value('DD_state'), channel: value('BDQD'), channelService: value('BDQD_FWXM'), orderAmount: value('DDJE'), isStrickenCase: value('isStrickenCase'),
+      sourceOrderNo: value('BDQD_DDBH'), createdTime: value('xtsj_'), documentNo: value('JZR_ZJHM'), orderStatus: value('DD_state'), bookingChannelType: value('YYQDLX'), bd: value('BDYH'), channel: value('BDQD'), channelService: value('BDQD_FWXM'), orderAmount: value('DDJE'), isStrickenCase: value('isStrickenCase'),
       hospital: value('H_NAME'), hospitalAddress: value('H_ADDRESS'), department: value('H_KS'), doctor: value('H_YS'),
       requestTime: value('BBQ_XQ'), responseTime: value('BBQ_YD'), serviceStartTime: value('BBQ_QDFW'), bookingFeedbackTime: value('BBQ_FK'), latestTicketTime: value('lastQueuingTime'), escortSummary: value('PZXJ')
     }, escorts: escorts.map((escort) => ({ id: String(escort.ZJ ?? '').trim(), escortName: String(escort.PZR ?? '').trim(), escortPhone: phones.get(String(escort.PZR ?? '').trim()) ?? '', serviceDate: String(escort.BBQ_FW ?? '').trim() })) }
@@ -261,6 +266,8 @@ export interface HuanyuMysqlPushOptions {
 export interface PetHuanyuOrderUpdate {
   orderNo: string
   orderStatus: string
+  bookingChannelType?: string
+  bd?: string
   hospitalId: string | null
   hospitalAddressId: string | null
   departmentId: string | null
@@ -306,12 +313,13 @@ export async function updateHuanyuOrderDirectlyOnMysql(input: PetHuanyuOrderUpda
   try {
     await connection.beginTransaction()
     const [existingRows] = await connection.execute<RowDataPacket[]>(
-      'SELECT `DDBH`, `DD_state`, `BDQD`, `BDQD_FWXM`, `DDJE`, `H_NAME`, `H_ADDRESS`, `H_KS`, `H_YS`, `BBQ_XQ`, `BBQ_YD`, `BBQ_QDFW`, `BBQ_FK`, `lastQueuingTime`, `PZXJ` FROM `HY_FACT_DDCX_NEW` WHERE `DDBH` = ? LIMIT 1 FOR UPDATE', [orderNo])
+      'SELECT `DDBH`, `DD_state`, `YYQDLX`, `BDYH`, `BDQD`, `BDQD_FWXM`, `DDJE`, `H_NAME`, `H_ADDRESS`, `H_KS`, `H_YS`, `BBQ_XQ`, `BBQ_YD`, `BBQ_QDFW`, `BBQ_FK`, `lastQueuingTime`, `PZXJ` FROM `HY_FACT_DDCX_NEW` WHERE `DDBH` = ? LIMIT 1 FOR UPDATE', [orderNo])
     if (!existingRows.length) throw new Error(`远端寰宇订单 ${orderNo} 不存在`)
 
     if (input.expectedOrder) {
       const fields: Record<string, string> = { orderStatus: 'DD_state', hospital: 'H_NAME', hospitalAddress: 'H_ADDRESS', department: 'H_KS', doctor: 'H_YS', requestTime: 'BBQ_XQ', responseTime: 'BBQ_YD', serviceStartTime: 'BBQ_QDFW', bookingFeedbackTime: 'BBQ_FK', latestTicketTime: 'lastQueuingTime' }
       if (input.escortSummary !== undefined) fields.escortSummary = 'PZXJ'
+      if (input.bookingChannelType !== undefined) { fields.bookingChannelType = 'YYQDLX'; fields.bd = 'BDYH' }
       if (Object.entries(fields).some(([key, column]) => String(existingRows[0][column] ?? '').trim() !== String(input.expectedOrder?.[key] ?? '').trim())) throw new Error('订单内容已发生变化，请重新打开订单')
     }
 
@@ -345,6 +353,7 @@ export async function updateHuanyuOrderDirectlyOnMysql(input: PetHuanyuOrderUpda
       if (new Set(selectedIds).size !== selectedIds.length || selectedIds.some((id) => !validIds.has(id))) throw new Error('陪诊记录标识无效，请重新打开订单')
     }
 
+    if (input.bookingChannelType !== undefined) await connection.execute('UPDATE `HY_FACT_DDCX_NEW` SET `YYQDLX` = ?, `BDYH` = ? WHERE `DDBH` = ?', [input.bookingChannelType || null, input.bd || null, orderNo])
     const writeField = (column: string): string => input.expectedOrder ? '?' : `COALESCE(?, \`${column}\`)`
     await connection.execute(
         `UPDATE \`HY_FACT_DDCX_NEW\` SET

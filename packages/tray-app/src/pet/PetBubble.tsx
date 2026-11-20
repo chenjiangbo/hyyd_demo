@@ -117,7 +117,7 @@ export type PetPanel =
       isStrickenCase?: boolean
     }
 
-export type PetLookupKind = 'hospital' | 'address' | 'department' | 'doctor' | 'escort'
+export type PetLookupKind = 'hospital' | 'address' | 'department' | 'doctor' | 'escort' | 'bd'
 export interface PetLookupOption { id: string; name: string; phone?: string }
 type PetFieldChange = (fieldId: string, value: string, selectedOption?: PetLookupOption) => void
 
@@ -332,7 +332,8 @@ function Field({ field, panel, onFieldChange, onLookup }: {
     : field.id === 'hospitalAddress' ? 'address'
       : field.id === 'department' ? 'department'
         : field.id === 'doctor' ? 'doctor'
-          : /^escort-\d+-name$/.test(field.id) ? 'escort' : null
+          : field.id === 'bd' && !field.readOnly ? 'bd'
+            : /^escort-\d+-name$/.test(field.id) ? 'escort' : null
   const hospitalValue = String(fields.get('hospital')?.value ?? '')
   const departmentValue = String(fields.get('department')?.value ?? '')
   const initialValue = useRef(String(field.value))
@@ -412,7 +413,7 @@ function Field({ field, panel, onFieldChange, onLookup }: {
       <span className="pet-bubble__lookup-chevron" aria-hidden="true" />
       {lookupOpen && createPortal(<div className="pet-bubble__search-options pet-bubble__lookup-portal" style={lookupPosition}>
         {lookupBusy && <small>加载中…</small>}
-        {!lookupBusy && lookupOptions.length === 0 && <small>无匹配项，可手动输入</small>}
+        {!lookupBusy && lookupOptions.length === 0 && <small>{kind === 'bd' ? '无匹配项' : '无匹配项，可手动输入'}</small>}
         {lookupOptions.map((option) => <button key={option.id} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => {
           const currentValue = String(field.value)
           if (currentValue !== option.id) onFieldChange?.(field.id, option.id, option)
@@ -467,7 +468,7 @@ function FormFields({ panel, onFieldChange, onLookup, onAddEscortRecord, onRemov
   return <fieldset className="pet-bubble__form-body" disabled={panel.submitState === 'submitting'}>
     {orderSections.map((section) => <fieldset className={`pet-bubble__form-section pet-bubble__form-section--order pet-bubble__form-section--${section.id}`} key={section.id}>
       <legend>{orderAi && section.id === 'order-info' ? '订单基本信息' : section.title}{orderAi && section.id === 'order-info' && panel.isStrickenCase && <span className="pet-bubble__special-case">专案 +20元</span>}{!orderAi && section.id === 'order-info' && !section.fieldIds.includes('orderNo') && fieldsById.has('orderNo') && <span className="pet-bubble__order-number">{String(fieldsById.get('orderNo')?.value ?? '')}<button type="button" title="复制订单号" onClick={() => { void navigator.clipboard?.writeText(String(fieldsById.get('orderNo')?.value ?? '')) }}>复制</button></span>}</legend>
-      <div className="pet-bubble__fields">{(orderAi && section.id === 'order-info' ? ['orderNo', 'documentNo', 'groupName', 'orderStatus', 'channelService', 'orderAmount', 'amountChanged'] : section.fieldIds).map((fieldId) => {
+      <div className="pet-bubble__fields">{(orderAi && section.id === 'order-info' ? ['sourceOrderNo', 'documentNo', 'groupName', 'orderNo', 'orderStatus', 'channelService', 'orderAmount', 'amountChanged', 'bookingChannelType', 'bd'] : section.fieldIds).map((fieldId) => {
         const storedField = fieldsById.get(fieldId)
         const field = orderAi && fieldId === 'documentNo' && storedField ? { ...storedField, label: '身份证号', placeholder: '暂无身份证号' } : storedField
         const orderInfo = panel.id.startsWith('order-ai:') && section.id === 'order-info'

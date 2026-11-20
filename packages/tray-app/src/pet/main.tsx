@@ -486,6 +486,7 @@ export function Pet(): React.JSX.Element {
         if (nameChanged && field.id === `escort-${escortName[1]}-phone`) return { ...field, value: selectedOption?.phone ?? '', suggestion: undefined, aiPrefill: false }
         const phoneIndex = field.id.match(/^escort-(\d+)-phone$/)?.[1]
         if (editedPhonePerson && phoneIndex && escortSelections.current[phoneIndex]?.id === editedPhonePerson) return { ...field, value, aiPrefill: false, suggestion: field.suggestion === value ? undefined : field.suggestion }
+        if (field.id === 'bd' && fieldId === 'bookingChannelType') return { ...field, value: value === '3' ? '无' : ['1', '2'].includes(value) ? (field.value === '无' ? '' : field.value) : '', readOnly: !['1', '2'].includes(value) }
         if (field.id === 'orderAmount') return { ...field, value: fieldId === 'orderAmount' ? value : nextAmount ?? String(field.value), readOnly: !editable, error: missingPrice ? '未找到服务项目价格，请核对金额' : fieldId === 'orderAmount' || nextAmount !== undefined ? undefined : field.error }
         if (field.id === 'amountChanged') return { ...field, value: String(editable), readOnly: cancelled }
         if (field.id === fieldId || (mirrorResponse && field.id === 'responseTime')) return { ...field, value, aiPrefill: false, hint: undefined, suggestion: ['hospital', 'hospitalAddress', 'department', 'doctor'].includes(field.id) ? field.suggestion : field.suggestion === value ? undefined : field.suggestion }

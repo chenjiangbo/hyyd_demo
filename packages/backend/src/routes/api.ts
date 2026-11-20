@@ -4316,7 +4316,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       if (expectedEscorts && escortList.some((item) => /^\d+$/.test(item.escortName) && item.expectedEscortId !== item.escortName)) return reply.status(400).send({ ok: false, error: '请重新选择陪诊人员' })
       if (expectedEscorts && body.expectedOrder && typeof body.expectedOrder === 'object') {
         const current = await readRemotePetOrder(orderNo)
-        const keys = ['orderStatus', 'channel', 'channelService', 'orderAmount', 'hospital', 'hospitalAddress', 'department', 'doctor', 'requestTime', 'responseTime', 'serviceStartTime', 'bookingFeedbackTime', 'latestTicketTime', ...(Object.hasOwn(fields, 'escortSummary') ? ['escortSummary'] : [])]
+        const keys = ['orderStatus', ...(Object.hasOwn(fields, 'bookingChannelType') ? ['bookingChannelType', 'bd'] : []), 'channel', 'channelService', 'orderAmount', 'hospital', 'hospitalAddress', 'department', 'doctor', 'requestTime', 'responseTime', 'serviceStartTime', 'bookingFeedbackTime', 'latestTicketTime', ...(Object.hasOwn(fields, 'escortSummary') ? ['escortSummary'] : [])]
         const changed = !current || keys.some((key) => cleanText(current.order[key]) !== cleanText(body.expectedOrder[key]))
         const normalize = (items: Array<{ id: string; escortId: string; serviceDate: string }>) => JSON.stringify(items.map((item) => [item.id, item.escortId, item.serviceDate]).sort((a, b) => a[0].localeCompare(b[0])))
         const actual = current?.escorts.map((item) => ({ id: item.id, escortId: item.escortName, serviceDate: item.serviceDate })) ?? []
@@ -4324,6 +4324,15 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
         const selectedIds = escortList.map((item) => item.id).filter(Boolean)
         const validIds = new Set(actual.map((item) => item.id))
         if (new Set(selectedIds).size !== selectedIds.length || selectedIds.some((id) => !validIds.has(id))) return reply.status(400).send({ ok: false, error: '陪诊记录标识无效，请重新打开订单' })
+      }
+      if (Object.hasOwn(fields, 'bookingChannelType')) {
+        const channelType = cleanText(fields.bookingChannelType)
+        const bd = cleanText(fields.bd)
+        if (!['', '1', '2', '3'].includes(channelType) || (channelType === '3' && bd !== '无') || (!channelType && bd)) return reply.status(400).send({ ok: false, error: '预约渠道类型或 BD 无效' })
+        if (bd && bd !== '无' && bd !== cleanText(body.expectedOrder?.bd)) {
+          const options = await listHuanyuBdUsers('', bd)
+          if (!options.some((item) => item.id === bd)) return reply.status(400).send({ ok: false, error: '请选择有效的 BD' })
+        }
       }
       const preview = await previewHuanyuMasterSave(masterInput)
       if (preview.creations.length && !confirmedCreations) {
@@ -4346,6 +4355,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
         orderNo,
         ...(Object.hasOwn(fields, 'escortSummary') ? { escortSummary: cleanText(fields.escortSummary) } : {}),
         orderStatus: cleanText(fields.orderStatus),
+        ...(Object.hasOwn(fields, 'bookingChannelType') ? { bookingChannelType: cleanText(fields.bookingChannelType), bd: cleanText(fields.bd) } : {}),
         hospitalId: resolved.hospital,
         hospitalAddressId: resolved.hospitalAddress,
         departmentId: resolved.department,

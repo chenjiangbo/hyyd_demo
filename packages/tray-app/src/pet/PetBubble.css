@@ -283,6 +283,7 @@
 .pet-bubble--order-ai .pet-bubble__form-section--time-info .pet-bubble__field[data-has-source='false'] { grid-template-columns: 72px minmax(0, 1fr) 26px; }
 .pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field:not(.pet-bubble__field--checkbox) { grid-template-columns: 72px minmax(0, 1fr) auto; gap: 3px 4px; }
 .pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field:not(.pet-bubble__field--checkbox)[data-has-source='false'] { grid-template-columns: 72px minmax(0, 1fr); }
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='sourceOrderNo'],
 .pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='orderNo'],
 .pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='documentNo'],
 .pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='groupName'],
@@ -291,6 +292,7 @@
 .pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='orderStatus'][data-has-source='false'],
 .pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='channelService'],
 .pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='channelService'][data-has-source='false'] { grid-template-columns: 72px minmax(0, 1fr) 26px; }
+.pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='sourceOrderNo'] .pet-bubble__field-source,
 .pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='orderNo'] .pet-bubble__field-source,
 .pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='documentNo'] .pet-bubble__field-source,
 .pet-bubble--order-ai .pet-bubble__form-section--order-info .pet-bubble__field[data-field-id='groupName'] .pet-bubble__field-source,

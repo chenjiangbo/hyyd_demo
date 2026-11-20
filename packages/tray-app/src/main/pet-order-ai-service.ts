@@ -160,6 +160,7 @@ export class PetOrderAiService {
     if (!config) throw new Error('请先登录寰宇智能助手')
     const paths: Record<string, string> = {
       status: '/api/v1/dictionaries/huanyu/order-statuses',
+      bd: '/api/v1/dictionaries/huanyu/bd-users',
       hospital: '/api/v1/dictionaries/huanyu/hospitals',
       address: '/api/v1/dictionaries/huanyu/hospital-addresses',
       department: '/api/v1/dictionaries/huanyu/hospital-departments',
@@ -227,7 +228,7 @@ export class PetOrderAiService {
     this.currentPanel = { ...this.currentPanel,
       fields: [...currentFields.filter((field) => !/^escort-\d+-(date|name|phone)$/.test(field.id) && (!/^unmatched-ai-\d+-(date|name|phone)$/.test(field.id) || Object.hasOwn(fields, field.id))).map((field) => {
         const value = Object.prototype.hasOwnProperty.call(fields, field.id) ? fields[field.id] : field.value
-        return { ...field, value, readOnly: field.id === 'orderAmount' ? fields.amountChanged !== 'true' || ['已取消', '无责取消'].includes(fields.orderStatus) : field.id === 'amountChanged' ? ['已取消', '无责取消'].includes(fields.orderStatus) : field.readOnly }
+        return { ...field, value, readOnly: field.id === 'bd' ? !['1', '2'].includes(fields.bookingChannelType) : field.id === 'orderAmount' ? fields.amountChanged !== 'true' || ['已取消', '无责取消'].includes(fields.orderStatus) : field.id === 'amountChanged' ? ['已取消', '无责取消'].includes(fields.orderStatus) : field.readOnly }
       }), ...escortFields],
       sections: [...(this.currentPanel.sections ?? []).filter((section) => !section.repeatable), ...escortIndexes.map((index) => {
         const prefix = `escort-${index}`
@@ -236,6 +237,7 @@ export class PetOrderAiService {
     }
     const requestFields = {
       orderStatus: fields.orderStatus ?? '',
+      bookingChannelType: fields.bookingChannelType ?? '', bd: fields.bd ?? '',
       escortSummary: fields.escortSummary ?? '',
       hospital: fields.hospital ?? '', hospitalAddress: fields.hospitalAddress ?? '', department: fields.department ?? '', doctor: fields.doctor ?? '',
       requestTime: fields.requestTime ?? '', responseTime: fields.responseTime ?? '', serviceStartTime: fields.serviceStartTime ?? '',
@@ -493,6 +495,16 @@ export class PetOrderAiService {
         const standard = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?/)
         return standard ? `${standard[1]}-${standard[2]}-${standard[3]}T${standard[4]}:${standard[5]}:${standard[6] ?? '00'}` : trimmed
       }
+      const creationTime = (() => {
+        const raw = (current.createdTime ?? '').trim()
+        const compact = raw.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/)
+        const normalized = compact ? `${compact[1]}-${compact[2]}-${compact[3]}T${compact[4]}:${compact[5]}:${compact[6]}` : toDateTimeLocal(raw)
+        const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/)
+        if (!match) return ''
+        const [, y, m, d, h, min, sec] = match
+        const date = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d), Number(h), Number(min), Number(sec)))
+        return date.getUTCFullYear() === Number(y) && date.getUTCMonth() + 1 === Number(m) && date.getUTCDate() === Number(d) && date.getUTCHours() === Number(h) && date.getUTCMinutes() === Number(min) && date.getUTCSeconds() === Number(sec) ? normalized : ''
+      })()
       const aiEscorts = (payload.data?.escortRecords ?? []).map((record) => ({ serviceDate: record.serviceDate ?? '', escortName: record.escortName ?? '', escortPhone: record.escortPhone ?? '' }))
       const currentEscorts = currentPayload.data.escorts
       const matchedAi = new Map<number, number>()
@@ -527,10 +539,13 @@ export class PetOrderAiService {
       const selectedStatus = current.orderStatus || values.order_status || ''
       const cancelled = selectedStatus === '已取消' || selectedStatus === '无责取消'
       const fields = [
-        { id: 'orderNo', label: '订单号', type: 'text' as const, value: orderNo, placeholder: '', readOnly: true, copyable: true },
+        { id: 'sourceOrderNo', label: 'B端订单号', type: 'text' as const, value: current.sourceOrderNo, placeholder: '暂无B端订单号', readOnly: true, copyable: true },
+        { id: 'orderNo', label: '寰宇订单号', type: 'text' as const, value: orderNo, placeholder: '', readOnly: true, copyable: true },
         { id: 'documentNo', label: '身份证号', type: 'text' as const, value: current.documentNo ?? '', placeholder: '暂无身份证号', readOnly: true, copyable: true },
         { id: 'groupName', label: '名称复制', type: 'textarea' as const, value: payload.data?.groupName ?? '', placeholder: '订单信息不完整，无法生成群名称', readOnly: true, copyable: true },
         { id: 'orderStatus', label: '订单状态', type: 'select' as const, ...merged(current.orderStatus, values.order_status ?? ''), placeholder: '请选择订单状态', options: statusOptions.map((item) => ({ value: String(item.id ?? item.name ?? ''), label: String(item.name ?? item.id ?? '') })) },
+        { id: 'bookingChannelType', label: '预约渠道类型', type: 'select' as const, value: current.bookingChannelType, placeholder: '请选择预约渠道类型', options: [{ value: '1', label: 'BD' }, { value: '2', label: '公共' }, { value: '3', label: '无' }] },
+        { id: 'bd', label: 'BD', type: 'text' as const, value: current.bookingChannelType === '3' ? '无' : current.bd, placeholder: '请选择 BD', readOnly: !['1', '2'].includes(current.bookingChannelType) },
         { id: 'channelService', label: '服务项目', type: 'select' as const, value: current.channelService, placeholder: '请选择服务项目', options: products.map((item) => ({ value: item.id, label: item.name, price: item.price })) },
         { id: 'orderAmount', label: '订单金额', type: 'number' as const, value: cancelled ? '0' : current.orderAmount, placeholder: '请输入订单金额', readOnly: true },
         { id: 'amountChanged', label: '金额修改', type: 'checkbox' as const, value: 'false', placeholder: '金额修改', readOnly: cancelled },
@@ -543,7 +558,7 @@ export class PetOrderAiService {
               : { value: id === 'hospital' && isArea ? '' : (intention[id] ?? ''), hint: intention[id] && !(id === 'hospital' && isArea) ? '泰康意向' : undefined }),
           placeholder: `请输入${label}`
         })),
-        ...TIME_FIELDS.map(([id, code, label]) => ({ id, label, type: 'datetime-local' as const, ...merged(toDateTimeLocal(current[id] ?? ''), toDateTimeLocal(values[code] ?? '')), placeholder: `请选择${label}` })),
+        ...TIME_FIELDS.map(([id, code, label]) => ({ id, label, type: 'datetime-local' as const, ...merged(toDateTimeLocal(current[id] ?? '') || (id === 'requestTime' || id === 'responseTime' ? creationTime : ''), id === 'requestTime' || id === 'responseTime' ? '' : toDateTimeLocal(values[code] ?? '')), placeholder: `请选择${label}` })),
         { id: 'escortSummary', label: '陪诊小结', type: 'textarea' as const, ...merged(current.escortSummary ?? '', values.escort_service_summary ?? ''), placeholder: '请输入陪诊小结' },
         ...escortRecords.flatMap((record, index) => {
           const prefix = `escort-${index + 1}`
@@ -566,7 +581,7 @@ export class PetOrderAiService {
         description: '以下为订单的部分字段及 AI 建议值，核对或修改后可一键填单。',
         fields, originalService: current.channelService, originalAmount: current.orderAmount, originalStatus: current.orderStatus, isStrickenCase: current.isStrickenCase === '1',
         sections: [
-          { id: 'order-info', title: '订单基本信息', fieldIds: ['orderNo', 'documentNo', 'groupName', 'orderStatus', 'channelService', 'orderAmount', 'amountChanged'] },
+          { id: 'order-info', title: '订单基本信息', fieldIds: ['sourceOrderNo', 'documentNo', 'groupName', 'orderNo', 'orderStatus', 'channelService', 'orderAmount', 'amountChanged', 'bookingChannelType', 'bd'] },
           { id: 'hospital-info', title: '医院信息', fieldIds: ['hospital', 'hospitalAddress', 'department', 'doctor'] },
           { id: 'time-info', title: '时间信息', fieldIds: TIME_FIELDS.map(([fieldId]) => fieldId) },
           { id: 'escort-summary', title: '陪诊小结', fieldIds: ['escortSummary'] },
