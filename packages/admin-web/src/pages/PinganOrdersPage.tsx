@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { adminApi } from '../api/client'
 import type { PinganOrderListRow } from '../api/types'
 import { EmptyBlock, ErrorBlock, LoadingBlock, PageHeader } from '../components/ui'
@@ -30,7 +30,6 @@ function JsonSection({ title, value }: { title: string; value: unknown }): React
 }
 
 export default function PinganOrdersPage(): React.JSX.Element {
-  const client = useQueryClient()
   const [draft, setDraft] = useState({ search: '', orderType: '', employeeId: '' })
   const [filters, setFilters] = useState(draft)
   const [page, setPage] = useState(1)
@@ -55,14 +54,6 @@ export default function PinganOrdersPage(): React.JSX.Element {
     queryFn: () => adminApi.pinganOrder(selectedOrder!.pinganUserId, selectedOrder!.orderId),
     enabled: selectedOrder !== null
   })
-  const mappingMutation = useMutation({
-    mutationFn: ({ pinganStaffId, employeeId }: { pinganStaffId: string; employeeId: number | null }) =>
-      adminApi.updatePinganStaff(pinganStaffId, employeeId),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: ['pingan-staff'] })
-      void client.invalidateQueries({ queryKey: ['pingan-orders'] })
-    }
-  })
   const accounts = accountsQuery.data ?? []
   const staff = staffQuery.data ?? []
   const unmappedCount = staff.filter((person) => !person.mapped).length
@@ -85,7 +76,7 @@ export default function PinganOrdersPage(): React.JSX.Element {
           <span className="text-sm text-fg-muted">{accounts.length} 个账号</span>
         </div>
         {accountsQuery.isLoading ? <LoadingBlock /> : accountsQuery.error ? <ErrorBlock error={accountsQuery.error} onRetry={() => void accountsQuery.refetch()} /> : !accounts.length ? (
-          <EmptyBlock label="尚未收到平安登录账号" />
+          <EmptyBlock label="暂无已维护的平安登录账号" />
         ) : (
           <div className="overflow-x-auto border border-line bg-surface rounded">
             <table className="w-full text-sm text-left">
@@ -95,7 +86,8 @@ export default function PinganOrdersPage(): React.JSX.Element {
                   <th className="px-3 py-2 font-medium">平安显示姓名</th>
                   <th className="px-3 py-2 font-medium">订单</th>
                   <th className="px-3 py-2 font-medium">采集批次</th>
-                  <th className="px-3 py-2 font-medium">最近识别</th>
+                  <th className="px-3 py-2 font-medium">最近采集</th>
+                  <th className="px-3 py-2 font-medium">对应员工</th>
                 </tr>
               </thead>
               <tbody>
@@ -105,7 +97,8 @@ export default function PinganOrdersPage(): React.JSX.Element {
                     <td className="px-3 py-2">{account.displayName || '—'}</td>
                     <td className="px-3 py-2 tabular-nums">{account.orderCount}</td>
                     <td className="px-3 py-2 tabular-nums">{account.runCount}</td>
-                    <td className="px-3 py-2 whitespace-nowrap text-fg-muted">{fmtTimeFull(account.lastSeenAt)}</td>
+                    <td className="px-3 py-2 whitespace-nowrap text-fg-muted">{account.lastCollectedAt ? fmtTimeFull(account.lastCollectedAt) : '—'}</td>
+                    <td className="px-3 py-2">{account.employeeName ?? '未匹配'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -117,7 +110,7 @@ export default function PinganOrdersPage(): React.JSX.Element {
       <section className="mb-8">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-base font-semibold">订单当前处理人</h2>
-          <span className="text-sm text-fg-muted">{staff.length} 人 · {unmappedCount} 人待绑定</span>
+          <span className="text-sm text-fg-muted">{staff.length} 人 · {unmappedCount} 人待匹配</span>
         </div>
         {staffQuery.isLoading ? <LoadingBlock /> : staffQuery.error ? <ErrorBlock error={staffQuery.error} onRetry={() => void staffQuery.refetch()} /> : !staff.length ? (
           <EmptyBlock label="尚未采集到订单处理人" />
@@ -138,23 +131,7 @@ export default function PinganOrdersPage(): React.JSX.Element {
                   <tr key={person.pinganStaffId} className="border-t border-line">
                     <td className="px-3 py-2 font-mono text-xs">{person.pinganStaffId}</td>
                     <td className="px-3 py-2">{person.displayName || '未提供姓名'}</td>
-                    <td className="px-3 py-2">
-                      <select
-                        aria-label={`绑定平安处理人 ${person.pinganStaffId}`}
-                        value={person.employeeId ?? ''}
-                        disabled={mappingMutation.isPending || employeesQuery.isLoading}
-                        onChange={(event) => mappingMutation.mutate({
-                          pinganStaffId: person.pinganStaffId,
-                          employeeId: event.target.value ? Number(event.target.value) : null
-                        })}
-                        className="min-w-48 px-2 py-1.5 border border-line bg-surface rounded text-sm"
-                      >
-                        <option value="">待绑定</option>
-                        {(employeesQuery.data ?? []).map((employee) => (
-                          <option key={employee.id} value={employee.id}>{employee.name}（{employee.id}）</option>
-                        ))}
-                      </select>
-                    </td>
+                    <td className="px-3 py-2">{person.employee?.name ?? '未匹配'}</td>
                     <td className="px-3 py-2 tabular-nums">{person.orderCount}</td>
                     <td className="px-3 py-2 whitespace-nowrap text-fg-muted">{fmtTimeFull(person.lastSeenAt)}</td>
                   </tr>
@@ -163,7 +140,6 @@ export default function PinganOrdersPage(): React.JSX.Element {
             </table>
           </div>
         )}
-        {mappingMutation.error && <p className="mt-2 text-sm text-danger">绑定失败：{mappingMutation.error.message}</p>}
       </section>
 
       <section className="mb-8">
@@ -177,6 +153,7 @@ export default function PinganOrdersPage(): React.JSX.Element {
                 <tr>
                   <th className="px-3 py-2 font-medium">开始时间</th>
                   <th className="px-3 py-2 font-medium">采集账号</th>
+                  <th className="px-3 py-2 font-medium">采集员工</th>
                   <th className="px-3 py-2 font-medium">查询日期</th>
                   <th className="px-3 py-2 font-medium">分页</th>
                   <th className="px-3 py-2 font-medium">列表 / 详情 / 附件</th>
@@ -187,7 +164,8 @@ export default function PinganOrdersPage(): React.JSX.Element {
                 {runs.map((run) => (
                   <tr key={run.id} className="border-t border-line">
                     <td className="px-3 py-2 whitespace-nowrap">{fmtTimeFull(run.startedAt)}</td>
-                    <td className="px-3 py-2">{run.account.displayName ?? '平安账号'} <span className="text-fg-subtle">/ {run.pinganUserId}</span></td>
+                    <td className="px-3 py-2">{run.collectorDisplayName ?? '平安账号'} <span className="text-fg-subtle">/ {run.pinganUserId}</span></td>
+                    <td className="px-3 py-2">{run.collectorEmployee?.name ?? '—'}</td>
                     <td className="px-3 py-2 whitespace-nowrap text-xs">{run.scanStartDate} 至 {run.scanEndDate}</td>
                     <td className="px-3 py-2 tabular-nums">{run.pageCount}</td>
                     <td className="px-3 py-2 tabular-nums">{run.listRows ?? '—'} / {run.detailCount ?? '—'} / {run.attachmentCount ?? '—'}</td>
@@ -252,7 +230,7 @@ export default function PinganOrdersPage(): React.JSX.Element {
                       <td className="px-3 py-2">{order.orderTypeName}</td>
                       <td className="px-3 py-2">{order.statusName || order.status || '—'}</td>
                       <td className="px-3 py-2">
-                        {order.employee?.name ?? (order.handlerUserId ? '处理人待绑定' : order.handlerName ? '缺少处理人 ID' : '未分配')}
+                        {order.employee?.name ?? (order.handlerUserId ? '处理人待匹配' : order.handlerName ? '缺少处理人 ID' : '未分配')}
                         <div className="text-xs text-fg-subtle">{order.handlerName || order.handlerUserId || '无当前处理人'}</div>
                       </td>
                       <td className="px-3 py-2">
@@ -294,9 +272,10 @@ export default function PinganOrdersPage(): React.JSX.Element {
                   <div><dt className="text-xs text-fg-muted">订单类型</dt><dd>{detailQuery.data.orderTypeName}</dd></div>
                   <div><dt className="text-xs text-fg-muted">订单状态</dt><dd>{detailQuery.data.statusName || detailQuery.data.status || '—'}</dd></div>
                   <div><dt className="text-xs text-fg-muted">当前处理人</dt><dd>{detailQuery.data.handlerName || '未分配'}{detailQuery.data.handlerUserId ? `（${detailQuery.data.handlerUserId}）` : ''}</dd></div>
-                  <div><dt className="text-xs text-fg-muted">归属员工</dt><dd>{detailQuery.data.employee?.name ?? '待绑定'}</dd></div>
+                  <div><dt className="text-xs text-fg-muted">归属员工</dt><dd>{detailQuery.data.employee?.name ?? '待匹配'}</dd></div>
                   <div><dt className="text-xs text-fg-muted">采集状态</dt><dd>{stateLabel(detailQuery.data.captureState)}</dd></div>
                   <div><dt className="text-xs text-fg-muted">附件采集</dt><dd>{detailQuery.data.attachmentState === 'complete' ? '完整' : detailQuery.data.attachmentState === 'partial_failure' ? '部分附件不可用' : '尚未采集'}</dd></div>
+                  <div><dt className="text-xs text-fg-muted">最近上报员工</dt><dd>{detailQuery.data.lastSeenRun?.collectorEmployee?.name ?? '—'}</dd></div>
                   <div><dt className="text-xs text-fg-muted">首次发现</dt><dd>{fmtTimeFull(detailQuery.data.firstSeenAt)}</dd></div>
                   <div><dt className="text-xs text-fg-muted">最近采集</dt><dd>{fmtTimeFull(detailQuery.data.lastSeenAt)}</dd></div>
                 </dl>

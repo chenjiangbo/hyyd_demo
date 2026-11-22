@@ -75,10 +75,10 @@ export default function TaikangHuanyuChannelMappingPage(): React.JSX.Element {
 
   return (
     <div>
-      <PageHeader title="泰康业务渠道配置" subtitle="为泰康绿通、泰康挂号协助选择创建寰宇订单时使用的 B端渠道。" />
+      <PageHeader title="业务渠道配置" />
       <Card className="mb-4 p-4 text-sm text-fg-muted leading-6">
         <div>渠道下拉数据实时只读自远端 MySQL 维表 <code>dim_hy_qd</code>，保存的是渠道 ID，不依赖名称匹配。</div>
-        <div>创建寰宇订单时：泰康业务类型 → 本配置渠道 ID → <code>dim_hy_qd_cp</code> 中服务项目 ID 前四位相同的记录 → 按服务项目名称精确匹配。</div>
+        <div>建单时按业务选定 B 端渠道，再在该渠道下匹配服务项目。</div>
         <div className="text-amber-700">配置变更只影响之后新建的寰宇订单；已创建且人工维护过的订单不会被覆盖。</div>
       </Card>
 
@@ -96,7 +96,7 @@ export default function TaikangHuanyuChannelMappingPage(): React.JSX.Element {
         {loading ? <div className="py-10 text-center text-sm text-fg-muted">加载中…</div> : (
           <div className="overflow-x-auto">
             <table className="min-w-[860px] w-full text-left text-sm">
-              <thead className="border-b border-line text-fg-muted"><tr><th className="px-2 py-3 font-medium">泰康业务</th><th className="px-2 py-3 font-medium">B端渠道（远端维表）</th><th className="px-2 py-3 font-medium">启用</th><th className="px-2 py-3 font-medium">上次更新</th><th className="px-2 py-3 font-medium"></th></tr></thead>
+              <thead className="border-b border-line text-fg-muted"><tr><th className="px-2 py-3 font-medium">业务</th><th className="px-2 py-3 font-medium">B端渠道（远端维表）</th><th className="px-2 py-3 font-medium">启用</th><th className="px-2 py-3 font-medium">上次更新</th><th className="px-2 py-3 font-medium"></th></tr></thead>
               <tbody>{mappings.map((mapping) => {
                 const value = draft[mapping.businessKey] ?? { huanyuChannelId: '', enabled: true }
                 return <tr key={mapping.businessKey} className="border-b border-line/70">

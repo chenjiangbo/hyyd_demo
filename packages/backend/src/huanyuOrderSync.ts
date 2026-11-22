@@ -117,7 +117,7 @@ function localDateYmd(date = new Date()): string {
 }
 
 /** HYYD + YYYYMMDD + 8 位随机数，共 20 位。 */
-function generateDdbh(): string {
+export function generateDdbh(): string {
   return `HYYD${localDateYmd()}${randomInt(0, 100_000_000).toString().padStart(8, '0')}`
 }
 

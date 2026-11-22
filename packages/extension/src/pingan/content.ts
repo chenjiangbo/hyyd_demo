@@ -26,6 +26,7 @@ let lastStatus: PinganRunStatus | null = null;
 let observedListPage = false;
 let pinganIdentity: PinganIdentity | null = null;
 let pinganBackendReady = false;
+let collectorEmployeeId: number | null = null;
 let sessionKeepaliveInFlight = false;
 let sessionKeepaliveFailures = 0;
 let sessionKeepaliveRetry: ReturnType<typeof setTimeout> | null = null;
@@ -86,7 +87,11 @@ function runtimeMessage<T>(message: Record<string, unknown>): Promise<T> {
 
 async function uploadPinganRun(run: Record<string, unknown>): Promise<void> {
   if (!pinganIdentity) return;
-  await runtimeMessage({ type: 'PINGAN_BACKEND_RUN', pinganUserId: pinganIdentity.pinganUserId, run });
+  await runtimeMessage({
+    type: 'PINGAN_BACKEND_RUN',
+    pinganUserId: pinganIdentity.pinganUserId,
+    run: { ...run, collectorDisplayName: pinganIdentity.displayName },
+  });
   await logEvent('info', 'backend_run_uploaded', `采集批次（${String(run.state ?? '状态更新')}）已上传到后台`);
 }
 
@@ -100,11 +105,12 @@ async function uploadPinganPage(page: Record<string, unknown>): Promise<void> {
 }
 
 async function uploadPinganOrder(order: PinganOrder): Promise<void> {
-  if (!pinganBackendReady || !pinganIdentity) return;
+  const runId = lastStatus?.runId;
+  if (!pinganBackendReady || !pinganIdentity || !runId || collectorEmployeeId === null) return;
   const response = await runtimeMessage<{
     ok: true;
     data: { outcome: 'created' | 'status_updated' | 'unchanged'; storedAttachmentIds: string[] };
-  }>({ type: 'PINGAN_BACKEND_ORDER', pinganUserId: pinganIdentity.pinganUserId, order });
+  }>({ type: 'PINGAN_BACKEND_ORDER', pinganUserId: pinganIdentity.pinganUserId, runId, order });
   if (!response.data || !['created', 'status_updated', 'unchanged'].includes(response.data.outcome) ||
       !Array.isArray(response.data.storedAttachmentIds) || response.data.storedAttachmentIds.some((id) => typeof id !== 'string')) {
     throw new Error('后台未确认订单是否已入库及已存附件');
@@ -119,6 +125,7 @@ async function uploadPinganOrder(order: PinganOrder): Promise<void> {
       type: 'PINGAN_BACKEND_ATTACHMENT',
       pinganUserId: pinganIdentity.pinganUserId,
       orderId: order.orderId,
+      runId,
       attachmentId,
     });
     await logEvent('info', 'backend_attachment_uploaded', `附件 ${attachmentId} 已上传后台`, {
@@ -128,6 +135,7 @@ async function uploadPinganOrder(order: PinganOrder): Promise<void> {
     storedAttachmentIds.add(attachmentId);
   }
   order.backendSyncedAt = new Date().toISOString();
+  order.backendCollectorEmployeeId = collectorEmployeeId;
   await runtimeMessage({ type: 'PINGAN_SAVE_ORDER', order });
   await logEvent('info', 'backend_order_saved', '订单及附件已同步到后台', { orderId: order.orderId, orderType: order.orderType });
 }
@@ -166,7 +174,7 @@ async function keepPinganSessionAlive(): Promise<void> {
     await logEvent('error', 'session_keepalive_failed', `平安登录态探测失败（${sessionKeepaliveFailures}/2）：${message}`);
     if (sessionKeepaliveFailures >= 2) {
       loggedIn = false;
-      await updateStatus({ state: 'waiting_login', lastError: '平安登录状态已失效，请重新登录' });
+      await updateStatus({ state: 'waiting_login', pinganUserId: undefined, lastError: '平安登录状态已失效，请重新登录' });
     } else if (!sessionKeepaliveRetry) {
       sessionKeepaliveRetry = setTimeout(() => {
         sessionKeepaliveRetry = null;
@@ -247,7 +255,7 @@ async function runIfReady(): Promise<void> {
         error: message,
       };
       await runtimeMessage({ type: 'PINGAN_SAVE_RUN', run: failedRun });
-      if (pinganIdentity) {
+      if (pinganBackendReady && pinganIdentity) {
         await uploadPinganRun(failedRun).catch((uploadError) => {
           void logEvent('error', 'backend_run_upload_failed', safeError(uploadError));
         });
@@ -261,6 +269,8 @@ async function runIfReady(): Promise<void> {
 }
 
 async function runCollection(): Promise<void> {
+  pinganBackendReady = false;
+  collectorEmployeeId = null;
   const installDate = await getInstallDate();
   const startedAt = new Date().toISOString();
   const scanEndDate = beijingDateString(new Date(startedAt));
@@ -275,28 +285,32 @@ async function runCollection(): Promise<void> {
     state: 'running', installDate, scanStartDate, scanEndDate, startedAt, runId, currentType: undefined,
     currentPage: 0, pageCount: 0, listCount: 0, detailCount: 0,
     decryptedFieldCount: 0, attachmentCount: 0, errorCount: 0, lastError: undefined,
+    pinganUserId: undefined, backendAccountState: undefined, backendError: undefined,
   });
 
   const identityResponse = await requestPinganApi('user.getUserInfo');
   pinganIdentity = parsePinganIdentity(identityResponse.response);
-  pinganBackendReady = false;
+  await updateStatus({ pinganUserId: pinganIdentity.pinganUserId });
   try {
-    await runtimeMessage<{ ok: true; data: { pinganUserId: string } }>({
+    const identity = await runtimeMessage<{ ok: true; data: { pinganUserId: string; collectorEmployeeId: number } }>({
       type: 'PINGAN_BACKEND_IDENTIFY',
       pinganUserId: pinganIdentity.pinganUserId,
       displayName: pinganIdentity.displayName,
     });
+    if (!Number.isInteger(identity.data.collectorEmployeeId) || identity.data.collectorEmployeeId <= 0) {
+      throw new Error('后台没有返回有效的采集员工');
+    }
+    collectorEmployeeId = identity.data.collectorEmployeeId;
+    await uploadPinganRun(initialRun);
     pinganBackendReady = true;
     await updateStatus({ backendAccountState: 'registered' });
     await logEvent('info', 'backend_account_registered', '平安采集账号已登记，订单将按当前处理人归属');
   } catch (error) {
-    await updateStatus({ backendAccountState: 'offline' });
+    pinganBackendReady = false;
+    await updateStatus({ backendAccountState: 'offline', backendError: safeError(error) });
     await logEvent('error', 'backend_identify_failed', `后台账号登记失败：${safeError(error)}`);
     await logEvent('error', 'backend_upload_blocked', '平安账号登记未成功，本轮采集数据不会上传后台');
   }
-  await uploadPinganRun(initialRun).catch((error) => {
-    void logEvent('error', 'backend_run_upload_failed', safeError(error));
-  });
 
   const merchantResult = await requestPinganApi('roger.getMyMerchantList');
   const merchantModel = unwrapPinganResponse(merchantResult.response, 'roger.getMyMerchantList');
@@ -476,7 +490,7 @@ async function runCollection(): Promise<void> {
               pageNum: page,
             });
           }
-          if (pinganBackendReady && !order.backendSyncedAt) {
+          if (pinganBackendReady && (!order.backendSyncedAt || order.backendCollectorEmployeeId !== collectorEmployeeId)) {
             try {
               await uploadPinganOrder(order);
             } catch (error) {
@@ -516,7 +530,7 @@ async function runCollection(): Promise<void> {
           }
           if (changed || retryAttachments) delete order.backendSyncedAt;
           await runtimeMessage({ type: 'PINGAN_SAVE_ORDER', order });
-          if (pinganBackendReady && !order.backendSyncedAt) {
+          if (pinganBackendReady && (!order.backendSyncedAt || order.backendCollectorEmployeeId !== collectorEmployeeId)) {
             try {
               await uploadPinganOrder(order);
             } catch (error) {
@@ -529,7 +543,7 @@ async function runCollection(): Promise<void> {
         }
         if (!changed && order.captureState === 'complete' && order.attachmentState === 'complete') {
           await runtimeMessage({ type: 'PINGAN_SAVE_ORDER', order });
-          if (pinganBackendReady && !order.backendSyncedAt) {
+          if (pinganBackendReady && (!order.backendSyncedAt || order.backendCollectorEmployeeId !== collectorEmployeeId)) {
             try {
               await uploadPinganOrder(order);
             } catch (error) {
@@ -603,7 +617,7 @@ async function runCollection(): Promise<void> {
   };
   await runtimeMessage({ type: 'PINGAN_SAVE_RUN', run: completedRun });
   try {
-    await uploadPinganRun(completedRun);
+    if (pinganBackendReady) await uploadPinganRun(completedRun);
   } catch (error) {
     errorCount++;
     finalState = 'partial_failure';

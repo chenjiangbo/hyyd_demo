@@ -53,11 +53,12 @@ import {
   saveOrderAiSkillConfig
 } from '../services/orderAiSkillConfig.js'
 
-const TAIKANG_BUSINESS_CONFIG = {
+const CHANNEL_BUSINESS_CONFIG = {
   green_pass: '泰康绿通',
-  register_assist: '泰康挂号协助'
+  register_assist: '泰康挂号协助',
+  pingan: '平安好医生'
 } as const
-type TaikangBusinessKey = keyof typeof TAIKANG_BUSINESS_CONFIG
+type ChannelBusinessKey = keyof typeof CHANNEL_BUSINESS_CONFIG
 
 const ORDER_AI_BUSINESS_CONFIG_KEY = 'order_ai_business_config'
 
@@ -131,8 +132,8 @@ function defaultOrderAiBusinessConfig(): OrderAiBusinessConfig {
   }
 }
 
-function isTaikangBusinessKey(value: unknown): value is TaikangBusinessKey {
-  return typeof value === 'string' && value in TAIKANG_BUSINESS_CONFIG
+function isChannelBusinessKey(value: unknown): value is ChannelBusinessKey {
+  return typeof value === 'string' && Object.hasOwn(CHANNEL_BUSINESS_CONFIG, value)
 }
 
 export const ADMIN_COOKIE = 'hyyd_admin'
@@ -487,7 +488,7 @@ export function registerAdminRoutes(
       })
     })
 
-    // 泰康业务—寰宇 B 端渠道映射。渠道候选固定来自远端 MySQL dim_hy_qd，只读查询。
+    // 业务—寰宇 B 端渠道映射。渠道候选固定来自远端 MySQL dim_hy_qd，只读查询。
     fastify.get<{ Querystring: { q?: string } }>('/api/v1/admin/taikang-huanyu-channel-mappings/channels', async (request, reply) => {
       return reply.send({ data: await listHuanyuChannels(request.query.q) })
     })
@@ -506,6 +507,7 @@ export function registerAdminRoutes(
          ORDER BY CASE business_key
            WHEN 'green_pass' THEN 1
            WHEN 'register_assist' THEN 2
+           WHEN 'pingan' THEN 3
            ELSE 99
          END
       `
@@ -526,8 +528,8 @@ export function registerAdminRoutes(
       Body: { huanyuChannelId?: string; enabled?: boolean }
     }>('/api/v1/admin/taikang-huanyu-channel-mappings/:businessKey', async (request, reply) => {
       const { businessKey } = request.params
-      if (!isTaikangBusinessKey(businessKey)) {
-        return reply.status(400).send({ error: '仅支持配置泰康绿通或泰康挂号协助' })
+      if (!isChannelBusinessKey(businessKey)) {
+        return reply.status(400).send({ error: '不支持的业务渠道配置' })
       }
       const channelId = String(request.body?.huanyuChannelId ?? '').trim()
       const enabled = request.body?.enabled !== false
@@ -539,19 +541,20 @@ export function registerAdminRoutes(
       if (!channel) {
         return reply.status(400).send({ error: '所选 B端渠道已不在远端 dim_hy_qd 维表中，请重新选择' })
       }
-      await prisma.$executeRaw`
+      const updated = await prisma.$executeRaw`
         UPDATE taikang_huanyu_channel_mappings
-           SET business_name = ${TAIKANG_BUSINESS_CONFIG[businessKey]},
+           SET business_name = ${CHANNEL_BUSINESS_CONFIG[businessKey]},
                huanyu_channel_id = ${channel.id},
                huanyu_channel_name = ${channel.name},
                enabled = ${enabled},
                updated_at = now()
          WHERE business_key = ${businessKey}
       `
+      if (updated !== 1) return reply.status(404).send({ error: '业务渠道配置尚未初始化' })
       return reply.send({
         data: {
           businessKey,
-          businessName: TAIKANG_BUSINESS_CONFIG[businessKey],
+          businessName: CHANNEL_BUSINESS_CONFIG[businessKey],
           huanyuChannelId: channel.id,
           huanyuChannelName: channel.name,
           enabled

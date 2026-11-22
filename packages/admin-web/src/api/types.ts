@@ -336,8 +336,9 @@ export interface TaikangFormEventPage {
 export interface PinganAccountRow {
   pinganUserId: string
   displayName: string | null
-  firstSeenAt: string
-  lastSeenAt: string
+  employeeId: number | null
+  employeeName: string | null
+  lastCollectedAt: string | null
   orderCount: number
   runCount: number
 }
@@ -367,7 +368,8 @@ export interface PinganOrderListRow {
   attachmentErrors: string[]
   lastSeenAt: string
   employee: { id: number; name: string } | null
-  account: { displayName: string | null }
+  collectorDisplayName: string | null
+  lastSeenRun: { collectorEmployee: { id: number; name: string } | null } | null
   attachmentCount: number
 }
 
@@ -404,7 +406,8 @@ export interface PinganOrderDetail extends PinganOrderListRow {
 export interface PinganCollectionRunRow {
   id: string
   pinganUserId: string
-  account: { displayName: string | null }
+  collectorDisplayName: string | null
+  collectorEmployee: { id: number; name: string } | null
   installDate: string
   scanStartDate: string
   scanEndDate: string

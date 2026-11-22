@@ -30,6 +30,7 @@ import { addAdminSocket, removeAdminSocket } from './routes/adminBus.js'
 import { saveOrderAttachments, saveOrderDetailBundle } from './orderDetail.js'
 import { saveTaikangFormEvent } from './taikangFormRecording.js'
 import { registerPinganIngestRoutes } from './pinganCollection.js'
+import { pinganMysqlOrderJobsAvailable, startPinganMysqlOrderWorker } from './services/pinganMysqlOrderWorker.js'
 import { ensureOrderIdCardOcrTable, scheduleOrderIdCardOcr } from './services/orderIdCardOcr.js'
 import { ensureGreenPassIdCardJobs, runGreenPassIdCardOcr, startGreenPassIdCardRetries } from './services/greenPassIdCardOcr.js'
 import { initScheduler } from './asr/transcribeScheduler.js'
@@ -366,7 +367,7 @@ async function start() {
       origin: true, // 允许所有来源，方便开发联调
       credentials: true, // 允许携带 cookie（管理后台 admin JWT cookie 用）
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'X-Employee-Code']
+      allowedHeaders: ['Content-Type', 'X-Employee-Code', 'X-Pingan-User-Id']
     })
 
     // 1.5 注册 cookie 插件（管理后台鉴权用 httpOnly cookie）
@@ -1028,7 +1029,8 @@ async function start() {
 
     // 4. 注册 REST API 路由
     registerApiRoutes(server, prisma, minioClient, minioPublicClient)
-    registerPinganIngestRoutes(server, prisma, minioClient)
+    const pinganMysqlJobsEnabled = await pinganMysqlOrderJobsAvailable(prisma)
+    registerPinganIngestRoutes(server, prisma, minioClient, pinganMysqlJobsEnabled)
 
     // 4.1 注册管理后台 admin 路由（独立 JWT cookie 鉴权，挂 /api/v1/admin/*）
     registerAdminRoutes(server, prisma, minioClient, minioPublicClient)
@@ -1110,6 +1112,10 @@ async function start() {
     const stopGreenPassSyncRetries = startGreenPassSyncRetries()
     const stopOutpatientCompletion = startOutpatientCompletionSchedule(prisma, server.log)
     server.addHook('onClose', async () => { stopGreenPassIdCardRetries(); stopGreenPassSyncRetries(); stopOutpatientCompletion() })
+    if (pinganMysqlJobsEnabled) {
+      const stopPinganMysqlOrderWorker = startPinganMysqlOrderWorker(prisma, minioClient, server.log)
+      server.addHook('onClose', async () => { stopPinganMysqlOrderWorker() })
+    }
     await server.listen({ port, host })
     server.log.info(`寰宇医道后端服务启动成功，运行在: http://${host}:${port}`)
 

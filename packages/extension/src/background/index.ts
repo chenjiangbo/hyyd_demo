@@ -212,6 +212,7 @@ async function pinganBackendRequest(path: string, init: RequestInit = {}): Promi
   const hasForm = typeof FormData !== 'undefined' && init.body instanceof FormData;
   const response = await fetch(url, {
     ...init,
+    redirect: 'error',
     headers: {
       ...(hasForm ? {} : { 'Content-Type': 'application/json' }),
       ...init.headers,
@@ -592,7 +593,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               : message.type === 'PINGAN_BACKEND_PAGE' ? '/api/v1/pingan/pages' : '/api/v1/pingan/orders';
             const key = message.type === 'PINGAN_BACKEND_RUN' ? 'run' : message.type === 'PINGAN_BACKEND_PAGE' ? 'page' : 'order';
             const data = await pinganBackendRequest(path, {
-              method: 'POST', body: JSON.stringify({ pinganUserId: message.pinganUserId, [key]: message[key] }),
+              method: 'POST', body: JSON.stringify({ pinganUserId: message.pinganUserId, runId: message.runId, [key]: message[key] }),
             });
             sendResponse({ ok: true, data });
             return;
@@ -603,7 +604,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             const attachment = await getPinganAttachment(String(message.pinganUserId ?? ''), `${orderId}:${attachmentId}`);
             if (!attachment) throw new Error(`本机未找到订单 ${orderId} 的附件 ${attachmentId}`);
             const form = new FormData();
-            form.append('pinganUserId', String(message.pinganUserId ?? ''));
+            form.append('runId', String(message.runId ?? ''));
             form.append('orderId', orderId);
             form.append('attachmentId', attachmentId);
             form.append('fileName', attachment.fileName);
@@ -612,7 +613,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             form.append('sha256', attachment.sha256);
             form.append('capturedAt', attachment.capturedAt);
             form.append('file', attachment.blob, attachment.fileName || 'attachment');
-            const data = await pinganBackendRequest('/api/v1/pingan/attachments', { method: 'POST', body: form });
+            const data = await pinganBackendRequest('/api/v1/pingan/attachments', {
+              method: 'POST', body: form, headers: { 'X-Pingan-User-Id': String(message.pinganUserId ?? '') },
+            });
             sendResponse({ ok: true, data });
             return;
           }

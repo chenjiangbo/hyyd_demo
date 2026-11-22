@@ -177,7 +177,7 @@ export interface HuanyuChannelOption {
 }
 
 export interface TaikangHuanyuChannelMapping {
-  businessKey: 'green_pass' | 'register_assist'
+  businessKey: 'green_pass' | 'register_assist' | 'pingan'
   businessName: string
   huanyuChannelId: string | null
   huanyuChannelName: string | null
@@ -427,12 +427,6 @@ export const adminApi = {
   },
   pinganStaff() {
     return request<PinganStaffRow[]>('/api/v1/admin/pingan/staff')
-  },
-  updatePinganStaff(pinganStaffId: string, employeeId: number | null) {
-    return request<PinganStaffRow>(`/api/v1/admin/pingan/staff/${encodeURIComponent(pinganStaffId)}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ employeeId })
-    })
   },
   pinganOrders(params: { page?: number; pageSize?: number; search?: string; orderType?: string; employeeId?: number } = {}) {
     return request<PinganOrderPage>(`/api/v1/admin/pingan/orders${qs(params)}`)

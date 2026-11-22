@@ -18,5 +18,6 @@ export function isEmployeeAuthExemptPath(url: string): boolean {
     url.startsWith('/api/v1/dim_cslb') ||
     url.startsWith('/m/') ||
     url.startsWith('/api/v1/escort-feedback') ||
+    // PingAn ingest resolves the employee from the maintained PingAn login account.
     url.startsWith('/api/v1/pingan/')
 }

@@ -174,7 +174,22 @@ export async function findHuanyuOrderNosOnMysqlByChannelOrderNo(channelOrderNo: 
   }
 }
 
-/** 直接在远端寰宇主表创建订单；调用方负责先按泰康订单号查重。 */
+/** 平安按 B 端订单号查重，优先识别本任务已经写入但尚未确认的主单。 */
+export async function findPinganMysqlOrderNo(channelOrderNo: string, candidateDdbh: string): Promise<string | null> {
+  const connection = await mysqlWriterPool().getConnection()
+  try {
+    const [rows] = await connection.execute<RowDataPacket[]>(
+      `SELECT DDBH FROM HY_FACT_DDCX_NEW WHERE BDQD_DDBH = ?
+       ORDER BY CASE WHEN DDBH = ? THEN 0 ELSE 1 END, xtsj_ DESC, DDBH DESC LIMIT 1`,
+      [channelOrderNo, candidateDdbh]
+    )
+    return rows[0] ? String(rows[0].DDBH).trim() : null
+  } finally {
+    connection.release()
+  }
+}
+
+/** 直接在远端寰宇主表创建订单；调用方负责先按 B 端订单号查重。 */
 export async function createHuanyuOrderOnMysql(row: Record<string, unknown>): Promise<void> {
   const columns = [
     'DDBH', 'DD_state', 'BDQD', 'BDQD_DDBH', 'BDQD_DDBH2', 'BDQD_FWXM', 'DDJE', 'KHJL',
@@ -182,16 +197,17 @@ export async function createHuanyuOrderOnMysql(row: Record<string, unknown>): Pr
     'JZR_JSMC', 'JZR_JSGX', 'JZR_JSLXFS', 'JZR_JB', 'JZR_BZ',
     'YYQDLX', 'isStrickenCase', 'xtsj_', 'BBQ_XQ', 'DATE_XQ', 'BBQ_YD', 'DATE_YD'
   ] as const
+  const insertColumns = Object.hasOwn(row, 'JZR_ZJHM') ? [...columns, 'JZR_ZJHM'] : columns
   const creationValues: Record<string, string> = {
     xtsj_: "DATE_FORMAT(NOW(), '%Y%m%d%H%i%s')",
     BBQ_XQ: "DATE_FORMAT(NOW(), '%Y%m%d %H:%i:%s')", DATE_XQ: "DATE_FORMAT(NOW(), '%Y%m%d')",
     BBQ_YD: "DATE_FORMAT(NOW(), '%Y%m%d %H:%i:%s')", DATE_YD: "DATE_FORMAT(NOW(), '%Y%m%d')"
   }
-  const sql = `INSERT INTO \`HY_FACT_DDCX_NEW\` (${columns.map((column) => `\`${column}\``).join(', ')}) VALUES (${columns.map((column) => creationValues[column] ?? '?').join(', ')})`
+  const sql = `INSERT INTO \`HY_FACT_DDCX_NEW\` (${insertColumns.map((column) => `\`${column}\``).join(', ')}) VALUES (${insertColumns.map((column) => creationValues[column] ?? '?').join(', ')})`
   const connection = await mysqlWriterPool().getConnection()
   try {
     await connection.query("SET time_zone = '+08:00'")
-    await connection.execute(sql, values(row, columns.filter((column) => !creationValues[column])))
+    await connection.execute(sql, values(row, insertColumns.filter((column) => !creationValues[column])))
   } finally {
     connection.release()
   }

@@ -29,6 +29,7 @@ export type PinganOrder = {
   attachmentErrors?: string[];
   errors: string[];
   backendSyncedAt?: string;
+  backendCollectorEmployeeId?: number;
   firstSeenAt: string;
   lastSeenAt: string;
 };
@@ -59,6 +60,7 @@ export type PinganEvent = {
   httpStatus?: number;
   businessCode?: string | number;
   durationMs?: number;
+  filteredStatuses?: Record<string, number>;
   message?: string;
 };
 
@@ -79,6 +81,8 @@ export type PinganRunStatus = {
   attachmentCount: number;
   errorCount: number;
   lastError?: string;
+  pinganUserId?: string;
+  backendError?: string;
   backendAccountState?: 'registered' | 'offline';
 };
 

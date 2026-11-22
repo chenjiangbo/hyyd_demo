@@ -14,6 +14,7 @@ model Employee {
   wechatId                String?                  @map("wechat_id")
   taikangAccount          String?                  @map("taikang_account")
   pinganId                String?                  @unique @map("pingan_id")
+  pinganCollectionRuns    PinganCollectionRun[]   @relation("PinganCollector")
   token                   String                   @unique
   password                String?                  @map("PASSWORD")
   enabled                 Int                      @default(1) @map("ENABLED")
@@ -23,7 +24,6 @@ model Employee {
   materials               Material[]
   unmatchedOrderRefs      UnmatchedOrderRef[]
   taikangFormSessions      TaikangFormSession[]
-  pinganStaff              PinganStaff[]
   pinganOrders             PinganOrder[]
   nativeChatConversations  NativeChatConversation[]
   mobileClientStates      MobileClientState[]
@@ -68,40 +68,15 @@ model TaikangFormEvent {
   @@map("taikang_form_events")
 }
 
-model PinganAccount {
-  pinganUserId String                 @id @db.VarChar(40) @map("pingan_user_id")
-  displayName  String?                @map("display_name")
-  firstSeenAt  DateTime               @default(now()) @db.Timestamp(3) @map("first_seen_at")
-  lastSeenAt   DateTime               @db.Timestamp(3) @map("last_seen_at")
-  createdAt    DateTime               @default(now()) @db.Timestamp(3) @map("created_at")
-  updatedAt    DateTime               @updatedAt @db.Timestamp(3) @map("updated_at")
-  orders       PinganOrder[]
-  runs         PinganCollectionRun[]
-
-  @@map("pingan_accounts")
-}
-
-model PinganStaff {
-  pinganStaffId String       @id @db.VarChar(40) @map("pingan_staff_id")
-  displayName   String?      @map("display_name")
-  employeeId    Int?         @map("employee_id")
-  employee      Employee?    @relation(fields: [employeeId], references: [id], onDelete: SetNull)
-  firstSeenAt   DateTime     @default(now()) @db.Timestamp(3) @map("first_seen_at")
-  lastSeenAt    DateTime     @db.Timestamp(3) @map("last_seen_at")
-  createdAt     DateTime     @default(now()) @db.Timestamp(3) @map("created_at")
-  updatedAt     DateTime     @updatedAt @db.Timestamp(3) @map("updated_at")
-  orders        PinganOrder[]
-
-  @@index([employeeId, lastSeenAt(sort: Desc)])
-  @@map("pingan_staff")
-}
-
 model PinganOrder {
   pinganUserId       String        @db.VarChar(40) @map("pingan_user_id")
-  account            PinganAccount @relation(fields: [pinganUserId], references: [pinganUserId], onDelete: Cascade)
+  firstSeenRunId     String?       @db.Uuid @map("first_seen_run_id")
+  firstSeenRun       PinganCollectionRun? @relation("PinganFirstSeenRun", fields: [firstSeenRunId], references: [id], onDelete: SetNull)
+  lastSeenRunId      String?       @db.Uuid @map("last_seen_run_id")
+  lastSeenRun        PinganCollectionRun? @relation("PinganLastSeenRun", fields: [lastSeenRunId], references: [id], onDelete: SetNull)
+  collectorDisplayName String?     @map("collector_display_name")
   orderId            String        @db.VarChar(120) @map("order_id")
   handlerUserId      String?       @db.VarChar(40) @map("handler_user_id")
-  handlerStaff       PinganStaff?  @relation(fields: [handlerUserId], references: [pinganStaffId], onDelete: SetNull)
   handlerName        String?       @map("handler_name")
   employeeId         Int?          @map("employee_id")
   employee           Employee?     @relation(fields: [employeeId], references: [id], onDelete: SetNull)
@@ -123,6 +98,7 @@ model PinganOrder {
   createdAt          DateTime      @default(now()) @db.Timestamp(3) @map("created_at")
   updatedAt          DateTime      @updatedAt @db.Timestamp(3) @map("updated_at")
   attachments        PinganOrderAttachment[]
+  mysqlOrderJobs     PinganMysqlOrderJob[]
 
   @@id([pinganUserId, orderId])
   @@index([employeeId, lastSeenAt(sort: Desc), orderId])
@@ -131,10 +107,29 @@ model PinganOrder {
   @@map("pingan_orders")
 }
 
+model PinganMysqlOrderJob {
+  orderId            String    @id @db.VarChar(120) @map("order_id")
+  pinganUserId       String    @db.VarChar(40) @map("pingan_user_id")
+  order              PinganOrder @relation(fields: [pinganUserId, orderId], references: [pinganUserId, orderId], onDelete: Cascade, map: "pingan_mysql_order_jobs_source_fkey")
+  candidateDdbh      String    @unique @db.VarChar(50) @map("candidate_ddbh")
+  state              String    @default("pending") @db.VarChar(24)
+  huanyuOrderNo      String?   @db.VarChar(50) @map("huanyu_order_no")
+  needsIdentity      Boolean   @default(false) @map("needs_identity")
+  checkedAttachments String?   @db.VarChar(32) @map("checked_attachments")
+  leaseId            String?   @db.Uuid @map("lease_id")
+  nextAttemptAt      DateTime  @default(now()) @db.Timestamp(6) @map("next_attempt_at")
+  failureCode        String?   @db.VarChar(120) @map("failure_code")
+
+  @@index([nextAttemptAt, orderId])
+  @@map("pingan_mysql_order_jobs")
+}
+
 model PinganOrderAttachment {
   pinganUserId String     @db.VarChar(40) @map("pingan_user_id")
   orderId      String     @db.VarChar(120) @map("order_id")
   order        PinganOrder @relation(fields: [pinganUserId, orderId], references: [pinganUserId, orderId], onDelete: Cascade)
+  uploadRunId  String?    @db.Uuid @map("upload_run_id")
+  uploadRun    PinganCollectionRun? @relation(fields: [uploadRunId], references: [id], onDelete: SetNull)
   attachmentId String     @db.VarChar(240) @map("attachment_id")
   fileName     String     @db.VarChar(500) @map("file_name")
   fileType     String?    @db.VarChar(120) @map("file_type")
@@ -148,13 +143,19 @@ model PinganOrderAttachment {
 
   @@id([pinganUserId, orderId, attachmentId])
   @@index([pinganUserId, orderId])
+  @@index([orderId])
   @@map("pingan_order_attachments")
 }
 
 model PinganCollectionRun {
   id                 String                  @id @db.Uuid
   pinganUserId       String                  @db.VarChar(40) @map("pingan_user_id")
-  account            PinganAccount           @relation(fields: [pinganUserId], references: [pinganUserId], onDelete: Cascade)
+  collectorEmployeeId Int?                    @map("collector_employee_id")
+  collectorEmployee  Employee?                @relation("PinganCollector", fields: [collectorEmployeeId], references: [id], onDelete: SetNull)
+  collectorDisplayName String?                 @map("collector_display_name")
+  firstSeenOrders    PinganOrder[]            @relation("PinganFirstSeenRun")
+  lastSeenOrders     PinganOrder[]            @relation("PinganLastSeenRun")
+  uploadedAttachments PinganOrderAttachment[]
   installDate        DateTime                @db.Date @map("install_date")
   scanStartDate      DateTime                @db.Date @map("scan_start_date")
   scanEndDate        DateTime                @db.Date @map("scan_end_date")
@@ -173,6 +174,8 @@ model PinganCollectionRun {
   updatedAt          DateTime                @updatedAt @db.Timestamp(3) @map("updated_at")
 
   @@index([startedAt(sort: Desc), id(sort: Desc)])
+  @@index([collectorEmployeeId, startedAt(sort: Desc)])
+  @@index([pinganUserId])
   @@map("pingan_collection_runs")
 }
 

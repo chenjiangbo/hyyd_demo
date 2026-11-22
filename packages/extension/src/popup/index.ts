@@ -113,11 +113,12 @@ async function refreshPinganStatus(): Promise<void> {
     : '';
   const label = $('pingan-collection-status');
   label.textContent = `${stateText[status.state] ?? '状态未知'}${current}`;
-  label.title = status.lastError || '';
+  label.title = status.lastError || status.backendError || '';
   $('pingan-collection-counts').textContent =
     `订单 ${status.listCount ?? 0} · 详情 ${status.detailCount ?? 0} · 解密字段 ${status.decryptedFieldCount ?? 0} · 附件 ${status.attachmentCount ?? 0} · 错误 ${status.errorCount ?? 0}`;
-  const backendStatus = status.backendAccountState === 'registered' ? '后台已登记'
-    : status.backendAccountState === 'offline' ? '后台暂不可用' : '';
+  if (status.pinganUserId) label.textContent += ` · 平安 ID ${status.pinganUserId}`;
+  const backendStatus = status.backendAccountState === 'registered' ? '后台已关联员工'
+    : status.backendAccountState === 'offline' ? status.backendError || '暂未同步后台' : '';
   if (backendStatus) label.textContent += ` · ${backendStatus}`;
 }
 
