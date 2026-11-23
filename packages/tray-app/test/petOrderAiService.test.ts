@@ -6,6 +6,57 @@ import { PetOrderAiService, type PetOrderAiPanel } from '../src/main/pet-order-a
 
 const origin = 'chrome-extension://akaojickfipoeobmiokkdbdaimeifmoa'
 
+test('平安精灵使用 ABI 值优先，未匹配名称参与建档核对', async () => {
+  const order = { sourceOrderNo: 'PA-001', channel: '', channelService: '', orderAmount: '', hospital: '', hospitalAddress: '', department: '', doctor: '', orderStatus: '待预约', escortSummary: '' }
+  const medical = { hospital: { id: '0001', name: '标准医院' }, address: { id: '000101', name: '标准地址' }, department: { id: null, name: '感染科' }, doctor: { id: null, name: '平安医生' } }
+  let submitted: any
+  const backend = createServer((req, res) => {
+    res.setHeader('Content-Type', 'application/json')
+    if (req.url?.startsWith('/api/v1/pet/order-current')) return void res.end(JSON.stringify({ data: { order, escorts: [], pinganMedical: medical } }))
+    if (req.url?.startsWith('/api/v1/pet/order-ai-fields')) return void res.end(JSON.stringify({ data: { fields: { hospital: '泰康候选' }, intention: {} } }))
+    if (req.url === '/api/v1/pet/huanyu-order-update') {
+      let body = ''
+      req.on('data', chunk => { body += chunk })
+      req.on('end', () => { submitted = JSON.parse(body); res.end(JSON.stringify({ ok: true, escortIds: [] })) })
+      return
+    }
+    res.end(JSON.stringify({ data: [] }))
+  })
+  await new Promise<void>(resolve => backend.listen(0, '127.0.0.1', resolve))
+  const panels: PetOrderAiPanel[] = []
+  const service = new PetOrderAiService(p => panels.push(p), (_id, p) => panels.push(p), () => {}, 43198)
+  service.setConfig({ backendUrl: `http://127.0.0.1:${(backend.address() as { port: number }).port}`, employeeCode: 'TEST' })
+  service.start()
+  const token = randomUUID()
+  try {
+    await fetch('http://127.0.0.1:43198/pet/order-page', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ event: 'open', token, tabId: 1, orderNo: 'HYYD000001', formOrderNo: 'HYYD000001' }) })
+    await waitFor(() => panels.some(p => p.kind === 'form'))
+    const panel = panels.filter(p => p.kind === 'form').at(-1)!
+    const field = (id: string) => panel.fields?.find(f => f.id === id)
+    assert.equal(field('hospital')?.value, '0001')
+    assert.equal(field('hospitalAddress')?.value, '000101')
+    assert.equal(field('department')?.value, '感染科')
+    assert.equal(field('doctor')?.value, '平安医生')
+    assert.equal(field('doctor')?.hint, undefined)
+    await service.handlePanelAction(`order-ai:${token}`, 'one-click-fill', Object.fromEntries((panel.fields ?? []).map(f => [f.id, f.value])))
+    assert.equal(submitted.fields.hospital, '0001')
+    assert.equal(submitted.fields.department, '感染科')
+    assert.equal(submitted.fields.doctor, '平安医生')
+    assert.equal(submitted.expectedOrder.hospital, '')
+  } finally { service.stop(); await new Promise<void>(resolve => backend.close(() => resolve())) }
+})
+
+test('平安精灵不在 ABI 已选其他医院时补入原匹配科室', async () => {
+  const { pinganMedicalFields } = await import('../src/main/pingan-medical-fields')
+  const item = (id: string | null, name: string) => ({ id, name })
+  const medical = { hospital: item('1', '原医院'), address: item('11', '原地址'), department: item('12', '原科室'), doctor: item('13', '原医生') }
+  const result = pinganMedicalFields({ hospital: '2', department: '已选科室' }, medical)
+  assert.equal(result.hospital.value, '2')
+  assert.equal(result.department.value, '已选科室')
+  assert.equal(result.hospitalAddress.value, '')
+  assert.equal(result.doctor.value, '')
+})
+
 test('订单值优先，意向写入后清除已保存字段标识', async () => {
   const order = { channel: '', channelService: '', orderAmount: '', hospital: '', department: '', orderStatus: '待跟进', escortSummary: '' }
   let submittedSummary: unknown

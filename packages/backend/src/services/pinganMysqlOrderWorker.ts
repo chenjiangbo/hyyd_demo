@@ -121,7 +121,7 @@ async function recognizePinganIdentity(prisma: PrismaClient, minio: Minio.Client
 async function processJob(prisma: PrismaClient, minio: Minio.Client, job: Job, leaseId: string) {
   const order = await prisma.pinganOrder.findUniqueOrThrow({
     where: { pinganUserId_orderId: { pinganUserId: job.pingan_user_id, orderId: job.order_id } },
-    select: { orderId: true, orderType: true, detailJson: true, decryptedFields: true, employee: { select: { token: true } } }
+    select: { orderId: true, orderType: true, detailJson: true, decryptedFields: true, employee: { select: { name: true } } }
   })
   if (job.state === 'pending') {
     const result = await syncPinganMainOrder(order, job.candidate_ddbh, {

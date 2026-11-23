@@ -67,6 +67,7 @@ export interface PetField {
   value: string | number | boolean
   placeholder?: string
   hint?: string
+  displayFallback?: string
   required?: boolean
   readOnly?: boolean
   options?: Array<{ value: string; label: string; price?: string }>
@@ -406,7 +407,7 @@ function Field({ field, panel, onFieldChange, onLookup }: {
   } else if (kind) {
     const selected = lookupOptions.find((option) => option.id === String(field.value) || option.name === String(field.value))
     control = <div className="pet-bubble__search-select">
-      <input {...common} title={panel.id.startsWith('order-ai:') ? (selected?.name ?? String(field.value)) || undefined : common.title} placeholder={`请选择或输入${field.label}`} ref={lookupInput} type="text" value={selected?.name ?? String(field.value)} onFocus={() => {
+      <input {...common} title={panel.id.startsWith('order-ai:') ? (selected?.name || String(field.value) || field.displayFallback) || undefined : common.title} placeholder={`请选择或输入${field.label}`} ref={lookupInput} type="text" value={selected?.name || String(field.value) || field.displayFallback || ''} onFocus={() => {
         positionLookup()
         setLookupOpen(true)
         const currentValue = String(field.value)

@@ -1,4 +1,5 @@
 import { createServer, type Server, type ServerResponse } from 'node:http'
+import { pinganMedicalFields, type PinganMedical } from './pingan-medical-fields'
 
 const PORT = 43186
 const EXTENSION_ORIGIN = 'chrome-extension://akaojickfipoeobmiokkdbdaimeifmoa'
@@ -23,7 +24,7 @@ export type PetOrderAiPanel = {
   text?: string
   title?: string
   description?: string
-  fields?: Array<{ id: string; label: string; type: 'text' | 'textarea' | 'date' | 'datetime-local' | 'select' | 'checkbox' | 'number'; value: string; placeholder: string; options?: Array<{ value: string; label: string; price?: string }>; copyable?: boolean; readOnly?: boolean; suggestion?: string; aiPrefill?: boolean; hint?: string; originalPhone?: string }>
+  fields?: Array<{ id: string; label: string; type: 'text' | 'textarea' | 'date' | 'datetime-local' | 'select' | 'checkbox' | 'number'; value: string; placeholder: string; options?: Array<{ value: string; label: string; price?: string }>; copyable?: boolean; readOnly?: boolean; suggestion?: string; aiPrefill?: boolean; hint?: string; displayFallback?: string; originalPhone?: string }>
   originalService?: string
   originalAmount?: string
   originalStatus?: string
@@ -504,12 +505,14 @@ export class PetOrderAiService {
       if (this.active?.token !== token || this.active.invalidated || this.active.formOrderNo !== orderNo) return
       const values = payload.data?.fields ?? {}
       const currentResponse = await fetch(`${config.backendUrl}/api/v1/pet/order-current?orderNo=${encodeURIComponent(orderNo)}`, { headers: { 'X-Employee-Code': config.employeeCode }, signal: AbortSignal.timeout(10_000) })
-      const currentPayload = await currentResponse.json() as { data?: { order: Record<string, string>; escorts: Array<{ id: string; escortName: string; escortPhone: string; serviceDate: string }> }; error?: string }
+      const currentPayload = await currentResponse.json() as { data?: { order: Record<string, string>; escorts: Array<{ id: string; escortName: string; escortPhone: string; serviceDate: string }>; pinganMedical?: PinganMedical | null }; error?: string }
       if (!currentResponse.ok || !currentPayload.data) throw new Error(currentPayload.error || '读取订单当前值失败')
       if (this.active?.token !== token || this.active.invalidated || this.active.formOrderNo !== orderNo) return
       this.currentSnapshot = currentPayload.data
       this.escortIdsByIndex = Object.fromEntries(currentPayload.data.escorts.map((record, index) => [String(index + 1), record.id]))
       const current = currentPayload.data.order
+      const pinganMedical = currentPayload.data.pinganMedical
+      const pinganFields = pinganMedical ? pinganMedicalFields(current, pinganMedical) : null
       const productParams = new URLSearchParams({ channelId: current.channel, currentId: current.channelService })
       const productResponse = await fetch(`${config.backendUrl}/api/v1/dictionaries/huanyu/channel-products?${productParams}`, { headers: { 'X-Employee-Code': config.employeeCode }, signal: AbortSignal.timeout(8_000) })
       if (!productResponse.ok) throw new Error('服务项目读取失败')
@@ -599,7 +602,7 @@ export class PetOrderAiService {
         { id: 'amountChanged', label: '金额修改', type: 'checkbox' as const, value: 'false', placeholder: '金额修改', readOnly: cancelled },
         ...HOSPITAL_FIELDS.map(([id, label]) => ({
           id, label, type: 'text' as const,
-          ...(['hospital', 'department', 'doctor'].includes(id)
+          ...(pinganFields ? pinganFields[id] : ['hospital', 'department', 'doctor'].includes(id)
             ? (current[id] ?? '').trim()
               ? merged(current[id], values[hospitalCode(id)] ?? '', resolvedNames[id] ?? '')
               : (values[hospitalCode(id)] ?? '').trim()

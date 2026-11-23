@@ -1,9 +1,38 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { pinganIdentityCandidates, pinganIdentityMask, pinganProductName, syncPinganMainOrder } from './pinganMysqlMainOrder.js'
+import { isPinganDoctorFullName, originalMedicalInfo, pinganDoctorName, pinganMedicalSource } from './pinganMedicalMatching.js'
 
 const candidate = 'HYYD2026112000000001'
 const identity = '11010519491231002X'
+
+test('uses requested medical fields and preserves unmatched names', () => {
+  const source = pinganMedicalSource({ orderInfo: { reqHospitalName: '需求医院', realHospitalName: '实际医院', reqHospitalAddress: '需求地址', reqDepName: '需求科室', reqDocName: '需求医生', note: '其他医院' } })
+  assert.deepEqual(source, { hospital: '需求医院', address: '需求地址', department: '需求科室', doctor: '需求医生', province: '', city: '' })
+  assert.deepEqual(originalMedicalInfo(source), { hospital: { id: null, name: '需求医院' }, address: { id: null, name: '需求地址' }, department: { id: null, name: '需求科室' }, doctor: { id: null, name: '' } })
+})
+
+test('uses the requested doctor for VIP registration and attending doctor for inpatient orders', () => {
+  const detail = { orderInfo: { reqDocName: '挂号医生', attendingDoc: '开单医生', responseDoc: '反馈医生' } }
+  assert.equal(pinganMedicalSource(detail, 'ORDINARY_REGISTER').doctor, '挂号医生')
+  assert.equal(pinganMedicalSource(detail, 'HOSPITALIZE_DOMESTIC').doctor, '开单医生')
+})
+
+test('does not treat generic doctor categories as a named doctor', () => {
+  for (const value of ['专家', ' 专家号 ', '知名专家', '主任医师', '不限']) assert.equal(pinganDoctorName(value), '')
+  assert.equal(pinganDoctorName('王小辉'), '王小辉')
+  assert.equal(pinganMedicalSource({ orderInfo: { reqDocName: '专家' } }, 'ORDINARY_REGISTER').doctor, '')
+})
+
+test('only allows a doctor name after explicit AI classification', async () => {
+  const yes = async () => ({ content: '{"isFullName":true}', model: 'test' })
+  const no = async () => ({ content: '{"isFullName":false}', model: 'test' })
+  const invalid = async () => ({ content: '{"isFullName":"true"}', model: 'test' })
+  assert.equal(await isPinganDoctorFullName('王小辉', yes), true)
+  assert.equal(await isPinganDoctorFullName('当地三甲专家', no), false)
+  assert.equal(await isPinganDoctorFullName('专家', yes), false)
+  await assert.rejects(isPinganDoctorFullName('张主任', invalid))
+})
 
 function order(orderType = 'HOSPITALIZE_DOMESTIC', decryptedIdentity = identity) {
   return {
@@ -27,7 +56,7 @@ function order(orderType = 'HOSPITALIZE_DOMESTIC', decryptedIdentity = identity)
       contactName: '测试就诊人',
       contactTel: '13000000000'
     },
-    employee: { token: 'handler-login' }
+    employee: { name: '测试处理人' }
   }
 }
 
@@ -59,17 +88,17 @@ test('matches the exact PingAn card variants and contract product CODE', () => {
   assert.equal(pinganProductName('ORDINARY_REGISTER', { goodsCode: 'UNKNOWN' }), null)
 })
 
-test('creates the PingAn main order with the handler login, dictionary price and verified full ID', async () => {
+test('creates the PingAn main order with the handler name, booking status, dictionary price and verified full ID', async () => {
   const { deps, inserted, productQueries, lookups } = harness()
   assert.deepEqual(await syncPinganMainOrder(order(), candidate, deps), {
     state: 'created', huanyuOrderNo: candidate, needsIdentity: false
   })
   assert.deepEqual(lookups, ['test-pingan-order'])
   assert.deepEqual(productQueries, [['0070', '寿险全国住院T+10']])
-  assert.deepEqual(Object.fromEntries(['DDBH', 'BDQD_DDBH', 'BDQD', 'BDQD_FWXM', 'DDJE', 'KHJL', 'JZR_ZJHM', 'JZR_JSLXFS']
+  assert.deepEqual(Object.fromEntries(['DDBH', 'DD_state', 'BDQD_DDBH', 'BDQD', 'BDQD_FWXM', 'DDJE', 'KHJL', 'JZR_ZJHM', 'JZR_JSLXFS']
     .map(key => [key, inserted[0]?.[key]])), {
-    DDBH: candidate, BDQD_DDBH: 'test-pingan-order', BDQD: '0070', BDQD_FWXM: '0070004', DDJE: '7980.00',
-    KHJL: 'handler-login', JZR_ZJHM: identity, JZR_JSLXFS: null
+    DDBH: candidate, DD_state: '待预约', BDQD_DDBH: 'test-pingan-order', BDQD: '0070', BDQD_FWXM: '0070004', DDJE: '7980.00',
+    KHJL: '测试处理人', JZR_ZJHM: identity, JZR_JSLXFS: null
   })
 })
 

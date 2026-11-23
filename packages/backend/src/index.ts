@@ -31,6 +31,7 @@ import { saveOrderAttachments, saveOrderDetailBundle } from './orderDetail.js'
 import { saveTaikangFormEvent } from './taikangFormRecording.js'
 import { registerPinganIngestRoutes } from './pinganCollection.js'
 import { pinganMysqlOrderJobsAvailable, startPinganMysqlOrderWorker } from './services/pinganMysqlOrderWorker.js'
+import { startPinganMedicalMatching } from './services/pinganMedicalMatching.js'
 import { ensureOrderIdCardOcrTable, scheduleOrderIdCardOcr } from './services/orderIdCardOcr.js'
 import { ensureGreenPassIdCardJobs, runGreenPassIdCardOcr, startGreenPassIdCardRetries } from './services/greenPassIdCardOcr.js'
 import { initScheduler } from './asr/transcribeScheduler.js'
@@ -1115,6 +1116,11 @@ async function start() {
     if (pinganMysqlJobsEnabled) {
       const stopPinganMysqlOrderWorker = startPinganMysqlOrderWorker(prisma, minioClient, server.log)
       server.addHook('onClose', async () => { stopPinganMysqlOrderWorker() })
+    }
+    const [pinganMedicalColumn] = await prisma.$queryRaw<Array<{ available: boolean }>>`SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='pingan_orders' AND column_name='medical_info') AS available`
+    if (pinganMedicalColumn?.available) {
+      const stopPinganMedicalMatching = startPinganMedicalMatching(prisma, server.log)
+      server.addHook('onClose', async () => { stopPinganMedicalMatching() })
     }
     await server.listen({ port, host })
     server.log.info(`寰宇医道后端服务启动成功，运行在: http://${host}:${port}`)

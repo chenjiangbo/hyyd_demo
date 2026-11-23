@@ -68,6 +68,7 @@ import { analyzeRegistrationProof, matchNativeRegistrationProofToOrders } from '
 import { understandImage } from '../services/imageUnderstanding.js'
 import { confirmPetImageOrder, dismissPetImage } from '../services/petImageConfirmation.js'
 import { getOrderAiAutomationConfig, isImageAiEnabled } from '../services/orderAiAutomationConfig.js'
+import { originalMedicalInfo, pinganMedicalSource } from '../services/pinganMedicalMatching.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { formatShanghaiDateTime, parseShanghaiDateTime, shanghaiDateKey } from '../time/shanghaiTime.js'
 import { isEmployeeAuthExemptPath } from '../employeeRequestAuth.js'
@@ -4255,7 +4256,22 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     try {
       const data = await readRemotePetOrder(orderNo)
       if (!data) return reply.status(404).send({ error: '远端订单不存在' })
-      return reply.send({ data })
+      const [column] = await prisma.$queryRaw<Array<{ available: boolean }>>`SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='pingan_orders' AND column_name='medical_info') AS available`
+      let pinganMedical: unknown = null
+      if (column?.available && data.order.sourceOrderNo) {
+        const matches = await prisma.$queryRaw<Array<{ medical_info: unknown; detail_json: unknown; order_type: string }>>`
+          SELECT CASE
+            WHEN p.medical_fingerprint=('v2:' || md5(p.detail_json::text)) AND p.medical_state='completed' THEN p.medical_info
+            WHEN p.medical_fingerprint IN (md5(p.detail_json::text), 'v2:' || md5(p.detail_json::text)) AND p.medical_info IS NOT NULL
+              THEN jsonb_set(p.medical_info, '{doctor}', '{"id":null,"name":""}'::jsonb)
+            ELSE NULL END AS medical_info,
+            p.detail_json, p.order_type FROM pingan_mysql_order_jobs j
+          JOIN pingan_orders p ON p.pingan_user_id=j.pingan_user_id AND p.order_id=j.order_id
+          WHERE j.huanyu_order_no=${orderNo} AND j.order_id=${data.order.sourceOrderNo} AND j.state IN ('created','skipped')
+          LIMIT 2`
+        if (matches.length === 1) pinganMedical = matches[0].medical_info ?? originalMedicalInfo(pinganMedicalSource(matches[0].detail_json, matches[0].order_type))
+      }
+      return reply.send({ data: { ...data, pinganMedical } })
     } catch (error) {
       request.log.error({ error }, '读取远端订单失败')
       return reply.status(503).send({ error: '读取远端订单失败，请稍后重试' })

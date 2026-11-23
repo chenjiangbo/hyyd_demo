@@ -66,7 +66,7 @@ export interface PinganMainOrderSource {
   orderType: string
   detailJson: unknown
   decryptedFields: unknown
-  employee: { token: string } | null
+  employee: { name: string } | null
 }
 
 interface MainOrderDependencies {
@@ -89,8 +89,8 @@ export async function syncPinganMainOrder(
   const person = pinganObject(order.decryptedFields)
   const patientName = text(person.patientName, 50)
   if (!info || !patientName) return { state: 'pending', failureCode: '等待平安订单详情或就诊人信息' }
-  const manager = text(order.employee?.token, 50)
-  if (!manager) return { state: 'pending', failureCode: '平安处理人没有对应的寰宇员工登录名' }
+  const manager = text(order.employee?.name, 50)
+  if (!manager) return { state: 'pending', failureCode: '平安处理人没有对应的寰宇员工姓名' }
   const channelId = await deps.channelId()
   if (!channelId) return { state: 'pending', failureCode: '平安好医生 B 端渠道未配置或已停用' }
   // A retry can find the exact DDBH reserved before the previous INSERT. Only that row belongs to this job.
@@ -114,7 +114,7 @@ export async function syncPinganMainOrder(
     ? info.patientAge : null
   await deps.insert({
     DDBH: candidateDdbh,
-    DD_state: '待跟进',
+    DD_state: '待预约',
     BDQD: channelId,
     BDQD_DDBH: order.orderId,
     BDQD_FWXM: product.id,
