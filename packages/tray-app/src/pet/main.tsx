@@ -363,17 +363,17 @@ export function Pet(): React.JSX.Element {
 
   const changeBusinessField = (fieldId: string, value: string, selectedOption?: PetLookupOption): void => {
     if (businessPanel?.kind === 'form' && businessPanel.submitState === 'submitting') return
-    if (fieldId.startsWith('__escort_suggestion:')) {
-      const suggestionIndex = fieldId.slice('__escort_suggestion:'.length)
-      if (!/^\d+$/.test(suggestionIndex) || !value) return
-      if (businessPanel?.kind !== 'form' || !businessPanel.sections) return
-      const sourceValue = (key: string) => String(businessPanel.fields.find((field) => field.id === `unmatched-ai-${suggestionIndex}-${key}`)?.value ?? '')
     if (fieldId === 'hospital' || fieldId === 'doctor' || fieldId === 'department' || fieldId === '__hospital_suggestion_group' || fieldId.startsWith('__hospital_suggestion:')) {
       const id = businessPanel?.kind === 'form' ? businessPanel.id : ''
       if (specialPriceEdited.current.panelId !== id) specialPriceEdited.current = { panelId: id, fields: new Set() }
       if (fieldId === '__hospital_suggestion_group') { specialPriceEdited.current.fields.add('hospital'); specialPriceEdited.current.fields.add('department'); specialPriceEdited.current.fields.add('doctor') }
       else specialPriceEdited.current.fields.add(fieldId.replace('__hospital_suggestion:', ''))
     }
+    if (fieldId.startsWith('__escort_suggestion:')) {
+      const suggestionIndex = fieldId.slice('__escort_suggestion:'.length)
+      if (!/^\d+$/.test(suggestionIndex) || !value) return
+      if (businessPanel?.kind !== 'form' || !businessPanel.sections) return
+      const sourceValue = (key: string) => String(businessPanel.fields.find((field) => field.id === `unmatched-ai-${suggestionIndex}-${key}`)?.value ?? '')
       const suggestedName = sourceValue('name').trim()
       const suggestedPhone = sourceValue('phone')
       const nextIndex = value === 'new' ? Math.max(escortIndexCounter.current.value, ...businessPanel.sections.map((section) => Number(section.id.match(/^escort-(\d+)$/)?.[1] ?? 0))) + 1 : 0
@@ -476,13 +476,13 @@ export function Pet(): React.JSX.Element {
       resetFields = fieldId === 'hospital' ? ['hospitalAddress', 'department', 'doctor'] : ['doctor']
       delete committedLookupSelections.current[fieldId]
     }
+    for (const resetField of resetFields) specialPriceEdited.current.fields.add(resetField)
     setBusinessPanel((current) => {
       if (current?.kind !== 'form') return current
       const reset = new Set(resetFields)
       const nameChanged = escortName && value !== String(current.fields.find((field) => field.id === fieldId)?.value ?? '')
       const currentRequest = current.fields.find((field) => field.id === 'requestTime')?.value
       const currentResponse = current.fields.find((field) => field.id === 'responseTime')?.value
-    for (const resetField of resetFields) specialPriceEdited.current.fields.add(resetField)
       const mirrorResponse = fieldId === 'requestTime' && (!currentResponse || currentResponse === currentRequest)
       const previousStatus = String(current.fields.find((field) => field.id === 'orderStatus')?.value ?? '')
       const serviceField = current.fields.find((field) => field.id === 'channelService')
@@ -505,12 +505,6 @@ export function Pet(): React.JSX.Element {
     })
   }
 
-  const lookupOrderDictionary = useCallback(async (kind: import('./PetBubble').PetLookupKind, query: string, parent: { hospitalId?: string; departmentId?: string; currentId?: string }): Promise<import('./PetBubble').PetLookupOption[]> => {
-    const records = (value: unknown): Array<{ id: string; name: string; phone?: string }> => Array.isArray(value) ? value.flatMap((item) => {
-      if (!item || typeof item !== 'object') return []
-      const option = item as Record<string, unknown>
-      if (typeof option.id !== 'string' && typeof option.id !== 'number') return []
-      const id = String(option.id)
   const pricePanel = businessPanel?.kind === 'form' && businessPanel.id.startsWith('order-ai:') ? businessPanel : null
   const pricePanelId = pricePanel?.id ?? ''
   const priceField = (id: string): string => String(pricePanel?.fields.find((field) => field.id === id)?.value ?? '')
@@ -558,6 +552,12 @@ export function Pet(): React.JSX.Element {
     return () => { active = false; if (timer) window.clearTimeout(timer) }
   }, [pricePanelId, priceOrderNo, priceHospital, priceDoctor, priceProduct, fallbackHospital, fallbackDoctor, specialIntent])
 
+  const lookupOrderDictionary = useCallback(async (kind: import('./PetBubble').PetLookupKind, query: string, parent: { hospitalId?: string; departmentId?: string; currentId?: string }): Promise<import('./PetBubble').PetLookupOption[]> => {
+    const records = (value: unknown): Array<{ id: string; name: string; phone?: string }> => Array.isArray(value) ? value.flatMap((item) => {
+      if (!item || typeof item !== 'object') return []
+      const option = item as Record<string, unknown>
+      if (typeof option.id !== 'string' && typeof option.id !== 'number') return []
+      const id = String(option.id)
       const name = typeof option.name === 'string' ? option.name : id
       const phone = typeof option.phone === 'string' ? option.phone : undefined
       return [{ id, name, phone }]
