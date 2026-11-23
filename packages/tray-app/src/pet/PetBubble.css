@@ -189,7 +189,7 @@
 .pet-bubble__time-wheels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 8px 0; }
 .pet-bubble__time-wheel { min-width: 0; text-align: center; }
 .pet-bubble__time-wheel > span { display: block; margin-bottom: 3px; color: #9b766a; }
-.pet-bubble__time-wheel > div { position: relative; height: 140px; overflow-y: auto; padding: 56px 2px; box-sizing: border-box; border: 1px solid #f0d9c9; border-radius: 7px; background: linear-gradient(to bottom, #fffdf9, #fff7f0); scroll-snap-type: y mandatory; scrollbar-width: thin; overscroll-behavior: contain; }
+.pet-bubble__time-wheel > div { position: relative; height: 140px; overflow-y: auto; padding: 56px 2px; box-sizing: border-box; border: 1px solid #f0d9c9; border-radius: 7px; background: linear-gradient(to bottom, #fffdf9, #fff7f0); scroll-snap-type: y mandatory; scroll-padding-top: 56px; scrollbar-width: thin; overscroll-behavior: contain; }
 .pet-bubble__time-wheel > div > i { display: block; height: 0; }
 .pet-bubble__time-wheel > div > button { display: block; box-sizing: border-box; width: 100%; height: 28px; padding: 0; border: 0; border-radius: 4px; color: #623327; background: transparent; font: inherit; scroll-snap-align: start; }
 .pet-bubble__time-wheel > div > button:hover { background: #fff1e7; }
