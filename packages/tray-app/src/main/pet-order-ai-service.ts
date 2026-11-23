@@ -1,4 +1,4 @@
-import { createServer, type Server } from 'node:http'
+import { createServer, type Server, type ServerResponse } from 'node:http'
 
 const PORT = 43186
 const EXTENSION_ORIGIN = 'chrome-extension://akaojickfipoeobmiokkdbdaimeifmoa'
@@ -46,6 +46,17 @@ export class PetOrderAiService {
   private escortIdsByIndex: Record<string, string> = {}
   private leaseTimer: ReturnType<typeof setInterval> | null = null
   private suspendTimer: ReturnType<typeof setTimeout> | null = null
+  private refreshWaiters = new Map<string, ServerResponse>()
+
+  private notifyRefresh(active: Active): void {
+    const response = this.refreshWaiters.get(active.token)
+    if (!response || !active.refreshPending || active.invalidated || active.formOrderNo !== active.orderNo) return
+    this.refreshWaiters.delete(active.token)
+    active.refreshPending = false
+    const needResetMasterData = active.needResetMasterData
+    active.needResetMasterData = false
+    response.end(JSON.stringify({ refresh: true, needResetMasterData }))
+  }
 
   constructor(
     private readonly showPanel: (panel: PetOrderAiPanel) => void,
@@ -109,13 +120,30 @@ export class PetOrderAiService {
       request.on('end', () => {
         try {
           const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
-          if ((body.event !== 'open' && body.event !== 'close' && body.event !== 'suspend' && body.event !== 'refresh-failed' && body.event !== 'refresh-complete') ||
+          if ((body.event !== 'open' && body.event !== 'close' && body.event !== 'suspend' && body.event !== 'refresh-failed' && body.event !== 'refresh-complete' && body.event !== 'wait-refresh') ||
               typeof body.token !== 'string' || !/^[a-f0-9-]{36}$/.test(body.token) ||
               typeof body.tabId !== 'number' || !Number.isInteger(body.tabId) || body.tabId < 0 ||
               typeof body.orderNo !== 'string' || !/^[A-Za-z0-9-]{6,64}$/.test(body.orderNo) ||
               (body.formOrderNo !== null && body.formOrderNo !== undefined &&
                 (typeof body.formOrderNo !== 'string' || !/^[A-Za-z0-9-]{6,64}$/.test(body.formOrderNo)))) {
             response.writeHead(400).end()
+            return
+          }
+          if (body.event === 'wait-refresh') {
+            const active = this.active
+            if (!active || active.token !== body.token || active.tabId !== body.tabId || active.orderNo !== body.orderNo || active.invalidated || active.formOrderNo !== active.orderNo) {
+              response.writeHead(409).end()
+              return
+            }
+            response.setHeader('Content-Type', 'application/json; charset=utf-8')
+            this.refreshWaiters.get(active.token)?.end(JSON.stringify({ refresh: false }))
+            this.refreshWaiters.set(active.token, response)
+            const timer = setTimeout(() => response.end(JSON.stringify({ refresh: false })), 20_000)
+            response.on('close', () => {
+              clearTimeout(timer)
+              if (this.refreshWaiters.get(active.token) === response) this.refreshWaiters.delete(active.token)
+            })
+            this.notifyRefresh(active)
             return
           }
           if ((body.event === 'refresh-failed' || body.event === 'refresh-complete') && this.currentSnapshot && this.active?.token === body.token && this.active.orderNo === body.orderNo && this.active.tabId === body.tabId && this.currentPanel?.kind === 'form') {
@@ -159,6 +187,14 @@ export class PetOrderAiService {
   async dictionary(kind: string, query = '', parent: { hospitalId?: string; departmentId?: string; currentId?: string } = {}): Promise<unknown> {
     const config = this.config
     if (!config) throw new Error('请先登录寰宇智能助手')
+    if (kind === 'special-price') {
+      const input = JSON.parse(query) as Record<string, string>
+      const params = new URLSearchParams(input)
+      const response = await fetch(`${config.backendUrl}/api/v1/pet/special-price?${params}`, { headers: { 'X-Employee-Code': config.employeeCode }, signal: AbortSignal.timeout(10000) })
+      const payload = await response.json() as { data?: unknown; error?: string }
+      if (!response.ok) throw new Error(payload.error || '特殊报价查询失败')
+      return payload.data
+    }
     const paths: Record<string, string> = {
       status: '/api/v1/dictionaries/huanyu/order-statuses',
       bd: '/api/v1/dictionaries/huanyu/bd-users',
@@ -187,14 +223,6 @@ export class PetOrderAiService {
     const active = this.active
     if (!active || panelId !== `order-ai:${active.token}` || this.currentPanel?.kind !== 'form') return
     if (this.currentPanel.submitState === 'submitting') return
-    if (kind === 'special-price') {
-      const input = JSON.parse(query) as Record<string, string>
-      const params = new URLSearchParams(input)
-      const response = await fetch(`${config.backendUrl}/api/v1/pet/special-price?${params}`, { headers: { 'X-Employee-Code': config.employeeCode }, signal: AbortSignal.timeout(10000) })
-      const payload = await response.json() as { data?: unknown; error?: string }
-      if (!response.ok) throw new Error(payload.error || '特殊报价查询失败')
-      return payload.data
-    }
     if (actionId === 'cancel-master-create') {
       for (const item of this.currentPanel.confirmation?.review ?? []) {
         this.masterDraft[item.key] = Object.fromEntries(item.fields.map((field) => [field.id, typeof values[`master:${item.key}:${field.id}`] === 'string' ? values[`master:${item.key}:${field.id}`] as string : field.value]))
@@ -222,6 +250,13 @@ export class PetOrderAiService {
         actions: [{ id: 'one-click-fill', label: '一键填单', tone: 'primary' }] }
       this.updatePanel(panelId, this.currentPanel)
       return
+    }
+    if (fields.orderStatus === '已取消') {
+      for (const index of escortIndexes) {
+        fields[`escort-${index}-date`] = ''
+        fields[`escort-${index}-name`] = ''
+        fields[`escort-${index}-phone`] = ''
+      }
     }
     const addressChanged = actionId === 'confirm-master-create' && (fields.hospitalAddress ?? '') !== (this.currentPanel.confirmation?.originalAddress ?? '')
     // 陪诊行可在渲染界面增删，提交时同步完整行结构，后续状态更新不能丢掉新增行。
@@ -331,6 +366,7 @@ export class PetOrderAiService {
           submitMessage: '填单完成，正在刷新页面…',
           actions: [{ id: 'one-click-fill', label: '一键填单', tone: 'primary', loading: true }] }
         const pendingPanel = this.currentPanel
+        this.notifyRefresh(active)
         const refreshTimer = setTimeout(() => {
           if (this.active !== active || this.currentPanel !== pendingPanel) return
           active.refreshPending = false
@@ -354,6 +390,8 @@ export class PetOrderAiService {
   stop(): void {
     if (this.leaseTimer) clearInterval(this.leaseTimer)
     this.leaseTimer = null
+    for (const response of this.refreshWaiters.values()) response.end(JSON.stringify({ refresh: false }))
+    this.refreshWaiters.clear()
     this.server?.close()
     this.server = null
     if (this.active) this.close(this.active.token)
@@ -454,6 +492,7 @@ export class PetOrderAiService {
         data?: {
           fields?: Record<string, string>
           intention?: Record<string, string>
+          intentPending?: boolean
           documentNo?: string
           groupName?: string
           documentNoStatus?: 'ok' | 'not_found' | 'unavailable'
@@ -491,7 +530,6 @@ export class PetOrderAiService {
       }))) as Record<string, string>
       if (this.active?.token !== token || this.active.invalidated || this.active.formOrderNo !== orderNo) return
       const escortRecords = currentPayload.data.escorts.map((record) => ({ serviceDate: record.serviceDate, escortName: record.escortName, escortPhone: record.escortPhone }))
-          intentPending?: boolean
       if (escortRecords.length === 0) escortRecords.push(...(payload.data?.escortRecords ?? []).map((record) => ({ serviceDate: record.serviceDate ?? '', escortName: record.escortName ?? '', escortPhone: record.escortPhone ?? '' })))
       if (escortRecords.length === 0) escortRecords.push({
         serviceDate: '',
@@ -596,6 +634,7 @@ export class PetOrderAiService {
         kind: 'form', id, title: '',
         description: '以下为订单的部分字段及 AI 建议值，核对或修改后可一键填单。',
         fields, originalService: current.channelService, originalAmount: current.orderAmount, originalStatus: current.orderStatus, isStrickenCase: current.isStrickenCase === '1',
+        specialPriceFallback: { hospital: (values.hospital ?? '').trim() || intention.hospital || '', doctor: (values.doctor ?? '').trim() || intention.doctor || '', pending: Boolean(payload.data?.intentPending) },
         sections: [
           { id: 'order-info', title: '订单基本信息', fieldIds: ['sourceOrderNo', 'documentNo', 'groupName', 'orderNo', 'orderStatus', 'channelService', 'orderAmount', 'amountChanged', 'bookingChannelType', 'bd'] },
           { id: 'hospital-info', title: '医院信息', fieldIds: ['hospital', 'hospitalAddress', 'department', 'doctor'] },
@@ -622,4 +661,3 @@ export class PetOrderAiService {
     }
   }
 }
-        specialPriceFallback: { hospital: (values.hospital ?? '').trim() || intention.hospital || '', doctor: (values.doctor ?? '').trim() || intention.doctor || '', pending: Boolean(payload.data?.intentPending) },

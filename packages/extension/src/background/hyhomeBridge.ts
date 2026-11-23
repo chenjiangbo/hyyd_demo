@@ -5,6 +5,7 @@ type Session = { token: string; orderNo: string; channelOrderNo: string; formOrd
 const sessions = new Map<number, Session>()
 const focusStates = new Map<number, boolean>()
 const pendingCalculations = new Map<number, { values: Record<string, string>; at: number }>()
+const refreshListeners = new Map<number, string>()
 const BRIDGE_URL = 'http://127.0.0.1:43186/pet/order-page'
 const calculationKeys = ['taskid', '_srcrptid', '_srccell', '_srcgridid', 'iscondition', 'hiddencalcparams', 'drillpath', 'bi_calc_dont_save_result', '@DDBH1', '@tk', 'hiddendrillpath', 'rptid']
 
@@ -79,16 +80,18 @@ async function syncWindowPanels(windowId?: number): Promise<void> {
   }
 }
 
-async function post(event: 'open' | 'close' | 'suspend' | 'refresh-failed' | 'refresh-complete', tabId: number, session: Session): Promise<void> {
+async function post(event: 'open' | 'close' | 'suspend' | 'refresh-failed' | 'refresh-complete' | 'wait-refresh', tabId: number, session: Session): Promise<void> {
   try {
     const response = await fetch(BRIDGE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ event, tabId, token: session.token, orderNo: session.orderNo, formOrderNo: session.formOrderNo, channelOrderNo: session.channelOrderNo }),
-      signal: AbortSignal.timeout(2_000)
+      signal: AbortSignal.timeout(event === 'wait-refresh' ? 25_000 : 2_000)
     })
     const payload = response.ok ? await response.json().catch(() => null) as { refresh?: boolean; needResetMasterData?: boolean } | null : null
-    if (event === 'open' && payload?.refresh && session.frameId !== null) {
+    if ((event === 'open' || event === 'wait-refresh') && payload?.refresh && session.frameId !== null) {
+      const latest = await getSession(tabId)
+      if (!latest || latest.token !== session.token || !latest.detail || latest.frameId !== session.frameId || latest.formOrderNo !== latest.orderNo) return
       console.info('[寰宇订单刷新] 客户端请求刷新')
       if (payload.needResetMasterData === true) {
         console.info('[寰宇订单刷新] 本次新建档案，准备触发重置维表按钮')
@@ -121,6 +124,22 @@ async function post(event: 'open' | 'close' | 'suspend' | 'refresh-failed' | 're
     if (event === 'open' && session.refreshingUntil) console.warn('[寰宇订单刷新] 发送刷新指令失败', error)
     // 精灵未启动时，下一个详情心跳会再次发送；页面检测不依赖本机服务在线。
   }
+}
+
+function listenForRefresh(tabId: number, session: Session): void {
+  if (refreshListeners.get(tabId) === session.token) return
+  refreshListeners.set(tabId, session.token)
+  void (async () => {
+    while (refreshListeners.get(tabId) === session.token) {
+      const latest = await getSession(tabId)
+      if (!latest || latest.token !== session.token || !latest.detail) break
+      const started = Date.now()
+      await post('wait-refresh', tabId, latest)
+      // 本机服务未运行或会话已失效时避免频繁重试。
+      if (Date.now() - started < 1000) await new Promise((resolve) => setTimeout(resolve, 5000))
+    }
+    if (refreshListeners.get(tabId) === session.token) refreshListeners.delete(tabId)
+  })()
 }
 
 async function forget(tabId: number, expectedDocumentId?: string): Promise<void> {
@@ -231,6 +250,16 @@ export async function handleHyhomePageEvent(message: unknown, sender: chrome.run
       console.info('[寰宇订单刷新] 详情页已补充匹配的计算参数')
     }
     const refreshing = Boolean(session.refreshingUntil && session.refreshingUntil > Date.now())
+    const sameDocument = session.documentId && sender.documentId
+      ? session.documentId === sender.documentId
+      : Boolean(session.detailUrl && session.detailUrl === sender.url && session.frameId === sender.frameId)
+    if (refreshing && sameDocument) {
+      // 旧页面在报表计算期间仍会发送心跳，不能将它当作新页面加载完成。
+      if (sender.tab.active && event.formOrderNo === session.orderNo) {
+        await post(await tabWindowVisible(sender.tab) ? 'open' : 'suspend', tabId, session)
+      }
+      return
+    }
     if (session.detailUrl && session.detailUrl !== sender.url && !refreshing) return
     if (refreshing && !event.formOrderNo) return
     if (refreshing) session.refreshingUntil = undefined
@@ -243,6 +272,7 @@ export async function handleHyhomePageEvent(message: unknown, sender: chrome.run
     await remember(tabId, session)
     if (refreshing && session.formOrderNo === session.orderNo) { console.info('[寰宇订单刷新] 新报表已加载并核对订单'); await post('refresh-complete', tabId, session) }
     if (sender.tab.active) await post(await tabWindowVisible(sender.tab) ? 'open' : 'suspend', tabId, session)
+    listenForRefresh(tabId, session)
   } else if (event.kind === 'list') {
     await closeDetail(tabId)
   } else if (event.kind === 'leave') {

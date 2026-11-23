@@ -4119,8 +4119,6 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     })) })
   })
 
-  // 浮动精灵按列表中的寰宇订单号取最新 AI 候选；仅展示和编辑，不在这里保存或回填。
-  fastify.get<{ Querystring: { orderNo?: string } }>('/api/v1/pet/order-ai-fields', async (request, reply) => {
   fastify.get<{ Querystring: { orderNo?: string; hospital?: string; doctor?: string; product?: string } }>('/api/v1/pet/special-price', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
     const orderNo = String(request.query.orderNo ?? '').trim()
@@ -4148,6 +4146,8 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     }
   })
 
+  // 浮动精灵按列表中的寰宇订单号取最新 AI 候选；仅展示和编辑，不在这里保存或回填。
+  fastify.get<{ Querystring: { orderNo?: string } }>('/api/v1/pet/order-ai-fields', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录' })
     const orderNo = String(request.query.orderNo ?? '').trim()
     if (!/^[A-Za-z0-9-]{6,64}$/.test(orderNo)) return reply.status(400).send({ error: '订单号格式无效' })
@@ -4275,9 +4275,9 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       ? (fields.escortList as unknown[]).map((item: unknown, index: number) => {
         const record = item && typeof item === 'object' ? item as Record<string, unknown> : {}
         return {
-          id: cleanText(record.id), escortName: cleanText(record.escortName),
-          phone: cleanText(record.phone), expectedEscortId: cleanText(record.expectedEscortId), expectedPhone: cleanText(record.expectedPhone),
-          serviceDate: cleanText(record.serviceDate),
+          id: cleanText(record.id), escortName: cleanText(fields.orderStatus) === '已取消' ? '' : cleanText(record.escortName),
+          phone: cleanText(fields.orderStatus) === '已取消' ? '' : cleanText(record.phone), expectedEscortId: cleanText(record.expectedEscortId), expectedPhone: cleanText(record.expectedPhone),
+          serviceDate: cleanText(fields.orderStatus) === '已取消' ? '' : cleanText(record.serviceDate),
           sequence: cleanText(record.sequence) || String(index + 1)
         }
       }) : []
@@ -4316,7 +4316,8 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
       }
       const times = { requestTime: storageTime(fields.requestTime), responseTime: storageTime(fields.responseTime), serviceStartTime: storageTime(fields.serviceStartTime), bookingFeedbackTime: storageTime(fields.bookingFeedbackTime), latestTicketTime: storageTime(fields.latestTicketTime), escorts: escortList.map((item) => storageTime(item.serviceDate)) }
       if (financial) validatePetOrderFinancial(financial, cleanText(fields.orderStatus))
-      if (!await huanyuOrderExistsOnMysql(orderNo)) return reply.status(404).send({ ok: false, error: `远端寰宇订单 ${orderNo} 不存在` })
+      const hasExpectedOrder = Boolean(expectedEscorts && body.expectedOrder && typeof body.expectedOrder === 'object')
+      if (!hasExpectedOrder && !await huanyuOrderExistsOnMysql(orderNo)) return reply.status(404).send({ ok: false, error: `远端寰宇订单 ${orderNo} 不存在` })
       let serviceValidated = false
       if (financial && financial.service !== financial.originalService) {
         const product = await findHuanyuChannelProductById(financial.service)
@@ -4324,8 +4325,9 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
         serviceValidated = true
       }
       if (expectedEscorts && escortList.some((item) => /^\d+$/.test(item.escortName) && item.expectedEscortId !== item.escortName)) return reply.status(400).send({ ok: false, error: '请重新选择陪诊人员' })
-      if (expectedEscorts && body.expectedOrder && typeof body.expectedOrder === 'object') {
+      if (expectedEscorts && hasExpectedOrder) {
         const current = await readRemotePetOrder(orderNo)
+        if (!current) return reply.status(404).send({ ok: false, error: `远端寰宇订单 ${orderNo} 不存在` })
         const keys = ['orderStatus', ...(Object.hasOwn(fields, 'bookingChannelType') ? ['bookingChannelType', 'bd'] : []), 'channel', 'channelService', 'orderAmount', 'hospital', 'hospitalAddress', 'department', 'doctor', 'requestTime', 'responseTime', 'serviceStartTime', 'bookingFeedbackTime', 'latestTicketTime', ...(Object.hasOwn(fields, 'escortSummary') ? ['escortSummary'] : [])]
         const changed = !current || keys.some((key) => cleanText(current.order[key]) !== cleanText(body.expectedOrder[key]))
         const normalize = (items: Array<{ id: string; escortId: string; serviceDate: string }>) => JSON.stringify(items.map((item) => [item.id, item.escortId, item.serviceDate]).sort((a, b) => a[0].localeCompare(b[0])))
