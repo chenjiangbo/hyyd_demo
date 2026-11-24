@@ -2,6 +2,7 @@ import { getPinganApiBusinessCode, getPinganContentItem, isPinganOrderCompleted,
 import {
   PINGAN_ORDER_TYPES,
   PINGAN_POLL_INTERVAL_MS,
+  PINGAN_PAUSED_KEY,
   type PinganEvent,
   type PinganOrder,
   type PinganApiProbeEvent,
@@ -19,6 +20,11 @@ const SESSION_KEEPALIVE_INTERVAL_MS = 2 * 60 * 1000;
 const SESSION_KEEPALIVE_RETRY_MS = 30_000;
 const PINGAN_LAST_DETAIL_START_KEY = 'pinganLastOrderDetailGroupStartedAt';
 let activeRun: Promise<void> | null = null;
+let pinganCollectionPaused = true;
+class PinganCollectionPaused extends Error {}
+function assertPinganCollectionEnabled(): void {
+  if (pinganCollectionPaused) throw new PinganCollectionPaused('已暂停采集');
+}
 let loggedIn = false;
 let availableOrderTypes = new Set<string>();
 let loginTimer: ReturnType<typeof setTimeout> | null = null;
@@ -234,8 +240,21 @@ async function handleApiEvent(payload: PinganApiProbeEvent): Promise<void> {
 }
 
 async function runIfReady(): Promise<void> {
-  if (!loggedIn || !isOrderListPage() || activeRun) return;
+  if (pinganCollectionPaused || !loggedIn || !isOrderListPage() || activeRun) return;
   activeRun = runCollection().catch(async (error) => {
+    if (error instanceof PinganCollectionPaused) {
+      if (lastStatus?.runId) {
+        const pausedRun = {
+          id: lastStatus.runId, startedAt: lastStatus.startedAt, completedAt: new Date().toISOString(),
+          installDate: lastStatus.installDate, scanStartDate: lastStatus.scanStartDate,
+          scanEndDate: lastStatus.scanEndDate, state: 'partial_failure', error: '已暂停采集',
+        };
+        await runtimeMessage({ type: 'PINGAN_SAVE_RUN', run: pausedRun });
+        if (pinganBackendReady && pinganIdentity) await uploadPinganRun(pausedRun).catch(() => {});
+      }
+      await updateStatus({ state: 'partial_failure', lastError: '已暂停采集' });
+      return;
+    }
     const message = safeError(error);
     console.error(`${LOG} 本轮采集失败`, message);
     const failedType = PINGAN_ORDER_TYPES.find((item) => item.name === lastStatus?.currentType);
@@ -264,6 +283,7 @@ async function runIfReady(): Promise<void> {
     return updateStatus({ state: 'error', lastError: message, errorCount: (lastStatus?.errorCount ?? 0) + 1 });
   }).finally(() => {
     activeRun = null;
+    if (!pinganCollectionPaused && lastStatus?.lastError === '已暂停采集') void runIfReady();
   });
   await activeRun;
 }
@@ -342,6 +362,7 @@ async function runCollection(): Promise<void> {
   let errorCount = 0;
   let uniqueOrderCount = 0;
   for (const type of PINGAN_ORDER_TYPES) {
+    assertPinganCollectionEnabled();
     const typeOrderIds = new Set<string>();
     await updateStatus({ currentType: type.name, currentPage: 0, pageCount: 0 });
     await logEvent('info', 'query_started', `开始查询 ${type.name}，创建日期 ${scanStartDate} 至 ${scanEndDate}`, { orderType: type.code });
@@ -351,6 +372,7 @@ async function runCollection(): Promise<void> {
     let expectedPageCount = 0;
     let typeTotal = -1;
     while (true) {
+      assertPinganCollectionEnabled();
       const parsed = parseOrderListPage(listResponse.response, page);
       if (parsed.orders.some((order) => order.orderType !== type.code)) {
         throw new Error(`${type.name} 查询返回了其他订单类型`);
@@ -396,6 +418,7 @@ async function runCollection(): Promise<void> {
 
       const filteredStatuses = new Map<string, number>();
       for (const row of parsed.orders) {
+        assertPinganCollectionEnabled();
         typeOrderIds.add(row.orderId);
         if (!isPinganOrderStatusInScope(type.code, row.statusStr)) {
           const statusName = String(row.statusStr).trim();
@@ -602,6 +625,7 @@ async function runCollection(): Promise<void> {
         void logEvent('error', 'backend_page_upload_failed', safeError(error), { orderType: type.code, pageNum: page });
       });
       if (page >= expectedPageCount) break;
+      assertPinganCollectionEnabled();
       listResponse = await queryList(type.code, page + 1, scanStartDate, scanEndDate, startedAt, merchantId);
       page++;
     }
@@ -914,6 +938,15 @@ function safeError(error: unknown): string {
 }
 
 function initialize(): void {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes[PINGAN_PAUSED_KEY]) return;
+    pinganCollectionPaused = changes[PINGAN_PAUSED_KEY].newValue !== false;
+    if (!pinganCollectionPaused) void runIfReady();
+  });
+  void chrome.storage.local.get(PINGAN_PAUSED_KEY).then((stored) => {
+    pinganCollectionPaused = stored[PINGAN_PAUSED_KEY] !== false;
+    if (!pinganCollectionPaused) void runIfReady();
+  });
   const syncRoute = (): void => {
     const onListPage = isOrderListPage();
     if (onListPage === observedListPage) return;

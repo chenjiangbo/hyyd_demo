@@ -5,6 +5,7 @@ export const PINGAN_ORDER_TYPES = [
 
 export const PINGAN_POLL_INTERVAL_MS = 5 * 60 * 1000;
 export const PINGAN_INSTALL_DATE_KEY = 'pinganCollectionStartDate';
+export const PINGAN_PAUSED_KEY = 'pinganCollectPaused';
 export const PINGAN_STATUS_KEY = 'pinganCollectionStatus';
 
 export type PinganOrderType = (typeof PINGAN_ORDER_TYPES)[number]['code'];

@@ -1,6 +1,7 @@
 export {};
 import { configuredBackendWsUrl } from '../backendConnection';
 import { exportPinganData, exportPinganLogs } from '../pingan/localStore';
+import { PINGAN_PAUSED_KEY } from '../pingan/types';
 
 /**
  * 寰宇探针 Popup
@@ -93,7 +94,11 @@ async function refreshStatus() {
 }
 
 async function refreshPinganStatus(): Promise<void> {
-  const stored = await chrome.storage.local.get(PINGAN_STATUS_STORAGE_KEY);
+  const stored = await chrome.storage.local.get([PINGAN_STATUS_STORAGE_KEY, PINGAN_PAUSED_KEY]);
+  const paused = stored[PINGAN_PAUSED_KEY] !== false;
+  $('pingan-collect-dot').className = paused ? 'dot dot-amber' : 'dot dot-green';
+  $('pingan-collect-text').textContent = paused ? '已暂停' : '运行中';
+  $('toggle-pingan-collect').textContent = paused ? '恢复采集' : '暂停采集';
   const status = stored[PINGAN_STATUS_STORAGE_KEY];
   if (!status) {
     $('pingan-collection-status').textContent = '等待登录平安好医生';
@@ -112,7 +117,7 @@ async function refreshPinganStatus(): Promise<void> {
     ? `：${status.currentType}${status.currentPage ? ` 第 ${status.currentPage}/${status.pageCount || '?'} 页` : ''}`
     : '';
   const label = $('pingan-collection-status');
-  label.textContent = `${stateText[status.state] ?? '状态未知'}${current}`;
+  label.textContent = paused ? '已暂停采集' : `${stateText[status.state] ?? '状态未知'}${current}`;
   label.title = status.lastError || status.backendError || '';
   $('pingan-collection-counts').textContent =
     `订单 ${status.listCount ?? 0} · 详情 ${status.detailCount ?? 0} · 解密字段 ${status.decryptedFieldCount ?? 0} · 附件 ${status.attachmentCount ?? 0} · 错误 ${status.errorCount ?? 0}`;
@@ -407,11 +412,18 @@ async function clearEditAnalysis() {
   $('download-pingan-data').addEventListener('click', () => {
     downloadPinganData().catch((error) => alert(`导出平安采集结果失败：${error instanceof Error ? error.message : String(error)}`));
   });
+  $('toggle-pingan-collect').addEventListener('click', () => {
+    void (async () => {
+      const stored = await chrome.storage.local.get(PINGAN_PAUSED_KEY);
+      await chrome.storage.local.set({ [PINGAN_PAUSED_KEY]: !(stored[PINGAN_PAUSED_KEY] !== false) });
+      await refreshPinganStatus();
+    })().catch((error) => alert(`切换平安采集状态失败：${error instanceof Error ? error.message : String(error)}`));
+  });
   $('download-pingan-logs').addEventListener('click', () => {
     downloadPinganLogs().catch((error) => alert(`导出平安采集日志失败：${error instanceof Error ? error.message : String(error)}`));
   });
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && changes[PINGAN_STATUS_STORAGE_KEY]) void refreshPinganStatus();
+    if (area === 'local' && (changes[PINGAN_STATUS_STORAGE_KEY] || changes[PINGAN_PAUSED_KEY])) void refreshPinganStatus();
   });
 
   $('save-config').addEventListener('click', () => {

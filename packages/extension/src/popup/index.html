@@ -38,6 +38,7 @@
       .debug-buttons.wide { grid-template-columns: 1fr; margin-top: 8px; }
       .debug-buttons.three { grid-template-columns: 1fr 1fr 1fr; margin-top: 8px; }
       #toggle-collect { background: #d97706; }
+      #toggle-pingan-collect { background: #d97706; }
       #clear-cache { background: #dc2626; }
       #start-tracking-analysis { background: #2563eb; }
       #start-missing-tracking-analysis { background: #1d4ed8; }
@@ -99,6 +100,11 @@
 
     <div class="debug-section" id="pingan-section">
       <div class="debug-title">平安好医生采集</div>
+      <div class="row">
+        <span class="label">采集</span>
+        <span class="value"><span class="dot dot-gray" id="pingan-collect-dot"></span><span id="pingan-collect-text">检查中…</span></span>
+      </div>
+      <div class="debug-buttons wide"><button id="toggle-pingan-collect">恢复采集</button></div>
       <div class="analysis-status" id="pingan-collection-status">等待登录平安好医生</div>
       <div class="analysis-status" id="pingan-collection-counts">尚无采集记录</div>
       <div class="debug-buttons">
