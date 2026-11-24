@@ -26,11 +26,18 @@ export default function SystemRemindersPage(): React.JSX.Element {
   const [config, setConfig] = useState<SystemReminderConfig | null>(null)
   const [error, setError] = useState<Error | null>(null)
   const [selectedCategory, setSelectedCategory] = useState<string>('全部')
+  const [employees, setEmployees] = useState<Array<{ id: number; name: string }>>([])
+  const [reminderEmployeeIds, setReminderEmployeeIds] = useState<number[]>([])
+  const [savingEmployees, setSavingEmployees] = useState(false)
+  const [employeeMessage, setEmployeeMessage] = useState('')
 
   async function load(): Promise<void> {
     setError(null)
     try {
-      setConfig(await adminApi.systemReminderConfig())
+      const [rules, recipients] = await Promise.all([adminApi.systemReminderConfig(), adminApi.callUploadReminderEmployees()])
+      setConfig(rules)
+      setEmployees(recipients.employees)
+      setReminderEmployeeIds(recipients.selectedIds.filter(id => recipients.employees.some(employee => employee.id === id)))
     } catch (reason) {
       setError(reason instanceof Error ? reason : new Error(String(reason)))
     }
@@ -39,6 +46,20 @@ export default function SystemRemindersPage(): React.JSX.Element {
   useEffect(() => {
     void load()
   }, [])
+
+  async function saveReminderEmployees(): Promise<void> {
+    setSavingEmployees(true)
+    setEmployeeMessage('')
+    try {
+      const result = await adminApi.saveCallUploadReminderEmployees(reminderEmployeeIds)
+      setReminderEmployeeIds(result.selectedIds)
+      setEmployeeMessage('保存成功')
+    } catch (reason) {
+      setEmployeeMessage(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setSavingEmployees(false)
+    }
+  }
 
   const categories = useMemo(() => {
     if (!config) return ['全部']
@@ -97,13 +118,46 @@ export default function SystemRemindersPage(): React.JSX.Element {
                       <span className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-600 text-white text-xs font-bold">
                         日
                       </span>
-                      <h3 className="font-bold text-base text-emerald-950">日常录音上传提醒（广播）</h3>
+                      <h3 className="font-bold text-base text-emerald-950">日常录音上传提醒</h3>
                     </div>
                     <span className="text-xs font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded border border-emerald-300">
-                      接收对象：所有启用员工
+                      接收对象：已配置的启用员工
                     </span>
                   </div>
                   <div className="space-y-2.5 text-sm">
+                    <div className="rounded-lg bg-white/90 border border-emerald-200/80 p-3">
+                      <div className="font-bold text-slate-900 mb-2">接收提醒的员工</div>
+                      <select aria-label="选择接收提醒的员工" value="" onChange={event => {
+                        const employeeId = Number(event.target.value)
+                        if (!employeeId) return
+                        setEmployeeMessage('')
+                        setReminderEmployeeIds(ids => ids.includes(employeeId) ? ids : [...ids, employeeId])
+                      }} className="w-full rounded-md border border-emerald-200 bg-white px-3 py-2 text-xs text-slate-700 focus:border-emerald-500 focus:outline-none">
+                        <option value="">选择员工</option>
+                        {employees.filter(employee => !reminderEmployeeIds.includes(employee.id)).map(employee => (
+                          <option key={employee.id} value={employee.id}>{employee.name}</option>
+                        ))}
+                      </select>
+                      {reminderEmployeeIds.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {reminderEmployeeIds.map(id => {
+                            const employee = employees.find(item => item.id === id)
+                            if (!employee) return null
+                            return <span key={id} className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-900">
+                              <span className="break-all">{employee.name}</span>
+                              <button type="button" aria-label={`移除${employee.name}`} onClick={() => {
+                                setEmployeeMessage('')
+                                setReminderEmployeeIds(ids => ids.filter(item => item !== id))
+                              }} className="shrink-0 text-emerald-700 hover:text-emerald-950">×</button>
+                            </span>
+                          })}
+                        </div>
+                      )}
+                      <div className="flex items-center gap-3 mt-3">
+                        <button type="button" disabled={savingEmployees} onClick={() => void saveReminderEmployees()} className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">保存</button>
+                        {employeeMessage && <span className="text-xs text-slate-600" role="status">{employeeMessage}</span>}
+                      </div>
+                    </div>
                     <div className="rounded-lg bg-white/90 border border-emerald-200/80 p-3 shadow-2xs">
                       <div className="flex items-center gap-2 font-bold text-slate-900 mb-1">
                         <span className="px-2 py-0.5 text-xs font-bold bg-emerald-100 text-emerald-800 rounded">

@@ -41,6 +41,7 @@ import { findHuanyuChannelById, listHuanyuChannels } from '../db/remoteDictionar
 import { DEFAULT_WORKFLOW_TEMPLATES } from '../workflow/defaultWorkflowConfig.js'
 import { registerTaikangFormAdminRoutes } from '../taikangFormRecording.js'
 import { registerPinganAdminRoutes } from '../pinganCollection.js'
+import { getCallUploadReminderEmployees, saveCallUploadReminderEmployees } from '../services/callUploadReminderConfig.js'
 import { registerNativeChatCollectionAdminRoutes } from './nativeChatCollectionAdmin.js'
 import { getHyhomeOrderSite, saveHyhomeOrderSite } from '../services/hyhomeOrderSites.js'
 import {
@@ -790,6 +791,24 @@ export function registerAdminRoutes(
       }
     })
 
+    fastify.get('/api/v1/admin/call-upload-reminder-employees', async (_request, reply) => {
+      const [employees, selectedIds] = await Promise.all([
+        prisma.employee.findMany({ where: { enabled: 1 }, select: { id: true, name: true }, orderBy: { id: 'asc' } }),
+        getCallUploadReminderEmployees(prisma)
+      ])
+      return reply.send({ data: { employees, selectedIds } })
+    })
+
+    fastify.put('/api/v1/admin/call-upload-reminder-employees', async (request, reply) => {
+      try {
+        const body = request.body as { employeeIds?: unknown } | null
+        const selectedIds = await saveCallUploadReminderEmployees(prisma, body?.employeeIds)
+        return reply.send({ data: { selectedIds } })
+      } catch (error) {
+        return reply.status(400).send({ error: error instanceof Error ? error.message : String(error) })
+      }
+    })
+
     // 系统提醒规则与说明：集中汇总定时任务、业务触发条件、客户端通知与防重机制。
     fastify.get('/api/v1/admin/system-reminder-config', async (_request, reply) => {
       return reply.send({
@@ -800,19 +819,19 @@ export function registerAdminRoutes(
             clientPollInterval: '桌面浮窗每 15 秒查询到期提醒；主界面待办每 20 秒查询，完成或延后后的状态在下一轮查询时更新；收起浮窗只记录弹窗已收起，不改变待办状态',
             table: 'order_reminders（桌面待办）；fact_hy_pz_sms_logs（陪诊短信）',
             dailyUploadTimes: ['11:30', '17:30'],
-            dailyUploadDescription: '每天 11:30–12:00、17:30–18:00 两个时段内为所有启用员工生成提醒；每位员工每个时段仅生成一次。未主动延后的提醒错过时段后失效；员工主动延后时按延后时间再次提醒。'
+            dailyUploadDescription: '每天 11:30–12:00、17:30–18:00 两个时段内为已配置的启用员工生成提醒；每位员工每个时段仅生成一次。未主动延后的提醒错过时段后失效；员工主动延后时按延后时间再次提醒。'
           },
           rules: [
             {
               category: '日常提醒',
               name: '通话录音与通话记录上传提醒',
               trigger: '每天 11:30–12:00、17:30–18:00 两个时段内扫描生成，每位启用员工每个时段一次',
-              target: '所有启用员工（employee.enabled = 1）',
+              target: '已配置接收提醒的启用员工',
               content: '提醒内容: 请打开手机app上传通话录音和通话记录',
               technicalConditions: [
                 '匹配当前上海时间处于 11:30~12:00（上午批次 1130）或 17:30~18:00（下午批次 1730）',
-                '扫描员工表 employee 中所有启用状态（enabled = 1）的员工，不按员工角色再筛选',
-                '为每位启用员工批量写入 order_no 为 "SYSTEM" 的广播型提醒记录'
+                '扫描员工表中已配置接收提醒且启用的员工',
+                '为每位符合条件的员工写入 order_no 为 "SYSTEM" 的提醒记录'
               ],
               dedupeRule: '基于 auto:call_upload_reminder:{employeeId}:{YYYY-MM-DD}:{slot} 去重；未延后的提醒在批次时段结束后失效，员工主动延后时按延后时间再次提醒。'
             },

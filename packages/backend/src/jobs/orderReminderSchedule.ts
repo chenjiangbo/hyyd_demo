@@ -15,6 +15,7 @@ import { sendAliyunSms, getSmsConfig, isSmsTemplateEnabled } from '../services/a
 import { findRemoteReminderOrder, listRemoteEscortReminderDetails, readEscortReminderDisplay } from '../db/remoteDictionary.js'
 import { normalizeReminderDate, shouldAdvancePeriodicReminder } from './orderReminderRules.js'
 import { parseShanghaiDateTime } from '../time/shanghaiTime.js'
+import { expireUnselectedCallUploadReminders, getCallUploadReminderEmployees } from '../services/callUploadReminderConfig.js'
 
 export interface LoggerLike {
   info: (msg: string) => void
@@ -164,11 +165,18 @@ async function createReminderIfAbsent(
     }
     const dedupeKey = huanyuOrderNo ? `${params.dedupeKey}:hy:${huanyuOrderNo}` : params.dedupeKey
     const existing = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT id, extra_data->>'pzr' AS pzr, extra_data->>'serviceDate' AS service_date FROM order_reminders WHERE extra_data->>'dedupe_key' = $1 ORDER BY id DESC LIMIT 1;`,
+      `SELECT id, status, extra_data->>'callUploadConfigRemoved' AS config_removed, extra_data->>'pzr' AS pzr, extra_data->>'serviceDate' AS service_date FROM order_reminders WHERE extra_data->>'dedupe_key' = $1 ORDER BY id DESC LIMIT 1;`,
       dedupeKey
     )
     if (existing && existing.length > 0) {
       const current = existing[0]
+      if (params.type === 'upload_recording' && current.status === 'expired' && current.config_removed === 'true') {
+        const count = await prisma.$executeRawUnsafe(`
+          UPDATE order_reminders SET status='pending', remind_time=NOW(), updated_at=NOW(),
+            notification_generation=notification_generation+1, extra_data=extra_data-'callUploadConfigRemoved'
+          WHERE id=$1 AND status='expired' AND extra_data->>'callUploadConfigRemoved'='true';`, current.id)
+        return Number(count) > 0
+      }
       const nextPzr = String(params.extra?.pzr ?? '').trim()
       const nextDate = String(params.extra?.serviceDate ?? '').trim()
       if (nextPzr && nextDate && (current.pzr !== nextPzr || current.service_date !== nextDate)) {
@@ -1647,10 +1655,10 @@ export async function scanHospitalCareReminders(prisma: PrismaClient, logger?: L
 }
 
 /**
- * 场景 0：【通话录音与通话记录上传提醒】（默认每天 11:30 和 17:30 提醒所有在职员工）
+ * 场景 0：【通话录音与通话记录上传提醒】（每天 11:30 和 17:30 提醒已配置的启用员工）
  */
-async function scanDailyCallUploadReminders(prisma: PrismaClient, logger?: LoggerLike): Promise<void> {
-  const { ymd, hours, minutes } = shanghaiNowParts()
+export async function scanDailyCallUploadReminders(prisma: PrismaClient, logger?: LoggerLike, now = new Date()): Promise<void> {
+  const { ymd, hours, minutes } = shanghaiNowParts(now)
   let slot: string | null = null
 
   // 11:30 触发上午时段批次
@@ -1661,11 +1669,12 @@ async function scanDailyCallUploadReminders(prisma: PrismaClient, logger?: Logge
     slot = '1730'
   }
 
-  if (!slot) return
-
   try {
+    const employeeIds = await getCallUploadReminderEmployees(prisma)
+    await expireUnselectedCallUploadReminders(prisma, employeeIds)
+    if (!slot || !employeeIds.length) return
     const employees = await prisma.employee.findMany({
-      where: { enabled: 1 },
+      where: { enabled: 1, id: { in: employeeIds } },
       select: { id: true, name: true }
     })
 

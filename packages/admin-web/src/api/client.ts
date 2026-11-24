@@ -389,6 +389,12 @@ export const adminApi = {
   systemReminderConfig() {
     return request<SystemReminderConfig>('/api/v1/admin/system-reminder-config')
   },
+  callUploadReminderEmployees() {
+    return request<{ employees: Array<{ id: number; name: string }>; selectedIds: number[] }>('/api/v1/admin/call-upload-reminder-employees')
+  },
+  saveCallUploadReminderEmployees(employeeIds: number[]) {
+    return request<{ selectedIds: number[] }>('/api/v1/admin/call-upload-reminder-employees', { method: 'PUT', body: JSON.stringify({ employeeIds }) })
+  },
 
   // ───── 仪表盘 ─────
   dashboardSummary() {
