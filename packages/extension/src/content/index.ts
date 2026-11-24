@@ -1,6 +1,7 @@
 export {};
 import { classifyTrackingMatches, parseTrackingPage, type TrackingMatch } from './outpatientTracking';
 import { cancellationPage, cancellationWindow } from './taikangCancellationTracking';
+import { lookupRegistrationApplication, RegistrationIdleGate } from './registrationApplicationLookup';
 
 console.log('[寰宇探针] Content Script 已注入');
 
@@ -1892,6 +1893,7 @@ async function runTrackingPoolAnalysis(mode: TrackingAnalysisMode = 'all'): Prom
 }
 
 // ─── 用户身份（泰康 userId / userName） ──────────────────────
+let observedTaikangAccount: string | null = null;
 async function getUser(): Promise<{ userId: number; userName: string; nickName: string | null } | null> {
   const token = findTaikangToken();
   if (!token) return null;
@@ -1900,6 +1902,7 @@ async function getUser(): Promise<{ userId: number; userName: string; nickName: 
   const userId = Number(j?.data?.userid);
   const userName = typeof j?.data?.username === 'string' ? j.data.username.trim() : '';
   if (!Number.isInteger(userId) || userId <= 0 || !userName) return null;
+  observedTaikangAccount = userName;
   return { userId, userName, nickName: j?.data?.nickName ?? j?.data?.sysUser?.nickName ?? userName };
 }
 
@@ -2192,7 +2195,7 @@ async function claimCollector(): Promise<string | null> {
   return collectorGeneration;
 }
 
-async function sendCollected(type: 'SYNC_ORDERS' | 'ORDER_DETAIL_FETCHED' | 'ORDER_ATTACHMENTS_FETCHED' | 'OUTPATIENT_COMPLETION_LEASE' | 'OUTPATIENT_COMPLETION_RESULT' | 'TAIKANG_CANCELLATION_BATCH', identity: CollectionIdentity, payload: unknown) {
+async function sendCollected(type: 'SYNC_ORDERS' | 'ORDER_DETAIL_FETCHED' | 'ORDER_ATTACHMENTS_FETCHED' | 'OUTPATIENT_COMPLETION_LEASE' | 'OUTPATIENT_COMPLETION_RESULT' | 'TAIKANG_CANCELLATION_BATCH' | 'REGISTRATION_APPLICATION_LEASE' | 'REGISTRATION_APPLICATION_RESULT', identity: CollectionIdentity, payload: unknown) {
   assertSession(identity);
   const response = await chrome.runtime.sendMessage({
     type,
@@ -2210,6 +2213,51 @@ async function sendCollected(type: 'SYNC_ORDERS' | 'ORDER_DETAIL_FETCHED' | 'ORD
     throw new Error(response?.error || '后台未确认保存');
   }
   return response;
+}
+
+let registrationApplicationRunning = false;
+const registrationIdle = new RegistrationIdleGate();
+async function pollRegistrationApplications(): Promise<void> {
+  if (registrationApplicationRunning) return;
+  const currentToken = findTaikangToken();
+  if (!registrationIdle.shouldPoll(Boolean(currentToken), observedTaikangAccount)) return;
+  registrationApplicationRunning = true;
+  try {
+    const generation = await claimCollector();
+    const token = findTaikangToken();
+    if (!generation || !token) return;
+    const user = await getUser();
+    if (!user || token !== findTaikangToken()) return;
+    const identity: CollectionIdentity = { ...user, token, generation, batchId: crypto.randomUUID() };
+    for (let count = 0; count < 10; count++) {
+      await confirmIdentity(identity);
+      const ack = await sendCollected('REGISTRATION_APPLICATION_LEASE', identity, {});
+      const payload = ack.payload as { task?: { source_order_no?: string; lease_id?: string }; availability?: 'waiting' | 'retry' | 'done' } | null;
+      const task = payload?.task;
+      if (!task) {
+        if (!payload?.availability) throw new Error('挂号协助任务状态无效');
+        registrationIdle.defer(user.userName, payload.availability);
+        break;
+      }
+      if (!task.source_order_no || !task.lease_id) throw new Error('挂号协助申请号查询任务无效');
+      let result: { status: 'found' | 'not_found' | 'conflict' | 'error'; applicationNo?: string; source?: 'personal' | 'tracking'; errorMessage?: string };
+      try {
+        result = await lookupRegistrationApplication(task.source_order_no, async (pool, sourceOrderNo, pageNum) => {
+          await confirmIdentity(identity);
+          const response = await apiPost(UNIFY_BASE, pool === 'personal' ? 'medicalmanager/registerIndividualPool' : 'medicalmanager/registerTrackingPool',
+            pool === 'personal' ? { userId: identity.userId, serviceType: REGISTER_SERVICE_TYPE, subOrderNo: sourceOrderNo, pageNum, pageSize: PAGE_SIZE }
+              : { ...trackingPoolBaseBody(identity.userId, REGISTER_SERVICE_TYPE, '挂号协助'), subOrderNo: sourceOrderNo, pageNum, pageSize: PAGE_SIZE }, 15000, identity);
+          return response;
+        });
+      } catch (error) {
+        if (error instanceof TaikangAuthError || error instanceof TaikangSessionChanged) throw error;
+        result = { status: 'error', errorMessage: error instanceof Error ? error.message.slice(0, 500) : '查询失败' };
+      }
+      await sendCollected('REGISTRATION_APPLICATION_RESULT', identity, { sourceOrderNo: task.source_order_no, leaseId: task.lease_id, ...result });
+      await sleep(800);
+    }
+  } catch (error) { console.warn('[寰宇探针] 挂号协助申请号查询暂停', error); }
+  finally { registrationApplicationRunning = false; }
 }
 
 let cancellationScanRunning = false;
@@ -2502,6 +2550,8 @@ function startPolling() {
   setInterval(() => void pollOutpatientCompletion(), POLL_INTERVAL_MS);
   setTimeout(() => void pollTaikangCancellations(), POLL_FIRST_DELAY_MS);
   setInterval(() => void pollTaikangCancellations(), 10 * 60 * 1000);
+  setTimeout(() => void pollRegistrationApplications(), POLL_FIRST_DELAY_MS);
+  setInterval(() => void pollRegistrationApplications(), POLL_INTERVAL_MS);
   setInterval(() => {
     void claimCollector().then((generation) => {
       if (generation && !polling && fingerprintAccount === null) void pollOnce();

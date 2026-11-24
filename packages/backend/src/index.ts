@@ -48,6 +48,7 @@ import { ensureTaikangHuanyuChannelMappingTable } from './db/ensureTaikangHuanyu
 import { ensureOrderAttributionMismatchTable } from './db/ensureOrderAttributionMismatchTable.js'
 import { ensureOutpatientCompletionTables, startOutpatientCompletionSchedule, leaseOutpatientTask, recordOutpatientResult } from './services/outpatientCompletion.js'
 import { ensureTaikangCancellationTable, syncTaikangCancellation } from './services/taikangCancellationSync.js'
+import { ensureRegistrationApplicationTables, leaseRegistrationApplication, recordRegistrationApplication, registrationApplicationAvailability, startRegistrationApplicationSchedule } from './services/registrationApplicationBackfill.js'
 import { assertShanghaiDatabaseTimezone, createShanghaiPrismaClient } from './db/shanghaiPrisma.js'
 import { syncHuanyuOrderFromTaikang } from './huanyuOrderSync.js'
 import { findHuanyuOrderNoOnMysqlByChannelOrderNo, findHuanyuOrderNosOnMysqlByChannelOrderNo } from './huanyuMysqlPush.js'
@@ -363,6 +364,7 @@ async function start() {
     await ensureOrderAttributionMismatchTable(prisma)
     await ensureOutpatientCompletionTables(prisma)
     await ensureTaikangCancellationTable(prisma)
+    await ensureRegistrationApplicationTables(prisma)
     await ensureBuckets()
 
     // 1. 注册 CORS 跨域插件
@@ -520,6 +522,25 @@ async function start() {
                 lastSeenAt: Date.now()
                 })
               }
+            } else if (message.type === 'REGISTRATION_APPLICATION_LEASE' || message.type === 'REGISTRATION_APPLICATION_RESULT') {
+              const requestId = typeof message.requestId === 'string' ? message.requestId : ''
+              const reply = (ok: boolean, payload?: unknown, error?: string) => socket.send(JSON.stringify({ type: 'REGISTRATION_APPLICATION_ACK', requestId, ok, payload, error }))
+              if (client !== 'ext' || message.protocolVersion !== 2 || !requestId || message.taikangAccount !== taikangAccount || !Number.isInteger(taikangUserId) || taikangUserId <= 0 || Number(message.taikangUserId) !== taikangUserId || !await bindingStillMatches()) { reply(false, undefined, '泰康账号或请求无效'); return }
+              try {
+                if (message.type === 'REGISTRATION_APPLICATION_LEASE') {
+                  const connectedIds = [...activeConnections.entries()].filter(([, c]) => c.ext?.readyState === 1).map(([id]) => id)
+                  const employees = await prisma.employee.findMany({ where: { id: { in: connectedIds } }, select: { taikangAccount: true } })
+                  const onlineAccounts = employees.map(e => e.taikangAccount).filter((value): value is string => Boolean(value))
+                  const task = await leaseRegistrationApplication(prisma, taikangAccount, onlineAccounts)
+                  reply(true, task ? { task } : { availability: await registrationApplicationAvailability(prisma, taikangAccount) })
+                }
+                else {
+                  const p = message.payload
+                  if (!p || typeof p.sourceOrderNo !== 'string' || !/^[A-Za-z0-9-]{1,50}$/.test(p.sourceOrderNo) || typeof p.leaseId !== 'string' || !/^[a-f0-9-]{36}$/.test(p.leaseId) || !['found','not_found','conflict','error'].includes(p.status) || (p.applicationNo !== undefined && typeof p.applicationNo !== 'string') || (p.errorMessage !== undefined && typeof p.errorMessage !== 'string') || (p.source !== undefined && !['personal','tracking'].includes(p.source))) throw new Error('挂号协助申请号结果无效')
+                  await recordRegistrationApplication(prisma, taikangAccount, p)
+                  reply(true)
+                }
+              } catch (error) { reply(false, undefined, error instanceof Error ? error.message : '挂号协助查询失败') }
             } else if (message.type === 'TAIKANG_CANCELLATION_BATCH') {
               const requestId = typeof message.requestId === 'string' ? message.requestId : ''
               const reply = (ok: boolean, payload?: unknown, error?: string) => socket.send(JSON.stringify({ type: 'TAIKANG_CANCELLATION_ACK', requestId, ok, payload, error }))
@@ -1127,7 +1148,8 @@ async function start() {
     const stopGreenPassIdCardRetries = startGreenPassIdCardRetries(prisma, minioClient)
     const stopGreenPassSyncRetries = startGreenPassSyncRetries()
     const stopOutpatientCompletion = startOutpatientCompletionSchedule(prisma, server.log)
-    server.addHook('onClose', async () => { stopGreenPassIdCardRetries(); stopGreenPassSyncRetries(); stopOutpatientCompletion() })
+    const stopRegistrationApplication = startRegistrationApplicationSchedule(prisma, server.log)
+    server.addHook('onClose', async () => { stopGreenPassIdCardRetries(); stopGreenPassSyncRetries(); stopOutpatientCompletion(); stopRegistrationApplication() })
     if (pinganMysqlJobsEnabled) {
       const stopPinganMysqlOrderWorker = startPinganMysqlOrderWorker(prisma, minioClient, server.log)
       server.addHook('onClose', async () => { stopPinganMysqlOrderWorker() })
