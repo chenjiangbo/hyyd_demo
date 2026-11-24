@@ -47,6 +47,7 @@ import { ensureSysSettingsTable } from './db/ensureSysSettingsTable.js'
 import { ensureTaikangHuanyuChannelMappingTable } from './db/ensureTaikangHuanyuChannelMappingTable.js'
 import { ensureOrderAttributionMismatchTable } from './db/ensureOrderAttributionMismatchTable.js'
 import { ensureOutpatientCompletionTables, startOutpatientCompletionSchedule, leaseOutpatientTask, recordOutpatientResult } from './services/outpatientCompletion.js'
+import { ensureTaikangCancellationTable, syncTaikangCancellation } from './services/taikangCancellationSync.js'
 import { assertShanghaiDatabaseTimezone, createShanghaiPrismaClient } from './db/shanghaiPrisma.js'
 import { syncHuanyuOrderFromTaikang } from './huanyuOrderSync.js'
 import { findHuanyuOrderNoOnMysqlByChannelOrderNo, findHuanyuOrderNosOnMysqlByChannelOrderNo } from './huanyuMysqlPush.js'
@@ -361,6 +362,7 @@ async function start() {
     await ensureTaikangHuanyuChannelMappingTable(prisma)
     await ensureOrderAttributionMismatchTable(prisma)
     await ensureOutpatientCompletionTables(prisma)
+    await ensureTaikangCancellationTable(prisma)
     await ensureBuckets()
 
     // 1. 注册 CORS 跨域插件
@@ -518,6 +520,19 @@ async function start() {
                 lastSeenAt: Date.now()
                 })
               }
+            } else if (message.type === 'TAIKANG_CANCELLATION_BATCH') {
+              const requestId = typeof message.requestId === 'string' ? message.requestId : ''
+              const reply = (ok: boolean, payload?: unknown, error?: string) => socket.send(JSON.stringify({ type: 'TAIKANG_CANCELLATION_ACK', requestId, ok, payload, error }))
+              if (client !== 'ext' || message.protocolVersion !== 2 || !requestId || message.taikangAccount !== taikangAccount || !Number.isInteger(taikangUserId) || taikangUserId <= 0 || Number(message.taikangUserId) !== taikangUserId || !await bindingStillMatches()) {
+                reply(false, undefined, '泰康账号或请求无效'); return
+              }
+              const items = message.payload
+              if (!Array.isArray(items) || items.length > 100 || items.some((item: any) => !item || typeof item.sourceOrderNo !== 'string' || !/^[A-Za-z0-9-]{1,50}$/.test(item.sourceOrderNo) || typeof item.state !== 'string' || !item.state || item.stateName !== '已取消')) {
+                reply(false, undefined, '取消订单数据无效'); return
+              }
+              const results = []
+              for (const item of items) results.push({ sourceOrderNo: item.sourceOrderNo, result: await syncTaikangCancellation(prisma, item.sourceOrderNo) })
+              reply(true, results)
             } else if (message.type === 'OUTPATIENT_COMPLETION_LEASE' || message.type === 'OUTPATIENT_COMPLETION_RESULT') {
               const requestId = typeof message.requestId === 'string' ? message.requestId : ''
               const reply = (ok: boolean, payload?: unknown, error?: string) => socket.send(JSON.stringify({ type: 'OUTPATIENT_COMPLETION_ACK', requestId, ok, payload, error }))

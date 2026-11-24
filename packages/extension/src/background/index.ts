@@ -326,7 +326,7 @@ async function connectWebSocket(): Promise<void> {
         failPending(connectionError);
       }
 
-      if ((data.type === 'ORDERS_SYNCED_ACK' || data.type === 'ORDER_DETAIL_ACK' || data.type === 'ORDER_ATTACHMENTS_ACK' || data.type === 'OUTPATIENT_COMPLETION_ACK') && typeof data.requestId === 'string') {
+      if ((data.type === 'ORDERS_SYNCED_ACK' || data.type === 'ORDER_DETAIL_ACK' || data.type === 'ORDER_ATTACHMENTS_ACK' || data.type === 'OUTPATIENT_COMPLETION_ACK' || data.type === 'TAIKANG_CANCELLATION_ACK') && typeof data.requestId === 'string') {
         const pending = pendingMessages.get(data.requestId);
         if (pending && pending.socket === socket) {
           clearTimeout(pending.timer);
@@ -496,7 +496,7 @@ async function forwardCollection(message: any, tabId: number | undefined): Promi
     pendingMessages.set(requestId, { resolve, reject, timer, socket });
     try {
       socket.send(JSON.stringify({
-        type: message.type === 'OUTPATIENT_COMPLETION_LEASE' || message.type === 'OUTPATIENT_COMPLETION_RESULT' ? message.type : message.type === 'SYNC_ORDERS'
+        type: message.type === 'OUTPATIENT_COMPLETION_LEASE' || message.type === 'OUTPATIENT_COMPLETION_RESULT' || message.type === 'TAIKANG_CANCELLATION_BATCH' ? message.type : message.type === 'SYNC_ORDERS'
           ? 'ORDERS_SYNCED'
           : message.type === 'ORDER_ATTACHMENTS_FETCHED' ? 'ORDER_ATTACHMENTS_FETCHED' : 'ORDER_DETAIL_FETCHED',
         protocolVersion: 2,
@@ -706,6 +706,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'ORDER_ATTACHMENTS_FETCHED':
     case 'OUTPATIENT_COMPLETION_LEASE':
     case 'OUTPATIENT_COMPLETION_RESULT':
+    case 'TAIKANG_CANCELLATION_BATCH':
       void forwardCollection(message, sender.tab?.id)
         .then((ack) => sendResponse(ack))
         .catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));

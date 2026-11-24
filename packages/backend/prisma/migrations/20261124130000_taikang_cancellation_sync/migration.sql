@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS taikang_cancellation_sync (
+  source_order_no VARCHAR(50) PRIMARY KEY,
+  state VARCHAR(16) NOT NULL DEFAULT 'pending',
+  last_error TEXT,
+  updated_at TIMESTAMP(3) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TIMESTAMP(3) WITHOUT TIME ZONE
+);

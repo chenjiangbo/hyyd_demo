@@ -1,5 +1,6 @@
 export {};
 import { classifyTrackingMatches, parseTrackingPage, type TrackingMatch } from './outpatientTracking';
+import { cancellationPage, cancellationWindow } from './taikangCancellationTracking';
 
 console.log('[寰宇探针] Content Script 已注入');
 
@@ -2191,7 +2192,7 @@ async function claimCollector(): Promise<string | null> {
   return collectorGeneration;
 }
 
-async function sendCollected(type: 'SYNC_ORDERS' | 'ORDER_DETAIL_FETCHED' | 'ORDER_ATTACHMENTS_FETCHED' | 'OUTPATIENT_COMPLETION_LEASE' | 'OUTPATIENT_COMPLETION_RESULT', identity: CollectionIdentity, payload: unknown) {
+async function sendCollected(type: 'SYNC_ORDERS' | 'ORDER_DETAIL_FETCHED' | 'ORDER_ATTACHMENTS_FETCHED' | 'OUTPATIENT_COMPLETION_LEASE' | 'OUTPATIENT_COMPLETION_RESULT' | 'TAIKANG_CANCELLATION_BATCH', identity: CollectionIdentity, payload: unknown) {
   assertSession(identity);
   const response = await chrome.runtime.sendMessage({
     type,
@@ -2209,6 +2210,38 @@ async function sendCollected(type: 'SYNC_ORDERS' | 'ORDER_DETAIL_FETCHED' | 'ORD
     throw new Error(response?.error || '后台未确认保存');
   }
   return response;
+}
+
+let cancellationScanRunning = false;
+async function pollTaikangCancellations(): Promise<void> {
+  if (cancellationScanRunning) return;
+  cancellationScanRunning = true;
+  try {
+    const generation = await claimCollector();
+    if (!generation) return;
+    const token = findTaikangToken();
+    if (!token) return;
+    const user = await getUser();
+    if (!user || token !== findTaikangToken()) return;
+    const identity: CollectionIdentity = { ...user, token, generation, batchId: crypto.randomUUID() };
+    const window = cancellationWindow();
+    const seen = new Set<string>();
+    for (let pageNum = 1; pageNum <= 1000; pageNum++) {
+      await confirmIdentity(identity);
+      const response = await apiPost(UNIFY_BASE, 'medicalmanager/trackingPool', {
+        ...trackingPoolBaseBody(identity.userId, '', ''), orderState: 16,
+        applyStartTime: window.start, applyEndTime: window.end, pageNum, pageSize: 100
+      }, 15000, identity);
+      const page = cancellationPage(response);
+      const items = page.items.filter(item => { if (seen.has(item.sourceOrderNo)) return false; seen.add(item.sourceOrderNo); return true; });
+      for (let index = 0; index < items.length; index += 10) await sendCollected('TAIKANG_CANCELLATION_BATCH', identity, items.slice(index, index + 10));
+      if (!page.hasNextPage) return;
+      if (pageNum === 1000) throw new Error('泰康取消追踪池分页未完成');
+      await sleep(800);
+    }
+  } catch (error) {
+    console.warn('[寰宇探针] 泰康取消同步扫描失败', error);
+  } finally { cancellationScanRunning = false; }
 }
 
 async function checkOutpatientCompletion(identity: CollectionIdentity): Promise<void> {
@@ -2467,6 +2500,8 @@ function startPolling() {
   setInterval(() => void pollOnce(), POLL_INTERVAL_MS);
   setTimeout(() => void pollOutpatientCompletion(), POLL_FIRST_DELAY_MS);
   setInterval(() => void pollOutpatientCompletion(), POLL_INTERVAL_MS);
+  setTimeout(() => void pollTaikangCancellations(), POLL_FIRST_DELAY_MS);
+  setInterval(() => void pollTaikangCancellations(), 10 * 60 * 1000);
   setInterval(() => {
     void claimCollector().then((generation) => {
       if (generation && !polling && fingerprintAccount === null) void pollOnce();
