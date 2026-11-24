@@ -76,7 +76,7 @@ async function syncWindowPanels(windowId?: number): Promise<void> {
     if (windowId !== undefined && tab.windowId !== windowId) continue
     const visible = await tabWindowVisible(tab)
     focusStates.set(tabId, visible)
-    await post(!tab.active ? 'close' : visible ? 'open' : 'suspend', tabId, session)
+    await post(visible ? 'open' : 'suspend', tabId, session)
   }
 }
 
@@ -224,7 +224,7 @@ export async function handleHyhomePageEvent(message: unknown, sender: chrome.run
     const visible = await tabWindowVisible(tab)
     if (focusStates.get(tabId) !== visible) {
       focusStates.set(tabId, visible)
-      await post(!tab.active ? 'close' : visible ? 'open' : 'suspend', tabId, session)
+      await post(visible ? 'open' : 'suspend', tabId, session)
     }
     return
   }
@@ -290,7 +290,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 })
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   for (const [otherTabId, session] of sessions) {
-    if (otherTabId !== tabId && session.detail) void post('close', otherTabId, session)
+    if (otherTabId !== tabId && session.detail) void post('suspend', otherTabId, session)
   }
   void syncWindowPanels()
 })
