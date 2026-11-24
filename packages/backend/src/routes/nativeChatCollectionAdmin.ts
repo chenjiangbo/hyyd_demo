@@ -8,6 +8,8 @@ import { understandImage } from '../services/imageUnderstanding.js'
 import { matchNativeRegistrationProofToOrders } from '../services/registrationProofService.js'
 import {
   getNativeChatCollectionConfig,
+  getDisabledNativeChatEmployees,
+  saveDisabledNativeChatEmployees,
   saveNativeChatCollectionConfig,
   validateNativeChatCollectionRules
 } from '../services/nativeChatCollectionConfig.js'
@@ -236,6 +238,23 @@ export function registerNativeChatCollectionAdminRoutes(
 
   fastify.get('/api/v1/admin/native-chat-collection-config', async (_request, reply) => {
     return reply.send({ data: await getNativeChatCollectionConfig(prisma) })
+  })
+
+  fastify.get('/api/v1/admin/native-chat-collection-employees', async (_request, reply) => {
+    const [employees, disabled] = await Promise.all([
+      prisma.employee.findMany({ select: { id: true, name: true, token: true }, orderBy: { id: 'asc' } }),
+      getDisabledNativeChatEmployees(prisma)
+    ])
+    const disabledIds = new Set(disabled)
+    return reply.send({ data: employees.map((employee) => ({ id: employee.id, name: employee.name, account: employee.token, enabled: !disabledIds.has(employee.id) })) })
+  })
+
+  fastify.put<{ Body: { disabledEmployeeIds?: unknown } }>('/api/v1/admin/native-chat-collection-employees', async (request, reply) => {
+    try {
+      return reply.send({ data: await saveDisabledNativeChatEmployees(prisma, request.body?.disabledEmployeeIds) })
+    } catch (error) {
+      return reply.status(400).send({ error: error instanceof Error ? error.message : '员工采集设置保存失败' })
+    }
   })
 
   fastify.get('/api/v1/admin/native-chat-sessions', async (_request, reply) => {

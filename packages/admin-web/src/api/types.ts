@@ -13,6 +13,8 @@ export interface NativeChatCollectionRule {
   id: string
   enabled: boolean
   channel: 'wechat' | 'wxwork' | 'both'
+  accountChannel?: 'wechat' | 'wxwork' | null
+  accountId?: string | null
   match: 'source_id' | 'title_exact' | 'title_contains' | 'title_regex'
   value: string
 }

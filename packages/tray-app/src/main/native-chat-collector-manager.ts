@@ -151,6 +151,7 @@ export function discoveryFingerprint(session: Session): string {
 
 function matchesRule(rule: NativeChatCollectionRule, session: Session): boolean {
   if (!rule.enabled || (rule.channel !== 'both' && rule.channel !== session.channel)) return false
+  if (rule.accountId && (rule.accountId !== session.accountId || rule.accountChannel !== session.channel)) return false
   const title = session.title?.trim().toLocaleLowerCase() ?? ''
   const value = rule.value.trim().toLocaleLowerCase()
   if (rule.match === 'source_id') return rule.value === session.sourceConversationId
@@ -339,6 +340,7 @@ export class NativeChatCollectorManager {
   private discoveryProgress = new Map<Channel, { configVersion: string; confirmed: Map<string, string> }>()
   private activityIssues = new Map<Channel, string[]>()
   private cachedCollectionConfig: NativeChatCollectionConfig | null = null
+  private collectionEnabled = false
 
   constructor(private readonly imageMatchConfirmationEnabled = IMAGE_MATCH_CONFIRMATION_ENABLED) {
     this.cursors = parseCursorFile(this.cursorPath)
@@ -391,6 +393,7 @@ export class NativeChatCollectorManager {
     if (!/^https?:\/\//i.test(backendUrl)) throw new Error('消息采集服务地址无效')
     if (!employeeCode) throw new Error('消息采集缺少员工身份')
     const changedIdentity = this.config?.backendUrl !== backendUrl || this.config?.employeeCode !== employeeCode
+    if (changedIdentity) this.setCollectionEnabled(false)
     this.config = { backendUrl, employeeCode }
     if (changedIdentity) {
       this.successfulDiscoveryFingerprints.clear()
@@ -409,8 +412,6 @@ export class NativeChatCollectorManager {
       this.setHealth('wxwork', 'error', '消息采集程序仅支持 Windows')
       return
     }
-    this.ensureChildren()
-    this.sendSavedSubscriptions()
     if (!this.refreshTimer) {
       this.refreshTimer = setInterval(() => {
         void this.refreshSubscriptions()
@@ -547,7 +548,7 @@ export class NativeChatCollectorManager {
   }
 
   private ensureChildren(): void {
-    if (process.platform !== 'win32' || this.stopping || !this.config) return
+    if (process.platform !== 'win32' || this.stopping || !this.config || !this.collectionEnabled) return
     if (!this.wxworkContextBlocked) {
       try {
         const current = this.wxworkContext
@@ -839,6 +840,7 @@ export class NativeChatCollectorManager {
   }
 
   private async processDiscoveryEvent(channel: Channel, event: DiscoveryEvent): Promise<void> {
+    if (!this.collectionEnabled) return
     if (channel === 'wxwork' && !this.verifyWxworkContext()) return
     if (!Array.isArray(event.sessions)) throw new Error('采集进程会话目录格式错误')
     if (event.event === 'ready' && event.channel !== channel) throw new Error('采集进程就绪事件的平台与进程不一致')
@@ -876,6 +878,11 @@ export class NativeChatCollectorManager {
       const response = await this.request('GET', '/api/v1/native-chat/collection-config', undefined, 0)
       const candidate = response.data as NativeChatCollectionConfig
       if (!candidate || !Array.isArray(candidate.rules)) throw new Error('服务端会话采集配置格式错误')
+      if (candidate.collectionEnabled === false) {
+        this.persistCollectionRules(candidate)
+        this.setCollectionEnabled(false)
+        return
+      }
       collectionConfig = candidate
       this.persistCollectionRules(candidate)
       this.updateActivityIssues(event.sessions, candidate, channel)
@@ -1398,16 +1405,19 @@ export class NativeChatCollectorManager {
   private async refreshSubscriptions(discoveredSessions?: Session[], discoveredChannel?: Channel, knownConfig?: NativeChatCollectionConfig, confirmedSessions: Session[] = []): Promise<void> {
     if (this.refreshing || this.stopping || !this.config) return
     if (this.discoveryWorkerRunning && !discoveredSessions) return
-    if (process.platform === 'win32' && !this.wxworkContextBlocked) {
-      if (this.wxworkContext) this.verifyWxworkContext(true)
-      else this.ensureChildren()
-    }
     this.refreshing = true
     try {
       const response = knownConfig ? null : await this.get('/api/v1/native-chat/collection-config')
       const config = knownConfig ?? response?.data as NativeChatCollectionConfig
       if (!config || !Array.isArray(config.rules)) throw new Error('服务端会话采集配置格式错误')
       this.persistCollectionRules(config)
+      if (config.collectionEnabled === false) {
+        this.setCollectionEnabled(false)
+        return
+      }
+      const wasEnabled = this.collectionEnabled
+      this.setCollectionEnabled(true)
+      if (!wasEnabled) this.sendSavedSubscriptions()
       const nextSessions = new Map(this.sessions)
       if (discoveredSessions) {
         nextSessions.forEach((session, key) => {
@@ -1487,10 +1497,37 @@ export class NativeChatCollectorManager {
       }
       console.error(`[native-chat] 采集规则同步失败，继续使用上次已确认的会话订阅：${message}`)
       this.log('app', 'subscription_sync_error', message)
-      this.sendSavedSubscriptions()
+      if (this.cachedCollectionConfig && this.cachedCollectionConfig.collectionEnabled !== false) {
+        const wasEnabled = this.collectionEnabled
+        this.setCollectionEnabled(true)
+        if (!wasEnabled) this.sendSavedSubscriptions()
+      } else if (this.cachedCollectionConfig?.collectionEnabled === false) {
+        this.setCollectionEnabled(false)
+      } else if (!this.collectionEnabled) {
+        this.setHealth('wechat', 'waiting', '等待获取采集设置')
+        this.setHealth('wxwork', 'waiting', '等待获取采集设置')
+      }
     } finally {
       this.refreshing = false
     }
+  }
+
+  private setCollectionEnabled(enabled: boolean): void {
+    this.collectionEnabled = enabled
+    if (enabled) {
+      if (process.platform === 'win32' && !this.wxworkContextBlocked) {
+        if (this.wxworkContext) this.verifyWxworkContext(true)
+        this.ensureChildren()
+      }
+      return
+    }
+    this.pendingDiscoveryEvents.clear()
+    for (const [channel, child] of this.children) {
+      this.children.delete(channel)
+      this.requestCollectorStop(child, channel)
+    }
+    this.setHealth('wechat', 'waiting', '已关闭采集')
+    this.setHealth('wxwork', 'waiting', '已关闭采集')
   }
 
   private send(channel: Channel, value: Record<string, unknown>): void {
@@ -1714,7 +1751,11 @@ export class NativeChatCollectorManager {
       try {
         const response = await fetch(`${this.config.backendUrl}${path}`, {
           method,
-          headers: { 'X-Employee-Code': this.config.employeeCode, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+          headers: {
+            'X-Employee-Code': this.config.employeeCode,
+            'X-Native-Chat-Collection-Capabilities': 'account-scoped-rules-v1',
+            ...(body ? { 'Content-Type': 'application/json' } : {})
+          },
           body: body ? JSON.stringify(body) : undefined,
           signal: controller.signal
         })

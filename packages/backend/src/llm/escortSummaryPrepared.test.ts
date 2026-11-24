@@ -3,7 +3,13 @@ import { addDirectEscortSummary, resolveDirectEscortSummary, usePreparedEscortSu
 const message: OrderAiSourceMessage = { id: 1, sourceRef: '原生消息#1', channel: 'wechat', senderName: null, contentText: '原始消息', preparedEscortSummary: '首次 AI 提炼的完整小结', occurredAt: new Date() }
 const candidate: OrderAiFieldCandidate = { huanyuOrderNo: 'HYYD123456', fieldCode: 'escort_service_summary', fieldLabel: '陪诊服务小结', value: '订单 AI 的改写', normalizedValue: '订单 AI 的改写', candidateType: 'new_or_confirmed', confidence: 0.9, requiresConfirmation: false, evidence: [{ sourceId: '原生消息#1' }] }
 assert.equal(usePreparedEscortSummaries([candidate], [message])[0].value, message.preparedEscortSummary)
-assert.throws(() => usePreparedEscortSummaries([candidate], [{ ...message, preparedEscortSummary: undefined }]), /未能唯一对应/)
+const unrelated: OrderAiFieldCandidate = { ...candidate, fieldCode: 'hospital', fieldLabel: '最终确认医院', value: '北京协和医院', normalizedValue: '北京协和医院' }
+assert.deepEqual(usePreparedEscortSummaries([candidate, unrelated], [{ ...message, preparedEscortSummary: undefined }]), [unrelated])
+const ambiguousCandidate: OrderAiFieldCandidate = { ...candidate, evidence: [{ sourceId: '原生消息#1' }, { sourceId: '原生消息#2' }] }
+assert.equal(usePreparedEscortSummaries([ambiguousCandidate], [
+  message,
+  { ...message, id: 2, sourceRef: '原生消息#2', preparedEscortSummary: '另一份小结' }
+])[0].value, '首次 AI 提炼的完整小结\n\n另一份小结')
 const linked = [{ linkedOrderId: 42, sourceRef: '原生消息#1', preparedEscortSummary: '首次提炼的结果' }]
 const direct = resolveDirectEscortSummary(42, 'COD1', [{ orderNo: 'HYYD123456', bOrderNo: 'COD1' }], linked)
 assert.equal(direct?.huanyuOrderNo, 'HYYD123456')

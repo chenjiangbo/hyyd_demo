@@ -2,6 +2,24 @@ import type { NativeChatCollectionConfig, NativeChatCollectionRule } from '@huan
 import type { PrismaClient } from '@prisma/client'
 
 const SETTING_KEY = 'native_chat_collection_config'
+const DISABLED_EMPLOYEES_KEY = 'native_chat_collection_disabled_employees'
+
+export async function getDisabledNativeChatEmployees(prisma: PrismaClient): Promise<number[]> {
+  const rows = await prisma.$queryRaw<Array<{ value: unknown }>>`SELECT value FROM sys_settings WHERE key = ${DISABLED_EMPLOYEES_KEY}`
+  if (!rows.length) return []
+  const value = rows[0].value
+  if (!Array.isArray(value) || !value.every((id) => Number.isSafeInteger(id) && id > 0)) throw new Error('员工采集设置格式错误')
+  return value as number[]
+}
+
+export async function saveDisabledNativeChatEmployees(prisma: PrismaClient, input: unknown): Promise<number[]> {
+  if (!Array.isArray(input) || !input.every((id) => Number.isSafeInteger(id) && id > 0)) throw new Error('员工采集设置无效')
+  const ids = [...new Set(input)] as number[]
+  const employees = await prisma.employee.findMany({ where: { id: { in: ids } }, select: { id: true } })
+  if (employees.length !== ids.length) throw new Error('员工不存在，请刷新页面')
+  await prisma.$executeRaw`INSERT INTO sys_settings (key, value, updated_at) VALUES (${DISABLED_EMPLOYEES_KEY}, ${JSON.stringify(ids)}::jsonb, NOW()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`
+  return ids
+}
 
 export const DEFAULT_NATIVE_CHAT_COLLECTION_RULES: NativeChatCollectionRule[] = [
   { id: 'default-title-medical-group', enabled: true, channel: 'both', match: 'title_contains', value: '就医服务群' },
@@ -61,10 +79,28 @@ export function validateNativeChatCollectionRules(input: unknown): NativeChatCol
     const channel = raw.channel
     const match = raw.match
     const value = typeof raw.value === 'string' ? raw.value.trim() : ''
+    if (raw.accountId !== undefined && raw.accountId !== null && typeof raw.accountId !== 'string') {
+      throw new Error(`规则 ${id} 的账号 ID 格式无效`)
+    }
+    const accountId = typeof raw.accountId === 'string' ? raw.accountId.trim() : ''
+    const accountChannel = raw.accountChannel
     if (!id || ids.has(id)) throw new Error('规则 ID 不能为空且不能重复')
     if (channel !== 'wechat' && channel !== 'wxwork' && channel !== 'both') {
       throw new Error(`规则 ${id} 的平台无效`)
     }
+    if (accountChannel !== undefined && accountChannel !== null && accountChannel !== 'wechat' && accountChannel !== 'wxwork') {
+      throw new Error(`规则 ${id} 的账号平台无效`)
+    }
+    if (accountId && (accountChannel !== 'wechat' && accountChannel !== 'wxwork')) {
+      throw new Error(`规则 ${id} 指定账号时必须同时指定账号平台`)
+    }
+    if (!accountId && accountChannel !== undefined && accountChannel !== null) {
+      throw new Error(`规则 ${id} 指定账号平台时必须填写账号 ID`)
+    }
+    if (accountId && channel !== 'both' && channel !== accountChannel) {
+      throw new Error(`规则 ${id} 的账号平台必须与采集渠道一致`)
+    }
+    if (accountId.length > 200) throw new Error(`规则 ${id} 的账号 ID 过长`)
     if (match !== 'source_id' && match !== 'title_exact' && match !== 'title_contains' && match !== 'title_regex') {
       throw new Error(`规则 ${id} 的匹配方式无效`)
     }
@@ -82,6 +118,8 @@ export function validateNativeChatCollectionRules(input: unknown): NativeChatCol
       id,
       enabled: raw.enabled,
       channel,
+      accountChannel: accountId ? accountChannel as 'wechat' | 'wxwork' : null,
+      accountId: accountId || null,
       match,
       value
     })
@@ -93,6 +131,7 @@ export function matchNativeChatConversationRule(
   config: NativeChatCollectionConfig,
   conversation: {
     channel: 'wechat' | 'wxwork'
+    accountId: string
     sourceConversationId: string
     title: string | null
   }
@@ -100,6 +139,7 @@ export function matchNativeChatConversationRule(
   const title = conversation.title?.trim() ?? ''
   return config.rules.find((rule) => {
     if (!rule.enabled || (rule.channel !== 'both' && rule.channel !== conversation.channel)) return false
+    if (rule.accountId && (rule.accountId !== conversation.accountId || rule.accountChannel !== conversation.channel)) return false
     if (rule.match === 'source_id') return rule.value === conversation.sourceConversationId
     if (rule.match === 'title_exact') {
       return title.toLocaleLowerCase() === rule.value.toLocaleLowerCase()

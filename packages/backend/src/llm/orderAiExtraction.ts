@@ -60,12 +60,21 @@ export function resolveDirectEscortSummary(orderId: number, sourceOrderNo: strin
 
 export function usePreparedEscortSummaries(candidates: OrderAiFieldCandidate[], messages: OrderAiSourceMessage[]): OrderAiFieldCandidate[] {
   const prepared = new Map(messages.filter((item) => item.preparedEscortSummary && item.sourceRef).map((item) => [item.sourceRef!, item.preparedEscortSummary!]))
-  return candidates.map((candidate) => {
-    if (candidate.fieldCode !== 'escort_service_summary') return candidate
+  return candidates.flatMap((candidate) => {
+    if (candidate.fieldCode !== 'escort_service_summary') return [candidate]
     const values = [...new Set(candidate.evidence.map((item) => prepared.get(item.sourceId)).filter((value): value is string => Boolean(value)))]
-    if (!values.length) throw new Error('陪诊小结候选未能唯一对应已提炼的小结，不能自动填写')
+    if (!values.length) {
+      // Escort summaries are optional and are prepared by the dedicated summary
+      // pipeline. A model must never invent or paraphrase this field, and an
+      // invalid summary candidate must not fail unrelated order-field extraction.
+      console.warn('[order-ai-field] 拒绝未能唯一对应已提炼小结的候选', {
+        huanyuOrderNo: candidate.huanyuOrderNo,
+        evidenceSourceIds: candidate.evidence.map((item) => item.sourceId)
+      })
+      return []
+    }
     const value = values.join('\n\n')
-    return { ...candidate, value, normalizedValue: value }
+    return [{ ...candidate, value, normalizedValue: value }]
   })
 }
 

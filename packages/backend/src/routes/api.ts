@@ -8,7 +8,7 @@ import { getEnv } from '../env.js'
 import { extractOrderCandidate, resolveOrder, type OrderNoEntry } from '../lib/orderNoMatch.js'
 import { parseEscortDispatchTemplate } from '../lib/escortTemplateMatch.js'
 import { parseChatTime } from '../lib/chatTimeParser.js'
-import { getNativeChatCollectionConfig } from '../services/nativeChatCollectionConfig.js'
+import { getNativeChatCollectionConfig, getDisabledNativeChatEmployees } from '../services/nativeChatCollectionConfig.js'
 import { registerNativeChatIngestRoutes } from './nativeChatIngest.js'
 import { registerNativeChatDiscoveryRoutes } from './nativeChatDiscovery.js'
 import { registerNativeChatAttachmentRoutes } from './nativeChatAttachments.js'
@@ -3848,7 +3848,12 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
   fastify.get('/api/v1/native-chat/collection-config', async (request, reply) => {
     if (!request.employee) return reply.status(401).send({ error: '未登录或缺少工号' })
     const config = await getNativeChatCollectionConfig(prisma)
-    return reply.send({ data: config })
+    const collectionEnabled = !(await getDisabledNativeChatEmployees(prisma)).includes(request.employee.id)
+    const capabilities = request.headers['x-native-chat-collection-capabilities']
+    const supportsAccountScopedRules = typeof capabilities === 'string'
+      && capabilities.split(',').some((item) => item.trim() === 'account-scoped-rules-v1')
+    return reply.send({ data: { ...config, collectionEnabled, rules: !collectionEnabled ? [] : supportsAccountScopedRules
+      ? config.rules : config.rules.filter((rule) => !rule.accountId) } })
   })
 
   fastify.post<{ Body: CaptureFrameBody }>('/api/v1/capture/frame', async (request, reply) => {

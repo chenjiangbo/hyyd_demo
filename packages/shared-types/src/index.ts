@@ -174,6 +174,9 @@ export interface NativeChatCollectionRule {
   id: string
   enabled: boolean
   channel: MessageChannel | 'both'
+  /** Unset means any account. When set, accountChannel + accountId scope the rule to one source account. */
+  accountChannel?: MessageChannel | null
+  accountId?: string | null
   match: NativeChatConversationMatch
   value: string
 }
@@ -182,6 +185,7 @@ export interface NativeChatCollectionConfig {
   version: number
   updatedAt: string | null
   rules: NativeChatCollectionRule[]
+  collectionEnabled?: boolean
 }
 
 export interface Employee {

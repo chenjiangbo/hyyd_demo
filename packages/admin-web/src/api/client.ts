@@ -272,6 +272,12 @@ export const adminApi = {
   nativeChatCollectionConfig() {
     return request<NativeChatCollectionConfig>('/api/v1/admin/native-chat-collection-config')
   },
+  nativeChatCollectionEmployees() {
+    return request<Array<{ id: number; name: string; account: string; enabled: boolean }>>('/api/v1/admin/native-chat-collection-employees')
+  },
+  saveNativeChatCollectionEmployees(disabledEmployeeIds: number[]) {
+    return request<number[]>('/api/v1/admin/native-chat-collection-employees', { method: 'PUT', body: JSON.stringify({ disabledEmployeeIds }) })
+  },
   nativeChatSessions() {
     return request<NativeChatDiscoveredSession[]>('/api/v1/admin/native-chat-sessions')
   },
