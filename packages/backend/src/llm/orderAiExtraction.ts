@@ -46,13 +46,16 @@ export type OrderAiExtraction = {
   raw: string
 }
 
-export function resolveDirectEscortSummary(orderId: number, sourceOrderNo: string, orders: Array<{ orderNo: string; bOrderNo: string }>, messages: Array<{ linkedOrderId?: number | null; sourceRef: string; preparedEscortSummary?: string }>): { huanyuOrderNo: string; value: string; sourceRef: string } | undefined {
+type DirectEscortSummary = { huanyuOrderNo: string; value: string; sourceRef: string; sourceRefs?: string[] }
+
+export function resolveDirectEscortSummary(orderId: number, sourceOrderNo: string, orders: Array<{ orderNo: string; bOrderNo: string }>, messages: Array<{ linkedOrderId?: number | null; sourceRef: string; preparedEscortSummary?: string }>): DirectEscortSummary | undefined {
   const orderNos = [...new Set(orders.filter((item) => item.bOrderNo === sourceOrderNo).map((item) => item.orderNo))]
   if (orderNos.length !== 1) return undefined
   const summaries = messages.filter((item) => item.linkedOrderId === orderId && item.preparedEscortSummary)
-  if (new Set(summaries.map((item) => item.preparedEscortSummary)).size !== 1) return undefined
-  const summary = summaries.at(-1)
-  return summary?.preparedEscortSummary ? { huanyuOrderNo: orderNos[0], value: summary.preparedEscortSummary, sourceRef: summary.sourceRef } : undefined
+  const values = [...new Set(summaries.map((item) => item.preparedEscortSummary?.trim()).filter((value): value is string => Boolean(value)))]
+  if (!values.length) return undefined
+  const sourceRefs = [...new Set(summaries.map((item) => item.sourceRef))]
+  return { huanyuOrderNo: orderNos[0], value: values.join('\n\n'), sourceRef: sourceRefs[0], sourceRefs }
 }
 
 export function usePreparedEscortSummaries(candidates: OrderAiFieldCandidate[], messages: OrderAiSourceMessage[]): OrderAiFieldCandidate[] {
@@ -60,17 +63,42 @@ export function usePreparedEscortSummaries(candidates: OrderAiFieldCandidate[], 
   return candidates.map((candidate) => {
     if (candidate.fieldCode !== 'escort_service_summary') return candidate
     const values = [...new Set(candidate.evidence.map((item) => prepared.get(item.sourceId)).filter((value): value is string => Boolean(value)))]
-    if (values.length !== 1) throw new Error('陪诊小结候选未能唯一对应已提炼的小结，不能自动填写')
-    return { ...candidate, value: values[0], normalizedValue: values[0] }
+    if (!values.length) throw new Error('陪诊小结候选未能唯一对应已提炼的小结，不能自动填写')
+    const value = values.join('\n\n')
+    return { ...candidate, value, normalizedValue: value }
   })
 }
 
-export function addDirectEscortSummary(candidates: OrderAiFieldCandidate[], direct?: { huanyuOrderNo: string; value: string; sourceRef: string }): OrderAiFieldCandidate[] {
+/** 仅合并已由字段分析归属到同一寰宇单的小结；跨订单冲突的来源不自动使用。 */
+export function mergeAssignedEscortSummaries(candidates: OrderAiFieldCandidate[], messages: OrderAiSourceMessage[]): OrderAiFieldCandidate[] {
+  const summaries = candidates.filter((item) => item.fieldCode === 'escort_service_summary')
+  const ordersBySource = new Map<string, Set<string>>()
+  for (const candidate of summaries) for (const { sourceId } of candidate.evidence) {
+    const orders = ordersBySource.get(sourceId) ?? new Set<string>()
+    orders.add(candidate.huanyuOrderNo)
+    ordersBySource.set(sourceId, orders)
+  }
+  const output = candidates.filter((item) => item.fieldCode !== 'escort_service_summary')
+  for (const orderNo of new Set(summaries.map((item) => item.huanyuOrderNo))) {
+    const assigned = summaries.filter((item) => item.huanyuOrderNo === orderNo && item.candidateType !== 'ambiguous')
+    const refs = new Set(assigned.flatMap((item) => item.evidence.map((e) => e.sourceId)).filter((ref) => ordersBySource.get(ref)?.size === 1))
+    const sources = messages.filter((item) => item.sourceRef && refs.has(item.sourceRef) && item.preparedEscortSummary?.trim())
+    const values = [...new Set(sources.map((item) => item.preparedEscortSummary!.trim()))]
+    if (!values.length || !assigned.length) continue
+    const value = values.join('\n\n')
+    output.push({ ...assigned[0], value, normalizedValue: value, confidence: Math.min(...assigned.map((item) => item.confidence)), requiresConfirmation: true,
+      candidateType: assigned.some((item) => item.candidateType === 'change_candidate') ? 'change_candidate' : 'new_or_confirmed',
+      evidence: [...new Set(sources.map((item) => item.sourceRef!))].map((sourceId) => ({ sourceId })) })
+  }
+  return output
+}
+
+export function addDirectEscortSummary(candidates: OrderAiFieldCandidate[], direct?: DirectEscortSummary): OrderAiFieldCandidate[] {
   if (!direct) return candidates
   return [...candidates.filter((candidate) => !(candidate.fieldCode === 'escort_service_summary' && candidate.huanyuOrderNo === direct.huanyuOrderNo)), {
     huanyuOrderNo: direct.huanyuOrderNo, fieldCode: 'escort_service_summary', fieldLabel: '陪诊服务小结',
     value: direct.value, normalizedValue: direct.value, candidateType: 'new_or_confirmed', confidence: 1,
-    requiresConfirmation: true, evidence: [{ sourceId: direct.sourceRef }]
+    requiresConfirmation: true, evidence: (direct.sourceRefs ?? [direct.sourceRef]).map((sourceId) => ({ sourceId }))
   }]
 }
 
@@ -184,7 +212,7 @@ export const ORDER_AI_PROMPT_RULES = [
   '   同时 escort_records 的 value 输出所有陪诊安排的汇总描述文本。',
   '4. escort_name、escort_service_date、escort_phone 保持与第 1 次陪诊（首次陪诊）信息一致，确保向下兼容。',
   '5. 若沟通记录中出现了包含“渠道/订单号/就诊人/陪诊人/陪诊人电话”的标准派单/预约通知模板卡片，按上述渠道优先级提取，escort_name 与 escort_phone 置信度设为高（confidence >= 0.95），并引用对应渠道的派单消息作为证据。',
-  '6. 消息中如果提供“已提炼的陪诊服务小结”，直接使用该结果作为 escort_service_summary 的值，不要再次总结、删改或补充；只负责判断其所属寰宇服务单并引用对应消息作为证据。其他仅提到陪诊小结的消息不得当作已提炼结果。',
+  '6. 每条“已提炼的陪诊服务小结”分别判断其所属寰宇服务单；仅在归属明确时为每条小结单独输出一条 escort_service_summary 候选，并引用该消息的来源 ID。归属不明时不输出。不要改写小结；其他仅提到陪诊小结的消息不得当作已提炼结果。',
   '6. 若在通话录音或其他非正式聊天中口头提及过其他陪诊人，一律以企微（或微信兜底）的正式派单模板为准覆盖。',
   '“计划、想约、正在约、可能”不是完成；只有明确已挂号、预约成功、已检查、已住院、已出院、已陪诊、已复诊、已明确确认取消等事实才可输出步骤事件。',
   '【服务取消事件(service_cancelled)识别铁律（极其严谨）】：',
@@ -323,6 +351,7 @@ function normalizeEscortRecordsDateTime(value: unknown): unknown {
 function normalizeCandidates(raw: unknown, allowed: Map<string, OrderAiFieldDefinition>, huanyuOrderNos: Set<string>): OrderAiFieldCandidate[] {
   if (!Array.isArray(raw)) return []
   const latest = new Map<string, OrderAiFieldCandidate>()
+  const summaries: OrderAiFieldCandidate[] = []
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue
     const record = item as Record<string, unknown>
@@ -379,7 +408,7 @@ function normalizeCandidates(raw: unknown, allowed: Map<string, OrderAiFieldDefi
       normalizedValue = normalizedSchemes
     }
 
-    latest.set(`${huanyuOrderNo}:${fieldCode}`, {
+    const candidate: OrderAiFieldCandidate = {
       huanyuOrderNo,
       fieldCode: fieldCode!,
       fieldLabel: definition.label,
@@ -389,7 +418,9 @@ function normalizeCandidates(raw: unknown, allowed: Map<string, OrderAiFieldDefi
       confidence,
       requiresConfirmation: definition.requiresConfirmation || record.requires_confirmation === true || candidateType !== 'new_or_confirmed',
       evidence
-    })
+    }
+    if (fieldCode === 'escort_service_summary') summaries.push(candidate)
+    else latest.set(`${huanyuOrderNo}:${fieldCode}`, candidate)
   }
 
   // 1. 若提取到了多笔/多阶段 escort_records，自动将第 1 笔填充到 escort_name / escort_service_date / escort_phone，
@@ -466,7 +497,7 @@ function normalizeCandidates(raw: unknown, allowed: Map<string, OrderAiFieldDefi
     }
   }
 
-  return [...latest.values()]
+  return [...latest.values(), ...summaries]
 }
 
 function normalizeEvents(raw: unknown, huanyuOrderNos: Set<string>): WorkflowAnalysisEvent[] {
@@ -493,7 +524,7 @@ export async function extractOrderServiceFields(input: {
   currentValues: Record<string, unknown>
   messages: OrderAiSourceMessage[]
   calls: OrderAiSourceCall[]
-  directEscortSummary?: { huanyuOrderNo: string; value: string; sourceRef: string }
+  directEscortSummary?: DirectEscortSummary
 }): Promise<OrderAiExtraction> {
   const allowedByCode = new Map<string, OrderAiFieldDefinition>()
   for (const serviceType of new Set([input.serviceType, ...(input.huanyuOrders ?? []).map((order) => order.serviceType).filter((value): value is string => Boolean(value))])) {
@@ -524,9 +555,11 @@ export async function extractOrderServiceFields(input: {
   ].join('\n\n')
   const result = await chat([{ role: 'system', content: system }, { role: 'user', content: user }], { temperature: 0, maxTokens: 10000, model: input.model, provider: input.provider })
   const parsed = parseObject(result.content)
+  const directRefs = new Set(input.directEscortSummary?.sourceRefs ?? (input.directEscortSummary ? [input.directEscortSummary.sourceRef] : []))
   const normalized = normalizeCandidates(parsed.field_candidates, allowedMap, new Set((input.huanyuOrders ?? []).map((order) => order.orderNo)))
     .filter((candidate) => !(input.directEscortSummary && candidate.fieldCode === 'escort_service_summary' && candidate.huanyuOrderNo === input.directEscortSummary.huanyuOrderNo))
-  const candidates = addDirectEscortSummary(usePreparedEscortSummaries(normalized, input.messages), input.directEscortSummary)
+    .map((candidate) => candidate.fieldCode === 'escort_service_summary' ? { ...candidate, evidence: candidate.evidence.filter((item) => !directRefs.has(item.sourceId)) } : candidate)
+  const candidates = addDirectEscortSummary(mergeAssignedEscortSummaries(normalized, input.messages), input.directEscortSummary)
   return {
     candidates,
     workflowEvents: normalizeEvents(parsed.workflow_events, new Set((input.huanyuOrders ?? []).map((order) => order.orderNo))),

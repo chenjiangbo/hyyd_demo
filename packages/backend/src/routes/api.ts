@@ -4285,6 +4285,7 @@ function matchingHuanyuFact(predicate: Prisma.Sql): Prisma.Sql {
     const orderNo = String(body.orderNo ?? '').trim()
     const fields: Record<string, unknown> = body.fields && typeof body.fields === 'object' ? body.fields : {}
     if (!/^[A-Za-z0-9-]{6,64}$/.test(orderNo)) return reply.status(400).send({ ok: false, error: '订单号格式无效' })
+    if (typeof fields.escortSummary === 'string' && Array.from(fields.escortSummary.trim()).length > 2000) return reply.status(400).send({ ok: false, error: '陪诊小结不能超过2000个字，请调整后再填单' })
 
     const cleanText = (value: unknown): string => typeof value === 'string' ? value.trim() : ''
     const escortList: Array<{ id: string; escortName: string; phone: string; expectedEscortId: string; expectedPhone: string; serviceDate: string; sequence: string }> = Array.isArray(fields.escortList)
